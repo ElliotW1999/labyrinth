@@ -10,6 +10,7 @@ mod combat;
 mod components;
 mod healthbars;
 mod input;
+mod items;
 mod map;
 mod movement;
 mod progression;
@@ -26,6 +27,7 @@ use camera::CameraPlugin;
 use combat::CombatPlugin;
 use healthbars::HealthBarPlugin;
 use input::InputPlugin;
+use items::ItemsPlugin;
 use map::MapPlugin;
 use movement::MovementPlugin;
 use progression::ProgressionPlugin;
@@ -53,6 +55,7 @@ fn main() {
             MovementPlugin,
             CombatPlugin,
             ProgressionPlugin,
+            ItemsPlugin,
             InputPlugin,
             AbilitiesPlugin,
             AiPlugin,
