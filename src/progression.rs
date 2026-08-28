@@ -1,16 +1,16 @@
-//! Hero XP gains, skill points, and level-up stat growth.
+//! Hero XP gains, skill points, and attribute growth on level-up.
 
 use bevy::prelude::*;
 
 use crate::components::{
-    CombatStats, Health, HeroProgress, Mana, PlayerHero, xp_required_for_level,
+    CombatStats, Health, HeroAttributes, HeroProgress, Mana, PlayerHero, xp_required_for_level,
 };
 
 pub struct ProgressionPlugin;
 
 impl Plugin for ProgressionPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, apply_level_ups);
+        app.add_systems(Update, (regen_health, apply_level_ups));
     }
 }
 
@@ -32,35 +32,43 @@ pub fn add_xp(progress: &mut HeroProgress, amount: u32) {
     }
 }
 
+fn regen_health(time: Res<Time>, mut query: Query<&mut Health>) {
+    let dt = time.delta_secs();
+    for mut health in &mut query {
+        if health.regen_per_sec <= 0.0 || !health.is_alive() {
+            continue;
+        }
+        if health.current < health.max {
+            health.current = (health.current + health.regen_per_sec * dt).min(health.max);
+        }
+    }
+}
+
 fn apply_level_ups(
     mut heroes: Query<
-        (Entity, &HeroProgress, &mut Health, &mut Mana, &mut CombatStats),
+        (
+            Entity,
+            &HeroProgress,
+            &mut HeroAttributes,
+            &mut Health,
+            &mut Mana,
+            &mut CombatStats,
+        ),
         With<PlayerHero>,
     >,
     mut last_levels: Local<std::collections::HashMap<Entity, u32>>,
 ) {
-    for (entity, progress, mut health, mut mana, mut stats) in &mut heroes {
+    for (entity, progress, mut attrs, mut health, mut mana, mut stats) in &mut heroes {
         let previous = *last_levels.get(&entity).unwrap_or(&1);
         if progress.level > previous {
             for _ in previous..progress.level {
-                apply_level_bonus(&mut health, &mut mana, &mut stats);
+                let before = *attrs;
+                attrs.level_up();
+                HeroAttributes::apply_delta(&before, &attrs, &mut health, &mut mana, &mut stats);
             }
         }
         last_levels.insert(entity, progress.level);
     }
-}
-
-fn apply_level_bonus(health: &mut Health, mana: &mut Mana, stats: &mut CombatStats) {
-    let hp_gain = 60.0;
-    let mana_gain = 30.0;
-    health.max += hp_gain;
-    health.current = (health.current + hp_gain).min(health.max);
-    mana.max += mana_gain;
-    mana.current = (mana.current + mana_gain).min(mana.max);
-    stats.attack_damage += 4.0;
-    stats.armor += 0.5;
-    stats.magic_resist += 0.4;
-    stats.move_speed += 0.15;
 }
 
 #[cfg(test)]
@@ -105,5 +113,32 @@ mod tests {
         assert_eq!(points, 0);
         assert_eq!(loadout.slots[0].rank, 1);
         assert!(loadout.slots[0].mana_cost > 0.0);
+    }
+
+    #[test]
+    fn level_up_grows_primary_attributes() {
+        let mut attrs = HeroAttributes::starter();
+        let mut health = Health::new(400.0);
+        let mut mana = Mana::new(200.0, 5.0);
+        let mut stats = CombatStats {
+            attack_damage: 55.0,
+            attack_range: 8.0,
+            attack_speed: 1.0,
+            armor: 2.0,
+            magic_resist: 2.0,
+            move_speed: 12.0,
+        };
+        attrs.apply_to(&mut health, &mut mana, &mut stats);
+        let hp_before = health.max;
+        let armor_before = stats.armor;
+        let before = attrs;
+        attrs.level_up();
+        HeroAttributes::apply_delta(&before, &attrs, &mut health, &mut mana, &mut stats);
+        assert!(attrs.strength > before.strength);
+        assert!(attrs.agility > before.agility);
+        assert!(attrs.intelligence > before.intelligence);
+        assert!(health.max > hp_before);
+        assert!(stats.armor > armor_before);
+        assert!(stats.attack_speed > 1.0);
     }
 }

@@ -203,6 +203,20 @@ impl ItemId {
         }
     }
 
+    pub fn tooltip_body(self) -> String {
+        let kind = if self.has_active() {
+            "Active item"
+        } else {
+            "Passive item"
+        };
+        format!(
+            "{name}\nCost: {cost}g\n{kind}\n{desc}",
+            name = self.name(),
+            cost = self.cost(),
+            desc = self.description(),
+        )
+    }
+
     pub fn placeholder_color(self) -> Color {
         match self {
             ItemId::IronBracer => Color::srgb(0.55, 0.55, 0.6),

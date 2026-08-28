@@ -3,8 +3,9 @@
 use bevy::prelude::*;
 
 use crate::components::{
-    AbilityLoadout, Ancient, AttackCooldown, CombatStats, Creep, GoldBounty, Health, HeroProgress,
-    Lane, Mana, PlayerHero, PlayerWallet, Team, Tower, UnitRadius, XpBounty,
+    AbilityLoadout, Ancient, AttackCooldown, CombatStats, Creep, GoldBounty, Health,
+    HeroAttributes, HeroProgress, Lane, Mana, PlayerHero, PlayerWallet, Team, Tower, UnitRadius,
+    XpBounty,
 };
 use crate::items::{Inventory, StatusEffects};
 use crate::resources::SharedAssets;
@@ -18,6 +19,26 @@ impl Plugin for UnitsPlugin {
 }
 
 pub fn spawn_player_hero(mut commands: Commands, assets: Res<SharedAssets>) {
+    let attrs = HeroAttributes::starter();
+    // Base vitals/combat before primary attributes (attrs applied below).
+    let mut health = Health {
+        current: 360.0,
+        max: 360.0,
+        regen_per_sec: 0.5,
+    };
+    let mut mana = Mana::new(104.0, 11.1);
+    let mut stats = CombatStats {
+        attack_damage: 55.0,
+        attack_range: 8.0,
+        attack_speed: 0.74,
+        armor: 1.5,
+        magic_resist: 0.85,
+        move_speed: 12.0,
+    };
+    attrs.apply_to(&mut health, &mut mana, &mut stats);
+    health.current = health.max;
+    mana.current = mana.max;
+
     commands
         .spawn((
             Name::new("Player Hero"),
@@ -27,23 +48,20 @@ pub fn spawn_player_hero(mut commands: Commands, assets: Res<SharedAssets>) {
             Team::Radiant,
             PlayerHero,
             PlayerWallet { gold: 600 },
-            Health::new(720.0),
-            Mana::new(320.0, 12.0),
-            CombatStats {
-                attack_damage: 55.0,
-                attack_range: 8.0,
-                attack_speed: 1.1,
-                armor: 4.0,
-                magic_resist: 3.0,
-                move_speed: 12.0,
-            },
+            health,
+            mana,
+            stats,
             AttackCooldown(0.0),
             AbilityLoadout::starter(),
             HeroProgress::new(),
             UnitRadius(0.5),
             GoldBounty(0),
         ))
-        .insert((Inventory::empty(), StatusEffects::default()));
+        .insert((
+            attrs,
+            Inventory::empty(),
+            StatusEffects::default(),
+        ));
 }
 
 pub fn spawn_creep(
