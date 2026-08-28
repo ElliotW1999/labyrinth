@@ -8,6 +8,7 @@ mod ai;
 mod camera;
 mod combat;
 mod components;
+mod healthbars;
 mod input;
 mod map;
 mod movement;
@@ -22,6 +23,7 @@ use abilities::AbilitiesPlugin;
 use ai::AiPlugin;
 use camera::CameraPlugin;
 use combat::CombatPlugin;
+use healthbars::HealthBarPlugin;
 use input::InputPlugin;
 use map::MapPlugin;
 use movement::MovementPlugin;
@@ -53,6 +55,7 @@ fn main() {
             WavesPlugin,
             CameraPlugin,
             InputPlugin,
+            HealthBarPlugin,
             UiPlugin,
         ))
         .run();

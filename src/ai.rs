@@ -1,10 +1,13 @@
-//! Creep lane following and tower / unit aggro acquisition.
+//! Creep lane following and tower / creep aggro.
+//!
+//! The player hero is intentionally excluded — player orders must never be
+//! overwritten by AI aggro/chase logic.
 
 use bevy::prelude::*;
 
 use crate::combat::flat_distance;
 use crate::components::{
-    AttackTarget, CombatStats, Creep, Health, MoveTarget, Team, Tower, UnitRadius,
+    AttackTarget, CombatStats, Creep, Health, MoveTarget, PlayerHero, Team, Tower, UnitRadius,
 };
 
 pub struct AiPlugin;
@@ -17,6 +20,7 @@ impl Plugin for AiPlugin {
                 follow_lane_waypoints,
                 acquire_targets,
                 chase_attack_targets,
+                player_chase_attack_target,
             )
                 .chain(),
         );
@@ -59,14 +63,17 @@ fn follow_lane_waypoints(
 }
 
 fn acquire_targets(
-    mut seekers: Query<(
-        Entity,
-        &Transform,
-        &Team,
-        &CombatStats,
-        Option<&AttackTarget>,
-        Has<Tower>,
-    )>,
+    mut seekers: Query<
+        (
+            Entity,
+            &Transform,
+            &Team,
+            &CombatStats,
+            Option<&AttackTarget>,
+            Has<Tower>,
+        ),
+        Without<PlayerHero>,
+    >,
     candidates: Query<(Entity, &Transform, &Team, &Health, Option<&UnitRadius>)>,
     mut commands: Commands,
 ) {
@@ -85,7 +92,8 @@ fn acquire_targets(
             let still_valid = snaps.iter().any(|(e, pos, target_team, radius)| {
                 *e == *target
                     && *target_team == team.enemy()
-                    && flat_distance(transform.translation, *pos) <= stats.attack_range + *radius + 1.5
+                    && flat_distance(transform.translation, *pos)
+                        <= stats.attack_range + *radius + 1.5
             });
             if still_valid {
                 continue;
@@ -121,7 +129,10 @@ fn acquire_targets(
 }
 
 fn chase_attack_targets(
-    attackers: Query<(Entity, &Transform, &CombatStats, &AttackTarget), Without<Tower>>,
+    attackers: Query<
+        (Entity, &Transform, &CombatStats, &AttackTarget),
+        (Without<Tower>, Without<PlayerHero>),
+    >,
     targets: Query<&Transform>,
     mut commands: Commands,
 ) {
@@ -138,5 +149,27 @@ fn chase_attack_targets(
         } else {
             commands.entity(entity).remove::<MoveTarget>();
         }
+    }
+}
+
+/// Player-only chase: walk into range for an explicit attack order, but never
+/// clear a newer move order (MoveTarget without wanting to chase).
+pub fn player_chase_attack_target(
+    hero: Query<(Entity, &Transform, &CombatStats, &AttackTarget), (With<PlayerHero>, Without<MoveTarget>)>,
+    targets: Query<&Transform>,
+    mut commands: Commands,
+) {
+    let Ok((entity, transform, stats, AttackTarget(target))) = hero.single() else {
+        return;
+    };
+    let Ok(target_tf) = targets.get(*target) else {
+        commands.entity(entity).remove::<AttackTarget>();
+        return;
+    };
+    let dist = flat_distance(transform.translation, target_tf.translation);
+    if dist > stats.attack_range * 0.9 {
+        commands.entity(entity).insert(MoveTarget {
+            position: Vec3::new(target_tf.translation.x, 0.0, target_tf.translation.z),
+        });
     }
 }
