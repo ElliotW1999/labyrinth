@@ -1,10 +1,13 @@
-//! HUD: vitals, spell bar with icons/ranks, unspent points, and minimap.
+//! HUD: vitals, spell bar, inventory, shop, unspent points, and minimap.
 
 use bevy::prelude::*;
 
 use crate::components::{
     AbilityId, AbilityLoadout, Ancient, Creep, Health, HeroProgress, Mana, PlayerHero,
     PlayerWallet, Team, Tower,
+};
+use crate::items::{
+    Inventory, ItemId, ItemShop, PurchaseItemRequest, ShopUiState, StatusEffects, StatusKind,
 };
 use crate::resources::MatchConfig;
 
@@ -19,6 +22,13 @@ impl Plugin for UiPlugin {
                     refresh_hud_text,
                     refresh_spell_bar,
                     handle_spell_level_clicks,
+                    refresh_inventory_bar,
+                    refresh_buffs_text,
+                    handle_shop_toggle_button,
+                    sync_shop_panel_visibility,
+                    handle_shop_buy_clicks,
+                    handle_shop_close_keys,
+                    refresh_shop_status,
                     refresh_minimap,
                 ),
             );
@@ -39,6 +49,9 @@ struct HudGold;
 
 #[derive(Component)]
 struct HudSkillPoints;
+
+#[derive(Component)]
+struct HudBuffs;
 
 #[derive(Component)]
 struct SpellBarRoot;
@@ -64,6 +77,35 @@ struct SpellLevelButton {
 }
 
 #[derive(Component)]
+struct InventorySlotIcon {
+    index: usize,
+}
+
+#[derive(Component)]
+struct InventorySlotLabel {
+    index: usize,
+}
+
+#[derive(Component)]
+struct InventorySlotCd {
+    index: usize,
+}
+
+#[derive(Component)]
+struct ShopToggleButton;
+
+#[derive(Component)]
+struct ShopPanel;
+
+#[derive(Component)]
+struct ShopStatusText;
+
+#[derive(Component)]
+struct ShopBuyButton {
+    item: ItemId,
+}
+
+#[derive(Component)]
 struct MinimapRoot;
 
 #[derive(Component)]
@@ -83,6 +125,7 @@ enum MinimapDotKind {
 
 const MINIMAP_SIZE: f32 = 180.0;
 const MAX_MINIMAP_DOTS: usize = 64;
+const SHOP_BUTTON_SIZE: f32 = 44.0;
 
 fn spawn_hud(mut commands: Commands) {
     commands
@@ -130,6 +173,30 @@ fn spawn_hud(mut commands: Commands) {
                     TextFont::from_font_size(18.0),
                     TextColor(Color::srgb(0.95, 0.7, 1.0)),
                 ));
+                panel.spawn((
+                    HudBuffs,
+                    Text::new("Buffs: none"),
+                    TextFont::from_font_size(16.0),
+                    TextColor(Color::srgb(0.7, 0.95, 0.75)),
+                ));
+            });
+
+            // Inventory bar (above spell bar)
+            root.spawn(Node {
+                position_type: PositionType::Absolute,
+                bottom: px(100),
+                left: percent(50),
+                margin: UiRect::left(px(-168)),
+                flex_direction: FlexDirection::Row,
+                column_gap: px(6),
+                padding: UiRect::all(px(6)),
+                border_radius: BorderRadius::all(px(6)),
+                ..default()
+            })
+            .with_children(|bar| {
+                for i in 0..6 {
+                    spawn_inventory_slot(bar, i);
+                }
             });
 
             // Bottom-center spell bar
@@ -165,25 +232,25 @@ fn spawn_hud(mut commands: Commands) {
             // Help
             root.spawn((
                 Text::new(
-                    "RMB: move/attack  |  LMB: confirm spell  |  Ctrl+QWER or +: rank up  |  Space: stop",
+                    "RMB: move/attack  |  ASDZXC: items  |  Shop (bottom-right)  |  Ctrl+QWER: rank  |  Space: stop",
                 ),
                 TextFont::from_font_size(14.0),
                 TextColor(Color::srgba(0.8, 0.85, 0.9, 0.8)),
                 Node {
                     position_type: PositionType::Absolute,
-                    bottom: px(100),
+                    bottom: px(155),
                     left: px(16),
                     ..default()
                 },
             ));
 
-            // Minimap
+            // Minimap (above shop button)
             root.spawn((
                 MinimapRoot,
                 Node {
                     position_type: PositionType::Absolute,
                     right: px(14),
-                    bottom: px(14),
+                    bottom: px(14.0 + SHOP_BUTTON_SIZE + 8.0),
                     width: px(MINIMAP_SIZE),
                     height: px(MINIMAP_SIZE),
                     border: UiRect::all(px(2)),
@@ -224,6 +291,172 @@ fn spawn_hud(mut commands: Commands) {
                         Visibility::Hidden,
                     ));
                 }
+            });
+
+            // Shop toggle — bottom-right corner of the window
+            root.spawn((
+                Button,
+                ShopToggleButton,
+                Node {
+                    position_type: PositionType::Absolute,
+                    right: px(14),
+                    bottom: px(14),
+                    width: px(SHOP_BUTTON_SIZE),
+                    height: px(SHOP_BUTTON_SIZE),
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::Center,
+                    border: UiRect::all(px(2)),
+                    border_radius: BorderRadius::all(px(8)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.9, 0.7, 0.2)),
+                BorderColor::all(Color::srgb(0.35, 0.25, 0.05)),
+            ))
+            .with_children(|btn| {
+                btn.spawn((
+                    Text::new("$"),
+                    TextFont::from_font_size(24.0),
+                    TextColor(Color::srgb(0.1, 0.08, 0.02)),
+                ));
+            });
+
+            // Shop panel (starts hidden)
+            root.spawn((
+                ShopPanel,
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: percent(50),
+                    top: percent(50),
+                    margin: UiRect::new(px(-220), px(0), px(-240), px(0)),
+                    width: px(440),
+                    max_height: px(480),
+                    flex_direction: FlexDirection::Column,
+                    row_gap: px(8),
+                    padding: UiRect::all(px(14)),
+                    border: UiRect::all(px(2)),
+                    border_radius: BorderRadius::all(px(10)),
+                    overflow: Overflow::scroll_y(),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.06, 0.08, 0.12, 0.94)),
+                BorderColor::all(Color::srgb(0.85, 0.7, 0.25)),
+                Visibility::Hidden,
+            ))
+            .with_children(|panel| {
+                panel.spawn((
+                    Text::new("Item Shop"),
+                    TextFont::from_font_size(24.0),
+                    TextColor(Color::srgb(1.0, 0.9, 0.45)),
+                ));
+                panel.spawn((
+                    ShopStatusText,
+                    Text::new("Stand near your base shop to buy."),
+                    TextFont::from_font_size(14.0),
+                    TextColor(Color::srgb(0.75, 0.85, 0.9)),
+                ));
+                for &item in ItemId::all() {
+                    spawn_shop_row(panel, item);
+                }
+                panel.spawn((
+                    Text::new("Esc / click $ again to close"),
+                    TextFont::from_font_size(12.0),
+                    TextColor(Color::srgba(0.7, 0.75, 0.8, 0.8)),
+                ));
+            });
+        });
+}
+
+fn spawn_inventory_slot(parent: &mut ChildSpawnerCommands, index: usize) {
+    let hotkey = ItemId::inventory_hotkey(index).unwrap_or("?");
+    parent
+        .spawn((
+            InventorySlotIcon { index },
+            Node {
+                width: px(52),
+                height: px(52),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                border: UiRect::all(px(2)),
+                border_radius: BorderRadius::all(px(6)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.12, 0.14, 0.18, 0.85)),
+            BorderColor::all(Color::srgb(0.3, 0.35, 0.4)),
+        ))
+        .with_children(|slot| {
+            slot.spawn((
+                InventorySlotLabel { index },
+                Text::new(format!("{hotkey}")),
+                TextFont::from_font_size(14.0),
+                TextColor(Color::srgb(0.85, 0.9, 0.95)),
+            ));
+            slot.spawn((
+                InventorySlotCd { index },
+                Text::new(""),
+                TextFont::from_font_size(11.0),
+                TextColor(Color::srgb(1.0, 0.85, 0.4)),
+            ));
+        });
+}
+
+fn spawn_shop_row(parent: &mut ChildSpawnerCommands, item: ItemId) {
+    parent
+        .spawn(Node {
+            width: percent(100),
+            flex_direction: FlexDirection::Row,
+            column_gap: px(10),
+            align_items: AlignItems::Center,
+            padding: UiRect::all(px(6)),
+            border_radius: BorderRadius::all(px(6)),
+            ..default()
+        })
+        .with_children(|row| {
+            row.spawn((
+                Node {
+                    width: px(40),
+                    height: px(40),
+                    border_radius: BorderRadius::all(px(6)),
+                    ..default()
+                },
+                BackgroundColor(item.placeholder_color()),
+            ));
+            row.spawn(Node {
+                flex_direction: FlexDirection::Column,
+                flex_grow: 1.0,
+                ..default()
+            })
+            .with_children(|info| {
+                info.spawn((
+                    Text::new(format!("{} — {}g", item.name(), item.cost())),
+                    TextFont::from_font_size(15.0),
+                    TextColor(Color::srgb(0.95, 0.95, 1.0)),
+                ));
+                info.spawn((
+                    Text::new(item.description()),
+                    TextFont::from_font_size(12.0),
+                    TextColor(Color::srgb(0.7, 0.78, 0.85)),
+                ));
+            });
+            row.spawn((
+                Button,
+                ShopBuyButton { item },
+                Node {
+                    width: px(64),
+                    height: px(32),
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::Center,
+                    border_radius: BorderRadius::all(px(6)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.25, 0.55, 0.35)),
+            ))
+            .with_children(|btn| {
+                btn.spawn((
+                    Text::new("Buy"),
+                    TextFont::from_font_size(14.0),
+                    TextColor(Color::WHITE),
+                ));
             });
         });
 }
@@ -292,10 +525,46 @@ fn spawn_spell_icon(parent: &mut ChildSpawnerCommands, index: usize, id: Ability
 
 fn refresh_hud_text(
     hero: Query<(&Health, &Mana, &PlayerWallet, &HeroProgress), With<PlayerHero>>,
-    mut vitals: Query<&mut Text, (With<HudVitals>, Without<HudLevel>, Without<HudGold>, Without<HudSkillPoints>)>,
-    mut level: Query<&mut Text, (With<HudLevel>, Without<HudVitals>, Without<HudGold>, Without<HudSkillPoints>)>,
-    mut gold: Query<&mut Text, (With<HudGold>, Without<HudVitals>, Without<HudLevel>, Without<HudSkillPoints>)>,
-    mut points: Query<&mut Text, (With<HudSkillPoints>, Without<HudVitals>, Without<HudLevel>, Without<HudGold>)>,
+    mut vitals: Query<
+        &mut Text,
+        (
+            With<HudVitals>,
+            Without<HudLevel>,
+            Without<HudGold>,
+            Without<HudSkillPoints>,
+            Without<HudBuffs>,
+        ),
+    >,
+    mut level: Query<
+        &mut Text,
+        (
+            With<HudLevel>,
+            Without<HudVitals>,
+            Without<HudGold>,
+            Without<HudSkillPoints>,
+            Without<HudBuffs>,
+        ),
+    >,
+    mut gold: Query<
+        &mut Text,
+        (
+            With<HudGold>,
+            Without<HudVitals>,
+            Without<HudLevel>,
+            Without<HudSkillPoints>,
+            Without<HudBuffs>,
+        ),
+    >,
+    mut points: Query<
+        &mut Text,
+        (
+            With<HudSkillPoints>,
+            Without<HudVitals>,
+            Without<HudLevel>,
+            Without<HudGold>,
+            Without<HudBuffs>,
+        ),
+    >,
 ) {
     let Ok((health, mana, wallet, progress)) = hero.single() else {
         return;
@@ -333,6 +602,34 @@ fn refresh_hud_text(
     }
 }
 
+fn refresh_buffs_text(
+    hero: Query<&StatusEffects, With<PlayerHero>>,
+    mut buffs: Query<&mut Text, With<HudBuffs>>,
+) {
+    let Ok(statuses) = hero.single() else {
+        return;
+    };
+    let Ok(mut text) = buffs.single_mut() else {
+        return;
+    };
+    if statuses.effects.is_empty() {
+        *text = Text::new("Buffs: none");
+        return;
+    }
+    let parts: Vec<String> = statuses
+        .effects
+        .iter()
+        .map(|e| {
+            let tag = match e.kind {
+                StatusKind::Buff => "+",
+                StatusKind::Debuff => "-",
+            };
+            format!("{tag}{} {:.0}s", e.id, e.remaining.ceil())
+        })
+        .collect();
+    *text = Text::new(format!("Buffs: {}", parts.join(", ")));
+}
+
 fn refresh_spell_bar(
     hero: Query<(&AbilityLoadout, &HeroProgress), With<PlayerHero>>,
     mut ranks: Query<(&SpellRankText, &mut Text), Without<SpellCdText>>,
@@ -363,12 +660,9 @@ fn refresh_spell_bar(
     }
 
     for (meta, mut vis) in &mut buttons {
-        let show = loadout
-            .slots
-            .get(meta.index)
-            .is_some_and(|slot| {
-                progress.skill_points > 0 && slot.id.can_rank_up(slot.rank, progress.level)
-            });
+        let show = loadout.slots.get(meta.index).is_some_and(|slot| {
+            progress.skill_points > 0 && slot.id.can_rank_up(slot.rank, progress.level)
+        });
         *vis = if show {
             Visibility::Visible
         } else {
@@ -388,6 +682,54 @@ fn refresh_spell_bar(
     }
 }
 
+fn refresh_inventory_bar(
+    hero: Query<&Inventory, With<PlayerHero>>,
+    mut icons: Query<(&InventorySlotIcon, &mut BackgroundColor, &mut BorderColor)>,
+    mut labels: Query<(&InventorySlotLabel, &mut Text), Without<InventorySlotCd>>,
+    mut cds: Query<(&InventorySlotCd, &mut Text), Without<InventorySlotLabel>>,
+) {
+    let Ok(inv) = hero.single() else {
+        return;
+    };
+
+    for (meta, mut bg, mut border) in &mut icons {
+        if let Some(item) = inv.slots.get(meta.index).and_then(|s| s.as_ref()) {
+            *bg = BackgroundColor(item.id.placeholder_color());
+            *border = BorderColor::all(if item.id.has_active() {
+                Color::srgb(0.95, 0.85, 0.3)
+            } else {
+                Color::srgb(0.25, 0.3, 0.35)
+            });
+        } else {
+            *bg = BackgroundColor(Color::srgba(0.12, 0.14, 0.18, 0.85));
+            *border = BorderColor::all(Color::srgb(0.3, 0.35, 0.4));
+        }
+    }
+
+    for (meta, mut text) in &mut labels {
+        let hotkey = ItemId::inventory_hotkey(meta.index).unwrap_or("?");
+        if let Some(item) = inv.slots.get(meta.index).and_then(|s| s.as_ref()) {
+            *text = Text::new(format!("{hotkey} {}", item.id.short_label()));
+        } else {
+            *text = Text::new(hotkey.to_string());
+        }
+    }
+
+    for (meta, mut text) in &mut cds {
+        if let Some(item) = inv.slots.get(meta.index).and_then(|s| s.as_ref()) {
+            if item.cooldown_remaining > 0.05 {
+                *text = Text::new(format!("{:.0}s", item.cooldown_remaining.ceil()));
+            } else if item.id.has_active() {
+                *text = Text::new("rdy");
+            } else {
+                *text = Text::new("");
+            }
+        } else {
+            *text = Text::new("");
+        }
+    }
+}
+
 fn handle_spell_level_clicks(
     interactions: Query<(&Interaction, &SpellLevelButton), Changed<Interaction>>,
     mut hero: Query<(&mut AbilityLoadout, &mut HeroProgress), With<PlayerHero>>,
@@ -400,6 +742,88 @@ fn handle_spell_level_clicks(
             loadout.try_rank_up(button.index, progress.level, &mut progress.skill_points);
         }
     }
+}
+
+fn handle_shop_toggle_button(
+    interactions: Query<&Interaction, (Changed<Interaction>, With<ShopToggleButton>)>,
+    mut shop_ui: ResMut<ShopUiState>,
+) {
+    for interaction in &interactions {
+        if *interaction == Interaction::Pressed {
+            shop_ui.open = !shop_ui.open;
+        }
+    }
+}
+
+fn sync_shop_panel_visibility(
+    shop_ui: Res<ShopUiState>,
+    mut panel: Query<&mut Visibility, With<ShopPanel>>,
+) {
+    let Ok(mut vis) = panel.single_mut() else {
+        return;
+    };
+    *vis = if shop_ui.open {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    };
+}
+
+fn handle_shop_close_keys(keys: Res<ButtonInput<KeyCode>>, mut shop_ui: ResMut<ShopUiState>) {
+    if shop_ui.open && keys.just_pressed(KeyCode::Escape) {
+        shop_ui.open = false;
+    }
+}
+
+fn handle_shop_buy_clicks(
+    interactions: Query<(&Interaction, &ShopBuyButton), Changed<Interaction>>,
+    shop_ui: Res<ShopUiState>,
+    mut writer: MessageWriter<PurchaseItemRequest>,
+) {
+    if !shop_ui.open {
+        return;
+    }
+    for (interaction, button) in &interactions {
+        if *interaction == Interaction::Pressed {
+            writer.write(PurchaseItemRequest { item: button.item });
+        }
+    }
+}
+
+fn refresh_shop_status(
+    shop_ui: Res<ShopUiState>,
+    hero: Query<(&Transform, &Team, &PlayerWallet, &Inventory), With<PlayerHero>>,
+    shops: Query<(&Transform, &ItemShop)>,
+    mut status: Query<&mut Text, With<ShopStatusText>>,
+) {
+    if !shop_ui.open {
+        return;
+    }
+    let Ok((hero_tf, hero_team, wallet, inv)) = hero.single() else {
+        return;
+    };
+    let Ok(mut text) = status.single_mut() else {
+        return;
+    };
+    let near = shops.iter().any(|(shop_tf, shop)| {
+        shop.team == *hero_team
+            && crate::combat::flat_distance(hero_tf.translation, shop_tf.translation)
+                <= shop.purchase_range
+    });
+    let empty = inv.first_empty().map(|i| i + 1);
+    let range_msg = if near {
+        "In shop range"
+    } else {
+        "Out of range — walk to the gold shop near base"
+    };
+    let slots_msg = match empty {
+        Some(n) => format!("free slot {}", n),
+        None => "inventory full".into(),
+    };
+    *text = Text::new(format!(
+        "{range_msg}  |  Gold: {}  |  {}",
+        wallet.gold, slots_msg
+    ));
 }
 
 fn refresh_minimap(
@@ -464,7 +888,6 @@ fn refresh_minimap(
         *vis = Visibility::Visible;
     }
 
-    // Hide unused dots.
     for (_dot, mut node, mut color, mut vis) in dot_iter {
         node.left = px(-20.0);
         node.top = px(-20.0);
@@ -476,7 +899,6 @@ fn refresh_minimap(
 fn world_to_minimap(pos: Vec3, half_extent: f32) -> (f32, f32) {
     let nx = ((pos.x / half_extent) * 0.5 + 0.5).clamp(0.0, 1.0);
     let nz = ((pos.z / half_extent) * 0.5 + 0.5).clamp(0.0, 1.0);
-    // UI Y grows downward; world +Z is "south" on our camera, map similarly.
     let x = nx * (MINIMAP_SIZE - 8.0) + 1.0;
     let y = nz * (MINIMAP_SIZE - 8.0) + 1.0;
     (x, y)

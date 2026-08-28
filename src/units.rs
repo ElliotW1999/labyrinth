@@ -6,6 +6,7 @@ use crate::components::{
     AbilityLoadout, Ancient, AttackCooldown, CombatStats, Creep, GoldBounty, Health, HeroProgress,
     Lane, Mana, PlayerHero, PlayerWallet, Team, Tower, UnitRadius, XpBounty,
 };
+use crate::items::{Inventory, StatusEffects};
 use crate::resources::SharedAssets;
 
 pub struct UnitsPlugin;
@@ -17,30 +18,32 @@ impl Plugin for UnitsPlugin {
 }
 
 pub fn spawn_player_hero(mut commands: Commands, assets: Res<SharedAssets>) {
-    commands.spawn((
-        Name::new("Player Hero"),
-        Mesh3d(assets.unit_mesh.clone()),
-        MeshMaterial3d(assets.radiant_mat.clone()),
-        Transform::from_xyz(-44.0, 0.9, -44.0),
-        Team::Radiant,
-        PlayerHero,
-        PlayerWallet { gold: 600 },
-        Health::new(720.0),
-        Mana::new(320.0, 12.0),
-        CombatStats {
-            attack_damage: 55.0,
-            attack_range: 8.0,
-            attack_speed: 1.1,
-            armor: 4.0,
-            magic_resist: 3.0,
-            move_speed: 12.0,
-        },
-        AttackCooldown(0.0),
-        AbilityLoadout::starter(),
-        HeroProgress::new(),
-        UnitRadius(0.5),
-        GoldBounty(0),
-    ));
+    commands
+        .spawn((
+            Name::new("Player Hero"),
+            Mesh3d(assets.unit_mesh.clone()),
+            MeshMaterial3d(assets.radiant_mat.clone()),
+            Transform::from_xyz(-44.0, 0.9, -44.0),
+            Team::Radiant,
+            PlayerHero,
+            PlayerWallet { gold: 600 },
+            Health::new(720.0),
+            Mana::new(320.0, 12.0),
+            CombatStats {
+                attack_damage: 55.0,
+                attack_range: 8.0,
+                attack_speed: 1.1,
+                armor: 4.0,
+                magic_resist: 3.0,
+                move_speed: 12.0,
+            },
+            AttackCooldown(0.0),
+            AbilityLoadout::starter(),
+            HeroProgress::new(),
+            UnitRadius(0.5),
+            GoldBounty(0),
+        ))
+        .insert((Inventory::empty(), StatusEffects::default()));
 }
 
 pub fn spawn_creep(
