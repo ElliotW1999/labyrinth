@@ -115,9 +115,48 @@ pub struct UnitRadius(pub f32);
 #[derive(Component, Debug, Clone, Copy)]
 pub struct GoldBounty(pub u32);
 
+/// Experience granted to nearby allied heroes on death.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct XpBounty(pub u32);
+
 #[derive(Component, Debug, Clone, Copy)]
 pub struct PlayerWallet {
     pub gold: u32,
+}
+
+/// Hero level / XP progression.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct HeroProgress {
+    pub level: u32,
+    pub xp: u32,
+    pub xp_to_next: u32,
+}
+
+impl HeroProgress {
+    pub fn new() -> Self {
+        Self {
+            level: 1,
+            xp: 0,
+            xp_to_next: xp_required_for_level(1),
+        }
+    }
+}
+
+impl Default for HeroProgress {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// XP needed to go from `level` -> `level + 1`.
+pub fn xp_required_for_level(level: u32) -> u32 {
+    100 + (level.saturating_sub(1)) * 40
+}
+
+/// Circular world obstacle (tree placeholder).
+#[derive(Component, Debug, Clone, Copy)]
+pub struct Obstacle {
+    pub radius: f32,
 }
 
 #[derive(Component, Debug, Clone)]

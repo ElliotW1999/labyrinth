@@ -20,8 +20,10 @@ cargo run --release
 
 | Input | Action |
 | --- | --- |
-| Right click | Move, or attack if clicking an enemy |
+| Right click ground | Move |
+| Right click enemy | Attack (required to fight) |
 | Left click | Move |
+| Space | Stop (clear move + attack) |
 | Q | Dash |
 | W | Shockwave (AoE damage) |
 | E | Bolt (targeted projectile) |
@@ -31,9 +33,10 @@ cargo run --release
 
 ## What's included
 
-- Three-lane map with river, jungle pockets, towers, and ancients
-- Player hero with HP / mana / gold / QWER abilities
+- Three-lane map with river, jungle pockets, tree obstacles, towers, and ancients
+- Player hero with HP / mana / gold / XP / levels and QWER abilities
 - Creep waves that path down each lane
+- Explicit right-click attack orders (no free auto-acquire for the player)
 - Auto-attack combat with armor mitigation
 - Tower and creep aggro AI
 - Top-down chase camera and HUD
@@ -47,13 +50,14 @@ src/
   resources.rs     Match config + shared meshes/materials
   map.rs           Battlefield + lane waypoints
   units.rs         Hero / creep / tower / ancient factories
-  movement.rs      Move orders
-  combat.rs        Auto-attack, projectiles, death / bounty
+  movement.rs      Move orders + tree collision
+  combat.rs        Attack orders, projectiles, death / gold / XP
+  progression.rs   Hero XP and level-up stats
   abilities.rs     QWER casting
   ai.rs            Lane following + aggro
   waves.rs         Periodic creep spawns
   camera.rs        Chase camera
-  input.rs         Click-to-move / attack
+  input.rs         Click-to-move / attack / stop
   ui.rs            HUD
 ```
 
