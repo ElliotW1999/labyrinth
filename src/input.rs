@@ -2,6 +2,7 @@
 
 use bevy::prelude::*;
 
+use crate::abilities::{cancel_targeting_if_any, AbilityTargeting};
 use crate::combat::flat_distance;
 use crate::components::{AttackTarget, Ground, Health, MoveTarget, PlayerHero, Team, UnitRadius};
 use crate::movement::{order_hero_move, order_hero_stop};
@@ -10,13 +11,14 @@ pub struct InputPlugin;
 
 impl Plugin for InputPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (handle_point_and_click, handle_stop_command));
+        app.add_systems(Update, (handle_stop_command, handle_point_and_click));
     }
 }
 
 fn handle_stop_command(
     keys: Res<ButtonInput<KeyCode>>,
     hero: Query<Entity, With<PlayerHero>>,
+    mut targeting: ResMut<AbilityTargeting>,
     mut commands: Commands,
 ) {
     if !keys.just_pressed(KeyCode::Space) {
@@ -25,6 +27,7 @@ fn handle_stop_command(
     let Ok(hero_entity) = hero.single() else {
         return;
     };
+    cancel_targeting_if_any(&mut commands, &mut targeting);
     order_hero_stop(&mut commands, hero_entity);
 }
 
@@ -35,10 +38,22 @@ fn handle_point_and_click(
     ground: Query<&GlobalTransform, With<Ground>>,
     hero: Query<(Entity, &Team), With<PlayerHero>>,
     enemies: Query<(Entity, &GlobalTransform, &Team, &Health, Option<&UnitRadius>)>,
+    mut targeting: ResMut<AbilityTargeting>,
     mut commands: Commands,
 ) {
     let right = mouse.just_pressed(MouseButton::Right);
     let left = mouse.just_pressed(MouseButton::Left);
+
+    // While targeting a spell, LMB is consumed by the ability system.
+    if targeting.active.is_some() {
+        if right {
+            // Issuing a move/attack command cancels the pending spell.
+            cancel_targeting_if_any(&mut commands, &mut targeting);
+        } else {
+            return;
+        }
+    }
+
     if !right && !left {
         return;
     }
@@ -71,7 +86,6 @@ fn handle_point_and_click(
     };
 
     if right {
-        // Attack only when the click lands on an enemy unit / tower / ancient.
         let clicked_enemy = enemies
             .iter()
             .filter(|(_, _, team, hp, _)| **team == hero_team.enemy() && hp.is_alive())
@@ -94,7 +108,6 @@ fn handle_point_and_click(
             order_hero_move(&mut commands, hero_entity, hit);
         }
     } else if left {
-        // Left click is always a move — never an attack.
         order_hero_move(&mut commands, hero_entity, hit);
     }
 }

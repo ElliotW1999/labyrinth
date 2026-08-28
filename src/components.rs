@@ -69,7 +69,43 @@ pub struct CombatStats {
     pub attack_range: f32,
     pub attack_speed: f32,
     pub armor: f32,
+    /// Reduces magical damage (same formula family as armor).
+    pub magic_resist: f32,
     pub move_speed: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DamageType {
+    Physical,
+    Magical,
+}
+
+/// How an ability is activated from the hotkey.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AbilityCastKind {
+    /// Fires immediately on key press.
+    Instant,
+    /// Key enters targeting; LMB confirms at a ground point / unit.
+    Targeted {
+        cast_range: f32,
+        aoe_radius: f32,
+    },
+}
+
+impl AbilityId {
+    pub fn cast_kind(self) -> AbilityCastKind {
+        match self {
+            AbilityId::Dash | AbilityId::Shockwave => AbilityCastKind::Instant,
+            AbilityId::Bolt => AbilityCastKind::Targeted {
+                cast_range: 12.0,
+                aoe_radius: 1.8,
+            },
+            AbilityId::Nova => AbilityCastKind::Targeted {
+                cast_range: 10.0,
+                aoe_radius: 5.5,
+            },
+        }
+    }
 }
 
 #[derive(Component, Debug, Clone, Copy)]
@@ -224,14 +260,33 @@ pub struct Projectile {
     pub team: Team,
     pub radius: f32,
     pub lifetime: f32,
+    pub damage_type: DamageType,
+    /// Optional splash radius applied on impact (spell bolts).
+    pub splash_radius: f32,
 }
 
 /// Homing target for a projectile bolt.
 #[derive(Component, Debug, Clone, Copy)]
 pub struct ProjectileHome(pub Entity);
 
+/// Visual style selector for unique spell / AA projectiles.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectileStyle {
+    AutoAttack,
+    SpellBolt,
+}
+
 #[derive(Component, Debug, Clone, Copy)]
 pub struct Lifetime(pub f32);
+
+/// Expanding / fading spell VFX (shockwave rings, nova bursts, dash ghosts).
+#[derive(Component, Debug, Clone, Copy)]
+pub struct SpellFx {
+    pub age: f32,
+    pub lifetime: f32,
+    pub start_scale: f32,
+    pub end_scale: f32,
+}
 
 /// World-space health bar root linked to a living unit.
 #[derive(Component, Debug, Clone, Copy)]

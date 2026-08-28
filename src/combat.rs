@@ -1,10 +1,11 @@
-//! Auto-attack via animated projectiles, damage, death, bounty, and XP.
+//! Auto-attack via animated projectiles, damage types, death, bounty, and XP.
 
 use bevy::prelude::*;
 
 use crate::components::{
-    AttackCooldown, AttackTarget, CombatStats, GoldBounty, Health, HeroProgress, Lifetime,
-    PlayerHero, PlayerWallet, Projectile, ProjectileHome, Team, UnitRadius, XpBounty,
+    AttackCooldown, AttackTarget, CombatStats, DamageType, GoldBounty, Ground, Health, HeroProgress,
+    Lifetime, PlayerHero, PlayerWallet, Projectile, ProjectileHome, ProjectileStyle, Team,
+    UnitRadius, XpBounty,
 };
 use crate::progression::add_xp;
 use crate::resources::SharedAssets;
@@ -52,14 +53,8 @@ fn auto_attack(
     let target_snapshots: Vec<_> = targets
         .iter()
         .filter(|(_, _, _, hp, _, _)| hp.is_alive())
-        .map(|(e, t, team, _, stats, radius)| {
-            (
-                e,
-                t.translation,
-                *team,
-                stats.armor,
-                radius.map(|r| r.0).unwrap_or(0.5),
-            )
+        .map(|(e, t, team, _, _stats, radius)| {
+            (e, t.translation, *team, radius.map(|r| r.0).unwrap_or(0.5))
         })
         .collect();
 
@@ -70,7 +65,6 @@ fn auto_attack(
             continue;
         }
 
-        // Players only attack an explicit right-clicked target.
         if is_player && current_target.is_none() {
             continue;
         }
@@ -80,7 +74,7 @@ fn auto_attack(
             .and_then(|AttackTarget(id)| {
                 target_snapshots
                     .iter()
-                    .find(|(e, pos, target_team, _, radius)| {
+                    .find(|(e, pos, target_team, radius)| {
                         *e == *id
                             && *target_team == team.enemy()
                             && flat_distance(origin, *pos) <= stats.attack_range + *radius
@@ -93,8 +87,8 @@ fn auto_attack(
                 }
                 target_snapshots
                     .iter()
-                    .filter(|(_, _, target_team, _, _)| *target_team == team.enemy())
-                    .filter(|(_, pos, _, _, radius)| {
+                    .filter(|(_, _, target_team, _)| *target_team == team.enemy())
+                    .filter(|(_, pos, _, radius)| {
                         flat_distance(origin, *pos) <= stats.attack_range + *radius
                     })
                     .min_by(|a, b| {
@@ -105,12 +99,12 @@ fn auto_attack(
                     .copied()
             });
 
-        let Some((target_entity, target_pos, _, armor, _)) = chosen else {
+        let Some((target_entity, target_pos, _, _)) = chosen else {
             continue;
         };
 
-        let damage = mitigate(stats.attack_damage, armor);
-        spawn_projectile(
+        let damage = stats.attack_damage;
+        spawn_auto_attack(
             &mut commands,
             &assets,
             *team,
@@ -126,12 +120,18 @@ fn auto_attack(
 
 fn fly_projectiles(
     time: Res<Time>,
-    mut projectiles: Query<(Entity, &mut Transform, &Projectile, Option<&ProjectileHome>)>,
+    mut projectiles: Query<(
+        Entity,
+        &mut Transform,
+        &Projectile,
+        Option<&ProjectileHome>,
+        Option<&GroundBoltAim>,
+    )>,
     homes: Query<&GlobalTransform, Without<Projectile>>,
     mut commands: Commands,
 ) {
     let dt = time.delta_secs();
-    for (entity, mut transform, projectile, home) in &mut projectiles {
+    for (entity, mut transform, projectile, home, ground_aim) in &mut projectiles {
         let mut destination = transform.translation + *transform.forward() * projectile.speed;
 
         if let Some(ProjectileHome(target)) = home {
@@ -140,6 +140,8 @@ fn fly_projectiles(
             } else {
                 commands.entity(entity).remove::<ProjectileHome>();
             }
+        } else if let Some(aim) = ground_aim {
+            destination = Vec3::new(aim.position.x, transform.translation.y, aim.position.z);
         }
 
         let to = destination - transform.translation;
@@ -151,6 +153,10 @@ fn fly_projectiles(
         let dir = to / dist;
         if step >= dist {
             transform.translation = destination;
+            if ground_aim.is_some() {
+                // Trigger splash at the aim point by tagging for impact next frame.
+                commands.entity(entity).insert(GroundBoltImpact);
+            }
         } else {
             transform.translation += dir * step;
         }
@@ -158,31 +164,61 @@ fn fly_projectiles(
     }
 }
 
+#[derive(Component, Debug, Clone, Copy)]
+struct GroundBoltImpact;
+
 fn apply_projectile_hits(
     mut commands: Commands,
-    projectiles: Query<(Entity, &Transform, &Projectile, Option<&ProjectileHome>)>,
-    mut units: Query<(Entity, &Transform, &Team, &mut Health, Option<&UnitRadius>)>,
+    projectiles: Query<(
+        Entity,
+        &Transform,
+        &Projectile,
+        Option<&ProjectileHome>,
+        Option<&GroundBoltImpact>,
+    )>,
+    mut units: Query<(Entity, &Transform, &Team, &mut Health, &CombatStats, Option<&UnitRadius>)>,
 ) {
-    for (proj_entity, proj_tf, projectile, home) in &projectiles {
-        let mut hit = false;
-        for (unit_entity, unit_tf, team, mut health, radius) in &mut units {
-            if *team == projectile.team || !health.is_alive() {
-                continue;
-            }
-            if let Some(ProjectileHome(target)) = home {
-                if unit_entity != *target {
+    for (proj_entity, proj_tf, projectile, home, ground_impact) in &projectiles {
+        let impact = proj_tf.translation;
+        let mut despawn = false;
+        let mut primary_hit: Option<Entity> = None;
+
+        if let Some(ProjectileHome(target)) = home {
+            for (unit_entity, unit_tf, team, mut health, stats, radius) in &mut units {
+                if unit_entity != *target || *team == projectile.team || !health.is_alive() {
                     continue;
                 }
+                let reach = projectile.radius + radius.map(|r| r.0).unwrap_or(0.5);
+                let vertical = (impact.y - (unit_tf.translation.y + 1.0)).abs();
+                if flat_distance(impact, unit_tf.translation) <= reach && vertical < 2.5 {
+                    let dmg = apply_damage(projectile.damage, projectile.damage_type, stats);
+                    health.current -= dmg;
+                    primary_hit = Some(unit_entity);
+                    despawn = true;
+                }
             }
-            let reach = projectile.radius + radius.map(|r| r.0).unwrap_or(0.5);
-            let vertical = (proj_tf.translation.y - (unit_tf.translation.y + 1.0)).abs();
-            if flat_distance(proj_tf.translation, unit_tf.translation) <= reach && vertical < 2.5 {
-                health.current -= projectile.damage;
-                hit = true;
-                break;
+        } else if ground_impact.is_some() {
+            despawn = true;
+        }
+
+        if despawn && projectile.splash_radius > 0.0 {
+            for (unit_entity, unit_tf, team, mut health, stats, _) in &mut units {
+                if *team == projectile.team || !health.is_alive() {
+                    continue;
+                }
+                if primary_hit == Some(unit_entity) {
+                    continue;
+                }
+                if flat_distance(impact, unit_tf.translation) <= projectile.splash_radius {
+                    let ratio = if primary_hit.is_some() { 0.45 } else { 1.0 };
+                    let dmg =
+                        apply_damage(projectile.damage * ratio, projectile.damage_type, stats);
+                    health.current -= dmg;
+                }
             }
         }
-        if hit {
+
+        if despawn {
             commands.entity(proj_entity).despawn();
         }
     }
@@ -223,12 +259,7 @@ fn despawn_dead(
         Without<PlayerHero>,
     >,
     mut heroes: Query<
-        (
-            &Transform,
-            &Team,
-            &mut PlayerWallet,
-            &mut HeroProgress,
-        ),
+        (&Transform, &Team, &mut PlayerWallet, &mut HeroProgress),
         With<PlayerHero>,
     >,
 ) {
@@ -245,7 +276,6 @@ fn despawn_dead(
                 if *hero_team != victim_team.enemy() {
                     continue;
                 }
-                // Solo-player prototype: gold always goes to the hero.
                 if let Some(gold) = gold_bounty {
                     wallet.gold += gold.0;
                 }
@@ -263,8 +293,15 @@ fn despawn_dead(
     }
 }
 
-pub fn mitigate(raw_damage: f32, armor: f32) -> f32 {
-    let factor = 1.0 - (0.06 * armor) / (1.0 + 0.06 * armor.abs());
+pub fn apply_damage(raw: f32, damage_type: DamageType, stats: &CombatStats) -> f32 {
+    match damage_type {
+        DamageType::Physical => mitigate(raw, stats.armor),
+        DamageType::Magical => mitigate(raw, stats.magic_resist),
+    }
+}
+
+pub fn mitigate(raw_damage: f32, resistance: f32) -> f32 {
+    let factor = 1.0 - (0.06 * resistance) / (1.0 + 0.06 * resistance.abs());
     (raw_damage * factor).max(0.0)
 }
 
@@ -278,7 +315,22 @@ fn projectile_speed_for(attack_range: f32) -> f32 {
     (18.0 + attack_range * 1.5).clamp(20.0, 45.0)
 }
 
-pub fn spawn_projectile(
+pub fn cursor_ground_hit(
+    windows: &Query<&Window>,
+    camera: &Query<(&Camera, &GlobalTransform)>,
+    ground: &Query<&GlobalTransform, With<Ground>>,
+) -> Option<Vec3> {
+    let window = windows.single().ok()?;
+    let cursor = window.cursor_position()?;
+    let (camera, cam_transform) = camera.single().ok()?;
+    let ray = camera.viewport_to_world(cam_transform, cursor).ok()?;
+    let ground_tf = ground.single().ok()?;
+    let plane = InfinitePlane3d::new(Dir3::Y);
+    let distance = ray.intersect_plane(ground_tf.translation(), plane)?;
+    Some(ray.get_point(distance))
+}
+
+fn spawn_auto_attack(
     commands: &mut Commands,
     assets: &SharedAssets,
     team: Team,
@@ -301,7 +353,7 @@ pub fn spawn_projectile(
     };
 
     commands.spawn((
-        Name::new("Projectile"),
+        Name::new("Auto Attack"),
         Mesh3d(assets.projectile_mesh.clone()),
         MeshMaterial3d(material),
         transform,
@@ -311,10 +363,68 @@ pub fn spawn_projectile(
             team,
             radius: 0.7,
             lifetime: 2.5,
+            damage_type: DamageType::Physical,
+            splash_radius: 0.0,
         },
         ProjectileHome(target),
+        ProjectileStyle::AutoAttack,
         Lifetime(2.5),
     ));
+}
+
+pub fn spawn_spell_bolt(
+    commands: &mut Commands,
+    assets: &SharedAssets,
+    team: Team,
+    origin: Vec3,
+    target: Option<Entity>,
+    target_pos: Vec3,
+    damage: f32,
+    splash_radius: f32,
+) {
+    let start = origin + Vec3::Y * 1.2;
+    let aim = (target_pos + Vec3::Y * 1.0) - start;
+    let mut transform = Transform::from_translation(start);
+    if let Ok(dir) = Dir3::new(aim) {
+        transform.look_to(dir, Vec3::Y);
+    }
+
+    let mut entity = commands.spawn((
+        Name::new("Spell Bolt"),
+        Mesh3d(assets.spell_bolt_mesh.clone()),
+        MeshMaterial3d(assets.spell_bolt_mat.clone()),
+        transform,
+        Projectile {
+            damage,
+            speed: 34.0,
+            team,
+            radius: 0.85,
+            lifetime: 2.5,
+            damage_type: DamageType::Magical,
+            splash_radius,
+        },
+        ProjectileStyle::SpellBolt,
+        Lifetime(2.5),
+    ));
+
+    if let Some(target) = target {
+        entity.insert(ProjectileHome(target));
+    } else {
+        // Non-homing ground bolt: store aim via a short-lived move toward point using home-less flight.
+        // Face already set; fly_projectiles will go forward. Nudge lifetime by distance.
+        let dist = flat_distance(origin, target_pos);
+        let travel = (dist / 34.0) + 0.05;
+        entity.insert(Lifetime(travel));
+        // Also mark a one-shot impact by reducing projectile lifetime.
+        entity.insert(GroundBoltAim {
+            position: target_pos,
+        });
+    }
+}
+
+#[derive(Component, Debug, Clone, Copy)]
+pub struct GroundBoltAim {
+    pub position: Vec3,
 }
 
 #[cfg(test)]
@@ -322,11 +432,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn armor_reduces_damage() {
+    fn armor_reduces_physical() {
+        let stats = CombatStats {
+            attack_damage: 0.0,
+            attack_range: 0.0,
+            attack_speed: 1.0,
+            armor: 10.0,
+            magic_resist: 0.0,
+            move_speed: 0.0,
+        };
         let raw = 100.0;
-        let mitigated = mitigate(raw, 10.0);
+        let mitigated = apply_damage(raw, DamageType::Physical, &stats);
         assert!(mitigated < raw);
         assert!(mitigated > 50.0);
+    }
+
+    #[test]
+    fn magic_resist_reduces_magical() {
+        let stats = CombatStats {
+            attack_damage: 0.0,
+            attack_range: 0.0,
+            attack_speed: 1.0,
+            armor: 0.0,
+            magic_resist: 10.0,
+            move_speed: 0.0,
+        };
+        let raw = 100.0;
+        let phys = apply_damage(raw, DamageType::Physical, &stats);
+        let mag = apply_damage(raw, DamageType::Magical, &stats);
+        assert!((phys - raw).abs() < 0.01);
+        assert!(mag < raw);
     }
 
     #[test]

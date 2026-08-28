@@ -51,6 +51,14 @@ pub struct SharedAssets {
     pub jungle_mat: Handle<StandardMaterial>,
     pub tree_mesh: Handle<Mesh>,
     pub tree_mat: Handle<StandardMaterial>,
+    pub spell_bolt_mesh: Handle<Mesh>,
+    pub spell_bolt_mat: Handle<StandardMaterial>,
+    pub indicator_range_mat: Handle<StandardMaterial>,
+    pub indicator_aoe_mat: Handle<StandardMaterial>,
+    pub indicator_ring_mesh: Handle<Mesh>,
+    pub shockwave_mat: Handle<StandardMaterial>,
+    pub nova_mat: Handle<StandardMaterial>,
+    pub dash_ghost_mat: Handle<StandardMaterial>,
 }
 
 pub(crate) fn load_shared_assets(
@@ -136,6 +144,54 @@ pub(crate) fn load_shared_assets(
     assets.tree_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.16, 0.38, 0.18),
         perceptual_roughness: 0.9,
+        ..default()
+    });
+    assets.spell_bolt_mesh = meshes.add(Sphere::new(0.35));
+    assets.spell_bolt_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.75, 0.35, 1.0),
+        emissive: LinearRgba::rgb(6.0, 1.5, 10.0),
+        unlit: true,
+        ..default()
+    });
+    assets.indicator_ring_mesh = meshes.add(Cylinder::new(1.0, 0.05));
+    assets.indicator_range_mat = materials.add(StandardMaterial {
+        base_color: Color::srgba(0.3, 0.7, 1.0, 0.22),
+        emissive: LinearRgba::rgb(0.2, 0.5, 1.0),
+        unlit: true,
+        alpha_mode: AlphaMode::Blend,
+        cull_mode: None,
+        ..default()
+    });
+    assets.indicator_aoe_mat = materials.add(StandardMaterial {
+        base_color: Color::srgba(1.0, 0.55, 0.2, 0.28),
+        emissive: LinearRgba::rgb(1.2, 0.4, 0.1),
+        unlit: true,
+        alpha_mode: AlphaMode::Blend,
+        cull_mode: None,
+        ..default()
+    });
+    assets.shockwave_mat = materials.add(StandardMaterial {
+        base_color: Color::srgba(0.4, 0.85, 1.0, 0.45),
+        emissive: LinearRgba::rgb(1.0, 3.0, 5.0),
+        unlit: true,
+        alpha_mode: AlphaMode::Blend,
+        cull_mode: None,
+        ..default()
+    });
+    assets.nova_mat = materials.add(StandardMaterial {
+        base_color: Color::srgba(1.0, 0.85, 0.3, 0.5),
+        emissive: LinearRgba::rgb(5.0, 3.5, 0.5),
+        unlit: true,
+        alpha_mode: AlphaMode::Blend,
+        cull_mode: None,
+        ..default()
+    });
+    assets.dash_ghost_mat = materials.add(StandardMaterial {
+        base_color: Color::srgba(0.4, 0.7, 1.0, 0.35),
+        emissive: LinearRgba::rgb(0.5, 1.5, 3.0),
+        unlit: true,
+        alpha_mode: AlphaMode::Blend,
+        cull_mode: None,
         ..default()
     });
 }
