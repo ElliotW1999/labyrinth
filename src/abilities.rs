@@ -89,6 +89,11 @@ fn begin_or_cast_from_hotkeys(
         return;
     };
 
+    // Ctrl+QWER is reserved for spending skill points.
+    if keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight) {
+        return;
+    }
+
     let casts = [
         (KeyCode::KeyQ, 0usize),
         (KeyCode::KeyW, 1),
@@ -109,11 +114,14 @@ fn begin_or_cast_from_hotkeys(
         let Some(slot) = loadout.slots.get(index).cloned() else {
             continue;
         };
+        if slot.rank == 0 {
+            continue;
+        }
         if slot.cooldown_remaining > 0.0 || mana.current < slot.mana_cost {
             continue;
         }
 
-        match slot.id.cast_kind() {
+        match slot.cast_kind() {
             AbilityCastKind::Instant => {
                 let Some(slot_mut) = loadout.slot_mut(index) else {
                     continue;
@@ -128,7 +136,7 @@ fn begin_or_cast_from_hotkeys(
                     hero_entity,
                     transform,
                     *team,
-                    slot.id,
+                    slot_mut,
                     &enemies,
                 );
             }
@@ -142,7 +150,13 @@ fn begin_or_cast_from_hotkeys(
                     cast_range,
                     aoe_radius,
                 });
-                spawn_indicators(&mut commands, &assets, transform.translation, cast_range, aoe_radius);
+                spawn_indicators(
+                    &mut commands,
+                    &assets,
+                    transform.translation,
+                    cast_range,
+                    aoe_radius,
+                );
             }
         }
     }
@@ -154,13 +168,13 @@ fn cast_instant(
     hero_entity: Entity,
     transform: &Transform,
     team: Team,
-    ability: AbilityId,
+    slot: &crate::components::AbilitySlot,
     enemies: &Query<(Entity, &Transform, &Team, &Health, &CombatStats), Without<PlayerHero>>,
 ) {
-    match ability {
+    match slot.id {
         AbilityId::Dash => {
             let forward = transform.forward();
-            let dest = transform.translation + *forward * 10.0;
+            let dest = transform.translation + *forward * slot.dash_distance();
             spawn_dash_ghosts(commands, assets, transform.translation, dest);
             commands.entity(hero_entity).insert(MoveTarget {
                 position: Vec3::new(dest.x, 0.0, dest.z),
@@ -168,13 +182,22 @@ fn cast_instant(
         }
         AbilityId::Shockwave => {
             let origin = transform.translation;
-            spawn_expanding_ring(commands, assets, origin, 9.0, assets.shockwave_mat.clone(), 0.45);
+            let radius = slot.shockwave_radius();
+            let damage = slot.shockwave_damage();
+            spawn_expanding_ring(
+                commands,
+                assets,
+                origin,
+                radius,
+                assets.shockwave_mat.clone(),
+                0.45,
+            );
             for (enemy_entity, enemy_tf, enemy_team, enemy_hp, stats) in enemies.iter() {
                 if *enemy_team == team || !enemy_hp.is_alive() {
                     continue;
                 }
-                if flat_distance(origin, enemy_tf.translation) <= 9.0 {
-                    let amount = apply_damage(120.0, DamageType::Magical, stats);
+                if flat_distance(origin, enemy_tf.translation) <= radius {
+                    let amount = apply_damage(damage, DamageType::Magical, stats);
                     commands.entity(enemy_entity).insert(PendingDamage { amount });
                 }
             }
@@ -241,18 +264,20 @@ fn confirm_or_cancel_targeted_cast(
         clear_targeting(&mut commands, &mut targeting);
         return;
     };
-    if slot.cooldown_remaining > 0.0 || !mana.try_spend(slot.mana_cost) {
+    if slot.rank == 0 || slot.cooldown_remaining > 0.0 || !mana.try_spend(slot.mana_cost) {
         clear_targeting(&mut commands, &mut targeting);
         return;
     }
     slot.cooldown_remaining = slot.cooldown;
     let ability = pending.ability;
     let aoe = pending.aoe_radius;
+    let bolt_damage = slot.bolt_damage();
+    let nova_damage = slot.nova_damage();
+    let nova_heal = slot.nova_heal();
     clear_targeting(&mut commands, &mut targeting);
 
     match ability {
         AbilityId::Bolt => {
-            // Prefer a unit under the cursor; otherwise fire at the ground point.
             let unit_target = enemies
                 .iter()
                 .filter(|(_, _, enemy_team, hp, _, _)| {
@@ -276,7 +301,7 @@ fn confirm_or_cancel_targeted_cast(
                     transform.translation,
                     Some(enemy),
                     enemy_tf.translation,
-                    140.0,
+                    bolt_damage,
                     aoe,
                 );
                 commands.entity(hero_entity).insert(AttackTarget(enemy));
@@ -288,13 +313,13 @@ fn confirm_or_cancel_targeted_cast(
                     transform.translation,
                     None,
                     hit,
-                    140.0,
+                    bolt_damage,
                     aoe,
                 );
             }
         }
         AbilityId::Nova => {
-            health.current = (health.current + 150.0).min(health.max);
+            health.current = (health.current + nova_heal).min(health.max);
             spawn_expanding_ring(
                 &mut commands,
                 &assets,
@@ -308,7 +333,7 @@ fn confirm_or_cancel_targeted_cast(
                     continue;
                 }
                 if flat_distance(hit, enemy_tf.translation) <= aoe {
-                    let amount = apply_damage(220.0, DamageType::Magical, stats);
+                    let amount = apply_damage(nova_damage, DamageType::Magical, stats);
                     commands.entity(enemy_entity).insert(PendingDamage { amount });
                 }
             }

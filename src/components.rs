@@ -69,7 +69,6 @@ pub struct CombatStats {
     pub attack_range: f32,
     pub attack_speed: f32,
     pub armor: f32,
-    /// Reduces magical damage (same formula family as armor).
     pub magic_resist: f32,
     pub move_speed: f32,
 }
@@ -83,29 +82,8 @@ pub enum DamageType {
 /// How an ability is activated from the hotkey.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AbilityCastKind {
-    /// Fires immediately on key press.
     Instant,
-    /// Key enters targeting; LMB confirms at a ground point / unit.
-    Targeted {
-        cast_range: f32,
-        aoe_radius: f32,
-    },
-}
-
-impl AbilityId {
-    pub fn cast_kind(self) -> AbilityCastKind {
-        match self {
-            AbilityId::Dash | AbilityId::Shockwave => AbilityCastKind::Instant,
-            AbilityId::Bolt => AbilityCastKind::Targeted {
-                cast_range: 12.0,
-                aoe_radius: 1.8,
-            },
-            AbilityId::Nova => AbilityCastKind::Targeted {
-                cast_range: 10.0,
-                aoe_radius: 5.5,
-            },
-        }
-    }
+    Targeted { cast_range: f32, aoe_radius: f32 },
 }
 
 #[derive(Component, Debug, Clone, Copy)]
@@ -124,7 +102,6 @@ pub struct PlayerHero;
 
 #[derive(Component, Debug, Clone, Copy)]
 pub struct Creep {
-    /// Lane this creep was spawned into (used by tooling / future AI variants).
     #[allow(dead_code)]
     pub lane: Lane,
 }
@@ -151,7 +128,6 @@ pub struct UnitRadius(pub f32);
 #[derive(Component, Debug, Clone, Copy)]
 pub struct GoldBounty(pub u32);
 
-/// Experience granted to nearby allied heroes on death.
 #[derive(Component, Debug, Clone, Copy)]
 pub struct XpBounty(pub u32);
 
@@ -160,12 +136,13 @@ pub struct PlayerWallet {
     pub gold: u32,
 }
 
-/// Hero level / XP progression.
 #[derive(Component, Debug, Clone, Copy)]
 pub struct HeroProgress {
     pub level: u32,
     pub xp: u32,
     pub xp_to_next: u32,
+    /// Unspent ability rank points.
+    pub skill_points: u32,
 }
 
 impl HeroProgress {
@@ -174,6 +151,7 @@ impl HeroProgress {
             level: 1,
             xp: 0,
             xp_to_next: xp_required_for_level(1),
+            skill_points: 1,
         }
     }
 }
@@ -184,28 +162,13 @@ impl Default for HeroProgress {
     }
 }
 
-/// XP needed to go from `level` -> `level + 1`.
 pub fn xp_required_for_level(level: u32) -> u32 {
     100 + (level.saturating_sub(1)) * 40
 }
 
-/// Circular world obstacle (tree placeholder).
 #[derive(Component, Debug, Clone, Copy)]
 pub struct Obstacle {
     pub radius: f32,
-}
-
-#[derive(Component, Debug, Clone)]
-pub struct AbilityLoadout {
-    pub slots: [AbilitySlot; 4],
-}
-
-#[derive(Debug, Clone)]
-pub struct AbilitySlot {
-    pub id: AbilityId,
-    pub cooldown_remaining: f32,
-    pub cooldown: f32,
-    pub mana_cost: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -216,40 +179,167 @@ pub enum AbilityId {
     Nova,
 }
 
+impl AbilityId {
+    pub fn hotkey_label(self) -> &'static str {
+        match self {
+            AbilityId::Dash => "Q",
+            AbilityId::Shockwave => "W",
+            AbilityId::Bolt => "E",
+            AbilityId::Nova => "R",
+        }
+    }
+
+    pub fn max_rank(self) -> u32 {
+        match self {
+            AbilityId::Nova => 4,
+            _ => 7,
+        }
+    }
+
+    /// Whether the next rank can be purchased at `hero_level`.
+    /// Q/W/E: rank N requires hero level >= 2N-1 (max at 13).
+    /// R: ranks unlock at 6 / 12 / 18 / 24.
+    pub fn can_rank_up(self, current_rank: u32, hero_level: u32) -> bool {
+        let next = current_rank + 1;
+        if next > self.max_rank() {
+            return false;
+        }
+        match self {
+            AbilityId::Nova => hero_level >= 6 * next,
+            _ => hero_level >= 2 * next - 1,
+        }
+    }
+
+    pub fn placeholder_color(self) -> Color {
+        match self {
+            AbilityId::Dash => Color::srgb(0.25, 0.65, 1.0),
+            AbilityId::Shockwave => Color::srgb(0.2, 0.85, 0.75),
+            AbilityId::Bolt => Color::srgb(0.75, 0.35, 1.0),
+            AbilityId::Nova => Color::srgb(1.0, 0.75, 0.2),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AbilitySlot {
+    pub id: AbilityId,
+    /// 0 = unlearned (cannot cast).
+    pub rank: u32,
+    pub cooldown_remaining: f32,
+    pub cooldown: f32,
+    pub mana_cost: f32,
+}
+
+impl AbilitySlot {
+    pub fn fresh(id: AbilityId) -> Self {
+        let mut slot = Self {
+            id,
+            rank: 0,
+            cooldown_remaining: 0.0,
+            cooldown: 0.0,
+            mana_cost: 0.0,
+        };
+        slot.refresh_stats();
+        slot
+    }
+
+    pub fn refresh_stats(&mut self) {
+        let r = self.rank.max(1);
+        match self.id {
+            AbilityId::Dash => {
+                self.cooldown = (7.5 - r as f32 * 0.35).max(4.0);
+                self.mana_cost = 35.0 + r as f32 * 5.0;
+            }
+            AbilityId::Shockwave => {
+                self.cooldown = (9.0 - r as f32 * 0.4).max(5.0);
+                self.mana_cost = 50.0 + r as f32 * 8.0;
+            }
+            AbilityId::Bolt => {
+                self.cooldown = (6.0 - r as f32 * 0.3).max(3.0);
+                self.mana_cost = 45.0 + r as f32 * 7.0;
+            }
+            AbilityId::Nova => {
+                self.cooldown = (50.0 - r as f32 * 4.0).max(30.0);
+                self.mana_cost = 100.0 + r as f32 * 20.0;
+            }
+        }
+    }
+
+    pub fn cast_kind(&self) -> AbilityCastKind {
+        let r = self.rank.max(1);
+        match self.id {
+            AbilityId::Dash | AbilityId::Shockwave => AbilityCastKind::Instant,
+            AbilityId::Bolt => AbilityCastKind::Targeted {
+                cast_range: 10.0 + r as f32 * 0.8,
+                aoe_radius: 1.4 + r as f32 * 0.15,
+            },
+            AbilityId::Nova => AbilityCastKind::Targeted {
+                cast_range: 8.5 + r as f32 * 0.7,
+                aoe_radius: 4.5 + r as f32 * 0.5,
+            },
+        }
+    }
+
+    pub fn dash_distance(&self) -> f32 {
+        8.0 + self.rank as f32 * 1.2
+    }
+
+    pub fn shockwave_damage(&self) -> f32 {
+        70.0 + self.rank as f32 * 28.0
+    }
+
+    pub fn shockwave_radius(&self) -> f32 {
+        6.5 + self.rank as f32 * 0.55
+    }
+
+    pub fn bolt_damage(&self) -> f32 {
+        90.0 + self.rank as f32 * 30.0
+    }
+
+    pub fn nova_damage(&self) -> f32 {
+        160.0 + self.rank as f32 * 55.0
+    }
+
+    pub fn nova_heal(&self) -> f32 {
+        100.0 + self.rank as f32 * 40.0
+    }
+}
+
+#[derive(Component, Debug, Clone)]
+pub struct AbilityLoadout {
+    pub slots: [AbilitySlot; 4],
+}
+
 impl AbilityLoadout {
     pub fn starter() -> Self {
         Self {
             slots: [
-                AbilitySlot {
-                    id: AbilityId::Dash,
-                    cooldown_remaining: 0.0,
-                    cooldown: 6.0,
-                    mana_cost: 40.0,
-                },
-                AbilitySlot {
-                    id: AbilityId::Shockwave,
-                    cooldown_remaining: 0.0,
-                    cooldown: 8.0,
-                    mana_cost: 60.0,
-                },
-                AbilitySlot {
-                    id: AbilityId::Bolt,
-                    cooldown_remaining: 0.0,
-                    cooldown: 5.0,
-                    mana_cost: 50.0,
-                },
-                AbilitySlot {
-                    id: AbilityId::Nova,
-                    cooldown_remaining: 0.0,
-                    cooldown: 40.0,
-                    mana_cost: 120.0,
-                },
+                AbilitySlot::fresh(AbilityId::Dash),
+                AbilitySlot::fresh(AbilityId::Shockwave),
+                AbilitySlot::fresh(AbilityId::Bolt),
+                AbilitySlot::fresh(AbilityId::Nova),
             ],
         }
     }
 
     pub fn slot_mut(&mut self, index: usize) -> Option<&mut AbilitySlot> {
         self.slots.get_mut(index)
+    }
+
+    pub fn try_rank_up(&mut self, index: usize, hero_level: u32, skill_points: &mut u32) -> bool {
+        if *skill_points == 0 {
+            return false;
+        }
+        let Some(slot) = self.slots.get_mut(index) else {
+            return false;
+        };
+        if !slot.id.can_rank_up(slot.rank, hero_level) {
+            return false;
+        }
+        slot.rank += 1;
+        slot.refresh_stats();
+        *skill_points -= 1;
+        true
     }
 }
 
@@ -261,15 +351,12 @@ pub struct Projectile {
     pub radius: f32,
     pub lifetime: f32,
     pub damage_type: DamageType,
-    /// Optional splash radius applied on impact (spell bolts).
     pub splash_radius: f32,
 }
 
-/// Homing target for a projectile bolt.
 #[derive(Component, Debug, Clone, Copy)]
 pub struct ProjectileHome(pub Entity);
 
-/// Visual style selector for unique spell / AA projectiles.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectileStyle {
     AutoAttack,
@@ -279,7 +366,6 @@ pub enum ProjectileStyle {
 #[derive(Component, Debug, Clone, Copy)]
 pub struct Lifetime(pub f32);
 
-/// Expanding / fading spell VFX (shockwave rings, nova bursts, dash ghosts).
 #[derive(Component, Debug, Clone, Copy)]
 pub struct SpellFx {
     pub age: f32,
@@ -288,7 +374,6 @@ pub struct SpellFx {
     pub end_scale: f32,
 }
 
-/// World-space health bar root linked to a living unit.
 #[derive(Component, Debug, Clone, Copy)]
 pub struct HealthBar {
     pub owner: Entity,
