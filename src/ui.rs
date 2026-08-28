@@ -594,18 +594,20 @@ fn refresh_hud_text(
         ),
         With<PlayerHero>,
     >,
-    mut vitals: Query<&mut Text, With<HudVitals>>,
-    mut level: Query<&mut Text, With<HudLevel>>,
-    mut gold: Query<&mut Text, With<HudGold>>,
-    mut points: Query<&mut Text, With<HudSkillPoints>>,
-    mut attrs_text: Query<&mut Text, With<HudAttributes>>,
-    mut combat_text: Query<&mut Text, With<HudCombatStats>>,
+    mut texts: ParamSet<(
+        Query<&mut Text, With<HudVitals>>,
+        Query<&mut Text, With<HudLevel>>,
+        Query<&mut Text, With<HudGold>>,
+        Query<&mut Text, With<HudSkillPoints>>,
+        Query<&mut Text, With<HudAttributes>>,
+        Query<&mut Text, With<HudCombatStats>>,
+    )>,
 ) {
     let Ok((health, mana, wallet, progress, attrs, stats)) = hero.single() else {
         return;
     };
 
-    if let Ok(mut text) = vitals.single_mut() {
+    if let Ok(mut text) = texts.p0().single_mut() {
         *text = Text::new(format!(
             "HP {hp:.0} / {hp_max:.0} (+{hpr:.1}/s)   MP {mp:.0} / {mp_max:.0}",
             hp = health.current.max(0.0),
@@ -615,7 +617,7 @@ fn refresh_hud_text(
             mp_max = mana.max,
         ));
     }
-    if let Ok(mut text) = level.single_mut() {
+    if let Ok(mut text) = texts.p1().single_mut() {
         if progress.level >= 25 {
             *text = Text::new(format!("Level {}   MAX", progress.level));
         } else {
@@ -625,10 +627,10 @@ fn refresh_hud_text(
             ));
         }
     }
-    if let Ok(mut text) = gold.single_mut() {
+    if let Ok(mut text) = texts.p2().single_mut() {
         *text = Text::new(format!("Gold: {}", wallet.gold));
     }
-    if let Ok(mut text) = points.single_mut() {
+    if let Ok(mut text) = texts.p3().single_mut() {
         let label = if progress.skill_points > 0 {
             format!("Skill Points: {}  (Ctrl+QWER or +)", progress.skill_points)
         } else {
@@ -636,7 +638,7 @@ fn refresh_hud_text(
         };
         *text = Text::new(label);
     }
-    if let Ok(mut text) = attrs_text.single_mut() {
+    if let Ok(mut text) = texts.p4().single_mut() {
         *text = Text::new(format!(
             "STR {s:.0}  AGI {a:.0}  INT {i:.0}",
             s = attrs.strength,
@@ -644,7 +646,7 @@ fn refresh_hud_text(
             i = attrs.intelligence,
         ));
     }
-    if let Ok(mut text) = combat_text.single_mut() {
+    if let Ok(mut text) = texts.p5().single_mut() {
         *text = Text::new(format!(
             "AD {ad:.0}  AS {aspeed:.2}  Rng {rng:.0}  Arm {arm:.1}  MR {mr:.1}",
             ad = stats.attack_damage,
