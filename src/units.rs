@@ -3,8 +3,8 @@
 use bevy::prelude::*;
 
 use crate::components::{
-    AbilityLoadout, Ancient, AttackCooldown, CombatStats, Creep, GoldBounty, Health, Lane, Mana,
-    PlayerHero, PlayerWallet, Team, Tower, UnitRadius,
+    AbilityLoadout, Ancient, AttackCooldown, CombatStats, Creep, GoldBounty, Health, HeroProgress,
+    Lane, Mana, PlayerHero, PlayerWallet, Team, Tower, UnitRadius, XpBounty,
 };
 use crate::resources::SharedAssets;
 
@@ -36,6 +36,7 @@ pub fn spawn_player_hero(mut commands: Commands, assets: Res<SharedAssets>) {
         },
         AttackCooldown(0.0),
         AbilityLoadout::starter(),
+        HeroProgress::new(),
         UnitRadius(0.5),
         GoldBounty(0),
     ));
@@ -71,6 +72,7 @@ pub fn spawn_creep(
         AttackCooldown(0.0),
         UnitRadius(0.4),
         GoldBounty(35),
+        XpBounty(45),
         crate::ai::LaneFollower {
             waypoints: crate::map::lane_path(team, lane),
             index: 0,
@@ -109,6 +111,7 @@ pub fn spawn_tower(
         AttackCooldown(0.0),
         UnitRadius(0.9),
         GoldBounty(120),
+        XpBounty(150),
     ));
 }
 
@@ -140,5 +143,6 @@ pub fn spawn_ancient(
         },
         UnitRadius(1.8),
         GoldBounty(0),
+        XpBounty(400),
     ));
 }

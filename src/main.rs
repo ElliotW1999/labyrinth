@@ -12,6 +12,7 @@ mod healthbars;
 mod input;
 mod map;
 mod movement;
+mod progression;
 mod resources;
 mod ui;
 mod units;
@@ -27,6 +28,7 @@ use healthbars::HealthBarPlugin;
 use input::InputPlugin;
 use map::MapPlugin;
 use movement::MovementPlugin;
+use progression::ProgressionPlugin;
 use resources::ResourcesPlugin;
 use ui::UiPlugin;
 use units::UnitsPlugin;
@@ -50,6 +52,7 @@ fn main() {
             UnitsPlugin,
             MovementPlugin,
             CombatPlugin,
+            ProgressionPlugin,
             AbilitiesPlugin,
             AiPlugin,
             WavesPlugin,

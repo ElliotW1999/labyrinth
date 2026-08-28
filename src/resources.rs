@@ -49,6 +49,8 @@ pub struct SharedAssets {
     pub lane_mat: Handle<StandardMaterial>,
     pub river_mat: Handle<StandardMaterial>,
     pub jungle_mat: Handle<StandardMaterial>,
+    pub tree_mesh: Handle<Mesh>,
+    pub tree_mat: Handle<StandardMaterial>,
 }
 
 pub(crate) fn load_shared_assets(
@@ -128,6 +130,12 @@ pub(crate) fn load_shared_assets(
     assets.jungle_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.12, 0.22, 0.1),
         perceptual_roughness: 1.0,
+        ..default()
+    });
+    assets.tree_mesh = meshes.add(Cylinder::new(0.85, 3.5));
+    assets.tree_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.16, 0.38, 0.18),
+        perceptual_roughness: 0.9,
         ..default()
     });
 }

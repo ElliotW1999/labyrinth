@@ -1,11 +1,12 @@
-//! Auto-attack via animated projectiles, damage, death, and bounty.
+//! Auto-attack via animated projectiles, damage, death, bounty, and XP.
 
 use bevy::prelude::*;
 
 use crate::components::{
-    AttackCooldown, AttackTarget, CombatStats, GoldBounty, Health, Lifetime, PlayerHero,
-    PlayerWallet, Projectile, ProjectileHome, Team, UnitRadius,
+    AttackCooldown, AttackTarget, CombatStats, GoldBounty, Health, HeroProgress, Lifetime,
+    PlayerHero, PlayerWallet, Projectile, ProjectileHome, Team, UnitRadius, XpBounty,
 };
+use crate::progression::add_xp;
 use crate::resources::SharedAssets;
 
 pub struct CombatPlugin;
@@ -38,11 +39,13 @@ fn auto_attack(
     mut commands: Commands,
     assets: Res<SharedAssets>,
     mut attackers: Query<(
+        Entity,
         &Transform,
         &Team,
         &CombatStats,
         &mut AttackCooldown,
         Option<&AttackTarget>,
+        Has<PlayerHero>,
     )>,
     targets: Query<(Entity, &Transform, &Team, &Health, &CombatStats, Option<&UnitRadius>)>,
 ) {
@@ -60,8 +63,15 @@ fn auto_attack(
         })
         .collect();
 
-    for (transform, team, stats, mut cooldown, current_target) in &mut attackers {
+    for (_entity, transform, team, stats, mut cooldown, current_target, is_player) in
+        &mut attackers
+    {
         if cooldown.0 > 0.0 || stats.attack_damage <= 0.0 || stats.attack_range <= 0.0 {
+            continue;
+        }
+
+        // Players only attack an explicit right-clicked target.
+        if is_player && current_target.is_none() {
             continue;
         }
 
@@ -78,6 +88,9 @@ fn auto_attack(
                     .copied()
             })
             .or_else(|| {
+                if is_player {
+                    return None;
+                }
                 target_snapshots
                     .iter()
                     .filter(|(_, _, target_team, _, _)| *target_team == team.enemy())
@@ -198,24 +211,54 @@ fn tick_lifetimes(
 
 fn despawn_dead(
     mut commands: Commands,
-    dead: Query<(Entity, &Health, Option<&GoldBounty>, Option<&Team>), Without<PlayerHero>>,
-    mut wallets: Query<&mut PlayerWallet, With<PlayerHero>>,
-    hero_team: Query<&Team, With<PlayerHero>>,
+    dead: Query<
+        (
+            Entity,
+            &Transform,
+            &Health,
+            Option<&GoldBounty>,
+            Option<&XpBounty>,
+            Option<&Team>,
+        ),
+        Without<PlayerHero>,
+    >,
+    mut heroes: Query<
+        (
+            &Transform,
+            &Team,
+            &mut PlayerWallet,
+            &mut HeroProgress,
+        ),
+        With<PlayerHero>,
+    >,
 ) {
-    let Ok(player_team) = hero_team.single() else {
-        return;
-    };
-    let mut wallet = wallets.single_mut().ok();
+    const XP_SHARE_RADIUS: f32 = 18.0;
 
-    for (entity, health, bounty, team) in &dead {
+    for (entity, transform, health, gold_bounty, xp_bounty, team) in &dead {
         if health.is_alive() {
             continue;
         }
-        if let (Some(bounty), Some(team), Some(wallet)) = (bounty, team, wallet.as_mut()) {
-            if *team == player_team.enemy() {
-                wallet.gold += bounty.0;
+
+        if let Some(victim_team) = team {
+            let death_pos = transform.translation;
+            for (hero_tf, hero_team, mut wallet, mut progress) in &mut heroes {
+                if *hero_team != victim_team.enemy() {
+                    continue;
+                }
+                // Solo-player prototype: gold always goes to the hero.
+                if let Some(gold) = gold_bounty {
+                    wallet.gold += gold.0;
+                }
+                let dx = hero_tf.translation.x - death_pos.x;
+                let dz = hero_tf.translation.z - death_pos.z;
+                if (dx * dx + dz * dz).sqrt() <= XP_SHARE_RADIUS {
+                    if let Some(xp) = xp_bounty {
+                        add_xp(&mut progress, xp.0);
+                    }
+                }
             }
         }
+
         commands.entity(entity).despawn();
     }
 }

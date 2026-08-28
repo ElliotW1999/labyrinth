@@ -2,7 +2,7 @@
 
 use bevy::prelude::*;
 
-use crate::components::{Ground, Lane, Team};
+use crate::components::{Ground, Lane, Obstacle, Team};
 use crate::resources::{MatchConfig, SharedAssets};
 use crate::units::{spawn_ancient, spawn_tower};
 
@@ -92,6 +92,8 @@ fn spawn_map(
             Transform::from_translation(pos),
         ));
     }
+
+    spawn_tree_obstacles(&mut commands, &assets);
 
     // Lighting
     commands.spawn((
@@ -195,6 +197,56 @@ fn spawn_lane_strip(
         MeshMaterial3d(assets.lane_mat.clone()),
         Transform::from_translation(mid).with_rotation(Quat::from_rotation_y(yaw)),
     ));
+}
+
+/// Placeholder trees blocking travel between lanes (jungle corridors).
+fn spawn_tree_obstacles(commands: &mut Commands, assets: &SharedAssets) {
+    // Clusters sit off the lane strips so creep paths stay clear.
+    let trees = [
+        // Between mid and top (NW jungle)
+        Vec3::new(-28.0, 1.75, 8.0),
+        Vec3::new(-22.0, 1.75, 14.0),
+        Vec3::new(-18.0, 1.75, 6.0),
+        Vec3::new(-32.0, 1.75, 16.0),
+        Vec3::new(-14.0, 1.75, 18.0),
+        Vec3::new(-24.0, 1.75, 22.0),
+        // Between mid and bot (SW jungle)
+        Vec3::new(-8.0, 1.75, -28.0),
+        Vec3::new(-14.0, 1.75, -22.0),
+        Vec3::new(-6.0, 1.75, -18.0),
+        Vec3::new(-16.0, 1.75, -32.0),
+        Vec3::new(-18.0, 1.75, -14.0),
+        Vec3::new(-22.0, 1.75, -24.0),
+        // Between mid and top (SE / dire jungle)
+        Vec3::new(28.0, 1.75, -8.0),
+        Vec3::new(22.0, 1.75, -14.0),
+        Vec3::new(18.0, 1.75, -6.0),
+        Vec3::new(32.0, 1.75, -16.0),
+        Vec3::new(14.0, 1.75, -18.0),
+        Vec3::new(24.0, 1.75, -22.0),
+        // Between mid and bot (NE / dire jungle)
+        Vec3::new(8.0, 1.75, 28.0),
+        Vec3::new(14.0, 1.75, 22.0),
+        Vec3::new(6.0, 1.75, 18.0),
+        Vec3::new(16.0, 1.75, 32.0),
+        Vec3::new(18.0, 1.75, 14.0),
+        Vec3::new(22.0, 1.75, 24.0),
+        // Extra river-bank blockers
+        Vec3::new(-8.0, 1.75, 8.0),
+        Vec3::new(8.0, 1.75, -8.0),
+        Vec3::new(-12.0, 1.75, -4.0),
+        Vec3::new(12.0, 1.75, 4.0),
+    ];
+
+    for (i, pos) in trees.into_iter().enumerate() {
+        commands.spawn((
+            Name::new(format!("Tree {i}")),
+            Mesh3d(assets.tree_mesh.clone()),
+            MeshMaterial3d(assets.tree_mat.clone()),
+            Transform::from_translation(pos),
+            Obstacle { radius: 1.1 },
+        ));
+    }
 }
 
 /// Waypoints creeps follow down each lane toward the enemy ancient.

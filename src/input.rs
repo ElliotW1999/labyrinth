@@ -1,17 +1,31 @@
-//! Player controls: point-and-click move / attack. Camera pan lives in `camera`.
+//! Player controls: point-and-click move / attack, and stop.
 
 use bevy::prelude::*;
 
 use crate::combat::flat_distance;
-use crate::components::{AttackTarget, Ground, Health, MoveTarget, PlayerHero, Team};
-use crate::movement::order_hero_move;
+use crate::components::{AttackTarget, Ground, Health, MoveTarget, PlayerHero, Team, UnitRadius};
+use crate::movement::{order_hero_move, order_hero_stop};
 
 pub struct InputPlugin;
 
 impl Plugin for InputPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, handle_point_and_click);
+        app.add_systems(Update, (handle_point_and_click, handle_stop_command));
     }
+}
+
+fn handle_stop_command(
+    keys: Res<ButtonInput<KeyCode>>,
+    hero: Query<Entity, With<PlayerHero>>,
+    mut commands: Commands,
+) {
+    if !keys.just_pressed(KeyCode::Space) {
+        return;
+    }
+    let Ok(hero_entity) = hero.single() else {
+        return;
+    };
+    order_hero_stop(&mut commands, hero_entity);
 }
 
 fn handle_point_and_click(
@@ -20,7 +34,7 @@ fn handle_point_and_click(
     camera: Query<(&Camera, &GlobalTransform)>,
     ground: Query<&GlobalTransform, With<Ground>>,
     hero: Query<(Entity, &Team), With<PlayerHero>>,
-    enemies: Query<(Entity, &GlobalTransform, &Team, &Health)>,
+    enemies: Query<(Entity, &GlobalTransform, &Team, &Health, Option<&UnitRadius>)>,
     mut commands: Commands,
 ) {
     let right = mouse.just_pressed(MouseButton::Right);
@@ -57,17 +71,21 @@ fn handle_point_and_click(
     };
 
     if right {
+        // Attack only when the click lands on an enemy unit / tower / ancient.
         let clicked_enemy = enemies
             .iter()
-            .filter(|(_, _, team, hp)| **team == hero_team.enemy() && hp.is_alive())
-            .filter(|(_, tf, _, _)| flat_distance(tf.translation(), hit) < 2.5)
+            .filter(|(_, _, team, hp, _)| **team == hero_team.enemy() && hp.is_alive())
+            .filter(|(_, tf, _, _, radius)| {
+                let r = radius.map(|r| r.0).unwrap_or(0.5);
+                flat_distance(tf.translation(), hit) < r + 1.2
+            })
             .min_by(|a, b| {
                 flat_distance(a.1.translation(), hit)
                     .partial_cmp(&flat_distance(b.1.translation(), hit))
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
 
-        if let Some((enemy, _, _, _)) = clicked_enemy {
+        if let Some((enemy, _, _, _, _)) = clicked_enemy {
             commands
                 .entity(hero_entity)
                 .insert(AttackTarget(enemy))
@@ -76,6 +94,7 @@ fn handle_point_and_click(
             order_hero_move(&mut commands, hero_entity, hit);
         }
     } else if left {
+        // Left click is always a move — never an attack.
         order_hero_move(&mut commands, hero_entity, hit);
     }
 }

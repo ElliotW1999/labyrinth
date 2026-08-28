@@ -1,8 +1,8 @@
-//! Minimal HUD: vitals, gold, ability cooldowns, and controls help.
+//! Minimal HUD: vitals, gold, level/XP, ability cooldowns, and controls help.
 
 use bevy::prelude::*;
 
-use crate::components::{AbilityLoadout, Health, Mana, PlayerHero, PlayerWallet};
+use crate::components::{AbilityLoadout, Health, HeroProgress, Mana, PlayerHero, PlayerWallet};
 
 pub struct UiPlugin;
 
@@ -21,6 +21,9 @@ struct HudVitals;
 
 #[derive(Component)]
 struct HudGold;
+
+#[derive(Component)]
+struct HudLevel;
 
 #[derive(Component)]
 struct HudAbilities;
@@ -51,6 +54,16 @@ fn spawn_hud(mut commands: Commands) {
                 },
             ));
             parent.spawn((
+                HudLevel,
+                Text::new("Level 1   XP 0 / 100"),
+                TextFont::from_font_size(20.0),
+                TextColor(Color::srgb(0.55, 0.9, 1.0)),
+                Node {
+                    margin: UiRect::bottom(px(6)),
+                    ..default()
+                },
+            ));
+            parent.spawn((
                 HudGold,
                 Text::new("Gold: 0"),
                 TextFont::from_font_size(20.0),
@@ -72,7 +85,7 @@ fn spawn_hud(mut commands: Commands) {
             ));
             parent.spawn((
                 Text::new(
-                    "RMB: move / attack   |   Q dash  W shockwave  E bolt  R nova   |   Arrows pan  F re-center",
+                    "RMB: move / attack unit   |   Space: stop   |   QWER abilities   |   Arrows pan  F re-center",
                 ),
                 TextFont::from_font_size(16.0),
                 TextColor(Color::srgba(0.8, 0.85, 0.9, 0.85)),
@@ -81,12 +94,48 @@ fn spawn_hud(mut commands: Commands) {
 }
 
 fn refresh_hud(
-    hero: Query<(&Health, &Mana, &PlayerWallet, &AbilityLoadout), With<PlayerHero>>,
-    mut vitals: Query<&mut Text, (With<HudVitals>, Without<HudGold>, Without<HudAbilities>)>,
-    mut gold: Query<&mut Text, (With<HudGold>, Without<HudVitals>, Without<HudAbilities>)>,
-    mut abilities: Query<&mut Text, (With<HudAbilities>, Without<HudVitals>, Without<HudGold>)>,
+    hero: Query<
+        (&Health, &Mana, &PlayerWallet, &AbilityLoadout, &HeroProgress),
+        With<PlayerHero>,
+    >,
+    mut vitals: Query<
+        &mut Text,
+        (
+            With<HudVitals>,
+            Without<HudGold>,
+            Without<HudAbilities>,
+            Without<HudLevel>,
+        ),
+    >,
+    mut level: Query<
+        &mut Text,
+        (
+            With<HudLevel>,
+            Without<HudVitals>,
+            Without<HudGold>,
+            Without<HudAbilities>,
+        ),
+    >,
+    mut gold: Query<
+        &mut Text,
+        (
+            With<HudGold>,
+            Without<HudVitals>,
+            Without<HudAbilities>,
+            Without<HudLevel>,
+        ),
+    >,
+    mut abilities: Query<
+        &mut Text,
+        (
+            With<HudAbilities>,
+            Without<HudVitals>,
+            Without<HudGold>,
+            Without<HudLevel>,
+        ),
+    >,
 ) {
-    let Ok((health, mana, wallet, loadout)) = hero.single() else {
+    let Ok((health, mana, wallet, loadout, progress)) = hero.single() else {
         return;
     };
 
@@ -98,6 +147,17 @@ fn refresh_hud(
             mp = mana.current,
             mp_max = mana.max,
         ));
+    }
+
+    if let Ok(mut text) = level.single_mut() {
+        if progress.level >= 25 {
+            *text = Text::new(format!("Level {}   MAX", progress.level));
+        } else {
+            *text = Text::new(format!(
+                "Level {}   XP {} / {}",
+                progress.level, progress.xp, progress.xp_to_next
+            ));
+        }
     }
 
     if let Ok(mut text) = gold.single_mut() {
@@ -112,7 +172,11 @@ fn refresh_hud(
             .enumerate()
             .map(|(i, slot)| {
                 if slot.cooldown_remaining > 0.05 {
-                    format!("{l}({cd:.0})", l = labels[i], cd = slot.cooldown_remaining.ceil())
+                    format!(
+                        "{l}({cd:.0})",
+                        l = labels[i],
+                        cd = slot.cooldown_remaining.ceil()
+                    )
                 } else {
                     format!("{l} ready", l = labels[i])
                 }
