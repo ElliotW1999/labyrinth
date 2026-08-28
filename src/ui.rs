@@ -3,8 +3,8 @@
 use bevy::prelude::*;
 
 use crate::components::{
-    AbilityId, AbilityLoadout, Ancient, Creep, Health, HeroProgress, Mana, PlayerHero,
-    PlayerWallet, Team, Tower,
+    AbilityId, AbilityLoadout, Ancient, CombatStats, Creep, Health, HeroAttributes, HeroProgress,
+    Mana, PlayerHero, PlayerWallet, Team, Tower,
 };
 use crate::items::{
     Inventory, ItemId, ItemShop, PurchaseItemRequest, ShopUiState, StatusEffects, StatusKind,
@@ -27,8 +27,10 @@ impl Plugin for UiPlugin {
                     handle_shop_toggle_button,
                     sync_shop_panel_visibility,
                     handle_shop_buy_clicks,
+                    handle_shop_backdrop_close,
                     handle_shop_close_keys,
                     refresh_shop_status,
+                    update_item_tooltips,
                     refresh_minimap,
                 ),
             );
@@ -52,6 +54,12 @@ struct HudSkillPoints;
 
 #[derive(Component)]
 struct HudBuffs;
+
+#[derive(Component)]
+struct HudAttributes;
+
+#[derive(Component)]
+struct HudCombatStats;
 
 #[derive(Component)]
 struct SpellBarRoot;
@@ -104,6 +112,15 @@ struct ShopStatusText;
 struct ShopBuyButton {
     item: ItemId,
 }
+
+#[derive(Component)]
+struct ShopBackdrop;
+
+#[derive(Component)]
+struct ItemTooltip;
+
+#[derive(Component)]
+struct ItemTooltipText;
 
 #[derive(Component)]
 struct MinimapRoot;
@@ -179,6 +196,18 @@ fn spawn_hud(mut commands: Commands) {
                     TextFont::from_font_size(16.0),
                     TextColor(Color::srgb(0.7, 0.95, 0.75)),
                 ));
+                panel.spawn((
+                    HudAttributes,
+                    Text::new("STR --  AGI --  INT --"),
+                    TextFont::from_font_size(16.0),
+                    TextColor(Color::srgb(0.95, 0.8, 0.55)),
+                ));
+                panel.spawn((
+                    HudCombatStats,
+                    Text::new("AD --  AS --  Rng --  Arm --  MR --"),
+                    TextFont::from_font_size(14.0),
+                    TextColor(Color::srgb(0.75, 0.85, 0.95)),
+                ));
             });
 
             // Inventory bar (above spell bar)
@@ -232,7 +261,7 @@ fn spawn_hud(mut commands: Commands) {
             // Help
             root.spawn((
                 Text::new(
-                    "RMB: move/attack  |  ASDZXC: items  |  Shop (bottom-right)  |  Ctrl+QWER: rank  |  Space: stop",
+                    "RMB hold: move/attack  |  G: attack-move  |  ASDZXC: items  |  $ shop  |  Space: stop",
                 ),
                 TextFont::from_font_size(14.0),
                 TextColor(Color::srgba(0.8, 0.85, 0.9, 0.8)),
@@ -311,6 +340,7 @@ fn spawn_hud(mut commands: Commands) {
                 },
                 BackgroundColor(Color::srgb(0.9, 0.7, 0.2)),
                 BorderColor::all(Color::srgb(0.35, 0.25, 0.05)),
+                ZIndex(55),
             ))
             .with_children(|btn| {
                 btn.spawn((
@@ -320,6 +350,21 @@ fn spawn_hud(mut commands: Commands) {
                 ));
             });
 
+            // Full-screen backdrop closes the shop when clicked
+            root.spawn((
+                Button,
+                ShopBackdrop,
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: percent(100),
+                    height: percent(100),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.35)),
+                Visibility::Hidden,
+                ZIndex(40),
+            ));
+
             // Shop panel (starts hidden)
             root.spawn((
                 ShopPanel,
@@ -327,20 +372,19 @@ fn spawn_hud(mut commands: Commands) {
                     position_type: PositionType::Absolute,
                     left: percent(50),
                     top: percent(50),
-                    margin: UiRect::new(px(-220), px(0), px(-240), px(0)),
-                    width: px(440),
-                    max_height: px(480),
+                    margin: UiRect::new(px(-200), px(0), px(-210), px(0)),
+                    width: px(400),
                     flex_direction: FlexDirection::Column,
-                    row_gap: px(8),
+                    row_gap: px(10),
                     padding: UiRect::all(px(14)),
                     border: UiRect::all(px(2)),
                     border_radius: BorderRadius::all(px(10)),
-                    overflow: Overflow::scroll_y(),
                     ..default()
                 },
-                BackgroundColor(Color::srgba(0.06, 0.08, 0.12, 0.94)),
+                BackgroundColor(Color::srgba(0.06, 0.08, 0.12, 0.96)),
                 BorderColor::all(Color::srgb(0.85, 0.7, 0.25)),
                 Visibility::Hidden,
+                ZIndex(50),
             ))
             .with_children(|panel| {
                 panel.spawn((
@@ -350,17 +394,56 @@ fn spawn_hud(mut commands: Commands) {
                 ));
                 panel.spawn((
                     ShopStatusText,
-                    Text::new("Stand near your base shop to buy."),
-                    TextFont::from_font_size(14.0),
+                    Text::new("Stand near your base shop to buy. Hover for details."),
+                    TextFont::from_font_size(13.0),
                     TextColor(Color::srgb(0.75, 0.85, 0.9)),
                 ));
-                for &item in ItemId::all() {
-                    spawn_shop_row(panel, item);
-                }
+                panel
+                    .spawn(Node {
+                        width: percent(100),
+                        flex_direction: FlexDirection::Row,
+                        flex_wrap: FlexWrap::Wrap,
+                        column_gap: px(10),
+                        row_gap: px(10),
+                        justify_content: JustifyContent::Center,
+                        ..default()
+                    })
+                    .with_children(|grid| {
+                        for &item in ItemId::all() {
+                            spawn_shop_item(grid, item);
+                        }
+                    });
                 panel.spawn((
-                    Text::new("Esc / click $ again to close"),
+                    Text::new("Esc / click outside / $ to close"),
                     TextFont::from_font_size(12.0),
                     TextColor(Color::srgba(0.7, 0.75, 0.8, 0.8)),
+                ));
+            });
+
+            // Shared item tooltip (shop + inventory)
+            root.spawn((
+                ItemTooltip,
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: px(24),
+                    bottom: px(220),
+                    width: px(260),
+                    padding: UiRect::all(px(10)),
+                    border: UiRect::all(px(1)),
+                    border_radius: BorderRadius::all(px(6)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.05, 0.07, 0.1, 0.95)),
+                BorderColor::all(Color::srgb(0.85, 0.75, 0.4)),
+                Visibility::Hidden,
+                ZIndex(60),
+            ))
+            .with_children(|tip| {
+                tip.spawn((
+                    ItemTooltipText,
+                    Text::new(""),
+                    TextFont::from_font_size(14.0),
+                    TextColor(Color::srgb(0.95, 0.95, 1.0)),
                 ));
             });
         });
@@ -370,15 +453,18 @@ fn spawn_inventory_slot(parent: &mut ChildSpawnerCommands, index: usize) {
     let hotkey = ItemId::inventory_hotkey(index).unwrap_or("?");
     parent
         .spawn((
+            Button,
             InventorySlotIcon { index },
             Node {
-                width: px(52),
-                height: px(52),
+                width: px(72),
+                height: px(70),
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
+                padding: UiRect::all(px(2)),
                 border: UiRect::all(px(2)),
                 border_radius: BorderRadius::all(px(6)),
+                row_gap: px(2),
                 ..default()
             },
             BackgroundColor(Color::srgba(0.12, 0.14, 0.18, 0.85)),
@@ -388,76 +474,49 @@ fn spawn_inventory_slot(parent: &mut ChildSpawnerCommands, index: usize) {
             slot.spawn((
                 InventorySlotLabel { index },
                 Text::new(format!("{hotkey}")),
-                TextFont::from_font_size(14.0),
-                TextColor(Color::srgb(0.85, 0.9, 0.95)),
+                TextFont::from_font_size(11.0),
+                TextColor(Color::srgb(0.9, 0.92, 0.95)),
             ));
             slot.spawn((
                 InventorySlotCd { index },
                 Text::new(""),
-                TextFont::from_font_size(11.0),
+                TextFont::from_font_size(10.0),
                 TextColor(Color::srgb(1.0, 0.85, 0.4)),
             ));
         });
 }
 
-fn spawn_shop_row(parent: &mut ChildSpawnerCommands, item: ItemId) {
+fn spawn_shop_item(parent: &mut ChildSpawnerCommands, item: ItemId) {
     parent
-        .spawn(Node {
-            width: percent(100),
-            flex_direction: FlexDirection::Row,
-            column_gap: px(10),
-            align_items: AlignItems::Center,
-            padding: UiRect::all(px(6)),
-            border_radius: BorderRadius::all(px(6)),
-            ..default()
-        })
-        .with_children(|row| {
-            row.spawn((
-                Node {
-                    width: px(40),
-                    height: px(40),
-                    border_radius: BorderRadius::all(px(6)),
-                    ..default()
-                },
-                BackgroundColor(item.placeholder_color()),
-            ));
-            row.spawn(Node {
+        .spawn((
+            Button,
+            ShopBuyButton { item },
+            Node {
+                width: px(86),
+                height: px(92),
                 flex_direction: FlexDirection::Column,
-                flex_grow: 1.0,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                row_gap: px(4),
+                padding: UiRect::all(px(4)),
+                border: UiRect::all(px(2)),
+                border_radius: BorderRadius::all(px(8)),
                 ..default()
-            })
-            .with_children(|info| {
-                info.spawn((
-                    Text::new(format!("{} — {}g", item.name(), item.cost())),
-                    TextFont::from_font_size(15.0),
-                    TextColor(Color::srgb(0.95, 0.95, 1.0)),
-                ));
-                info.spawn((
-                    Text::new(item.description()),
-                    TextFont::from_font_size(12.0),
-                    TextColor(Color::srgb(0.7, 0.78, 0.85)),
-                ));
-            });
-            row.spawn((
-                Button,
-                ShopBuyButton { item },
-                Node {
-                    width: px(64),
-                    height: px(32),
-                    align_items: AlignItems::Center,
-                    justify_content: JustifyContent::Center,
-                    border_radius: BorderRadius::all(px(6)),
-                    ..default()
-                },
-                BackgroundColor(Color::srgb(0.25, 0.55, 0.35)),
-            ))
-            .with_children(|btn| {
-                btn.spawn((
-                    Text::new("Buy"),
-                    TextFont::from_font_size(14.0),
-                    TextColor(Color::WHITE),
-                ));
-            });
+            },
+            BackgroundColor(item.placeholder_color()),
+            BorderColor::all(Color::srgb(0.2, 0.2, 0.25)),
+        ))
+        .with_children(|btn| {
+            btn.spawn((
+                Text::new(item.short_label()),
+                TextFont::from_font_size(20.0),
+                TextColor(Color::WHITE),
+            ));
+            btn.spawn((
+                Text::new(item.name()),
+                TextFont::from_font_size(11.0),
+                TextColor(Color::srgb(0.95, 0.95, 1.0)),
+            ));
         });
 }
 
@@ -524,62 +583,41 @@ fn spawn_spell_icon(parent: &mut ChildSpawnerCommands, index: usize, id: Ability
 }
 
 fn refresh_hud_text(
-    hero: Query<(&Health, &Mana, &PlayerWallet, &HeroProgress), With<PlayerHero>>,
-    mut vitals: Query<
-        &mut Text,
+    hero: Query<
         (
-            With<HudVitals>,
-            Without<HudLevel>,
-            Without<HudGold>,
-            Without<HudSkillPoints>,
-            Without<HudBuffs>,
+            &Health,
+            &Mana,
+            &PlayerWallet,
+            &HeroProgress,
+            &HeroAttributes,
+            &CombatStats,
         ),
+        With<PlayerHero>,
     >,
-    mut level: Query<
-        &mut Text,
-        (
-            With<HudLevel>,
-            Without<HudVitals>,
-            Without<HudGold>,
-            Without<HudSkillPoints>,
-            Without<HudBuffs>,
-        ),
-    >,
-    mut gold: Query<
-        &mut Text,
-        (
-            With<HudGold>,
-            Without<HudVitals>,
-            Without<HudLevel>,
-            Without<HudSkillPoints>,
-            Without<HudBuffs>,
-        ),
-    >,
-    mut points: Query<
-        &mut Text,
-        (
-            With<HudSkillPoints>,
-            Without<HudVitals>,
-            Without<HudLevel>,
-            Without<HudGold>,
-            Without<HudBuffs>,
-        ),
-    >,
+    mut texts: ParamSet<(
+        Query<&mut Text, With<HudVitals>>,
+        Query<&mut Text, With<HudLevel>>,
+        Query<&mut Text, With<HudGold>>,
+        Query<&mut Text, With<HudSkillPoints>>,
+        Query<&mut Text, With<HudAttributes>>,
+        Query<&mut Text, With<HudCombatStats>>,
+    )>,
 ) {
-    let Ok((health, mana, wallet, progress)) = hero.single() else {
+    let Ok((health, mana, wallet, progress, attrs, stats)) = hero.single() else {
         return;
     };
 
-    if let Ok(mut text) = vitals.single_mut() {
+    if let Ok(mut text) = texts.p0().single_mut() {
         *text = Text::new(format!(
-            "HP {hp:.0} / {hp_max:.0}    MP {mp:.0} / {mp_max:.0}",
+            "HP {hp:.0} / {hp_max:.0} (+{hpr:.1}/s)   MP {mp:.0} / {mp_max:.0}",
             hp = health.current.max(0.0),
             hp_max = health.max,
+            hpr = health.regen_per_sec,
             mp = mana.current,
             mp_max = mana.max,
         ));
     }
-    if let Ok(mut text) = level.single_mut() {
+    if let Ok(mut text) = texts.p1().single_mut() {
         if progress.level >= 25 {
             *text = Text::new(format!("Level {}   MAX", progress.level));
         } else {
@@ -589,16 +627,34 @@ fn refresh_hud_text(
             ));
         }
     }
-    if let Ok(mut text) = gold.single_mut() {
+    if let Ok(mut text) = texts.p2().single_mut() {
         *text = Text::new(format!("Gold: {}", wallet.gold));
     }
-    if let Ok(mut text) = points.single_mut() {
+    if let Ok(mut text) = texts.p3().single_mut() {
         let label = if progress.skill_points > 0 {
             format!("Skill Points: {}  (Ctrl+QWER or +)", progress.skill_points)
         } else {
             "Skill Points: 0".into()
         };
         *text = Text::new(label);
+    }
+    if let Ok(mut text) = texts.p4().single_mut() {
+        *text = Text::new(format!(
+            "STR {s:.0}  AGI {a:.0}  INT {i:.0}",
+            s = attrs.strength,
+            a = attrs.agility,
+            i = attrs.intelligence,
+        ));
+    }
+    if let Ok(mut text) = texts.p5().single_mut() {
+        *text = Text::new(format!(
+            "AD {ad:.0}  AS {aspeed:.2}  Rng {rng:.0}  Arm {arm:.1}  MR {mr:.1}",
+            ad = stats.attack_damage,
+            aspeed = stats.attack_speed,
+            rng = stats.attack_range,
+            arm = stats.armor,
+            mr = stats.magic_resist,
+        ));
     }
 }
 
@@ -709,9 +765,9 @@ fn refresh_inventory_bar(
     for (meta, mut text) in &mut labels {
         let hotkey = ItemId::inventory_hotkey(meta.index).unwrap_or("?");
         if let Some(item) = inv.slots.get(meta.index).and_then(|s| s.as_ref()) {
-            *text = Text::new(format!("{hotkey} {}", item.id.short_label()));
+            *text = Text::new(format!("{}\n{}", item.id.short_label(), item.id.name()));
         } else {
-            *text = Text::new(hotkey.to_string());
+            *text = Text::new(format!("{hotkey}"));
         }
     }
 
@@ -757,16 +813,31 @@ fn handle_shop_toggle_button(
 
 fn sync_shop_panel_visibility(
     shop_ui: Res<ShopUiState>,
-    mut panel: Query<&mut Visibility, With<ShopPanel>>,
+    mut panel: Query<&mut Visibility, (With<ShopPanel>, Without<ShopBackdrop>)>,
+    mut backdrop: Query<&mut Visibility, (With<ShopBackdrop>, Without<ShopPanel>)>,
 ) {
-    let Ok(mut vis) = panel.single_mut() else {
-        return;
-    };
-    *vis = if shop_ui.open {
+    let vis = if shop_ui.open {
         Visibility::Visible
     } else {
         Visibility::Hidden
     };
+    if let Ok(mut v) = panel.single_mut() {
+        *v = vis;
+    }
+    if let Ok(mut v) = backdrop.single_mut() {
+        *v = vis;
+    }
+}
+
+fn handle_shop_backdrop_close(
+    interactions: Query<&Interaction, (Changed<Interaction>, With<ShopBackdrop>)>,
+    mut shop_ui: ResMut<ShopUiState>,
+) {
+    for interaction in &interactions {
+        if *interaction == Interaction::Pressed {
+            shop_ui.open = false;
+        }
+    }
 }
 
 fn handle_shop_close_keys(keys: Res<ButtonInput<KeyCode>>, mut shop_ui: ResMut<ShopUiState>) {
@@ -787,6 +858,72 @@ fn handle_shop_buy_clicks(
         if *interaction == Interaction::Pressed {
             writer.write(PurchaseItemRequest { item: button.item });
         }
+    }
+}
+
+fn update_item_tooltips(
+    shop_ui: Res<ShopUiState>,
+    shop_items: Query<(&Interaction, &ShopBuyButton)>,
+    inv_slots: Query<(&Interaction, &InventorySlotIcon)>,
+    inv: Query<&Inventory, With<PlayerHero>>,
+    mut tip: Query<&mut Visibility, With<ItemTooltip>>,
+    mut tip_text: Query<&mut Text, With<ItemTooltipText>>,
+) {
+    let Ok(mut tip_vis) = tip.single_mut() else {
+        return;
+    };
+    let Ok(mut text) = tip_text.single_mut() else {
+        return;
+    };
+
+    let mut body: Option<String> = None;
+
+    if shop_ui.open {
+        for (interaction, button) in &shop_items {
+            if matches!(*interaction, Interaction::Hovered | Interaction::Pressed) {
+                body = Some(button.item.tooltip_body());
+                break;
+            }
+        }
+    }
+
+    if body.is_none() {
+        let Ok(inventory) = inv.single() else {
+            *tip_vis = Visibility::Hidden;
+            return;
+        };
+        for (interaction, slot) in &inv_slots {
+            if matches!(*interaction, Interaction::Hovered | Interaction::Pressed) {
+                if let Some(item) = inventory.slots.get(slot.index).and_then(|s| s.as_ref()) {
+                    let hotkey = ItemId::inventory_hotkey(slot.index).unwrap_or("?");
+                    body = Some(format!(
+                        "{}\nHotkey: {}\n{}",
+                        item.id.tooltip_body(),
+                        hotkey,
+                        if item.cooldown_remaining > 0.05 {
+                            format!("Cooldown: {:.0}s", item.cooldown_remaining.ceil())
+                        } else if item.id.has_active() {
+                            "Ready".into()
+                        } else {
+                            "Passive".into()
+                        }
+                    ));
+                } else {
+                    body = Some(format!(
+                        "Empty slot\nHotkey: {}",
+                        ItemId::inventory_hotkey(slot.index).unwrap_or("?")
+                    ));
+                }
+                break;
+            }
+        }
+    }
+
+    if let Some(body) = body {
+        *text = Text::new(body);
+        *tip_vis = Visibility::Visible;
+    } else {
+        *tip_vis = Visibility::Hidden;
     }
 }
 
@@ -821,7 +958,7 @@ fn refresh_shop_status(
         None => "inventory full".into(),
     };
     *text = Text::new(format!(
-        "{range_msg}  |  Gold: {}  |  {}",
+        "{range_msg}  |  Gold: {}  |  {}  |  Hover item for details",
         wallet.gold, slots_msg
     ));
 }

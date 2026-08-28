@@ -22,6 +22,7 @@ impl Team {
 pub struct Health {
     pub current: f32,
     pub max: f32,
+    pub regen_per_sec: f32,
 }
 
 impl Health {
@@ -29,6 +30,7 @@ impl Health {
         Self {
             current: max,
             max,
+            regen_per_sec: 0.0,
         }
     }
 
@@ -65,12 +67,94 @@ impl Mana {
 
 #[derive(Component, Debug, Clone, Copy)]
 pub struct CombatStats {
+    /// Auto-attack damage (physical).
     pub attack_damage: f32,
     pub attack_range: f32,
     pub attack_speed: f32,
     pub armor: f32,
     pub magic_resist: f32,
     pub move_speed: f32,
+}
+
+/// Primary hero attributes. Level-ups raise these; each point feeds derived combat stats.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct HeroAttributes {
+    pub strength: f32,
+    pub agility: f32,
+    pub intelligence: f32,
+    pub str_per_level: f32,
+    pub agi_per_level: f32,
+    pub int_per_level: f32,
+}
+
+impl HeroAttributes {
+    pub fn starter() -> Self {
+        Self {
+            strength: 20.0,
+            agility: 18.0,
+            intelligence: 18.0,
+            str_per_level: 2.2,
+            agi_per_level: 2.0,
+            int_per_level: 2.4,
+        }
+    }
+
+    /// Max HP gained per point of Strength.
+    pub const HP_PER_STR: f32 = 18.0;
+    /// HP regen per point of Strength.
+    pub const HP_REGEN_PER_STR: f32 = 0.12;
+    /// Armor per point of Agility.
+    pub const ARMOR_PER_AGI: f32 = 0.14;
+    /// Attack speed per point of Agility.
+    pub const ATTACK_SPEED_PER_AGI: f32 = 0.02;
+    /// Max mana per point of Intelligence.
+    pub const MANA_PER_INT: f32 = 12.0;
+    /// Mana regen per point of Intelligence.
+    pub const MANA_REGEN_PER_INT: f32 = 0.05;
+    /// Magic resist per point of Intelligence.
+    pub const MR_PER_INT: f32 = 0.12;
+
+    pub fn apply_to(&self, health: &mut Health, mana: &mut Mana, stats: &mut CombatStats) {
+        health.max += self.strength * Self::HP_PER_STR;
+        health.current = health.current.min(health.max);
+        health.regen_per_sec += self.strength * Self::HP_REGEN_PER_STR;
+        stats.armor += self.agility * Self::ARMOR_PER_AGI;
+        stats.attack_speed += self.agility * Self::ATTACK_SPEED_PER_AGI;
+        mana.max += self.intelligence * Self::MANA_PER_INT;
+        mana.current = mana.current.min(mana.max);
+        mana.regen_per_sec += self.intelligence * Self::MANA_REGEN_PER_INT;
+        stats.magic_resist += self.intelligence * Self::MR_PER_INT;
+    }
+
+    /// Apply only the delta between `before` and `self` (used on level-up).
+    pub fn apply_delta(
+        before: &Self,
+        after: &Self,
+        health: &mut Health,
+        mana: &mut Mana,
+        stats: &mut CombatStats,
+    ) {
+        let d_str = after.strength - before.strength;
+        let d_agi = after.agility - before.agility;
+        let d_int = after.intelligence - before.intelligence;
+        let hp = d_str * Self::HP_PER_STR;
+        health.max += hp;
+        health.current = (health.current + hp).min(health.max);
+        health.regen_per_sec += d_str * Self::HP_REGEN_PER_STR;
+        stats.armor += d_agi * Self::ARMOR_PER_AGI;
+        stats.attack_speed += d_agi * Self::ATTACK_SPEED_PER_AGI;
+        let mp = d_int * Self::MANA_PER_INT;
+        mana.max += mp;
+        mana.current = (mana.current + mp).min(mana.max);
+        mana.regen_per_sec += d_int * Self::MANA_REGEN_PER_INT;
+        stats.magic_resist += d_int * Self::MR_PER_INT;
+    }
+
+    pub fn level_up(&mut self) {
+        self.strength += self.str_per_level;
+        self.agility += self.agi_per_level;
+        self.intelligence += self.int_per_level;
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
