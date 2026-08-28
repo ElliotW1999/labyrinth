@@ -152,24 +152,26 @@ fn chase_attack_targets(
     }
 }
 
-/// Player-only chase: walk into range for an explicit attack order, but never
-/// clear a newer move order (MoveTarget without wanting to chase).
+/// Player-only chase: keep pathing toward an attack target until in range.
 pub fn player_chase_attack_target(
-    hero: Query<(Entity, &Transform, &CombatStats, &AttackTarget), (With<PlayerHero>, Without<MoveTarget>)>,
-    targets: Query<&Transform>,
+    hero: Query<(Entity, &Transform, &CombatStats, &AttackTarget), With<PlayerHero>>,
+    targets: Query<(&Transform, Option<&UnitRadius>)>,
     mut commands: Commands,
 ) {
     let Ok((entity, transform, stats, AttackTarget(target))) = hero.single() else {
         return;
     };
-    let Ok(target_tf) = targets.get(*target) else {
+    let Ok((target_tf, radius)) = targets.get(*target) else {
         commands.entity(entity).remove::<AttackTarget>();
         return;
     };
+    let reach = stats.attack_range + radius.map(|r| r.0).unwrap_or(0.5);
     let dist = flat_distance(transform.translation, target_tf.translation);
-    if dist > stats.attack_range * 0.9 {
+    if dist > reach * 0.9 {
         commands.entity(entity).insert(MoveTarget {
             position: Vec3::new(target_tf.translation.x, 0.0, target_tf.translation.z),
         });
+    } else {
+        commands.entity(entity).remove::<MoveTarget>();
     }
 }

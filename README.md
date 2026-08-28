@@ -21,25 +21,31 @@ cargo run --release
 | Input | Action |
 | --- | --- |
 | Right click ground | Move (cancels pending targeted spell) |
-| Right click enemy | Attack (cancels pending targeted spell) |
-| Left click | Move, or confirm targeted spell |
+| Right click enemy | Attack — path in if out of range (cancels pending targeted spell) |
+| Left click | Confirm targeted spell (not used for move) |
 | Space | Stop (clear move + attack + cancel spell) |
-| Q | Dash (instant) |
-| W | Shockwave (instant self AoE, magic) |
-| E | Arcane Bolt (targeted — show range/AoE, LMB cast) |
-| R | Nova (targeted ground AoE — show range/AoE, LMB cast) |
+| Q / W / E / R | Cast ability (must be ranked first) |
+| Ctrl+Q / W / E / R | Spend a skill point to rank that ability |
+| Spell bar `+` | Rank up when highlighted |
 | Arrow keys / screen edge | Pan camera on the XZ plane |
 | F | Snap camera to hero (no continuous lock) |
+
+### Ability ranks
+
+- Level-ups grant skill points (start with 1 at level 1)
+- Q / W / E: up to 7 ranks; rank N needs hero level ≥ 2N−1 (max at 13)
+- R: up to 4 ranks; unlocked at overall levels 6 / 12 / 18 / 24
+- Each rank scales damage, cooldown, range, and mana cost
 
 ## What's included
 
 - Three-lane map with river, jungle pockets, tree obstacles, towers, and ancients
-- Player hero with HP / mana / gold / XP / levels and QWER abilities
+- Player hero with HP / mana / gold / XP / levels and rankable QWER abilities
 - Creep waves that path down each lane
 - Explicit right-click attack orders (no free auto-acquire for the player)
 - Auto-attack combat with armor mitigation
 - Tower and creep aggro AI
-- Top-down chase camera and HUD
+- Free camera, spell bar with placeholder icons / ranks, unspent skill points, and minimap
 
 ## Layout
 
@@ -56,9 +62,9 @@ src/
   abilities.rs     QWER casting
   ai.rs            Lane following + aggro
   waves.rs         Periodic creep spawns
-  camera.rs        Chase camera
-  input.rs         Click-to-move / attack / stop
-  ui.rs            HUD
+  camera.rs        Free camera (edge / arrows / F snap)
+  input.rs         RMB move / attack / stop / spell ranking
+  ui.rs            HUD (spell bar, skill points, minimap)
 ```
 
 ## Extending

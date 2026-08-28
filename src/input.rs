@@ -1,17 +1,27 @@
-//! Player controls: point-and-click move / attack, and stop.
+//! Player controls: right-click move / attack, stop, and spell rank hotkeys.
 
 use bevy::prelude::*;
 
 use crate::abilities::{cancel_targeting_if_any, AbilityTargeting};
 use crate::combat::flat_distance;
-use crate::components::{AttackTarget, Ground, Health, MoveTarget, PlayerHero, Team, UnitRadius};
+use crate::components::{
+    AbilityLoadout, AttackTarget, CombatStats, Ground, Health, HeroProgress, MoveTarget,
+    PlayerHero, Team, UnitRadius,
+};
 use crate::movement::{order_hero_move, order_hero_stop};
 
 pub struct InputPlugin;
 
 impl Plugin for InputPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (handle_stop_command, handle_point_and_click));
+        app.add_systems(
+            Update,
+            (
+                handle_stop_command,
+                handle_point_and_click,
+                handle_spell_rank_hotkeys,
+            ),
+        );
     }
 }
 
@@ -31,12 +41,38 @@ fn handle_stop_command(
     order_hero_stop(&mut commands, hero_entity);
 }
 
+fn handle_spell_rank_hotkeys(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut hero: Query<(&mut AbilityLoadout, &mut HeroProgress), With<PlayerHero>>,
+) {
+    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+    if !ctrl {
+        return;
+    }
+
+    let Ok((mut loadout, mut progress)) = hero.single_mut() else {
+        return;
+    };
+
+    let picks = [
+        (KeyCode::KeyQ, 0usize),
+        (KeyCode::KeyW, 1),
+        (KeyCode::KeyE, 2),
+        (KeyCode::KeyR, 3),
+    ];
+    for (key, index) in picks {
+        if keys.just_pressed(key) {
+            loadout.try_rank_up(index, progress.level, &mut progress.skill_points);
+        }
+    }
+}
+
 fn handle_point_and_click(
     mouse: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
     camera: Query<(&Camera, &GlobalTransform)>,
     ground: Query<&GlobalTransform, With<Ground>>,
-    hero: Query<(Entity, &Team), With<PlayerHero>>,
+    hero: Query<(Entity, &Team, &CombatStats, &Transform), With<PlayerHero>>,
     enemies: Query<(Entity, &GlobalTransform, &Team, &Health, Option<&UnitRadius>)>,
     mut targeting: ResMut<AbilityTargeting>,
     mut commands: Commands,
@@ -44,17 +80,18 @@ fn handle_point_and_click(
     let right = mouse.just_pressed(MouseButton::Right);
     let left = mouse.just_pressed(MouseButton::Left);
 
-    // While targeting a spell, LMB is consumed by the ability system.
+    // Targeted spells consume LMB; RMB cancels then issues move/attack.
     if targeting.active.is_some() {
         if right {
-            // Issuing a move/attack command cancels the pending spell.
             cancel_targeting_if_any(&mut commands, &mut targeting);
         } else {
             return;
         }
     }
 
-    if !right && !left {
+    // Movement / attack is right-click only (left is spell confirm / UI).
+    if !right {
+        let _ = left;
         return;
     }
 
@@ -81,33 +118,36 @@ fn handle_point_and_click(
     };
     let hit = ray.get_point(distance);
 
-    let Ok((hero_entity, hero_team)) = hero.single() else {
+    let Ok((hero_entity, hero_team, stats, hero_tf)) = hero.single() else {
         return;
     };
 
-    if right {
-        let clicked_enemy = enemies
-            .iter()
-            .filter(|(_, _, team, hp, _)| **team == hero_team.enemy() && hp.is_alive())
-            .filter(|(_, tf, _, _, radius)| {
-                let r = radius.map(|r| r.0).unwrap_or(0.5);
-                flat_distance(tf.translation(), hit) < r + 1.2
-            })
-            .min_by(|a, b| {
-                flat_distance(a.1.translation(), hit)
-                    .partial_cmp(&flat_distance(b.1.translation(), hit))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
+    let clicked_enemy = enemies
+        .iter()
+        .filter(|(_, _, team, hp, _)| **team == hero_team.enemy() && hp.is_alive())
+        .filter(|(_, tf, _, _, radius)| {
+            let r = radius.map(|r| r.0).unwrap_or(0.5);
+            flat_distance(tf.translation(), hit) < r + 1.2
+        })
+        .min_by(|a, b| {
+            flat_distance(a.1.translation(), hit)
+                .partial_cmp(&flat_distance(b.1.translation(), hit))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
-        if let Some((enemy, _, _, _, _)) = clicked_enemy {
-            commands
-                .entity(hero_entity)
-                .insert(AttackTarget(enemy))
-                .remove::<MoveTarget>();
+    if let Some((enemy, enemy_tf, _, _, radius)) = clicked_enemy {
+        let reach = stats.attack_range + radius.map(|r| r.0).unwrap_or(0.5);
+        let dist = flat_distance(hero_tf.translation, enemy_tf.translation());
+        commands.entity(hero_entity).insert(AttackTarget(enemy));
+        if dist > reach * 0.9 {
+            // Path toward the target when out of range.
+            commands.entity(hero_entity).insert(MoveTarget {
+                position: Vec3::new(enemy_tf.translation().x, 0.0, enemy_tf.translation().z),
+            });
         } else {
-            order_hero_move(&mut commands, hero_entity, hit);
+            commands.entity(hero_entity).remove::<MoveTarget>();
         }
-    } else if left {
+    } else {
         order_hero_move(&mut commands, hero_entity, hit);
     }
 }
