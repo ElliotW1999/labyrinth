@@ -1,4 +1,4 @@
-//! Player controls: right-click move / attack, left-click select ground, camera pan.
+//! Player controls: point-and-click move / attack. Camera pan lives in `camera`.
 
 use bevy::prelude::*;
 
@@ -10,7 +10,7 @@ pub struct InputPlugin;
 
 impl Plugin for InputPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (handle_point_and_click, pan_camera_with_keys));
+        app.add_systems(Update, handle_point_and_click);
     }
 }
 
@@ -42,7 +42,6 @@ fn handle_point_and_click(
         return;
     };
 
-    // Intersect with the ground plane y = 0.
     let Ok(ground_tf) = ground.single() else {
         return;
     };
@@ -58,7 +57,6 @@ fn handle_point_and_click(
     };
 
     if right {
-        // Prefer attacking a nearby enemy under the cursor; otherwise move.
         let clicked_enemy = enemies
             .iter()
             .filter(|(_, _, team, hp)| **team == hero_team.enemy() && hp.is_alive())
@@ -78,35 +76,6 @@ fn handle_point_and_click(
             order_hero_move(&mut commands, hero_entity, hit);
         }
     } else if left {
-        // Left click also issues a move for now (RTS muscle memory variant).
         order_hero_move(&mut commands, hero_entity, hit);
-    }
-}
-
-fn pan_camera_with_keys(
-    time: Res<Time>,
-    keys: Res<ButtonInput<KeyCode>>,
-    mut camera: Query<&mut Transform, With<crate::camera::GameCamera>>,
-) {
-    let Ok(mut transform) = camera.single_mut() else {
-        return;
-    };
-    // Arrow keys only — letter keys are reserved for abilities (QWER).
-    let mut delta = Vec3::ZERO;
-    if keys.pressed(KeyCode::ArrowLeft) {
-        delta.x -= 1.0;
-    }
-    if keys.pressed(KeyCode::ArrowRight) {
-        delta.x += 1.0;
-    }
-    if keys.pressed(KeyCode::ArrowUp) {
-        delta.z -= 1.0;
-    }
-    if keys.pressed(KeyCode::ArrowDown) {
-        delta.z += 1.0;
-    }
-    if delta != Vec3::ZERO {
-        // Temporarily nudge camera; follow system will re-anchor to hero unless held.
-        transform.translation += delta.normalize() * 28.0 * time.delta_secs();
     }
 }

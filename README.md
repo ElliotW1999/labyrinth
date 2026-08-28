@@ -26,7 +26,8 @@ cargo run --release
 | W | Shockwave (AoE damage) |
 | E | Bolt (targeted projectile) |
 | R | Nova (heal + large AoE) |
-| Arrow keys | Pan camera |
+| Arrow keys | Pan camera on the XZ plane |
+| F | Re-center camera on hero |
 
 ## What's included
 

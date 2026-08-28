@@ -72,7 +72,7 @@ fn spawn_hud(mut commands: Commands) {
             ));
             parent.spawn((
                 Text::new(
-                    "RMB: move / attack   |   Q dash  W shockwave  E bolt  R nova   |   Arrows pan",
+                    "RMB: move / attack   |   Q dash  W shockwave  E bolt  R nova   |   Arrows pan  F re-center",
                 ),
                 TextFont::from_font_size(16.0),
                 TextColor(Color::srgba(0.8, 0.85, 0.9, 0.85)),

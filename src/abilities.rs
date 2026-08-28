@@ -117,10 +117,12 @@ fn cast_abilities(
                     spawn_projectile(
                         &mut commands,
                         &assets,
-                        origin,
-                        enemy_tf.translation,
                         *team,
+                        origin,
+                        enemy,
+                        enemy_tf.translation,
                         140.0,
+                        32.0,
                     );
                     commands.entity(hero_entity).insert(AttackTarget(enemy));
                 }

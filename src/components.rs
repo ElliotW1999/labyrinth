@@ -187,10 +187,21 @@ pub struct Projectile {
     pub lifetime: f32,
 }
 
+/// Homing target for a projectile bolt.
 #[derive(Component, Debug, Clone, Copy)]
-pub struct ProjectileTarget {
-    pub position: Vec3,
-}
+pub struct ProjectileHome(pub Entity);
 
 #[derive(Component, Debug, Clone, Copy)]
 pub struct Lifetime(pub f32);
+
+/// World-space health bar root linked to a living unit.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct HealthBar {
+    pub owner: Entity,
+}
+
+#[derive(Component, Debug, Clone, Copy)]
+pub struct HealthBarFill;
+
+#[derive(Component, Debug, Clone, Copy)]
+pub struct HasHealthBar;

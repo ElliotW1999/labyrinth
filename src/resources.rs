@@ -35,11 +35,16 @@ pub struct SharedAssets {
     pub tower_mesh: Handle<Mesh>,
     pub ancient_mesh: Handle<Mesh>,
     pub projectile_mesh: Handle<Mesh>,
+    pub health_bar_bg_mesh: Handle<Mesh>,
+    pub health_bar_fill_mesh: Handle<Mesh>,
     pub radiant_mat: Handle<StandardMaterial>,
     pub dire_mat: Handle<StandardMaterial>,
     pub tower_radiant_mat: Handle<StandardMaterial>,
     pub tower_dire_mat: Handle<StandardMaterial>,
-    pub projectile_mat: Handle<StandardMaterial>,
+    pub projectile_radiant_mat: Handle<StandardMaterial>,
+    pub projectile_dire_mat: Handle<StandardMaterial>,
+    pub health_bar_bg_mat: Handle<StandardMaterial>,
+    pub health_bar_fill_mat: Handle<StandardMaterial>,
     pub ground_mat: Handle<StandardMaterial>,
     pub lane_mat: Handle<StandardMaterial>,
     pub river_mat: Handle<StandardMaterial>,
@@ -54,7 +59,10 @@ pub(crate) fn load_shared_assets(
     assets.unit_mesh = meshes.add(Capsule3d::new(0.35, 0.9));
     assets.tower_mesh = meshes.add(Cylinder::new(0.7, 3.2));
     assets.ancient_mesh = meshes.add(Cuboid::new(3.5, 2.5, 3.5));
-    assets.projectile_mesh = meshes.add(Sphere::new(0.25));
+    // Elongated dart — local forward is -Z after look_to.
+    assets.projectile_mesh = meshes.add(Cuboid::new(0.18, 0.18, 0.85));
+    assets.health_bar_bg_mesh = meshes.add(Cuboid::new(1.0, 0.12, 0.08));
+    assets.health_bar_fill_mesh = meshes.add(Cuboid::new(1.0, 0.1, 0.09));
 
     assets.radiant_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.25, 0.55, 0.95),
@@ -78,9 +86,27 @@ pub(crate) fn load_shared_assets(
         metallic: 0.2,
         ..default()
     });
-    assets.projectile_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(1.0, 0.85, 0.3),
-        emissive: LinearRgba::rgb(4.0, 2.5, 0.2),
+    assets.projectile_radiant_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.55, 0.85, 1.0),
+        emissive: LinearRgba::rgb(1.5, 4.0, 8.0),
+        unlit: true,
+        ..default()
+    });
+    assets.projectile_dire_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(1.0, 0.55, 0.25),
+        emissive: LinearRgba::rgb(8.0, 2.5, 0.4),
+        unlit: true,
+        ..default()
+    });
+    assets.health_bar_bg_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.08, 0.08, 0.1),
+        unlit: true,
+        alpha_mode: AlphaMode::Opaque,
+        ..default()
+    });
+    assets.health_bar_fill_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.25, 0.85, 0.35),
+        unlit: true,
         ..default()
     });
     assets.ground_mat = materials.add(StandardMaterial {
