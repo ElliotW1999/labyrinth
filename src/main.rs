@@ -53,11 +53,11 @@ fn main() {
             MovementPlugin,
             CombatPlugin,
             ProgressionPlugin,
+            InputPlugin,
             AbilitiesPlugin,
             AiPlugin,
             WavesPlugin,
             CameraPlugin,
-            InputPlugin,
             HealthBarPlugin,
             UiPlugin,
         ))

@@ -55,6 +55,7 @@ fn apply_level_bonus(health: &mut Health, mana: &mut Mana, stats: &mut CombatSta
     mana.current = (mana.current + mana_gain).min(mana.max);
     stats.attack_damage += 4.0;
     stats.armor += 0.5;
+    stats.magic_resist += 0.4;
     stats.move_speed += 0.15;
 }
 

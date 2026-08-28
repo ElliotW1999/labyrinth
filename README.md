@@ -20,16 +20,16 @@ cargo run --release
 
 | Input | Action |
 | --- | --- |
-| Right click ground | Move |
-| Right click enemy | Attack (required to fight) |
-| Left click | Move |
-| Space | Stop (clear move + attack) |
-| Q | Dash |
-| W | Shockwave (AoE damage) |
-| E | Bolt (targeted projectile) |
-| R | Nova (heal + large AoE) |
-| Arrow keys | Pan camera on the XZ plane |
-| F | Re-center camera on hero |
+| Right click ground | Move (cancels pending targeted spell) |
+| Right click enemy | Attack (cancels pending targeted spell) |
+| Left click | Move, or confirm targeted spell |
+| Space | Stop (clear move + attack + cancel spell) |
+| Q | Dash (instant) |
+| W | Shockwave (instant self AoE, magic) |
+| E | Arcane Bolt (targeted — show range/AoE, LMB cast) |
+| R | Nova (targeted ground AoE — show range/AoE, LMB cast) |
+| Arrow keys / screen edge | Pan camera on the XZ plane |
+| F | Snap camera to hero (no continuous lock) |
 
 ## What's included
 

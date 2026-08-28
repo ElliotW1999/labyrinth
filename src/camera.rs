@@ -1,6 +1,7 @@
-//! Top-down chase camera with true XZ plane panning.
+//! Free camera with arrow-key and screen-edge panning.
 
 use bevy::prelude::*;
+use bevy::window::PrimaryWindow;
 
 use crate::components::PlayerHero;
 
@@ -11,17 +12,16 @@ impl Plugin for CameraPlugin {
         app.init_resource::<CameraRig>()
             .init_resource::<CameraFocus>()
             .add_systems(Startup, spawn_camera)
-            .add_systems(Update, (update_camera_focus, position_camera).chain());
+            .add_systems(Update, (pan_camera_focus, position_camera).chain());
     }
 }
 
 #[derive(Resource, Debug, Clone, Copy)]
 pub struct CameraRig {
-    /// Height above the focus point.
     pub height: f32,
-    /// How far "south" of the focus the camera sits (world +Z).
     pub back: f32,
-    pub follow_lag: f32,
+    pub pan_speed: f32,
+    pub edge_size: f32,
 }
 
 impl Default for CameraRig {
@@ -29,25 +29,23 @@ impl Default for CameraRig {
         Self {
             height: 42.0,
             back: 18.0,
-            follow_lag: 8.0,
+            pan_speed: 36.0,
+            edge_size: 24.0,
         }
     }
 }
 
-/// Ground-plane point the camera looks at. Panning moves this in XZ;
-/// following lerps it toward the hero.
+/// Ground-plane point the camera looks at. Never auto-locks to the hero
+/// (hero collision jitter near trees was shaking a follow cam).
 #[derive(Resource, Debug, Clone, Copy)]
 pub struct CameraFocus {
     pub position: Vec3,
-    /// While true, focus tracks the hero. Arrow-key pan clears this.
-    pub follow_hero: bool,
 }
 
 impl Default for CameraFocus {
     fn default() -> Self {
         Self {
             position: Vec3::new(-44.0, 0.0, -44.0),
-            follow_hero: true,
         }
     }
 }
@@ -65,14 +63,21 @@ fn spawn_camera(mut commands: Commands, rig: Res<CameraRig>, focus: Res<CameraFo
     ));
 }
 
-fn update_camera_focus(
+fn pan_camera_focus(
     time: Res<Time>,
     rig: Res<CameraRig>,
     keys: Res<ButtonInput<KeyCode>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
     hero: Query<&Transform, With<PlayerHero>>,
     mut focus: ResMut<CameraFocus>,
 ) {
-    // Arrow keys pan the focus on the XZ plane (not the camera eye).
+    // F snaps once to the hero without enabling continuous follow.
+    if keys.just_pressed(KeyCode::KeyF) {
+        if let Ok(hero_tf) = hero.single() {
+            focus.position = Vec3::new(hero_tf.translation.x, 0.0, hero_tf.translation.z);
+        }
+    }
+
     let mut pan = Vec3::ZERO;
     if keys.pressed(KeyCode::ArrowLeft) {
         pan.x -= 1.0;
@@ -87,28 +92,28 @@ fn update_camera_focus(
         pan.z += 1.0;
     }
 
+    if let Ok(window) = windows.single() {
+        if let Some(cursor) = window.cursor_position() {
+            let w = window.width();
+            let h = window.height();
+            let edge = rig.edge_size;
+            if cursor.x <= edge {
+                pan.x -= 1.0;
+            } else if cursor.x >= w - edge {
+                pan.x += 1.0;
+            }
+            if cursor.y <= edge {
+                pan.z -= 1.0;
+            } else if cursor.y >= h - edge {
+                pan.z += 1.0;
+            }
+        }
+    }
+
     if pan != Vec3::ZERO {
-        focus.follow_hero = false;
-        focus.position += pan.normalize() * 36.0 * time.delta_secs();
+        focus.position += pan.normalize() * rig.pan_speed * time.delta_secs();
         focus.position.y = 0.0;
-        return;
     }
-
-    // F re-locks the camera onto the hero.
-    if keys.just_pressed(KeyCode::KeyF) {
-        focus.follow_hero = true;
-    }
-
-    if !focus.follow_hero {
-        return;
-    }
-
-    let Ok(hero_tf) = hero.single() else {
-        return;
-    };
-    let desired = Vec3::new(hero_tf.translation.x, 0.0, hero_tf.translation.z);
-    let t = 1.0 - (-rig.follow_lag * time.delta_secs()).exp();
-    focus.position = focus.position.lerp(desired, t);
 }
 
 fn position_camera(

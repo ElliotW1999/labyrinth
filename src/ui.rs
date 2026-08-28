@@ -85,7 +85,7 @@ fn spawn_hud(mut commands: Commands) {
             ));
             parent.spawn((
                 Text::new(
-                    "RMB: move / attack unit   |   Space: stop   |   QWER abilities   |   Arrows pan  F re-center",
+                    "RMB: move/attack  |  Space: stop  |  Q/W instant  E/R target+LMB  |  Edge/Arrows pan  F snap",
                 ),
                 TextFont::from_font_size(16.0),
                 TextColor(Color::srgba(0.8, 0.85, 0.9, 0.85)),
