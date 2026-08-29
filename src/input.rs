@@ -9,7 +9,7 @@ use crate::components::{
     PlayerHero, Team, UnitRadius,
 };
 use crate::items::ShopUiState;
-use crate::movement::{order_hero_move, order_hero_stop};
+use crate::movement::{order_attack_move, order_hero_move, order_hero_stop};
 use crate::net::{
     client_send_command, should_send_orders_over_network, ClientToServer, NetConfig, NetworkId,
     NetTransport,
@@ -208,6 +208,10 @@ fn handle_point_and_click(
     }
 
     if let Some((enemy, enemy_tf, _, _, radius, _)) = clicked_enemy {
+        commands
+            .entity(hero_entity)
+            .remove::<crate::components::AttackMoveOrder>()
+            .remove::<crate::components::QueuedAbilityCast>();
         order_attack_target(
             &mut commands,
             hero_entity,
@@ -227,15 +231,7 @@ fn handle_attack_move(
     windows: Query<&Window>,
     camera: Query<(&Camera, &GlobalTransform)>,
     ground: Query<&GlobalTransform, With<Ground>>,
-    hero: Query<(Entity, &Team, &CombatStats, &Transform), With<PlayerHero>>,
-    enemies: Query<(
-        Entity,
-        &GlobalTransform,
-        &Team,
-        &Health,
-        Option<&UnitRadius>,
-        Option<&NetworkId>,
-    )>,
+    hero: Query<Entity, With<PlayerHero>>,
     config: Res<NetConfig>,
     transport: Option<ResMut<NetTransport>>,
     mut targeting: ResMut<AbilityTargeting>,
@@ -249,7 +245,7 @@ fn handle_attack_move(
     let Some(hit) = cursor_ground_hit(&windows, &camera, &ground) else {
         return;
     };
-    let Ok((hero_entity, hero_team, stats, hero_tf)) = hero.single() else {
+    let Ok(hero_entity) = hero.single() else {
         return;
     };
 
@@ -267,26 +263,5 @@ fn handle_attack_move(
         return;
     }
 
-    let closest = enemies
-        .iter()
-        .filter(|(_, _, team, hp, _, _)| **team == hero_team.enemy() && hp.is_alive())
-        .min_by(|a, b| {
-            flat_distance(a.1.translation(), hit)
-                .partial_cmp(&flat_distance(b.1.translation(), hit))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-    if let Some((enemy, enemy_tf, _, _, radius, _)) = closest {
-        order_attack_target(
-            &mut commands,
-            hero_entity,
-            hero_tf,
-            stats,
-            enemy,
-            enemy_tf,
-            radius,
-        );
-    } else {
-        order_hero_move(&mut commands, hero_entity, hit);
-    }
+    order_attack_move(&mut commands, hero_entity, hit);
 }

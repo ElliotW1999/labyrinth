@@ -125,21 +125,26 @@ fn fly_projectiles(
         Entity,
         &mut Transform,
         &Projectile,
-        Option<&ProjectileHome>,
+        Option<&mut ProjectileHome>,
         Option<&GroundBoltAim>,
     )>,
     homes: Query<&GlobalTransform, Without<Projectile>>,
     mut commands: Commands,
 ) {
     let dt = time.delta_secs();
-    for (entity, mut transform, projectile, home, ground_aim) in &mut projectiles {
+    for (entity, mut transform, projectile, mut home, ground_aim) in &mut projectiles {
         let mut destination = transform.translation + *transform.forward() * projectile.speed;
 
-        if let Some(ProjectileHome(target)) = home {
-            if let Ok(target_tf) = homes.get(*target) {
-                destination = target_tf.translation() + Vec3::Y * 1.0;
+        if let Some(ref mut home) = home {
+            if let Ok(target_tf) = homes.get(home.target) {
+                home.last_pos = target_tf.translation() + Vec3::Y * 1.0;
+                destination = home.last_pos;
             } else {
+                // Target died or despawned — finish at last known location.
+                let last = home.last_pos;
                 commands.entity(entity).remove::<ProjectileHome>();
+                commands.entity(entity).insert(GroundBoltAim { position: last });
+                destination = Vec3::new(last.x, transform.translation.y, last.z);
             }
         } else if let Some(aim) = ground_aim {
             destination = Vec3::new(aim.position.x, transform.translation.y, aim.position.z);
@@ -148,15 +153,21 @@ fn fly_projectiles(
         let to = destination - transform.translation;
         let dist = to.length();
         if dist <= f32::EPSILON {
+            if ground_aim.is_some() {
+                commands.entity(entity).insert(GroundBoltImpact);
+            }
             continue;
         }
         let step = projectile.speed * dt;
         let dir = to / dist;
         if step >= dist {
             transform.translation = destination;
-            if ground_aim.is_some() {
-                // Trigger splash at the aim point by tagging for impact next frame.
+            // Arrived: hit home target check next system, or ground impact if aim bolt.
+            if ground_aim.is_some() || home.is_none() {
                 commands.entity(entity).insert(GroundBoltImpact);
+            } else {
+                // Homing projectile reached target position — force a hit check via impact tag.
+                commands.entity(entity).insert(ProjectileReachedTarget);
             }
         } else {
             transform.translation += dir * step;
@@ -168,6 +179,10 @@ fn fly_projectiles(
 #[derive(Component, Debug, Clone, Copy)]
 struct GroundBoltImpact;
 
+/// Homing projectile arrived at the target's position this frame.
+#[derive(Component, Debug, Clone, Copy)]
+struct ProjectileReachedTarget;
+
 fn apply_projectile_hits(
     mut commands: Commands,
     projectiles: Query<(
@@ -176,17 +191,18 @@ fn apply_projectile_hits(
         &Projectile,
         Option<&ProjectileHome>,
         Option<&GroundBoltImpact>,
+        Option<&ProjectileReachedTarget>,
     )>,
     mut units: Query<(Entity, &Transform, &Team, &mut Health, &CombatStats, Option<&UnitRadius>)>,
 ) {
-    for (proj_entity, proj_tf, projectile, home, ground_impact) in &projectiles {
+    for (proj_entity, proj_tf, projectile, home, ground_impact, reached) in &projectiles {
         let impact = proj_tf.translation;
         let mut despawn = false;
         let mut primary_hit: Option<Entity> = None;
 
-        if let Some(ProjectileHome(target)) = home {
+        if let Some(home) = home {
             for (unit_entity, unit_tf, team, mut health, stats, radius) in &mut units {
-                if unit_entity != *target || *team == projectile.team || !health.is_alive() {
+                if unit_entity != home.target || *team == projectile.team || !health.is_alive() {
                     continue;
                 }
                 let reach = projectile.radius + radius.map(|r| r.0).unwrap_or(0.5);
@@ -197,6 +213,10 @@ fn apply_projectile_hits(
                     primary_hit = Some(unit_entity);
                     despawn = true;
                 }
+            }
+            // Reached last known position but target already gone — end the projectile.
+            if reached.is_some() && !despawn {
+                despawn = true;
             }
         } else if ground_impact.is_some() {
             despawn = true;
@@ -367,7 +387,10 @@ fn spawn_auto_attack(
             damage_type: DamageType::Physical,
             splash_radius: 0.0,
         },
-        ProjectileHome(target),
+        ProjectileHome {
+            target,
+            last_pos: target_pos + Vec3::Y * 1.0,
+        },
         ProjectileStyle::AutoAttack,
         Lifetime(2.5),
     ));
@@ -409,14 +432,14 @@ pub fn spawn_spell_bolt(
     ));
 
     if let Some(target) = target {
-        entity.insert(ProjectileHome(target));
+        entity.insert(ProjectileHome {
+            target,
+            last_pos: target_pos + Vec3::Y * 1.0,
+        });
     } else {
-        // Non-homing ground bolt: store aim via a short-lived move toward point using home-less flight.
-        // Face already set; fly_projectiles will go forward. Nudge lifetime by distance.
         let dist = flat_distance(origin, target_pos);
         let travel = (dist / 34.0) + 0.05;
         entity.insert(Lifetime(travel));
-        // Also mark a one-shot impact by reducing projectile lifetime.
         entity.insert(GroundBoltAim {
             position: target_pos,
         });

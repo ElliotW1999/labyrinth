@@ -108,6 +108,8 @@ pub struct StatusEffect {
     pub magic_resist: f32,
     pub move_speed: f32,
     pub heal_per_sec: f32,
+    /// When true, skip collision with creeps and heroes (buildings/trees still block).
+    pub ignore_unit_collision: bool,
 }
 
 impl StatusEffect {
@@ -121,7 +123,23 @@ impl StatusEffect {
             magic_resist: 0.0,
             move_speed: 0.0,
             heal_per_sec: 0.0,
+            ignore_unit_collision: false,
         }
+    }
+
+    pub fn phased(duration: f32) -> Self {
+        Self {
+            ignore_unit_collision: true,
+            ..Self::buff("phased", duration)
+        }
+    }
+}
+
+impl StatusEffects {
+    pub fn is_phased(&self) -> bool {
+        self.effects
+            .iter()
+            .any(|e| e.ignore_unit_collision && e.remaining > 0.0)
     }
 }
 
@@ -404,6 +422,12 @@ fn tick_status_effects(
             }
         }
     }
+}
+
+/// Apply a phased buff (no combat-stat mutation).
+pub fn apply_phased(statuses: &mut StatusEffects, duration: f32) {
+    statuses.effects.retain(|e| e.id != "phased");
+    statuses.effects.push(StatusEffect::phased(duration));
 }
 
 /// Apply a timed buff and immediately add its flat modifiers to combat stats.
@@ -743,5 +767,16 @@ mod tests {
         let expired = statuses.effects.remove(0);
         stats.armor -= expired.armor;
         assert_eq!(stats.armor, 2.0);
+    }
+
+    #[test]
+    fn phased_buff_flags_ignore_unit_collision() {
+        let mut statuses = StatusEffects::default();
+        assert!(!statuses.is_phased());
+        apply_phased(&mut statuses, 1.0);
+        assert!(statuses.is_phased());
+        assert!(statuses.effects.iter().any(|e| e.ignore_unit_collision));
+        statuses.effects[0].remaining = 0.0;
+        assert!(!statuses.is_phased());
     }
 }
