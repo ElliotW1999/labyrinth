@@ -9,6 +9,7 @@ use crate::components::{
 use crate::items::{
     Inventory, ItemId, ItemShop, PurchaseItemRequest, ShopUiState, StatusEffects, StatusKind,
 };
+use crate::net::NetStatus;
 use crate::resources::MatchConfig;
 
 pub struct UiPlugin;
@@ -31,6 +32,7 @@ impl Plugin for UiPlugin {
                     handle_shop_close_keys,
                     refresh_shop_status,
                     update_item_tooltips,
+                    refresh_net_status,
                     refresh_minimap,
                 ),
             );
@@ -54,6 +56,9 @@ struct HudSkillPoints;
 
 #[derive(Component)]
 struct HudBuffs;
+
+#[derive(Component)]
+struct HudNet;
 
 #[derive(Component)]
 struct HudAttributes;
@@ -195,6 +200,12 @@ fn spawn_hud(mut commands: Commands) {
                     Text::new("Buffs: none"),
                     TextFont::from_font_size(16.0),
                     TextColor(Color::srgb(0.7, 0.95, 0.75)),
+                ));
+                panel.spawn((
+                    HudNet,
+                    Text::new("Net: offline"),
+                    TextFont::from_font_size(14.0),
+                    TextColor(Color::srgb(0.7, 0.85, 1.0)),
                 ));
                 panel.spawn((
                     HudAttributes,
@@ -961,6 +972,22 @@ fn refresh_shop_status(
         "{range_msg}  |  Gold: {}  |  {}  |  Hover item for details",
         wallet.gold, slots_msg
     ));
+}
+
+
+fn refresh_net_status(
+    status: Res<NetStatus>,
+    mut text: Query<&mut Text, With<HudNet>>,
+) {
+    let Ok(mut label) = text.single_mut() else {
+        return;
+    };
+    let peers = if status.connected_peers > 0 {
+        format!(" | peers {}", status.connected_peers)
+    } else {
+        String::new()
+    };
+    *label = Text::new(format!("Net: {}{}", status.detail, peers));
 }
 
 fn refresh_minimap(

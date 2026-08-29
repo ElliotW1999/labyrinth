@@ -8,19 +8,63 @@ use crate::components::{
     XpBounty,
 };
 use crate::items::{Inventory, StatusEffects};
+use crate::net::{NetConfig, NetMode, NetworkId, NetworkedHero};
 use crate::resources::SharedAssets;
 
 pub struct UnitsPlugin;
 
 impl Plugin for UnitsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_player_hero.after(crate::resources::load_shared_assets));
+        app.add_systems(Startup, spawn_initial_heroes.after(crate::resources::load_shared_assets));
     }
 }
 
-pub fn spawn_player_hero(mut commands: Commands, assets: Res<SharedAssets>) {
+fn spawn_initial_heroes(
+    mut commands: Commands,
+    assets: Res<SharedAssets>,
+    config: Res<NetConfig>,
+    mut session: ResMut<crate::net::NetSession>,
+) {
+    match config.mode {
+        NetMode::Offline => {
+            spawn_hero_entity(
+                &mut commands,
+                &assets,
+                Team::Radiant,
+                true,
+                1,
+                Vec3::new(-44.0, 0.9, -44.0),
+            );
+        }
+        NetMode::Host => {
+            let entity = spawn_hero_entity(
+                &mut commands,
+                &assets,
+                Team::Radiant,
+                true,
+                1,
+                Vec3::new(-44.0, 0.9, -44.0),
+            );
+            session.local_hero_id = Some(1);
+            session.local_hero_entity = Some(entity);
+            session.next_id = 2;
+        }
+        NetMode::Client => {
+            // Heroes are spawned after ServerToClient::Welcome.
+        }
+    }
+}
+
+/// Spawn a playable hero. `local` adds `PlayerHero` (this machine's controlled unit).
+pub fn spawn_hero_entity(
+    commands: &mut Commands,
+    assets: &SharedAssets,
+    team: Team,
+    local: bool,
+    network_id: u32,
+    position: Vec3,
+) -> Entity {
     let attrs = HeroAttributes::starter();
-    // Base vitals/combat before primary attributes (attrs applied below).
     let mut health = Health {
         current: 360.0,
         max: 360.0,
@@ -39,29 +83,43 @@ pub fn spawn_player_hero(mut commands: Commands, assets: Res<SharedAssets>) {
     health.current = health.max;
     mana.current = mana.max;
 
-    commands
-        .spawn((
-            Name::new("Player Hero"),
-            Mesh3d(assets.unit_mesh.clone()),
-            MeshMaterial3d(assets.radiant_mat.clone()),
-            Transform::from_xyz(-44.0, 0.9, -44.0),
-            Team::Radiant,
-            PlayerHero,
-            PlayerWallet { gold: 600 },
-            health,
-            mana,
-            stats,
-            AttackCooldown(0.0),
-            AbilityLoadout::starter(),
-            HeroProgress::new(),
-            UnitRadius(0.5),
-            GoldBounty(0),
-        ))
-        .insert((
-            attrs,
-            Inventory::empty(),
-            StatusEffects::default(),
-        ));
+    let mat = match team {
+        Team::Radiant => assets.radiant_mat.clone(),
+        Team::Dire => assets.dire_mat.clone(),
+    };
+    let name = if local {
+        format!("Local Hero ({team:?})")
+    } else {
+        format!("Remote Hero ({team:?})")
+    };
+
+    let mut entity = commands.spawn((
+        Name::new(name),
+        Mesh3d(assets.unit_mesh.clone()),
+        MeshMaterial3d(mat),
+        Transform::from_translation(position),
+        team,
+        NetworkedHero,
+        NetworkId(network_id),
+        PlayerWallet { gold: 600 },
+        health,
+        mana,
+        stats,
+        AttackCooldown(0.0),
+        AbilityLoadout::starter(),
+        HeroProgress::new(),
+        UnitRadius(0.5),
+    ));
+    entity.insert((
+        GoldBounty(0),
+        attrs,
+        Inventory::empty(),
+        StatusEffects::default(),
+    ));
+    if local {
+        entity.insert(PlayerHero);
+    }
+    entity.id()
 }
 
 pub fn spawn_creep(

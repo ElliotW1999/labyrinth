@@ -22,7 +22,8 @@ impl Plugin for AiPlugin {
                 chase_attack_targets,
                 player_chase_attack_target,
             )
-                .chain(),
+                .chain()
+                .run_if(crate::net::is_sim_authority),
         );
     }
 }

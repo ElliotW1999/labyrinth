@@ -9,7 +9,12 @@ pub struct MovementPlugin;
 
 impl Plugin for MovementPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (apply_move_targets, resolve_obstacle_collisions).chain());
+        app.add_systems(
+            Update,
+            (apply_move_targets, resolve_obstacle_collisions)
+                .chain()
+                .run_if(crate::net::is_sim_authority),
+        );
     }
 }
 
