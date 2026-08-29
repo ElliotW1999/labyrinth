@@ -7,7 +7,8 @@ use bevy::prelude::*;
 
 use crate::combat::flat_distance;
 use crate::components::{
-    AttackTarget, CombatStats, Creep, Health, MoveTarget, PlayerHero, Team, Tower, UnitRadius,
+    AttackMoveOrder, AttackTarget, CombatStats, Creep, Health, MoveTarget, PlayerHero, Team, Tower,
+    UnitRadius,
 };
 
 pub struct AiPlugin;
@@ -20,6 +21,7 @@ impl Plugin for AiPlugin {
                 follow_lane_waypoints,
                 acquire_targets,
                 chase_attack_targets,
+                player_attack_move,
                 player_chase_attack_target,
             )
                 .chain()
@@ -153,9 +155,58 @@ fn chase_attack_targets(
     }
 }
 
+/// Attack-move: walk toward the ordered destination; attack any enemy that enters range.
+fn player_attack_move(
+    hero: Query<
+        (Entity, &Transform, &CombatStats, &Team, &AttackMoveOrder),
+        With<PlayerHero>,
+    >,
+    enemies: Query<(Entity, &Transform, &Team, &Health, Option<&UnitRadius>)>,
+    mut commands: Commands,
+) {
+    let Ok((entity, transform, stats, hero_team, order)) = hero.single() else {
+        return;
+    };
+
+    let in_range = enemies
+        .iter()
+        .filter(|(_, _, team, hp, _)| **team == hero_team.enemy() && hp.is_alive())
+        .filter(|(_, tf, _, _, radius)| {
+            let r = radius.map(|r| r.0).unwrap_or(0.5);
+            flat_distance(transform.translation, tf.translation) <= stats.attack_range + r
+        })
+        .min_by(|a, b| {
+            flat_distance(transform.translation, a.1.translation)
+                .partial_cmp(&flat_distance(transform.translation, b.1.translation))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+    if let Some((enemy, _, _, _, _)) = in_range {
+        commands.entity(entity).insert(AttackTarget(enemy));
+        commands.entity(entity).remove::<MoveTarget>();
+        return;
+    }
+
+    // No enemy in range — keep pathing to the attack-move destination.
+    commands.entity(entity).remove::<AttackTarget>();
+    let dest = order.destination;
+    if flat_distance(transform.translation, dest) < 0.35 {
+        commands
+            .entity(entity)
+            .remove::<AttackMoveOrder>()
+            .remove::<MoveTarget>();
+    } else {
+        commands.entity(entity).insert(MoveTarget { position: dest });
+    }
+}
+
 /// Player-only chase: keep pathing toward an attack target until in range.
+/// Skipped while an attack-move order is active (handled above).
 pub fn player_chase_attack_target(
-    hero: Query<(Entity, &Transform, &CombatStats, &AttackTarget), With<PlayerHero>>,
+    hero: Query<
+        (Entity, &Transform, &CombatStats, &AttackTarget),
+        (With<PlayerHero>, Without<AttackMoveOrder>),
+    >,
     targets: Query<(&Transform, Option<&UnitRadius>)>,
     mut commands: Commands,
 ) {

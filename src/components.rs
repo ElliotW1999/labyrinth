@@ -176,6 +176,23 @@ pub struct AttackCooldown(pub f32);
 #[derive(Component, Debug, Clone, Copy)]
 pub struct AttackTarget(pub Entity);
 
+/// Attack-move: path toward `destination` while auto-acquiring enemies in attack range.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct AttackMoveOrder {
+    pub destination: Vec3,
+}
+
+/// Queued targeted ability: walk into cast range, then fire at `aim`.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct QueuedAbilityCast {
+    pub slot: usize,
+    pub ability: AbilityId,
+    pub cast_range: f32,
+    pub aoe_radius: f32,
+    pub aim: Vec3,
+    pub unit_target: Option<Entity>,
+}
+
 #[derive(Component, Debug, Clone, Copy)]
 pub struct MoveTarget {
     pub position: Vec3,
@@ -352,7 +369,11 @@ impl AbilitySlot {
     pub fn cast_kind(&self) -> AbilityCastKind {
         let r = self.rank.max(1);
         match self.id {
-            AbilityId::Dash | AbilityId::Shockwave => AbilityCastKind::Instant,
+            AbilityId::Shockwave => AbilityCastKind::Instant,
+            AbilityId::Dash => AbilityCastKind::Targeted {
+                cast_range: self.dash_distance(),
+                aoe_radius: 0.75,
+            },
             AbilityId::Bolt => AbilityCastKind::Targeted {
                 cast_range: 10.0 + r as f32 * 0.8,
                 aoe_radius: 1.4 + r as f32 * 0.15,
@@ -439,7 +460,10 @@ pub struct Projectile {
 }
 
 #[derive(Component, Debug, Clone, Copy)]
-pub struct ProjectileHome(pub Entity);
+pub struct ProjectileHome {
+    pub target: Entity,
+    pub last_pos: Vec3,
+}
 
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectileStyle {

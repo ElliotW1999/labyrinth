@@ -42,10 +42,10 @@ The HUD shows connection status. Host sim runs combat / creeps / AI; clients app
 | --- | --- |
 | Right click ground | Move (hold to keep issuing commands) |
 | Right click enemy | Attack — path in if out of range (hold reissues) |
-| G | Attack-move: attack the enemy closest to the cursor |
+| G | Attack-move: path toward cursor; attack enemies in attack range |
 | Left click | Confirm targeted spell (not used for move) |
 | Space | Stop (clear move + attack + cancel spell) |
-| Q / W / E / R | Cast ability (must be ranked first) |
+| Q / W / E / R | Cast ability (must be ranked first; targeted spells walk into range) |
 | Ctrl+Q / W / E / R | Spend a skill point to rank that ability |
 | Spell bar `+` | Rank up when highlighted |
 | A S D Z X C | Use inventory item in that slot (actives only) |
@@ -80,8 +80,10 @@ The HUD shows connection status. Host sim runs combat / creeps / AI; clients app
 - Player hero with Str/Agi/Int, HP / mana / gold / XP / levels and rankable QWER abilities
 - Item shop, 6-slot inventory, and timed buffs / debuffs
 - Creep waves that path down each lane
-- Explicit right-click attack orders and G attack-move
-- Auto-attack combat with armor / magic resist mitigation
+- Explicit right-click attack orders and G attack-move (path to cursor, attack in range)
+- Unit/building collision; Dash grants a short **phased** buff (ignores creep/hero collision)
+- Targeted spells (Q/E/R): confirm aim; if out of cast range the hero walks in then casts
+- Auto-attack combat with armor / magic resist mitigation; projectiles stop at the target
 - Tower and creep aggro AI
 - Free camera, spell bar, inventory tooltips, shop, skill points, and minimap
 - Optional online 1v1 (UDP host/client) while default play stays fully offline
@@ -95,7 +97,7 @@ src/
   resources.rs     Match config + shared meshes/materials
   map.rs           Battlefield + lane waypoints
   units.rs         Hero / creep / tower / ancient factories
-  movement.rs      Move orders + tree collision
+  movement.rs      Move orders + tree / building / unit collision
   combat.rs        Attack orders, projectiles, death / gold / XP
   progression.rs   Hero XP, attributes, and level-up growth
   abilities.rs     QWER casting

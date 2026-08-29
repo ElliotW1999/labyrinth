@@ -15,7 +15,7 @@ use crate::combat::flat_distance;
 use crate::components::{
     AttackTarget, CombatStats, Health, MoveTarget, Team, UnitRadius,
 };
-use crate::movement::{order_hero_move, order_hero_stop};
+use crate::movement::{order_attack_move, order_hero_move, order_hero_stop};
 use crate::units::spawn_hero_entity;
 
 use proto::{decode, encode};
@@ -107,7 +107,7 @@ fn host_recv_and_apply(
         &Health,
         Option<&UnitRadius>,
     )>,
-    any_enemies: Query<(Entity, &GlobalTransform, &Team, &Health, Option<&UnitRadius>)>,
+    _any_enemies: Query<(Entity, &GlobalTransform, &Team, &Health, Option<&UnitRadius>)>,
 ) {
     let packets = transport.poll();
     for (from, bytes) in packets {
@@ -168,33 +168,7 @@ fn host_recv_and_apply(
                 let Some(hero_entity) = session.remote_hero_entity else {
                     continue;
                 };
-                let Some((_, _, hero_tf, stats, _)) =
-                    heroes.iter().find(|(e, ..)| *e == hero_entity)
-                else {
-                    continue;
-                };
-                let hit = Vec3::new(x, y, z);
-                let closest = any_enemies
-                    .iter()
-                    .filter(|(_, _, team, hp, _)| **team == Team::Radiant && hp.is_alive())
-                    .min_by(|a, b| {
-                        flat_distance(a.1.translation(), hit)
-                            .partial_cmp(&flat_distance(b.1.translation(), hit))
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    });
-                if let Some((enemy, enemy_tf, _, _, radius)) = closest {
-                    apply_attack_order(
-                        &mut commands,
-                        hero_entity,
-                        hero_tf,
-                        stats,
-                        enemy,
-                        enemy_tf,
-                        radius,
-                    );
-                } else {
-                    order_hero_move(&mut commands, hero_entity, hit);
-                }
+                order_attack_move(&mut commands, hero_entity, Vec3::new(x, y, z));
             }
             ClientToServer::AttackNet { target } => {
                 let Some(hero_entity) = session.remote_hero_entity else {
