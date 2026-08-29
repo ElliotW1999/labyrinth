@@ -30,9 +30,16 @@ impl Plugin for MovementPlugin {
 
 fn apply_move_targets(
     time: Res<Time>,
-    mut movers: Query<(Entity, &mut Transform, &CombatStats, &MoveTarget, Option<&UnitRadius>)>,
+    mut movers: Query<
+        (Entity, &mut Transform, &CombatStats, &MoveTarget, Option<&UnitRadius>),
+        (Without<Tower>, Without<Ancient>, Without<Obstacle>),
+    >,
     obstacles: Query<(&Transform, &Obstacle), Without<MoveTarget>>,
-    buildings: Query<(&Transform, &UnitRadius), Or<(With<Tower>, With<Ancient>)>>,
+    // Without<MoveTarget> keeps this disjoint from `movers` (&mut Transform vs &Transform).
+    buildings: Query<
+        (&Transform, &UnitRadius),
+        (Or<(With<Tower>, With<Ancient>)>, Without<MoveTarget>),
+    >,
     mut commands: Commands,
 ) {
     let dt = time.delta_secs();

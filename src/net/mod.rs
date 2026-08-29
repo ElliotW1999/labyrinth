@@ -107,7 +107,6 @@ fn host_recv_and_apply(
         &Health,
         Option<&UnitRadius>,
     )>,
-    _any_enemies: Query<(Entity, &GlobalTransform, &Team, &Health, Option<&UnitRadius>)>,
 ) {
     let packets = transport.poll();
     for (from, bytes) in packets {
