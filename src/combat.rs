@@ -24,7 +24,8 @@ impl Plugin for CombatPlugin {
                 tick_lifetimes,
                 despawn_dead,
             )
-                .chain(),
+                .chain()
+                .run_if(crate::net::is_sim_authority),
         );
     }
 }

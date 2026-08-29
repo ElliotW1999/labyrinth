@@ -10,6 +10,10 @@ use crate::components::{
 };
 use crate::items::ShopUiState;
 use crate::movement::{order_hero_move, order_hero_stop};
+use crate::net::{
+    client_send_command, should_send_orders_over_network, ClientToServer, NetConfig, NetworkId,
+    NetTransport,
+};
 
 pub struct InputPlugin;
 
@@ -30,6 +34,8 @@ impl Plugin for InputPlugin {
 fn handle_stop_command(
     keys: Res<ButtonInput<KeyCode>>,
     hero: Query<Entity, With<PlayerHero>>,
+    config: Res<NetConfig>,
+    transport: Option<ResMut<NetTransport>>,
     mut targeting: ResMut<AbilityTargeting>,
     mut commands: Commands,
 ) {
@@ -40,6 +46,12 @@ fn handle_stop_command(
         return;
     };
     cancel_targeting_if_any(&mut commands, &mut targeting);
+    if should_send_orders_over_network(&config) {
+        if let Some(mut transport) = transport {
+            client_send_command(&mut transport, ClientToServer::Stop);
+        }
+        return;
+    }
     order_hero_stop(&mut commands, hero_entity);
 }
 
@@ -84,39 +96,6 @@ fn cursor_ground_hit(
     Some(ray.get_point(distance))
 }
 
-fn issue_attack_or_move(
-    commands: &mut Commands,
-    hero_entity: Entity,
-    hero_tf: &Transform,
-    hero_team: Team,
-    stats: &CombatStats,
-    hit: Vec3,
-    enemies: &Query<(Entity, &GlobalTransform, &Team, &Health, Option<&UnitRadius>)>,
-    click_radius: bool,
-) {
-    let clicked_enemy = enemies
-        .iter()
-        .filter(|(_, _, team, hp, _)| **team == hero_team.enemy() && hp.is_alive())
-        .filter(|(_, tf, _, _, radius)| {
-            if !click_radius {
-                return true;
-            }
-            let r = radius.map(|r| r.0).unwrap_or(0.5);
-            flat_distance(tf.translation(), hit) < r + 1.2
-        })
-        .min_by(|a, b| {
-            flat_distance(a.1.translation(), hit)
-                .partial_cmp(&flat_distance(b.1.translation(), hit))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-    if let Some((enemy, enemy_tf, _, _, radius)) = clicked_enemy {
-        order_attack_target(commands, hero_entity, hero_tf, stats, enemy, enemy_tf, radius);
-    } else if click_radius {
-        order_hero_move(commands, hero_entity, hit);
-    }
-}
-
 fn order_attack_target(
     commands: &mut Commands,
     hero_entity: Entity,
@@ -144,15 +123,23 @@ fn handle_point_and_click(
     camera: Query<(&Camera, &GlobalTransform)>,
     ground: Query<&GlobalTransform, With<Ground>>,
     hero: Query<(Entity, &Team, &CombatStats, &Transform), With<PlayerHero>>,
-    enemies: Query<(Entity, &GlobalTransform, &Team, &Health, Option<&UnitRadius>)>,
+    enemies: Query<(
+        Entity,
+        &GlobalTransform,
+        &Team,
+        &Health,
+        Option<&UnitRadius>,
+        Option<&NetworkId>,
+    )>,
     shop_ui: Res<ShopUiState>,
+    config: Res<NetConfig>,
+    transport: Option<ResMut<NetTransport>>,
     mut targeting: ResMut<AbilityTargeting>,
     mut commands: Commands,
 ) {
     let right_pressed = mouse.pressed(MouseButton::Right);
     let right_just = mouse.just_pressed(MouseButton::Right);
 
-    // Targeted spells: RMB cancels then (if still held / just pressed) issues move/attack.
     if targeting.active.is_some() {
         if right_just || right_pressed {
             cancel_targeting_if_any(&mut commands, &mut targeting);
@@ -161,15 +148,11 @@ fn handle_point_and_click(
         }
     }
 
-    // Hold-RMB continuously reissues; also fire on the initial press.
     if !right_pressed {
         return;
     }
 
-    // Don't steal world orders while the shop overlay is up (unless RMB to cancel).
-    if shop_ui.open && !right_just && !right_pressed {
-        return;
-    }
+    let _ = shop_ui.open;
 
     let Some(hit) = cursor_ground_hit(&windows, &camera, &ground) else {
         return;
@@ -178,26 +161,83 @@ fn handle_point_and_click(
         return;
     };
 
-    issue_attack_or_move(
-        &mut commands,
-        hero_entity,
-        hero_tf,
-        *hero_team,
-        stats,
-        hit,
-        &enemies,
-        true,
-    );
+    let clicked_enemy = enemies
+        .iter()
+        .filter(|(_, _, team, hp, _, _)| **team == hero_team.enemy() && hp.is_alive())
+        .filter(|(_, tf, _, _, radius, _)| {
+            let r = radius.map(|r| r.0).unwrap_or(0.5);
+            flat_distance(tf.translation(), hit) < r + 1.2
+        })
+        .min_by(|a, b| {
+            flat_distance(a.1.translation(), hit)
+                .partial_cmp(&flat_distance(b.1.translation(), hit))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+    if should_send_orders_over_network(&config) {
+        let Some(mut transport) = transport else {
+            return;
+        };
+        if let Some((_, _, _, _, _, net_id)) = clicked_enemy {
+            if let Some(id) = net_id {
+                client_send_command(
+                    &mut transport,
+                    ClientToServer::AttackNet { target: id.0 },
+                );
+            } else {
+                client_send_command(
+                    &mut transport,
+                    ClientToServer::AttackMove {
+                        x: hit.x,
+                        y: hit.y,
+                        z: hit.z,
+                    },
+                );
+            }
+        } else {
+            client_send_command(
+                &mut transport,
+                ClientToServer::MoveTo {
+                    x: hit.x,
+                    y: hit.y,
+                    z: hit.z,
+                },
+            );
+        }
+        return;
+    }
+
+    if let Some((enemy, enemy_tf, _, _, radius, _)) = clicked_enemy {
+        order_attack_target(
+            &mut commands,
+            hero_entity,
+            hero_tf,
+            stats,
+            enemy,
+            enemy_tf,
+            radius,
+        );
+    } else {
+        order_hero_move(&mut commands, hero_entity, hit);
+    }
 }
 
-/// Attack-move: attack the living enemy closest to the cursor (hotkey G).
 fn handle_attack_move(
     keys: Res<ButtonInput<KeyCode>>,
     windows: Query<&Window>,
     camera: Query<(&Camera, &GlobalTransform)>,
     ground: Query<&GlobalTransform, With<Ground>>,
     hero: Query<(Entity, &Team, &CombatStats, &Transform), With<PlayerHero>>,
-    enemies: Query<(Entity, &GlobalTransform, &Team, &Health, Option<&UnitRadius>)>,
+    enemies: Query<(
+        Entity,
+        &GlobalTransform,
+        &Team,
+        &Health,
+        Option<&UnitRadius>,
+        Option<&NetworkId>,
+    )>,
+    config: Res<NetConfig>,
+    transport: Option<ResMut<NetTransport>>,
     mut targeting: ResMut<AbilityTargeting>,
     mut commands: Commands,
 ) {
@@ -213,16 +253,30 @@ fn handle_attack_move(
         return;
     };
 
+    if should_send_orders_over_network(&config) {
+        if let Some(mut transport) = transport {
+            client_send_command(
+                &mut transport,
+                ClientToServer::AttackMove {
+                    x: hit.x,
+                    y: hit.y,
+                    z: hit.z,
+                },
+            );
+        }
+        return;
+    }
+
     let closest = enemies
         .iter()
-        .filter(|(_, _, team, hp, _)| **team == hero_team.enemy() && hp.is_alive())
+        .filter(|(_, _, team, hp, _, _)| **team == hero_team.enemy() && hp.is_alive())
         .min_by(|a, b| {
             flat_distance(a.1.translation(), hit)
                 .partial_cmp(&flat_distance(b.1.translation(), hit))
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
-    if let Some((enemy, enemy_tf, _, _, radius)) = closest {
+    if let Some((enemy, enemy_tf, _, _, radius, _)) = closest {
         order_attack_target(
             &mut commands,
             hero_entity,
@@ -233,7 +287,6 @@ fn handle_attack_move(
             radius,
         );
     } else {
-        // No enemies: advance toward the cursor like a move order.
         order_hero_move(&mut commands, hero_entity, hit);
     }
 }

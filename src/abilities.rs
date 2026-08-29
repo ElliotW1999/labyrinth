@@ -26,7 +26,8 @@ impl Plugin for AbilitiesPlugin {
                     animate_spell_fx,
                     apply_pending_damage,
                 )
-                    .chain(),
+                    .chain()
+                    .run_if(crate::net::is_sim_authority),
             );
     }
 }

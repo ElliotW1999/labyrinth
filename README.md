@@ -6,8 +6,12 @@ Bevy was chosen over a browser stack and over rolling a custom engine from scrat
 
 ## Run
 
+Offline (default — **no server required**):
+
 ```bash
 cargo run
+# same as:
+cargo run -- --mode offline
 ```
 
 Release build:
@@ -15,6 +19,22 @@ Release build:
 ```bash
 cargo run --release
 ```
+
+### Multiplayer (optional UDP 1v1)
+
+Host (authoritative listen server + local Radiant hero):
+
+```bash
+cargo run -- --mode host --addr 0.0.0.0:7777
+```
+
+Client (connects as Dire; sends orders, receives hero snapshots):
+
+```bash
+cargo run -- --mode client --addr 127.0.0.1:7777
+```
+
+The HUD shows connection status. Host sim runs combat / creeps / AI; clients apply hero snapshots (~20 Hz). Spells/items are host-authoritative for now (clients move/attack via the network).
 
 ## Controls
 
@@ -64,12 +84,13 @@ cargo run --release
 - Auto-attack combat with armor / magic resist mitigation
 - Tower and creep aggro AI
 - Free camera, spell bar, inventory tooltips, shop, skill points, and minimap
+- Optional online 1v1 (UDP host/client) while default play stays fully offline
 
 ## Layout
 
 ```
 src/
-  main.rs          App entry + plugin wiring
+  main.rs          App entry + CLI (--mode offline|host|client) + plugin wiring
   components.rs    Teams, vitals, attributes, abilities, unit tags
   resources.rs     Match config + shared meshes/materials
   map.rs           Battlefield + lane waypoints
@@ -79,6 +100,7 @@ src/
   progression.rs   Hero XP, attributes, and level-up growth
   abilities.rs     QWER casting
   items.rs         Shop, inventory, actives, status effects
+  net/             Offline / host / client UDP session + hero snapshots
   ai.rs            Lane following + aggro
   waves.rs         Periodic creep spawns
   camera.rs        Free camera (edge / arrows / F snap)
@@ -88,4 +110,4 @@ src/
 
 ## Extending
 
-Natural next layers: last-hit gold rules, fog of war, jungle neutrals, item recipes / sell-back, and authoritative multiplayer (e.g. Lightyear / custom replication on top of these components).
+Natural next layers: last-hit gold rules, fog of war, jungle neutrals, item recipes / sell-back, full unit replication, ability RPCs, and richer netcode (prediction / interpolation).
