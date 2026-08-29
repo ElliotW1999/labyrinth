@@ -12,6 +12,7 @@ mod camera;
 mod combat;
 mod components;
 mod healthbars;
+mod heroes;
 mod input;
 mod items;
 mod map;
@@ -33,6 +34,7 @@ use ai::AiPlugin;
 use camera::CameraPlugin;
 use combat::CombatPlugin;
 use healthbars::HealthBarPlugin;
+use heroes::{HeroId, HeroesPlugin, LocalHeroChoice};
 use input::InputPlugin;
 use items::ItemsPlugin;
 use map::MapPlugin;
@@ -58,9 +60,13 @@ struct Cli {
     /// Convenience alias for `--addr 0.0.0.0:<port>` when hosting.
     #[arg(long)]
     port: Option<u16>,
+
+    /// Skip select screen: `vanguard`, `skirmisher`, or `arcanist`.
+    #[arg(long)]
+    hero: Option<String>,
 }
 
-fn parse_net_config() -> NetConfig {
+fn parse_net_config() -> (NetConfig, LocalHeroChoice) {
     let cli = Cli::parse();
     let addr: SocketAddr = if let Some(port) = cli.port {
         format!("0.0.0.0:{port}")
@@ -71,14 +77,28 @@ fn parse_net_config() -> NetConfig {
             .parse()
             .unwrap_or_else(|_| "127.0.0.1:7777".parse().expect("fallback"))
     };
-    NetConfig {
-        mode: cli.mode,
-        addr,
+    let mut choice = LocalHeroChoice::default();
+    if let Some(name) = cli.hero.as_deref() {
+        if let Some(hero) = HeroId::from_cli(name) {
+            choice.hero = Some(hero);
+            choice.from_cli = true;
+        } else {
+            eprintln!(
+                "Unknown --hero `{name}` (use vanguard|skirmisher|arcanist); showing select"
+            );
+        }
     }
+    (
+        NetConfig {
+            mode: cli.mode,
+            addr,
+        },
+        choice,
+    )
 }
 
 fn main() {
-    let net_config = parse_net_config();
+    let (net_config, hero_choice) = parse_net_config();
     let title = match net_config.mode {
         NetMode::Offline => "Labyrinth".to_string(),
         NetMode::Host => format!("Labyrinth (Host {})", net_config.addr),
@@ -87,6 +107,7 @@ fn main() {
 
     App::new()
         .insert_resource(net_config)
+        .insert_resource(hero_choice)
         .add_plugins(
             DefaultPlugins.set(WindowPlugin {
                 primary_window: Some(Window {
@@ -102,9 +123,12 @@ fn main() {
             NetPlugin,
             MapPlugin,
             UnitsPlugin,
+            HeroesPlugin,
             MovementPlugin,
             CombatPlugin,
             ProgressionPlugin,
+        ))
+        .add_plugins((
             ItemsPlugin,
             InputPlugin,
             AbilitiesPlugin,

@@ -140,7 +140,8 @@ fn resolve_building_collisions(
     }
 }
 
-/// Soft circular separation between heroes and creeps. Phased heroes ignore this.
+/// Soft circular separation between heroes and creeps — only while a unit has the
+/// **forceful** buff. Phased units neither push nor are pushed.
 fn resolve_unit_collisions(
     mut units: Query<(
         Entity,
@@ -152,7 +153,7 @@ fn resolve_unit_collisions(
         Has<Creep>,
     )>,
 ) {
-    let snaps: Vec<(Entity, Vec3, f32, bool)> = units
+    let snaps: Vec<(Entity, Vec3, f32, bool, bool)> = units
         .iter()
         .filter(|(_, _, _, _, is_hero, is_net, is_creep)| *is_hero || *is_net || *is_creep)
         .map(|(e, tf, radius, statuses, _, _, _)| {
@@ -161,6 +162,7 @@ fn resolve_unit_collisions(
                 tf.translation,
                 radius.map(|r| r.0).unwrap_or(0.5),
                 statuses.map(|s| s.is_phased()).unwrap_or(false),
+                statuses.map(|s| s.can_push_units()).unwrap_or(false),
             )
         })
         .collect();
@@ -172,9 +174,13 @@ fn resolve_unit_collisions(
     let mut pushes: Vec<(Entity, Vec3)> = Vec::new();
     for i in 0..snaps.len() {
         for j in (i + 1)..snaps.len() {
-            let (a_e, a_pos, a_r, a_phase) = snaps[i];
-            let (b_e, b_pos, b_r, b_phase) = snaps[j];
+            let (a_e, a_pos, a_r, a_phase, a_push) = snaps[i];
+            let (b_e, b_pos, b_r, b_phase, b_push) = snaps[j];
             if a_phase || b_phase {
+                continue;
+            }
+            // Default: units overlap freely. Soft-separate only if someone is forceful.
+            if !a_push && !b_push {
                 continue;
             }
             let min_dist = a_r + b_r;
