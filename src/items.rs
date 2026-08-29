@@ -110,6 +110,8 @@ pub struct StatusEffect {
     pub heal_per_sec: f32,
     /// When true, skip collision with creeps and heroes (buildings/trees still block).
     pub ignore_unit_collision: bool,
+    /// When true, this unit soft-pushes overlapping creeps/heroes (off by default).
+    pub force_unit_push: bool,
 }
 
 impl StatusEffect {
@@ -124,6 +126,7 @@ impl StatusEffect {
             move_speed: 0.0,
             heal_per_sec: 0.0,
             ignore_unit_collision: false,
+            force_unit_push: false,
         }
     }
 
@@ -133,6 +136,14 @@ impl StatusEffect {
             ..Self::buff("phased", duration)
         }
     }
+
+    /// Temporary soft-separation against other units.
+    pub fn forceful(duration: f32) -> Self {
+        Self {
+            force_unit_push: true,
+            ..Self::buff("forceful", duration)
+        }
+    }
 }
 
 impl StatusEffects {
@@ -140,6 +151,12 @@ impl StatusEffects {
         self.effects
             .iter()
             .any(|e| e.ignore_unit_collision && e.remaining > 0.0)
+    }
+
+    pub fn can_push_units(&self) -> bool {
+        self.effects
+            .iter()
+            .any(|e| e.force_unit_push && e.remaining > 0.0)
     }
 }
 
@@ -428,6 +445,12 @@ fn tick_status_effects(
 pub fn apply_phased(statuses: &mut StatusEffects, duration: f32) {
     statuses.effects.retain(|e| e.id != "phased");
     statuses.effects.push(StatusEffect::phased(duration));
+}
+
+/// Apply a forceful buff so this unit soft-pushes overlapping units.
+pub fn apply_forceful(statuses: &mut StatusEffects, duration: f32) {
+    statuses.effects.retain(|e| e.id != "forceful");
+    statuses.effects.push(StatusEffect::forceful(duration));
 }
 
 /// Apply a timed buff and immediately add its flat modifiers to combat stats.
@@ -778,5 +801,16 @@ mod tests {
         assert!(statuses.effects.iter().any(|e| e.ignore_unit_collision));
         statuses.effects[0].remaining = 0.0;
         assert!(!statuses.is_phased());
+    }
+
+    #[test]
+    fn forceful_buff_enables_unit_push() {
+        let mut statuses = StatusEffects::default();
+        assert!(!statuses.can_push_units());
+        apply_forceful(&mut statuses, 2.0);
+        assert!(statuses.can_push_units());
+        assert!(!statuses.is_phased());
+        statuses.effects[0].remaining = 0.0;
+        assert!(!statuses.can_push_units());
     }
 }

@@ -15,6 +15,7 @@ use crate::combat::flat_distance;
 use crate::components::{
     AttackTarget, CombatStats, Health, MoveTarget, Team, UnitRadius,
 };
+use crate::heroes::{HeroId, HeroKind, LocalHeroChoice};
 use crate::movement::{order_attack_move, order_hero_move, order_hero_stop};
 use crate::units::spawn_hero_entity;
 
@@ -98,6 +99,7 @@ fn host_recv_and_apply(
     mut status: ResMut<NetStatus>,
     mut commands: Commands,
     assets: Res<crate::resources::SharedAssets>,
+    choice: Res<LocalHeroChoice>,
     heroes: Query<(Entity, &NetworkId, &Transform, &CombatStats, Option<&UnitRadius>)>,
     net_targets: Query<(
         Entity,
@@ -107,6 +109,7 @@ fn host_recv_and_apply(
         &Health,
         Option<&UnitRadius>,
     )>,
+    host_kind: Query<&HeroKind, With<crate::components::PlayerHero>>,
 ) {
     let packets = transport.poll();
     for (from, bytes) in packets {
@@ -114,7 +117,7 @@ fn host_recv_and_apply(
             continue;
         };
         match msg {
-            ClientToServer::Hello { name } => {
+            ClientToServer::Hello { name, hero_kind } => {
                 if session.client_addr.is_some() {
                     let _ = transport.send_to(
                         &from,
@@ -129,6 +132,14 @@ fn host_recv_and_apply(
                 status.connected_peers = 1;
                 status.detail = format!("Host: {name} connected from {from}");
 
+                let remote_kind = HeroId::from_u8(hero_kind);
+                let opponent_kind = host_kind
+                    .single()
+                    .map(|k| k.0)
+                    .ok()
+                    .or(choice.hero)
+                    .unwrap_or(HeroId::Vanguard);
+
                 if session.remote_hero_id.is_none() {
                     let id = next_network_id(&mut session);
                     let entity = spawn_hero_entity(
@@ -138,6 +149,7 @@ fn host_recv_and_apply(
                         false,
                         id,
                         Vec3::new(44.0, 0.9, 44.0),
+                        remote_kind,
                     );
                     session.remote_hero_id = Some(id);
                     session.remote_hero_entity = Some(entity);
@@ -150,6 +162,8 @@ fn host_recv_and_apply(
                         peer_id: 2,
                         hero_id,
                         team: team_to_u8(Team::Dire),
+                        hero_kind: remote_kind.as_u8(),
+                        opponent_kind: opponent_kind.as_u8(),
                     }),
                 );
             }
@@ -260,14 +274,19 @@ fn client_send_hello(
     transport: ResMut<NetTransport>,
     mut session: ResMut<NetSession>,
     mut status: ResMut<NetStatus>,
+    choice: Res<LocalHeroChoice>,
 ) {
     if session.hello_sent {
         return;
     }
+    let Some(hero) = choice.hero else {
+        return;
+    };
     session.hello_sent = true;
     status.detail = format!("Client: connecting to {}…", transport.peer_hint());
     let _ = transport.send_to_server(&encode(&ClientToServer::Hello {
         name: "DirePlayer".into(),
+        hero_kind: hero.as_u8(),
     }));
 }
 
@@ -289,6 +308,8 @@ fn client_recv_and_apply(
                 peer_id,
                 hero_id,
                 team,
+                hero_kind,
+                opponent_kind,
             } => {
                 if session.local_hero_entity.is_some() {
                     continue;
@@ -310,6 +331,7 @@ fn client_recv_and_apply(
                     true,
                     hero_id,
                     spawn_pos,
+                    HeroId::from_u8(hero_kind),
                 );
                 session.local_hero_entity = Some(local);
 
@@ -321,6 +343,7 @@ fn client_recv_and_apply(
                     false,
                     remote_id,
                     Vec3::new(-44.0, 0.9, -44.0),
+                    HeroId::from_u8(opponent_kind),
                 );
                 session.remote_hero_id = Some(remote_id);
                 session.remote_hero_entity = Some(remote);
@@ -365,6 +388,7 @@ mod tests {
 
         let hello = encode(&ClientToServer::Hello {
             name: "p2".into(),
+            hero_kind: 1,
         });
         client.send_to_server(&hello).unwrap();
         std::thread::sleep(Duration::from_millis(30));
@@ -374,7 +398,10 @@ mod tests {
         let (from, bytes) = &packets[0];
         let msg: ClientToServer = decode(bytes).unwrap();
         match msg {
-            ClientToServer::Hello { name } => assert_eq!(name, "p2"),
+            ClientToServer::Hello { name, hero_kind } => {
+                assert_eq!(name, "p2");
+                assert_eq!(hero_kind, 1);
+            }
             _ => panic!("expected Hello"),
         }
 
@@ -382,6 +409,8 @@ mod tests {
             peer_id: 2,
             hero_id: 2,
             team: 1,
+            hero_kind: 1,
+            opponent_kind: 0,
         });
         host.send_to(from, &welcome).unwrap();
         std::thread::sleep(Duration::from_millis(30));
@@ -394,10 +423,14 @@ mod tests {
                 peer_id,
                 hero_id,
                 team,
+                hero_kind,
+                opponent_kind,
             } => {
                 assert_eq!(peer_id, 2);
                 assert_eq!(hero_id, 2);
                 assert_eq!(team, 1);
+                assert_eq!(hero_kind, 1);
+                assert_eq!(opponent_kind, 0);
             }
             _ => panic!("expected Welcome"),
         }

@@ -274,49 +274,78 @@ pub struct Obstacle {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AbilityId {
+    // Vanguard
     Dash,
     Shockwave,
     Bolt,
     Nova,
+    // Skirmisher
+    Blink,
+    Flurry,
+    Caltrops,
+    Execute,
+    // Arcanist
+    ArcMissile,
+    FrostNova,
+    Barrier,
+    Meteor,
 }
 
 impl AbilityId {
-    pub fn hotkey_label(self) -> &'static str {
+    pub fn display_name(self) -> &'static str {
         match self {
-            AbilityId::Dash => "Q",
-            AbilityId::Shockwave => "W",
-            AbilityId::Bolt => "E",
-            AbilityId::Nova => "R",
+            AbilityId::Dash => "Dash",
+            AbilityId::Shockwave => "Shockwave",
+            AbilityId::Bolt => "Bolt",
+            AbilityId::Nova => "Nova",
+            AbilityId::Blink => "Blink",
+            AbilityId::Flurry => "Flurry",
+            AbilityId::Caltrops => "Caltrops",
+            AbilityId::Execute => "Execute",
+            AbilityId::ArcMissile => "Missile",
+            AbilityId::FrostNova => "Frost",
+            AbilityId::Barrier => "Barrier",
+            AbilityId::Meteor => "Meteor",
         }
+    }
+
+    pub fn is_ultimate(self) -> bool {
+        matches!(
+            self,
+            AbilityId::Nova | AbilityId::Execute | AbilityId::Meteor
+        )
     }
 
     pub fn max_rank(self) -> u32 {
-        match self {
-            AbilityId::Nova => 4,
-            _ => 7,
-        }
+        if self.is_ultimate() { 4 } else { 7 }
     }
 
     /// Whether the next rank can be purchased at `hero_level`.
-    /// Q/W/E: rank N requires hero level >= 2N-1 (max at 13).
-    /// R: ranks unlock at 6 / 12 / 18 / 24.
+    /// Basics: rank N requires hero level >= 2N-1 (max at 13).
+    /// Ultimates: ranks unlock at 6 / 12 / 18 / 24.
     pub fn can_rank_up(self, current_rank: u32, hero_level: u32) -> bool {
         let next = current_rank + 1;
         if next > self.max_rank() {
             return false;
         }
-        match self {
-            AbilityId::Nova => hero_level >= 6 * next,
-            _ => hero_level >= 2 * next - 1,
+        if self.is_ultimate() {
+            hero_level >= 6 * next
+        } else {
+            hero_level >= 2 * next - 1
         }
     }
 
     pub fn placeholder_color(self) -> Color {
         match self {
-            AbilityId::Dash => Color::srgb(0.25, 0.65, 1.0),
-            AbilityId::Shockwave => Color::srgb(0.2, 0.85, 0.75),
-            AbilityId::Bolt => Color::srgb(0.75, 0.35, 1.0),
-            AbilityId::Nova => Color::srgb(1.0, 0.75, 0.2),
+            AbilityId::Dash | AbilityId::Blink => Color::srgb(0.25, 0.65, 1.0),
+            AbilityId::Shockwave | AbilityId::Flurry | AbilityId::FrostNova => {
+                Color::srgb(0.2, 0.85, 0.75)
+            }
+            AbilityId::Bolt | AbilityId::Caltrops | AbilityId::ArcMissile => {
+                Color::srgb(0.75, 0.35, 1.0)
+            }
+            AbilityId::Nova | AbilityId::Execute | AbilityId::Meteor => Color::srgb(1.0, 0.75, 0.2),
+            AbilityId::Barrier => Color::srgb(0.45, 0.7, 1.0),
         }
     }
 }
@@ -347,19 +376,27 @@ impl AbilitySlot {
     pub fn refresh_stats(&mut self) {
         let r = self.rank.max(1);
         match self.id {
-            AbilityId::Dash => {
+            AbilityId::Dash | AbilityId::Blink => {
                 self.cooldown = (7.5 - r as f32 * 0.35).max(4.0);
                 self.mana_cost = 35.0 + r as f32 * 5.0;
             }
-            AbilityId::Shockwave => {
+            AbilityId::Shockwave | AbilityId::Flurry | AbilityId::FrostNova => {
                 self.cooldown = (9.0 - r as f32 * 0.4).max(5.0);
                 self.mana_cost = 50.0 + r as f32 * 8.0;
             }
-            AbilityId::Bolt => {
+            AbilityId::Bolt | AbilityId::ArcMissile => {
                 self.cooldown = (6.0 - r as f32 * 0.3).max(3.0);
                 self.mana_cost = 45.0 + r as f32 * 7.0;
             }
-            AbilityId::Nova => {
+            AbilityId::Caltrops => {
+                self.cooldown = (8.0 - r as f32 * 0.35).max(4.5);
+                self.mana_cost = 40.0 + r as f32 * 6.0;
+            }
+            AbilityId::Barrier => {
+                self.cooldown = (14.0 - r as f32 * 0.5).max(8.0);
+                self.mana_cost = 55.0 + r as f32 * 8.0;
+            }
+            AbilityId::Nova | AbilityId::Execute | AbilityId::Meteor => {
                 self.cooldown = (50.0 - r as f32 * 4.0).max(30.0);
                 self.mana_cost = 100.0 + r as f32 * 20.0;
             }
@@ -369,44 +406,87 @@ impl AbilitySlot {
     pub fn cast_kind(&self) -> AbilityCastKind {
         let r = self.rank.max(1);
         match self.id {
-            AbilityId::Shockwave => AbilityCastKind::Instant,
-            AbilityId::Dash => AbilityCastKind::Targeted {
+            AbilityId::Shockwave
+            | AbilityId::Flurry
+            | AbilityId::FrostNova
+            | AbilityId::Barrier => AbilityCastKind::Instant,
+            AbilityId::Dash | AbilityId::Blink => AbilityCastKind::Targeted {
                 cast_range: self.dash_distance(),
                 aoe_radius: 0.75,
             },
-            AbilityId::Bolt => AbilityCastKind::Targeted {
-                cast_range: 10.0 + r as f32 * 0.8,
-                aoe_radius: 1.4 + r as f32 * 0.15,
+            AbilityId::Bolt | AbilityId::ArcMissile | AbilityId::Execute => {
+                AbilityCastKind::Targeted {
+                    cast_range: 10.0 + r as f32 * 0.8,
+                    aoe_radius: 1.4 + r as f32 * 0.15,
+                }
+            }
+            AbilityId::Caltrops => AbilityCastKind::Targeted {
+                cast_range: 9.0 + r as f32 * 0.6,
+                aoe_radius: 2.2 + r as f32 * 0.2,
             },
             AbilityId::Nova => AbilityCastKind::Targeted {
                 cast_range: 8.5 + r as f32 * 0.7,
                 aoe_radius: 4.5 + r as f32 * 0.5,
             },
+            AbilityId::Meteor => AbilityCastKind::Targeted {
+                cast_range: 9.5 + r as f32 * 0.6,
+                aoe_radius: 5.0 + r as f32 * 0.55,
+            },
         }
     }
 
     pub fn dash_distance(&self) -> f32 {
-        8.0 + self.rank as f32 * 1.2
+        match self.id {
+            AbilityId::Blink => 9.0 + self.rank as f32 * 1.1,
+            _ => 8.0 + self.rank as f32 * 1.2,
+        }
     }
 
     pub fn shockwave_damage(&self) -> f32 {
-        70.0 + self.rank as f32 * 28.0
+        match self.id {
+            AbilityId::Flurry => 55.0 + self.rank as f32 * 22.0,
+            AbilityId::FrostNova => 65.0 + self.rank as f32 * 26.0,
+            _ => 70.0 + self.rank as f32 * 28.0,
+        }
     }
 
     pub fn shockwave_radius(&self) -> f32 {
-        6.5 + self.rank as f32 * 0.55
+        match self.id {
+            AbilityId::Flurry => 5.5 + self.rank as f32 * 0.4,
+            AbilityId::FrostNova => 6.0 + self.rank as f32 * 0.5,
+            _ => 6.5 + self.rank as f32 * 0.55,
+        }
     }
 
     pub fn bolt_damage(&self) -> f32 {
-        90.0 + self.rank as f32 * 30.0
+        match self.id {
+            AbilityId::ArcMissile => 85.0 + self.rank as f32 * 28.0,
+            AbilityId::Execute => 110.0 + self.rank as f32 * 40.0,
+            AbilityId::Caltrops => 50.0 + self.rank as f32 * 18.0,
+            _ => 90.0 + self.rank as f32 * 30.0,
+        }
     }
 
     pub fn nova_damage(&self) -> f32 {
-        160.0 + self.rank as f32 * 55.0
+        match self.id {
+            AbilityId::Meteor => 180.0 + self.rank as f32 * 60.0,
+            _ => 160.0 + self.rank as f32 * 55.0,
+        }
     }
 
     pub fn nova_heal(&self) -> f32 {
-        100.0 + self.rank as f32 * 40.0
+        match self.id {
+            AbilityId::Nova => 100.0 + self.rank as f32 * 40.0,
+            _ => 0.0,
+        }
+    }
+
+    pub fn barrier_armor(&self) -> f32 {
+        6.0 + self.rank as f32 * 2.5
+    }
+
+    pub fn barrier_duration(&self) -> f32 {
+        3.5 + self.rank as f32 * 0.4
     }
 }
 
@@ -416,13 +496,24 @@ pub struct AbilityLoadout {
 }
 
 impl AbilityLoadout {
+    #[allow(dead_code)]
     pub fn starter() -> Self {
+        // Default kit for tests / fallback — Vanguard.
+        Self::from_abilities([
+            AbilityId::Dash,
+            AbilityId::Shockwave,
+            AbilityId::Bolt,
+            AbilityId::Nova,
+        ])
+    }
+
+    pub fn from_abilities(abilities: [AbilityId; 4]) -> Self {
         Self {
             slots: [
-                AbilitySlot::fresh(AbilityId::Dash),
-                AbilitySlot::fresh(AbilityId::Shockwave),
-                AbilitySlot::fresh(AbilityId::Bolt),
-                AbilitySlot::fresh(AbilityId::Nova),
+                AbilitySlot::fresh(abilities[0]),
+                AbilitySlot::fresh(abilities[1]),
+                AbilitySlot::fresh(abilities[2]),
+                AbilitySlot::fresh(abilities[3]),
             ],
         }
     }

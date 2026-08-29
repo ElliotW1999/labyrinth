@@ -6,6 +6,7 @@ use crate::components::{
     AbilityId, AbilityLoadout, Ancient, CombatStats, Creep, Health, HeroAttributes, HeroProgress,
     Mana, PlayerHero, PlayerWallet, Team, Tower,
 };
+use crate::heroes::HeroKind;
 use crate::items::{
     Inventory, ItemId, ItemShop, PurchaseItemRequest, ShopUiState, StatusEffects, StatusKind,
 };
@@ -21,6 +22,7 @@ impl Plugin for UiPlugin {
                 Update,
                 (
                     refresh_hud_text,
+                    refresh_hero_name,
                     refresh_spell_bar,
                     handle_spell_level_clicks,
                     refresh_inventory_bar,
@@ -44,6 +46,9 @@ struct HudRoot;
 
 #[derive(Component)]
 struct HudVitals;
+
+#[derive(Component)]
+struct HudHeroName;
 
 #[derive(Component)]
 struct HudLevel;
@@ -71,6 +76,14 @@ struct SpellBarRoot;
 
 #[derive(Component)]
 struct SpellIcon {
+    index: usize,
+}
+
+#[derive(Component)]
+struct SpellHotkeyLabel;
+
+#[derive(Component)]
+struct SpellNameLabel {
     index: usize,
 }
 
@@ -178,6 +191,12 @@ fn spawn_hud(mut commands: Commands) {
                     TextColor(Color::srgb(0.92, 0.95, 1.0)),
                 ));
                 panel.spawn((
+                    HudHeroName,
+                    Text::new("Hero: —"),
+                    TextFont::from_font_size(18.0),
+                    TextColor(Color::srgb(0.85, 0.95, 0.7)),
+                ));
+                panel.spawn((
                     HudLevel,
                     Text::new("Level 1   XP 0 / 100"),
                     TextFont::from_font_size(18.0),
@@ -256,23 +275,15 @@ fn spawn_hud(mut commands: Commands) {
                 BackgroundColor(Color::srgba(0.05, 0.07, 0.1, 0.72)),
             ))
             .with_children(|bar| {
-                for (i, id) in [
-                    AbilityId::Dash,
-                    AbilityId::Shockwave,
-                    AbilityId::Bolt,
-                    AbilityId::Nova,
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    spawn_spell_icon(bar, i, id);
+                for i in 0..4 {
+                    spawn_spell_icon(bar, i, AbilityId::Dash);
                 }
             });
 
             // Help
             root.spawn((
                 Text::new(
-                    "RMB hold: move/attack  |  G: attack-move  |  ASDZXC: items  |  $ shop  |  Space: stop",
+                    "1-3 hero select  |  RMB: move/attack  |  G: attack-move  |  ASDZXC: items  |  $ shop  |  Space: stop",
                 ),
                 TextFont::from_font_size(14.0),
                 TextColor(Color::srgba(0.8, 0.85, 0.9, 0.8)),
@@ -532,6 +543,7 @@ fn spawn_shop_item(parent: &mut ChildSpawnerCommands, item: ItemId) {
 }
 
 fn spawn_spell_icon(parent: &mut ChildSpawnerCommands, index: usize, id: AbilityId) {
+    let hotkey = ["Q", "W", "E", "R"].get(index).copied().unwrap_or("?");
     parent
         .spawn((
             SpellIcon { index },
@@ -550,8 +562,15 @@ fn spawn_spell_icon(parent: &mut ChildSpawnerCommands, index: usize, id: Ability
         ))
         .with_children(|icon| {
             icon.spawn((
-                Text::new(id.hotkey_label()),
-                TextFont::from_font_size(26.0),
+                SpellHotkeyLabel,
+                Text::new(hotkey),
+                TextFont::from_font_size(18.0),
+                TextColor(Color::srgb(0.85, 0.9, 1.0)),
+            ));
+            icon.spawn((
+                SpellNameLabel { index },
+                Text::new(id.display_name()),
+                TextFont::from_font_size(12.0),
                 TextColor(Color::WHITE),
             ));
             icon.spawn((
@@ -591,6 +610,23 @@ fn spawn_spell_icon(parent: &mut ChildSpawnerCommands, index: usize, id: Ability
                 ));
             });
         });
+}
+
+fn refresh_hero_name(
+    hero: Query<&HeroKind, With<PlayerHero>>,
+    mut text_q: Query<&mut Text, With<HudHeroName>>,
+) {
+    let Ok(kind) = hero.single() else {
+        return;
+    };
+    let Ok(mut text) = text_q.single_mut() else {
+        return;
+    };
+    *text = Text::new(format!(
+        "Hero: {} ({})",
+        kind.0.name(),
+        kind.0.primary_label()
+    ));
 }
 
 fn refresh_hud_text(
@@ -699,10 +735,20 @@ fn refresh_buffs_text(
 
 fn refresh_spell_bar(
     hero: Query<(&AbilityLoadout, &HeroProgress), With<PlayerHero>>,
-    mut ranks: Query<(&SpellRankText, &mut Text), Without<SpellCdText>>,
-    mut cds: Query<(&SpellCdText, &mut Text), Without<SpellRankText>>,
+    mut ranks: Query<
+        (&SpellRankText, &mut Text),
+        (Without<SpellCdText>, Without<SpellNameLabel>),
+    >,
+    mut cds: Query<
+        (&SpellCdText, &mut Text),
+        (Without<SpellRankText>, Without<SpellNameLabel>),
+    >,
+    mut names: Query<
+        (&SpellNameLabel, &mut Text),
+        (Without<SpellRankText>, Without<SpellCdText>),
+    >,
     mut buttons: Query<(&SpellLevelButton, &mut Visibility)>,
-    mut icons: Query<(&SpellIcon, &mut BorderColor)>,
+    mut icons: Query<(&SpellIcon, &mut BorderColor, &mut BackgroundColor)>,
 ) {
     let Ok((loadout, progress)) = hero.single() else {
         return;
@@ -726,6 +772,12 @@ fn refresh_spell_bar(
         }
     }
 
+    for (meta, mut text) in &mut names {
+        if let Some(slot) = loadout.slots.get(meta.index) {
+            *text = Text::new(slot.id.display_name());
+        }
+    }
+
     for (meta, mut vis) in &mut buttons {
         let show = loadout.slots.get(meta.index).is_some_and(|slot| {
             progress.skill_points > 0 && slot.id.can_rank_up(slot.rank, progress.level)
@@ -737,8 +789,12 @@ fn refresh_spell_bar(
         };
     }
 
-    for (meta, mut border) in &mut icons {
-        let highlight = loadout.slots.get(meta.index).is_some_and(|slot| {
+    for (meta, mut border, mut bg) in &mut icons {
+        let slot = loadout.slots.get(meta.index);
+        if let Some(slot) = slot {
+            *bg = BackgroundColor(slot.id.placeholder_color());
+        }
+        let highlight = slot.is_some_and(|slot| {
             progress.skill_points > 0 && slot.id.can_rank_up(slot.rank, progress.level)
         });
         *border = BorderColor::all(if highlight {

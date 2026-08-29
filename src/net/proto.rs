@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientToServer {
-    Hello { name: String },
+    Hello { name: String, hero_kind: u8 },
     Heartbeat,
     MoveTo { x: f32, y: f32, z: f32 },
     AttackMove { x: f32, y: f32, z: f32 },
@@ -14,7 +14,15 @@ pub enum ClientToServer {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ServerToClient {
-    Welcome { peer_id: u32, hero_id: u32, team: u8 },
+    Welcome {
+        peer_id: u32,
+        hero_id: u32,
+        team: u8,
+        /// Client's selected hero kit.
+        hero_kind: u8,
+        /// Host / opponent hero kit.
+        opponent_kind: u8,
+    },
     Snapshot { tick: u32, heroes: Vec<HeroSnap> },
     Reject { reason: String },
 }
@@ -46,11 +54,15 @@ mod tests {
     fn roundtrip_hello() {
         let msg = ClientToServer::Hello {
             name: "tester".into(),
+            hero_kind: 1,
         };
         let bytes = encode(&msg);
         let back: ClientToServer = decode(&bytes).unwrap();
         match back {
-            ClientToServer::Hello { name } => assert_eq!(name, "tester"),
+            ClientToServer::Hello { name, hero_kind } => {
+                assert_eq!(name, "tester");
+                assert_eq!(hero_kind, 1);
+            }
             _ => panic!("wrong variant"),
         }
     }

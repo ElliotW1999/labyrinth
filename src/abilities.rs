@@ -8,7 +8,7 @@ use crate::components::{
     DamageType, Ground, Health, Lifetime, Mana, MoveTarget, PlayerHero, QueuedAbilityCast, SpellFx,
     Team, UnitRadius,
 };
-use crate::items::{apply_phased, StatusEffects};
+use crate::items::{apply_forceful, apply_phased, apply_status, StatusEffect, StatusEffects};
 use crate::resources::SharedAssets;
 
 pub struct AbilitiesPlugin;
@@ -83,12 +83,15 @@ fn begin_or_cast_from_hotkeys(
             &Team,
             &mut AbilityLoadout,
             &mut Mana,
+            &mut CombatStats,
+            &mut StatusEffects,
         ),
         With<PlayerHero>,
     >,
     enemies: Query<(Entity, &Transform, &Team, &Health, &CombatStats), Without<PlayerHero>>,
 ) {
-    let Ok((hero_entity, transform, team, mut loadout, mut mana)) = hero.single_mut()
+    let Ok((hero_entity, transform, team, mut loadout, mut mana, mut stats, mut statuses)) =
+        hero.single_mut()
     else {
         return;
     };
@@ -138,11 +141,12 @@ fn begin_or_cast_from_hotkeys(
                 cast_instant(
                     &mut commands,
                     &assets,
-                    hero_entity,
                     transform,
                     *team,
                     slot_mut,
                     &enemies,
+                    &mut stats,
+                    &mut statuses,
                 );
             }
             AbilityCastKind::Targeted {
@@ -170,14 +174,15 @@ fn begin_or_cast_from_hotkeys(
 fn cast_instant(
     commands: &mut Commands,
     assets: &SharedAssets,
-    _hero_entity: Entity,
     transform: &Transform,
     team: Team,
     slot: &crate::components::AbilitySlot,
     enemies: &Query<(Entity, &Transform, &Team, &Health, &CombatStats), Without<PlayerHero>>,
+    stats: &mut CombatStats,
+    statuses: &mut StatusEffects,
 ) {
     match slot.id {
-        AbilityId::Shockwave => {
+        AbilityId::Shockwave | AbilityId::Flurry | AbilityId::FrostNova => {
             let origin = transform.translation;
             let radius = slot.shockwave_radius();
             let damage = slot.shockwave_damage();
@@ -189,17 +194,39 @@ fn cast_instant(
                 assets.shockwave_mat.clone(),
                 0.45,
             );
-            for (enemy_entity, enemy_tf, enemy_team, enemy_hp, stats) in enemies.iter() {
+            for (enemy_entity, enemy_tf, enemy_team, enemy_hp, enemy_stats) in enemies.iter() {
                 if *enemy_team == team || !enemy_hp.is_alive() {
                     continue;
                 }
                 if flat_distance(origin, enemy_tf.translation) <= radius {
-                    let amount = apply_damage(damage, DamageType::Magical, stats);
+                    let amount = apply_damage(damage, DamageType::Magical, enemy_stats);
                     commands.entity(enemy_entity).insert(PendingDamage { amount });
                 }
             }
+            // Shockwave briefly lets the caster soft-push through the pack.
+            if slot.id == AbilityId::Shockwave {
+                apply_forceful(statuses, 2.0);
+            }
         }
-        AbilityId::Dash | AbilityId::Bolt | AbilityId::Nova => {}
+        AbilityId::Barrier => {
+            apply_status(
+                statuses,
+                stats,
+                StatusEffect {
+                    armor: slot.barrier_armor(),
+                    ..StatusEffect::buff("barrier", slot.barrier_duration())
+                },
+            );
+            spawn_expanding_ring(
+                commands,
+                assets,
+                transform.translation,
+                2.5,
+                assets.nova_mat.clone(),
+                0.4,
+            );
+        }
+        _ => {}
     }
 }
 
@@ -375,7 +402,7 @@ fn confirm_or_cancel_targeted_cast(
     clear_targeting(&mut commands, &mut targeting);
 
     match ability {
-        AbilityId::Dash => {
+        AbilityId::Dash | AbilityId::Blink => {
             fire_dash(
                 &mut commands,
                 &assets,
@@ -387,7 +414,17 @@ fn confirm_or_cancel_targeted_cast(
                 dash_distance,
             );
         }
-        AbilityId::Bolt => {
+        AbilityId::Bolt | AbilityId::ArcMissile | AbilityId::Execute => {
+            let mut damage = bolt_damage;
+            if ability == AbilityId::Execute {
+                if let Some((enemy, _)) = unit_target {
+                    if let Ok((_, _, _, hp, _, _)) = enemies.get(enemy) {
+                        if hp.current / hp.max.max(1.0) < 0.35 {
+                            damage *= 1.55;
+                        }
+                    }
+                }
+            }
             fire_bolt(
                 &mut commands,
                 &assets,
@@ -396,12 +433,19 @@ fn confirm_or_cancel_targeted_cast(
                 *team,
                 aim,
                 aoe,
-                bolt_damage,
+                damage,
                 unit_target,
             );
         }
-        AbilityId::Nova => {
-            health.current = (health.current + nova_heal).min(health.max);
+        AbilityId::Nova | AbilityId::Meteor | AbilityId::Caltrops => {
+            if nova_heal > 0.0 {
+                health.current = (health.current + nova_heal).min(health.max);
+            }
+            let ground_damage = if ability == AbilityId::Caltrops {
+                bolt_damage
+            } else {
+                nova_damage
+            };
             spawn_expanding_ring(
                 &mut commands,
                 &assets,
@@ -415,12 +459,12 @@ fn confirm_or_cancel_targeted_cast(
                     continue;
                 }
                 if flat_distance(aim, enemy_tf.translation) <= aoe {
-                    let amount = apply_damage(nova_damage, DamageType::Magical, enemy_stats);
+                    let amount = apply_damage(ground_damage, DamageType::Magical, enemy_stats);
                     commands.entity(enemy_entity).insert(PendingDamage { amount });
                 }
             }
         }
-        AbilityId::Shockwave => {}
+        _ => {}
     }
 }
 
@@ -504,7 +548,7 @@ fn resolve_queued_ability_casts(
         .remove::<MoveTarget>();
 
     match queued.ability {
-        AbilityId::Dash => {
+        AbilityId::Dash | AbilityId::Blink => {
             fire_dash(
                 &mut commands,
                 &assets,
@@ -516,7 +560,17 @@ fn resolve_queued_ability_casts(
                 dash_distance,
             );
         }
-        AbilityId::Bolt => {
+        AbilityId::Bolt | AbilityId::ArcMissile | AbilityId::Execute => {
+            let mut damage = bolt_damage;
+            if queued.ability == AbilityId::Execute {
+                if let Some((enemy, _)) = unit_target {
+                    if let Ok((_, _, _, hp, _, _)) = enemies.get(enemy) {
+                        if hp.current / hp.max.max(1.0) < 0.35 {
+                            damage *= 1.55;
+                        }
+                    }
+                }
+            }
             fire_bolt(
                 &mut commands,
                 &assets,
@@ -525,12 +579,19 @@ fn resolve_queued_ability_casts(
                 *team,
                 aim,
                 aoe,
-                bolt_damage,
+                damage,
                 unit_target,
             );
         }
-        AbilityId::Nova => {
-            health.current = (health.current + nova_heal).min(health.max);
+        AbilityId::Nova | AbilityId::Meteor | AbilityId::Caltrops => {
+            if nova_heal > 0.0 {
+                health.current = (health.current + nova_heal).min(health.max);
+            }
+            let ground_damage = if queued.ability == AbilityId::Caltrops {
+                bolt_damage
+            } else {
+                nova_damage
+            };
             spawn_expanding_ring(
                 &mut commands,
                 &assets,
@@ -544,12 +605,12 @@ fn resolve_queued_ability_casts(
                     continue;
                 }
                 if flat_distance(aim, enemy_tf.translation) <= aoe {
-                    let amount = apply_damage(nova_damage, DamageType::Magical, enemy_stats);
+                    let amount = apply_damage(ground_damage, DamageType::Magical, enemy_stats);
                     commands.entity(enemy_entity).insert(PendingDamage { amount });
                 }
             }
         }
-        AbilityId::Shockwave => {}
+        _ => {}
     }
 }
 

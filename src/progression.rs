@@ -99,7 +99,8 @@ mod tests {
     fn ultimate_ranks_at_six_twelve_eighteen_twenty_four() {
         assert!(!AbilityId::Nova.can_rank_up(0, 5));
         assert!(AbilityId::Nova.can_rank_up(0, 6));
-        assert!(AbilityId::Nova.can_rank_up(1, 12));
+        assert!(AbilityId::Execute.can_rank_up(0, 6));
+        assert!(AbilityId::Meteor.can_rank_up(1, 12));
         assert!(AbilityId::Nova.can_rank_up(2, 18));
         assert!(AbilityId::Nova.can_rank_up(3, 24));
         assert!(!AbilityId::Nova.can_rank_up(4, 25));

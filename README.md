@@ -12,6 +12,11 @@ Offline (default — **no server required**):
 cargo run
 # same as:
 cargo run -- --mode offline
+
+# Skip select screen:
+cargo run -- --hero vanguard
+cargo run -- --hero skirmisher
+cargo run -- --hero arcanist
 ```
 
 Release build:
@@ -40,6 +45,7 @@ The HUD shows connection status. Host sim runs combat / creeps / AI; clients app
 
 | Input | Action |
 | --- | --- |
+| 1 / 2 / 3 or click card | Pick Vanguard / Skirmisher / Arcanist at start |
 | Right click ground | Move (hold to keep issuing commands) |
 | Right click enemy | Attack — path in if out of range (hold reissues) |
 | G | Attack-move: path toward cursor; attack enemies in attack range |
@@ -54,11 +60,21 @@ The HUD shows connection status. Host sim runs combat / creeps / AI; clients app
 | Arrow keys / screen edge | Pan camera on the XZ plane |
 | F | Snap camera to hero (no continuous lock) |
 
+### Heroes
+
+| Hero | Primary | Kit |
+| --- | --- | --- |
+| Vanguard | Strength | Dash, Shockwave (brief **forceful** push), Bolt, Nova |
+| Skirmisher | Agility | Blink, Flurry, Caltrops, Execute (bonus vs low HP) |
+| Arcanist | Intelligence | Missile, Frost, Barrier, Meteor |
+
+Each hero has its own base Str/Agi/Int and per-level growth.
+
 ### Ability ranks
 
 - Level-ups grant skill points (start with 1 at level 1)
-- Q / W / E: up to 7 ranks; rank N needs hero level ≥ 2N−1 (max at 13)
-- R: up to 4 ranks; unlocked at overall levels 6 / 12 / 18 / 24
+- Basics: up to 7 ranks; rank N needs hero level ≥ 2N−1 (max at 13)
+- Ultimates: up to 4 ranks; unlocked at overall levels 6 / 12 / 18 / 24
 - Each rank scales damage, cooldown, range, and mana cost
 
 ### Attributes
@@ -66,23 +82,24 @@ The HUD shows connection status. Host sim runs combat / creeps / AI; clients app
 - **Strength** — max HP and HP regen
 - **Agility** — armor and attack speed
 - **Intelligence** — max mana, mana regen, and magic resist
-- Each level raises Str / Agi / Int (shown on the HUD with derived combat stats)
+- Each level raises Str / Agi / Int using that hero's growth rates (HUD shows derived combat stats)
 
 ### Items
 
 - Gold shop near each base; buy in range via the HUD shop (icons + names; hover for details)
 - Six inventory slots (icon + name; hover for details); actives use ASDZXC
 - Heroes carry a `StatusEffects` list for buffs / debuffs
-
+- Unit soft-push is **off by default**; the **forceful** buff enables it (e.g. Vanguard Shockwave). **Phased** (Dash/Blink) ignores unit push.
 ## What's included
 
 - Three-lane map with river, jungle pockets, tree obstacles, towers, and ancients
+- Selectable heroes (Vanguard / Skirmisher / Arcanist) with unique spells and Str/Agi/Int growth
 - Player hero with Str/Agi/Int, HP / mana / gold / XP / levels and rankable QWER abilities
-- Item shop, 6-slot inventory, and timed buffs / debuffs
+- Item shop, 6-slot inventory, and timed buffs / debuffs (phased, forceful, item actives)
 - Creep waves that path down each lane
 - Explicit right-click attack orders and G attack-move (path to cursor, attack in range)
-- Unit/building collision; Dash grants a short **phased** buff (ignores creep/hero collision)
-- Targeted spells (Q/E/R): confirm aim; if out of cast range the hero walks in then casts
+- Building/tree collision; unit soft-push only while **forceful**
+- Targeted spells: confirm aim; if out of cast range the hero walks in then casts
 - Auto-attack combat with armor / magic resist mitigation; projectiles stop at the target
 - Tower and creep aggro AI
 - Free camera, spell bar, inventory tooltips, shop, skill points, and minimap
@@ -92,8 +109,9 @@ The HUD shows connection status. Host sim runs combat / creeps / AI; clients app
 
 ```
 src/
-  main.rs          App entry + CLI (--mode offline|host|client) + plugin wiring
+  main.rs          App entry + CLI (--mode, --hero) + plugin wiring
   components.rs    Teams, vitals, attributes, abilities, unit tags
+  heroes.rs        Hero roster, select UI, spawn-on-pick
   resources.rs     Match config + shared meshes/materials
   map.rs           Battlefield + lane waypoints
   units.rs         Hero / creep / tower / ancient factories
