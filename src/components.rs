@@ -70,10 +70,98 @@ pub struct CombatStats {
     /// Auto-attack damage (physical).
     pub attack_damage: f32,
     pub attack_range: f32,
+    /// Base attack-speed rating (typically ~100). Part of the IAS formula.
+    pub base_attack_speed: f32,
+    /// Flat attack-speed bonuses (items, buffs).
+    pub attack_speed_flat: f32,
+    /// Multiplicative AS bonus (0.0 ⇒ ×1.0).
+    pub attack_speed_mult: f32,
+    /// Base attack time in seconds. APS = (IAS/100) / BAT.
+    pub base_attack_time: f32,
+    /// Cached attacks-per-second after the IAS formula (used by combat/HUD).
     pub attack_speed: f32,
+    /// Foreswing before the projectile/hit fires (0..=0.5s).
+    pub attack_point: f32,
+    /// Backswing after the attack (0..=0.5s); cancelled by new player orders.
+    pub attack_backswing: f32,
+    /// Yaw turn rate in radians per second.
+    pub turn_rate: f32,
     pub armor: f32,
     pub magic_resist: f32,
     pub move_speed: f32,
+}
+
+impl CombatStats {
+    /// Simple kit for creeps/towers/tests (no hero agility).
+    pub fn simple(
+        attack_damage: f32,
+        attack_range: f32,
+        attacks_per_sec: f32,
+        armor: f32,
+        magic_resist: f32,
+        move_speed: f32,
+    ) -> Self {
+        let bat = 1.0;
+        let ias = (attacks_per_sec * bat * 100.0).clamp(20.0, 700.0);
+        let mut stats = Self {
+            attack_damage,
+            attack_range,
+            base_attack_speed: ias,
+            attack_speed_flat: 0.0,
+            attack_speed_mult: 0.0,
+            base_attack_time: bat,
+            attack_speed: attacks_per_sec,
+            attack_point: 0.2,
+            attack_backswing: 0.25,
+            turn_rate: 8.0,
+            armor,
+            magic_resist,
+            move_speed,
+        };
+        stats.recompute_attack_speed(0.0);
+        stats
+    }
+
+    /// `(base + agi + flat) × (1 + mult)`, clamped to 20..=700.
+    pub fn attack_speed_rating(&self, agility: f32) -> f32 {
+        ((self.base_attack_speed + agility + self.attack_speed_flat)
+            * (1.0 + self.attack_speed_mult))
+            .clamp(20.0, 700.0)
+    }
+
+    /// Refresh cached APS from the IAS formula.
+    pub fn recompute_attack_speed(&mut self, agility: f32) {
+        let ias = self.attack_speed_rating(agility);
+        self.attack_speed = (ias / 100.0) / self.base_attack_time.max(0.01);
+    }
+}
+
+/// In-progress auto-attack foreswing / backswing.
+#[derive(Component, Debug, Clone, Copy)]
+pub enum AttackSwing {
+    Windup {
+        remaining: f32,
+        target: Entity,
+        damage: f32,
+    },
+    Backswing {
+        remaining: f32,
+    },
+}
+
+/// In-progress ability cast point / backswing.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct AbilityCasting {
+    pub slot: usize,
+    pub ability: AbilityId,
+    pub aoe_radius: f32,
+    pub aim: Vec3,
+    pub unit_target: Option<Entity>,
+    /// Time left in the cast point (ability fires when this hits 0).
+    pub point_remaining: f32,
+    /// After fire, remaining backswing (cancellable).
+    pub backswing_remaining: f32,
+    pub fired: bool,
 }
 
 /// Primary hero attributes. Level-ups raise these; each point feeds derived combat stats.
@@ -105,8 +193,6 @@ impl HeroAttributes {
     pub const HP_REGEN_PER_STR: f32 = 0.12;
     /// Armor per point of Agility.
     pub const ARMOR_PER_AGI: f32 = 0.14;
-    /// Attack speed per point of Agility.
-    pub const ATTACK_SPEED_PER_AGI: f32 = 0.02;
     /// Max mana per point of Intelligence.
     pub const MANA_PER_INT: f32 = 12.0;
     /// Mana regen per point of Intelligence.
@@ -119,11 +205,11 @@ impl HeroAttributes {
         health.current = health.current.min(health.max);
         health.regen_per_sec += self.strength * Self::HP_REGEN_PER_STR;
         stats.armor += self.agility * Self::ARMOR_PER_AGI;
-        stats.attack_speed += self.agility * Self::ATTACK_SPEED_PER_AGI;
         mana.max += self.intelligence * Self::MANA_PER_INT;
         mana.current = mana.current.min(mana.max);
         mana.regen_per_sec += self.intelligence * Self::MANA_REGEN_PER_INT;
         stats.magic_resist += self.intelligence * Self::MR_PER_INT;
+        stats.recompute_attack_speed(self.agility);
     }
 
     /// Apply only the delta between `before` and `self` (used on level-up).
@@ -142,12 +228,12 @@ impl HeroAttributes {
         health.current = (health.current + hp).min(health.max);
         health.regen_per_sec += d_str * Self::HP_REGEN_PER_STR;
         stats.armor += d_agi * Self::ARMOR_PER_AGI;
-        stats.attack_speed += d_agi * Self::ATTACK_SPEED_PER_AGI;
         let mp = d_int * Self::MANA_PER_INT;
         mana.max += mp;
         mana.current = (mana.current + mp).min(mana.max);
         mana.regen_per_sec += d_int * Self::MANA_REGEN_PER_INT;
         stats.magic_resist += d_int * Self::MR_PER_INT;
+        stats.recompute_attack_speed(after.agility);
     }
 
     pub fn level_up(&mut self) {
@@ -167,7 +253,10 @@ pub enum DamageType {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AbilityCastKind {
     Instant,
+    /// Ground / point target (optional soft unit lock for bolts).
     Targeted { cast_range: f32, aoe_radius: f32 },
+    /// Must be cast on a creep or hero.
+    UnitTargeted { cast_range: f32 },
 }
 
 #[derive(Component, Debug, Clone, Copy)]
@@ -358,6 +447,10 @@ pub struct AbilitySlot {
     pub cooldown_remaining: f32,
     pub cooldown: f32,
     pub mana_cost: f32,
+    /// Delay before the ability fires (0..=0.5 typical).
+    pub cast_point: f32,
+    /// Cancellable recovery after the ability fires.
+    pub cast_backswing: f32,
 }
 
 impl AbilitySlot {
@@ -368,6 +461,8 @@ impl AbilitySlot {
             cooldown_remaining: 0.0,
             cooldown: 0.0,
             mana_cost: 0.0,
+            cast_point: 0.2,
+            cast_backswing: 0.25,
         };
         slot.refresh_stats();
         slot
@@ -379,28 +474,48 @@ impl AbilitySlot {
             AbilityId::Dash | AbilityId::Blink => {
                 self.cooldown = (7.5 - r as f32 * 0.35).max(4.0);
                 self.mana_cost = 35.0 + r as f32 * 5.0;
+                self.cast_point = 0.05;
+                self.cast_backswing = 0.15;
             }
             AbilityId::Shockwave | AbilityId::Flurry | AbilityId::FrostNova => {
                 self.cooldown = (9.0 - r as f32 * 0.4).max(5.0);
                 self.mana_cost = 50.0 + r as f32 * 8.0;
+                self.cast_point = 0.25;
+                self.cast_backswing = 0.35;
             }
             AbilityId::Bolt | AbilityId::ArcMissile => {
                 self.cooldown = (6.0 - r as f32 * 0.3).max(3.0);
                 self.mana_cost = 45.0 + r as f32 * 7.0;
+                self.cast_point = 0.2;
+                self.cast_backswing = 0.3;
             }
             AbilityId::Caltrops => {
                 self.cooldown = (8.0 - r as f32 * 0.35).max(4.5);
                 self.mana_cost = 40.0 + r as f32 * 6.0;
+                self.cast_point = 0.15;
+                self.cast_backswing = 0.25;
             }
             AbilityId::Barrier => {
                 self.cooldown = (14.0 - r as f32 * 0.5).max(8.0);
                 self.mana_cost = 55.0 + r as f32 * 8.0;
+                self.cast_point = 0.1;
+                self.cast_backswing = 0.2;
             }
-            AbilityId::Nova | AbilityId::Execute | AbilityId::Meteor => {
+            AbilityId::Execute => {
                 self.cooldown = (50.0 - r as f32 * 4.0).max(30.0);
                 self.mana_cost = 100.0 + r as f32 * 20.0;
+                self.cast_point = 0.3;
+                self.cast_backswing = 0.4;
+            }
+            AbilityId::Nova | AbilityId::Meteor => {
+                self.cooldown = (50.0 - r as f32 * 4.0).max(30.0);
+                self.mana_cost = 100.0 + r as f32 * 20.0;
+                self.cast_point = 0.35;
+                self.cast_backswing = 0.45;
             }
         }
+        self.cast_point = self.cast_point.clamp(0.0, 0.5);
+        self.cast_backswing = self.cast_backswing.clamp(0.0, 0.5);
     }
 
     pub fn cast_kind(&self) -> AbilityCastKind {
@@ -414,12 +529,13 @@ impl AbilitySlot {
                 cast_range: self.dash_distance(),
                 aoe_radius: 0.75,
             },
-            AbilityId::Bolt | AbilityId::ArcMissile | AbilityId::Execute => {
-                AbilityCastKind::Targeted {
-                    cast_range: 10.0 + r as f32 * 0.8,
-                    aoe_radius: 1.4 + r as f32 * 0.15,
-                }
-            }
+            AbilityId::Bolt | AbilityId::Execute => AbilityCastKind::UnitTargeted {
+                cast_range: 10.0 + r as f32 * 0.8,
+            },
+            AbilityId::ArcMissile => AbilityCastKind::Targeted {
+                cast_range: 10.0 + r as f32 * 0.8,
+                aoe_radius: 1.4 + r as f32 * 0.15,
+            },
             AbilityId::Caltrops => AbilityCastKind::Targeted {
                 cast_range: 9.0 + r as f32 * 0.6,
                 aoe_radius: 2.2 + r as f32 * 0.2,

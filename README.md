@@ -55,6 +55,7 @@ The HUD shows connection status. Host sim runs combat / creeps / AI; clients app
 | Ctrl+Q / W / E / R | Spend a skill point to rank that ability |
 | Spell bar `+` | Rank up when highlighted |
 | A S D Z X C | Use inventory item in that slot (actives only) |
+| RMB inventory slot | Open sell menu (50% refund; must be near shop) |
 | `$` shop button (bottom-right) | Toggle item shop panel |
 | Click outside shop / Esc | Close shop panel |
 | Arrow keys / screen edge | Pan camera on the XZ plane |
@@ -64,11 +65,29 @@ The HUD shows connection status. Host sim runs combat / creeps / AI; clients app
 
 | Hero | Primary | Kit |
 | --- | --- | --- |
-| Vanguard | Strength | Dash, Shockwave (brief **forceful** push), Bolt, Nova |
-| Skirmisher | Agility | Blink, Flurry, Caltrops, Execute (bonus vs low HP) |
-| Arcanist | Intelligence | Missile, Frost, Barrier, Meteor |
+| Vanguard | Strength | Dash, Shockwave (brief **forceful** push), Bolt (unit), Nova |
+| Skirmisher | Agility | Blink, Flurry (silence+disarm), Caltrops, Execute (unit, bonus vs low HP) |
+| Arcanist | Intelligence | Missile, Frost (root), Barrier (debuff immunity), Meteor |
 
 Each hero has its own base Str/Agi/Int and per-level growth.
+
+### Combat timing
+
+- Units turn toward move/attack facing with a **turn rate**
+- Attacks use **foreswing** (0–0.5s) then fire, then **backswing** (0–0.5s; cancelled by move/stop/new orders)
+- Attack speed rating: `(base AS + agility + flat bonuses) × (1 + mult)`, clamped **20–700**; APS = `(IAS/100) / BAT`
+- Abilities use **cast point** then fire, then cancellable **cast backswing**
+
+### Status effects
+
+| Status | Effect |
+| --- | --- |
+| Silence | Blocks active abilities |
+| Stun | Blocks move, attack, and abilities |
+| Root | Blocks movement |
+| Disarm | Blocks attacking |
+| Debuff immunity | Blocks new debuffs (Barrier) |
+| Phased / Forceful | Collision ignore / soft-push |
 
 ### Ability ranks
 
@@ -76,18 +95,19 @@ Each hero has its own base Str/Agi/Int and per-level growth.
 - Basics: up to 7 ranks; rank N needs hero level ≥ 2N−1 (max at 13)
 - Ultimates: up to 4 ranks; unlocked at overall levels 6 / 12 / 18 / 24
 - Each rank scales damage, cooldown, range, and mana cost
+- **Unit-targeted** spells (Bolt, Execute) require clicking a creep or hero
 
 ### Attributes
 
 - **Strength** — max HP and HP regen
-- **Agility** — armor and attack speed
+- **Agility** — armor and attack-speed rating
 - **Intelligence** — max mana, mana regen, and magic resist
-- Each level raises Str / Agi / Int using that hero's growth rates (HUD shows derived combat stats)
+- Each level raises Str / Agi / Int using that hero's growth rates (HUD shows IAS/APS and derived combat stats)
 
 ### Items
 
 - Gold shop near each base; buy in range via the HUD shop (icons + names; hover for details)
-- Six inventory slots (icon + name; hover for details); actives use ASDZXC
+- Six inventory slots; RMB → **Sell (50%)** near shop; actives use ASDZXC
 - Heroes carry a `StatusEffects` list for buffs / debuffs
 - Unit soft-push is **off by default**; the **forceful** buff enables it (e.g. Vanguard Shockwave). **Phased** (Dash/Blink) ignores unit push.
 ## What's included
@@ -115,17 +135,18 @@ src/
   resources.rs     Match config + shared meshes/materials
   map.rs           Battlefield + lane waypoints
   units.rs         Hero / creep / tower / ancient factories
+  facing.rs        Turn-rate helpers
   movement.rs      Move orders + tree / building / unit collision
-  combat.rs        Attack orders, projectiles, death / gold / XP
+  combat.rs        Attack windup/backswing, projectiles, death / gold / XP
   progression.rs   Hero XP, attributes, and level-up growth
-  abilities.rs     QWER casting
-  items.rs         Shop, inventory, actives, status effects
+  abilities.rs     QWER casting with cast point/backswing
+  items.rs         Shop, inventory, sell, actives, status effects
   net/             Offline / host / client UDP session + hero snapshots
   ai.rs            Lane following + aggro
   waves.rs         Periodic creep spawns
   camera.rs        Free camera (edge / arrows / F snap)
   input.rs         RMB move / attack-move / stop / spell ranking
-  ui.rs            HUD (spell bar, inventory, shop, minimap)
+  ui.rs            HUD (spell bar, inventory sell menu, shop, minimap)
 ```
 
 ## Extending

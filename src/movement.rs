@@ -4,9 +4,10 @@ use bevy::prelude::*;
 
 use crate::combat::flat_distance;
 use crate::components::{
-    Ancient, AttackMoveOrder, AttackTarget, CombatStats, Creep, MoveTarget, Obstacle,
-    PlayerHero, QueuedAbilityCast, Tower, UnitRadius,
+    AbilityCasting, Ancient, AttackMoveOrder, AttackSwing, AttackTarget, CombatStats, Creep,
+    MoveTarget, Obstacle, PlayerHero, QueuedAbilityCast, Tower, UnitRadius,
 };
+use crate::facing::turn_toward;
 use crate::items::StatusEffects;
 use crate::net::NetworkedHero;
 
@@ -31,7 +32,14 @@ impl Plugin for MovementPlugin {
 fn apply_move_targets(
     time: Res<Time>,
     mut movers: Query<
-        (Entity, &mut Transform, &CombatStats, &MoveTarget, Option<&UnitRadius>),
+        (
+            Entity,
+            &mut Transform,
+            &CombatStats,
+            &MoveTarget,
+            Option<&UnitRadius>,
+            Option<&StatusEffects>,
+        ),
         (Without<Tower>, Without<Ancient>, Without<Obstacle>),
     >,
     obstacles: Query<(&Transform, &Obstacle), Without<MoveTarget>>,
@@ -51,8 +59,12 @@ fn apply_move_targets(
         blockers.push((tf.translation, radius.0));
     }
 
-    for (entity, mut transform, stats, target, radius) in &mut movers {
+    for (entity, mut transform, stats, target, radius, statuses) in &mut movers {
         if stats.move_speed <= 0.0 {
+            continue;
+        }
+        if statuses.is_some_and(|s| !s.can_move()) {
+            commands.entity(entity).remove::<MoveTarget>();
             continue;
         }
 
@@ -67,8 +79,11 @@ fn apply_move_targets(
             continue;
         }
 
-        let step = stats.move_speed * dt;
         let dir = to_target / distance;
+        let facing = turn_toward(&mut transform, dir, stats.turn_rate, dt);
+        // Still allow movement while turning (soft turn-rate), but prefer facing.
+
+        let step = stats.move_speed * dt * if facing { 1.0 } else { 0.55 };
         let mut next = if step >= distance {
             destination
         } else {
@@ -84,12 +99,7 @@ fn apply_move_targets(
             continue;
         }
 
-        let moved = next - transform.translation;
         transform.translation = next;
-        if moved.length_squared() > 0.0001 {
-            let yaw = moved.x.atan2(moved.z);
-            transform.rotation = Quat::from_rotation_y(yaw);
-        }
 
         if flat_distance(transform.translation, destination) < 0.2 {
             commands.entity(entity).remove::<MoveTarget>();
@@ -243,7 +253,9 @@ pub fn order_hero_move(commands: &mut Commands, hero: Entity, position: Vec3) {
         .insert(MoveTarget { position })
         .remove::<AttackTarget>()
         .remove::<AttackMoveOrder>()
-        .remove::<QueuedAbilityCast>();
+        .remove::<QueuedAbilityCast>()
+        .remove::<AttackSwing>()
+        .remove::<AbilityCasting>();
 }
 
 /// Halt movement and cancel the current attack / attack-move / queued cast.
@@ -253,7 +265,9 @@ pub fn order_hero_stop(commands: &mut Commands, hero: Entity) {
         .remove::<MoveTarget>()
         .remove::<AttackTarget>()
         .remove::<AttackMoveOrder>()
-        .remove::<QueuedAbilityCast>();
+        .remove::<QueuedAbilityCast>()
+        .remove::<AttackSwing>()
+        .remove::<AbilityCasting>();
 }
 
 pub fn order_attack_move(commands: &mut Commands, hero: Entity, destination: Vec3) {
@@ -264,5 +278,7 @@ pub fn order_attack_move(commands: &mut Commands, hero: Entity, destination: Vec
             position: destination,
         })
         .remove::<AttackTarget>()
-        .remove::<QueuedAbilityCast>();
+        .remove::<QueuedAbilityCast>()
+        .remove::<AttackSwing>()
+        .remove::<AbilityCasting>();
 }

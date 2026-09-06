@@ -3,10 +3,12 @@
 use bevy::prelude::*;
 
 use crate::components::{
-    AttackCooldown, AttackTarget, CombatStats, DamageType, GoldBounty, Ground, Health, HeroProgress,
-    Lifetime, PlayerHero, PlayerWallet, Projectile, ProjectileHome, ProjectileStyle, Team,
-    UnitRadius, XpBounty,
+    AttackCooldown, AttackSwing, AttackTarget, CombatStats, DamageType, GoldBounty, Ground, Health,
+    HeroProgress, Lifetime, PlayerHero, PlayerWallet, Projectile, ProjectileHome, ProjectileStyle,
+    Team, UnitRadius, XpBounty,
 };
+use crate::facing::turn_toward;
+use crate::items::StatusEffects;
 use crate::progression::add_xp;
 use crate::resources::SharedAssets;
 
@@ -18,7 +20,8 @@ impl Plugin for CombatPlugin {
             Update,
             (
                 tick_attack_cooldowns,
-                auto_attack,
+                begin_attack_windups,
+                tick_attack_swings,
                 fly_projectiles,
                 apply_projectile_hits,
                 tick_lifetimes,
@@ -37,35 +40,53 @@ fn tick_attack_cooldowns(time: Res<Time>, mut query: Query<&mut AttackCooldown>)
     }
 }
 
-fn auto_attack(
+/// Start foreswing when off cooldown, able to attack, and facing the target.
+fn begin_attack_windups(
+    time: Res<Time>,
     mut commands: Commands,
-    assets: Res<SharedAssets>,
     mut attackers: Query<(
         Entity,
-        &Transform,
+        &mut Transform,
         &Team,
         &CombatStats,
-        &mut AttackCooldown,
+        &AttackCooldown,
         Option<&AttackTarget>,
+        Option<&AttackSwing>,
+        Option<&StatusEffects>,
         Has<PlayerHero>,
     )>,
-    targets: Query<(Entity, &Transform, &Team, &Health, &CombatStats, Option<&UnitRadius>)>,
+    targets: Query<(Entity, &Transform, &Team, &Health, Option<&UnitRadius>)>,
 ) {
+    let dt = time.delta_secs();
     let target_snapshots: Vec<_> = targets
         .iter()
-        .filter(|(_, _, _, hp, _, _)| hp.is_alive())
-        .map(|(e, t, team, _, _stats, radius)| {
+        .filter(|(_, _, _, hp, _)| hp.is_alive())
+        .map(|(e, t, team, _, radius)| {
             (e, t.translation, *team, radius.map(|r| r.0).unwrap_or(0.5))
         })
         .collect();
 
-    for (_entity, transform, team, stats, mut cooldown, current_target, is_player) in
-        &mut attackers
+    for (
+        entity,
+        mut transform,
+        team,
+        stats,
+        cooldown,
+        current_target,
+        swing,
+        statuses,
+        is_player,
+    ) in &mut attackers
     {
+        if swing.is_some() {
+            continue;
+        }
         if cooldown.0 > 0.0 || stats.attack_damage <= 0.0 || stats.attack_range <= 0.0 {
             continue;
         }
-
+        if statuses.is_some_and(|s| !s.can_attack()) {
+            continue;
+        }
         if is_player && current_target.is_none() {
             continue;
         }
@@ -104,18 +125,88 @@ fn auto_attack(
             continue;
         };
 
-        let damage = stats.attack_damage;
-        spawn_auto_attack(
-            &mut commands,
-            &assets,
-            *team,
-            origin,
-            target_entity,
-            target_pos,
-            damage,
-            projectile_speed_for(stats.attack_range),
-        );
-        cooldown.0 = 1.0 / stats.attack_speed.max(0.1);
+        let dir = target_pos - origin;
+        let facing = turn_toward(&mut transform, dir, stats.turn_rate, dt);
+        if !facing {
+            continue;
+        }
+
+        let point = stats.attack_point.clamp(0.0, 0.5);
+        commands.entity(entity).insert(AttackSwing::Windup {
+            remaining: point,
+            target: target_entity,
+            damage: stats.attack_damage,
+        });
+    }
+}
+
+fn tick_attack_swings(
+    time: Res<Time>,
+    mut commands: Commands,
+    assets: Res<SharedAssets>,
+    mut attackers: Query<(
+        Entity,
+        &Transform,
+        &Team,
+        &CombatStats,
+        &mut AttackCooldown,
+        &mut AttackSwing,
+        Option<&StatusEffects>,
+    )>,
+    target_tfs: Query<&GlobalTransform>,
+) {
+    let dt = time.delta_secs();
+    for (entity, transform, team, stats, mut cooldown, mut swing, statuses) in &mut attackers {
+        if statuses.is_some_and(|s| !s.can_attack()) {
+            commands.entity(entity).remove::<AttackSwing>();
+            continue;
+        }
+        match *swing {
+            AttackSwing::Windup {
+                remaining,
+                target,
+                damage,
+            } => {
+                let next = remaining - dt;
+                if next > 0.0 {
+                    *swing = AttackSwing::Windup {
+                        remaining: next,
+                        target,
+                        damage,
+                    };
+                    continue;
+                }
+                let target_pos = target_tfs
+                    .get(target)
+                    .map(|tf| tf.translation())
+                    .unwrap_or(transform.translation + *transform.forward() * 4.0);
+                spawn_auto_attack(
+                    &mut commands,
+                    &assets,
+                    *team,
+                    transform.translation,
+                    target,
+                    target_pos,
+                    damage,
+                    projectile_speed_for(stats.attack_range),
+                );
+                cooldown.0 = 1.0 / stats.attack_speed.max(0.05);
+                let back = stats.attack_backswing.clamp(0.0, 0.5);
+                if back > 0.0 {
+                    *swing = AttackSwing::Backswing { remaining: back };
+                } else {
+                    commands.entity(entity).remove::<AttackSwing>();
+                }
+            }
+            AttackSwing::Backswing { remaining } => {
+                let next = remaining - dt;
+                if next > 0.0 {
+                    *swing = AttackSwing::Backswing { remaining: next };
+                } else {
+                    commands.entity(entity).remove::<AttackSwing>();
+                }
+            }
+        }
     }
 }
 
@@ -457,14 +548,7 @@ mod tests {
 
     #[test]
     fn armor_reduces_physical() {
-        let stats = CombatStats {
-            attack_damage: 0.0,
-            attack_range: 0.0,
-            attack_speed: 1.0,
-            armor: 10.0,
-            magic_resist: 0.0,
-            move_speed: 0.0,
-        };
+        let stats = CombatStats::simple(0.0, 0.0, 1.0, 10.0, 0.0, 0.0);
         let raw = 100.0;
         let mitigated = apply_damage(raw, DamageType::Physical, &stats);
         assert!(mitigated < raw);
@@ -473,14 +557,7 @@ mod tests {
 
     #[test]
     fn magic_resist_reduces_magical() {
-        let stats = CombatStats {
-            attack_damage: 0.0,
-            attack_range: 0.0,
-            attack_speed: 1.0,
-            armor: 0.0,
-            magic_resist: 10.0,
-            move_speed: 0.0,
-        };
+        let stats = CombatStats::simple(0.0, 0.0, 1.0, 0.0, 10.0, 0.0);
         let raw = 100.0;
         let phys = apply_damage(raw, DamageType::Physical, &stats);
         let mag = apply_damage(raw, DamageType::Magical, &stats);

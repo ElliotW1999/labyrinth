@@ -11,6 +11,7 @@ mod ai;
 mod camera;
 mod combat;
 mod components;
+mod facing;
 mod healthbars;
 mod heroes;
 mod input;

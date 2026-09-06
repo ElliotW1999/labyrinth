@@ -107,7 +107,13 @@ fn order_attack_target(
 ) {
     let reach = stats.attack_range + radius.map(|r| r.0).unwrap_or(0.5);
     let dist = flat_distance(hero_tf.translation, enemy_tf.translation());
-    commands.entity(hero_entity).insert(AttackTarget(enemy));
+    commands
+        .entity(hero_entity)
+        .insert(AttackTarget(enemy))
+        .remove::<crate::components::AttackSwing>()
+        .remove::<crate::components::AbilityCasting>()
+        .remove::<crate::components::AttackMoveOrder>()
+        .remove::<crate::components::QueuedAbilityCast>();
     if dist > reach * 0.9 {
         commands.entity(hero_entity).insert(MoveTarget {
             position: Vec3::new(enemy_tf.translation().x, 0.0, enemy_tf.translation().z),

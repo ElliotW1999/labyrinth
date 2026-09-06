@@ -111,14 +111,7 @@ impl HeroId {
                 base_health_regen: 0.6,
                 base_mana: 90.0,
                 base_mana_regen: 0.8,
-                combat: CombatStats {
-                    attack_damage: 58.0,
-                    attack_range: 5.5,
-                    attack_speed: 0.72,
-                    armor: 2.0,
-                    magic_resist: 0.7,
-                    move_speed: 11.5,
-                },
+                combat: hero_combat(58.0, 5.5, 1.7, 0.3, 0.35, 7.5, 2.0, 0.7, 11.5),
                 abilities: [
                     AbilityId::Dash,
                     AbilityId::Shockwave,
@@ -140,14 +133,7 @@ impl HeroId {
                 base_health_regen: 0.4,
                 base_mana: 100.0,
                 base_mana_regen: 0.9,
-                combat: CombatStats {
-                    attack_damage: 52.0,
-                    attack_range: 6.5,
-                    attack_speed: 0.88,
-                    armor: 1.2,
-                    magic_resist: 0.6,
-                    move_speed: 12.8,
-                },
+                combat: hero_combat(52.0, 6.5, 1.5, 0.25, 0.3, 10.0, 1.2, 0.6, 12.8),
                 abilities: [
                     AbilityId::Blink,
                     AbilityId::Flurry,
@@ -169,14 +155,7 @@ impl HeroId {
                 base_health_regen: 0.35,
                 base_mana: 140.0,
                 base_mana_regen: 1.4,
-                combat: CombatStats {
-                    attack_damage: 48.0,
-                    attack_range: 9.5,
-                    attack_speed: 0.7,
-                    armor: 0.8,
-                    magic_resist: 1.2,
-                    move_speed: 11.2,
-                },
+                combat: hero_combat(48.0, 9.5, 1.6, 0.35, 0.4, 6.5, 0.8, 1.2, 11.2),
                 abilities: [
                     AbilityId::ArcMissile,
                     AbilityId::FrostNova,
@@ -211,6 +190,34 @@ pub struct HeroDef {
     pub base_mana_regen: f32,
     pub combat: CombatStats,
     pub abilities: [AbilityId; 4],
+}
+
+fn hero_combat(
+    attack_damage: f32,
+    attack_range: f32,
+    base_attack_time: f32,
+    attack_point: f32,
+    attack_backswing: f32,
+    turn_rate: f32,
+    armor: f32,
+    magic_resist: f32,
+    move_speed: f32,
+) -> CombatStats {
+    CombatStats {
+        attack_damage,
+        attack_range,
+        base_attack_speed: 100.0,
+        attack_speed_flat: 0.0,
+        attack_speed_mult: 0.0,
+        base_attack_time,
+        attack_speed: 0.0,
+        attack_point: attack_point.clamp(0.0, 0.5),
+        attack_backswing: attack_backswing.clamp(0.0, 0.5),
+        turn_rate,
+        armor,
+        magic_resist,
+        move_speed,
+    }
 }
 
 impl HeroDef {
