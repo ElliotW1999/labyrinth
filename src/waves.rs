@@ -22,7 +22,7 @@ impl Plugin for WavesPlugin {
 }
 
 #[derive(Resource)]
-struct WaveTimer(Timer);
+pub(crate) struct WaveTimer(pub Timer);
 
 impl Default for WaveTimer {
     fn default() -> Self {

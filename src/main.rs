@@ -18,6 +18,7 @@ mod heroes;
 mod input;
 mod items;
 mod map;
+mod menu;
 mod movement;
 mod net;
 mod obstacle_course;
@@ -30,6 +31,7 @@ mod waves;
 use std::net::SocketAddr;
 
 use bevy::prelude::*;
+use bevy::window::{MonitorSelection, WindowMode};
 use clap::Parser;
 
 use abilities::AbilitiesPlugin;
@@ -42,6 +44,7 @@ use heroes::{HeroId, HeroesPlugin, LocalHeroChoice};
 use input::InputPlugin;
 use items::ItemsPlugin;
 use map::MapPlugin;
+use menu::MenuPlugin;
 use movement::MovementPlugin;
 use net::{NetConfig, NetMode, NetPlugin};
 use obstacle_course::ObstacleCoursePlugin;
@@ -117,7 +120,7 @@ fn main() {
             DefaultPlugins.set(WindowPlugin {
                 primary_window: Some(Window {
                     title,
-                    resolution: (1600, 900).into(),
+                    mode: WindowMode::BorderlessFullscreen(MonitorSelection::Primary),
                     ..default()
                 }),
                 ..default()
@@ -144,6 +147,7 @@ fn main() {
             FogPlugin,
             ObstacleCoursePlugin,
             UiPlugin,
+            MenuPlugin,
         ))
         .run();
 }

@@ -1,4 +1,4 @@
-//! Northern obstacle-course hazards: Firebreather and Heartpiercer.
+//! Obstacle-course hazards (screen-top / world −Z strip): Firebreather and Heartpiercer.
 
 use bevy::prelude::*;
 
@@ -32,7 +32,7 @@ impl Plugin for ObstacleCoursePlugin {
     }
 }
 
-/// Periodic orb turret in the fog-free training strip.
+/// Periodic orb turret — fires straight ahead along its facing.
 #[derive(Component, Debug, Clone, Copy)]
 pub struct Firebreather {
     pub timer: f32,
@@ -65,14 +65,15 @@ pub struct HazardOrb {
     pub velocity: Vec3,
 }
 
-/// Marker for the northern training strip ground.
+/// Marker for the training strip ground.
 #[derive(Component, Debug, Clone, Copy)]
 pub struct ObstacleCourseGround;
 
+// Screen-top from the default camera is world −Z.
 pub const COURSE_MIN_X: f32 = -28.0;
 pub const COURSE_MAX_X: f32 = 28.0;
-pub const COURSE_MIN_Z: f32 = 52.0;
-pub const COURSE_MAX_Z: f32 = 68.0;
+pub const COURSE_MIN_Z: f32 = -68.0;
+pub const COURSE_MAX_Z: f32 = -52.0;
 
 fn spawn_obstacle_course(
     mut commands: Commands,
@@ -122,12 +123,15 @@ fn spawn_obstacle_course(
         Transform::from_xyz(mid_x, 0.06, mid_z),
     ));
 
-    // Firebreather — left side; pulses orbs at the nearest unit or along +X.
+    // Firebreather — faces +X and only shoots along that facing.
+    let mut fire_tf =
+        Transform::from_xyz(-22.0, 1.6, mid_z).with_scale(Vec3::new(0.7, 0.85, 0.7));
+    fire_tf.look_to(Dir3::X, Vec3::Y);
     commands.spawn((
         Name::new("Firebreather"),
         Mesh3d(assets.tower_mesh.clone()),
         MeshMaterial3d(fire_mat),
-        Transform::from_xyz(-22.0, 1.6, mid_z).with_scale(Vec3::new(0.7, 0.85, 0.7)),
+        fire_tf,
         Firebreather {
             timer: 0.5,
             interval: 1.8,
@@ -138,7 +142,6 @@ fn spawn_obstacle_course(
         UnitRadius(0.7),
     ));
 
-    // Heartpiercer — right side; fires when the plate is stepped on.
     let piercer = commands
         .spawn((
             Name::new("Heartpiercer"),
@@ -191,10 +194,6 @@ fn tick_firebreathers(
     mut commands: Commands,
     assets: Res<SharedAssets>,
     mut turrets: Query<(&Transform, &mut Firebreather)>,
-    targets: Query<
-        (&Transform, &Health),
-        Or<(With<PlayerHero>, With<NetworkedHero>, With<Creep>)>,
-    >,
 ) {
     let dt = time.delta_secs();
     for (tf, mut gun) in &mut turrets {
@@ -204,23 +203,22 @@ fn tick_firebreathers(
         }
         gun.timer = gun.interval;
 
-        let origin = tf.translation;
-        let chosen = targets
-            .iter()
-            .filter(|(_, hp)| hp.is_alive())
-            .filter(|(t, _)| flat_distance(origin, t.translation) <= gun.range)
-            .min_by(|a, b| {
-                flat_distance(origin, a.0.translation)
-                    .partial_cmp(&flat_distance(origin, b.0.translation))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-
-        let aim = if let Some((target_tf, _)) = chosen {
-            target_tf.translation
+        let forward = *tf.forward();
+        let flat = Vec3::new(forward.x, 0.0, forward.z);
+        let dir = if flat.length_squared() > 1e-4 {
+            flat.normalize()
         } else {
-            origin + Vec3::new(gun.range, 0.0, 0.0)
+            Vec3::X
         };
-        spawn_hazard_orb(&mut commands, &assets, origin, aim, gun.damage, gun.speed);
+        let aim = tf.translation + dir * gun.range;
+        spawn_hazard_orb(
+            &mut commands,
+            &assets,
+            tf.translation,
+            aim,
+            gun.damage,
+            gun.speed,
+        );
     }
 }
 
