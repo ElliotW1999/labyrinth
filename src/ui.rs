@@ -897,9 +897,8 @@ fn handle_inventory_context_menu(
 
 fn handle_inventory_sell_clicks(
     interactions: Query<&Interaction, (Changed<Interaction>, With<InventorySellButton>)>,
-    menu: Res<InventoryContextMenu>,
     mut sell: MessageWriter<SellItemRequest>,
-    mut menu_state: ResMut<InventoryContextMenu>,
+    mut menu: ResMut<InventoryContextMenu>,
     mut menu_vis: Query<&mut Visibility, With<InventorySellMenu>>,
 ) {
     for interaction in &interactions {
@@ -909,7 +908,7 @@ fn handle_inventory_sell_clicks(
         if let Some(slot) = menu.slot {
             sell.write(SellItemRequest { slot });
         }
-        menu_state.slot = None;
+        menu.slot = None;
         if let Ok(mut vis) = menu_vis.single_mut() {
             *vis = Visibility::Hidden;
         }
@@ -1233,4 +1232,19 @@ fn world_to_minimap(pos: Vec3, half_extent: f32) -> (f32, f32) {
     let x = nx * (MINIMAP_SIZE - 8.0) + 1.0;
     let y = nz * (MINIMAP_SIZE - 8.0) + 1.0;
     (x, y)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: sell clicks must not take Res + ResMut of the same menu (Bevy B0002).
+    #[test]
+    fn inventory_sell_clicks_system_initializes() {
+        let mut world = World::new();
+        world.init_resource::<InventoryContextMenu>();
+        world.init_resource::<Messages<SellItemRequest>>();
+        let mut system = IntoSystem::into_system(handle_inventory_sell_clicks);
+        system.initialize(&mut world);
+    }
 }
