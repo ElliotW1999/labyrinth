@@ -12,6 +12,7 @@ mod camera;
 mod combat;
 mod components;
 mod facing;
+mod fog;
 mod healthbars;
 mod heroes;
 mod input;
@@ -19,6 +20,7 @@ mod items;
 mod map;
 mod movement;
 mod net;
+mod obstacle_course;
 mod progression;
 mod resources;
 mod ui;
@@ -34,6 +36,7 @@ use abilities::AbilitiesPlugin;
 use ai::AiPlugin;
 use camera::CameraPlugin;
 use combat::CombatPlugin;
+use fog::FogPlugin;
 use healthbars::HealthBarPlugin;
 use heroes::{HeroId, HeroesPlugin, LocalHeroChoice};
 use input::InputPlugin;
@@ -41,6 +44,7 @@ use items::ItemsPlugin;
 use map::MapPlugin;
 use movement::MovementPlugin;
 use net::{NetConfig, NetMode, NetPlugin};
+use obstacle_course::ObstacleCoursePlugin;
 use progression::ProgressionPlugin;
 use resources::ResourcesPlugin;
 use ui::UiPlugin;
@@ -137,6 +141,8 @@ fn main() {
             WavesPlugin,
             CameraPlugin,
             HealthBarPlugin,
+            FogPlugin,
+            ObstacleCoursePlugin,
             UiPlugin,
         ))
         .run();

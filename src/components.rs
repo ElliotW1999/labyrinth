@@ -84,7 +84,7 @@ pub struct CombatStats {
     pub attack_point: f32,
     /// Backswing after the attack (0..=0.5s); cancelled by new player orders.
     pub attack_backswing: f32,
-    /// Yaw turn rate in radians per second.
+    /// Yaw turn rate in radians per 0.03 seconds.
     pub turn_rate: f32,
     pub armor: f32,
     pub magic_resist: f32,
@@ -113,7 +113,7 @@ impl CombatStats {
             attack_speed: attacks_per_sec,
             attack_point: 0.2,
             attack_backswing: 0.25,
-            turn_rate: 8.0,
+            turn_rate: crate::facing::CREEP_TURN_RATE,
             armor,
             magic_resist,
             move_speed,

@@ -56,7 +56,7 @@ The HUD shows connection status. Host sim runs combat / creeps / AI; clients app
 | Spell bar `+` | Rank up when highlighted |
 | A S D Z X C | Use inventory item in that slot (actives only) |
 | RMB inventory slot | Open sell menu (50% refund; must be near shop) |
-| `$` shop button (bottom-right) | Toggle item shop panel |
+| `$` shop button (bottom-right, shows gold) | Toggle item shop panel |
 | Click outside shop / Esc | Close shop panel |
 | Arrow keys / screen edge | Pan camera on the XZ plane |
 | F | Snap camera to hero (no continuous lock) |
@@ -73,10 +73,23 @@ Each hero has its own base Str/Agi/Int and per-level growth.
 
 ### Combat timing
 
-- Units turn toward move/attack facing with a **turn rate**
+- Units only **start** moving, attacking, or casting once the aim/target is within **11.5°** of facing
+- **Turn rate** is radians per **0.03s** (heroes default **0.6**, creeps **0.5**)
 - Attacks use **foreswing** (0–0.5s) then fire, then **backswing** (0–0.5s; cancelled by move/stop/new orders)
 - Attack speed rating: `(base AS + agility + flat bonuses) × (1 + mult)`, clamped **20–700**; APS = `(IAS/100) / BAT`
 - Abilities use **cast point** then fire, then cancellable **cast backswing**
+
+### Fog of war
+
+- Enemy heroes/creeps are hidden outside team vision; buildings and trees stay visible
+- Heroes and towers have generous vision; creeps have half that range
+- Trees block line of sight for heroes, creeps, and towers
+- Northern **obstacle course** is fog-free
+
+### Obstacle course (north strip)
+
+- **Firebreather** — fires orbs on a timer
+- **Heartpiercer** — fires an orb when its pressure plate is stepped on
 
 ### Status effects
 
@@ -112,10 +125,11 @@ Each hero has its own base Str/Agi/Int and per-level growth.
 - Unit soft-push is **off by default**; the **forceful** buff enables it (e.g. Vanguard Shockwave). **Phased** (Dash/Blink) ignores unit push.
 ## What's included
 
-- Three-lane map with river, jungle pockets, tree obstacles, towers, and ancients
+- Three-lane map with river, jungle pockets, tree obstacles, towers, ancients, and a northern obstacle course
+- Fog of war with tree line-of-sight (buildings always visible; course is fog-free)
 - Selectable heroes (Vanguard / Skirmisher / Arcanist) with unique spells and Str/Agi/Int growth
 - Player hero with Str/Agi/Int, HP / mana / gold / XP / levels and rankable QWER abilities
-- Item shop, 6-slot inventory, and timed buffs / debuffs (phased, forceful, item actives)
+- Item shop (gold on the shop button), 6-slot inventory between spells and minimap, timed buffs / debuffs
 - Creep waves that path down each lane
 - Explicit right-click attack orders and G attack-move (path to cursor, attack in range)
 - Building/tree collision; unit soft-push only while **forceful**
@@ -129,26 +143,28 @@ Each hero has its own base Str/Agi/Int and per-level growth.
 
 ```
 src/
-  main.rs          App entry + CLI (--mode, --hero) + plugin wiring
-  components.rs    Teams, vitals, attributes, abilities, unit tags
-  heroes.rs        Hero roster, select UI, spawn-on-pick
-  resources.rs     Match config + shared meshes/materials
-  map.rs           Battlefield + lane waypoints
-  units.rs         Hero / creep / tower / ancient factories
-  facing.rs        Turn-rate helpers
-  movement.rs      Move orders + tree / building / unit collision
-  combat.rs        Attack windup/backswing, projectiles, death / gold / XP
-  progression.rs   Hero XP, attributes, and level-up growth
-  abilities.rs     QWER casting with cast point/backswing
-  items.rs         Shop, inventory, sell, actives, status effects
-  net/             Offline / host / client UDP session + hero snapshots
-  ai.rs            Lane following + aggro
-  waves.rs         Periodic creep spawns
-  camera.rs        Free camera (edge / arrows / F snap)
-  input.rs         RMB move / attack-move / stop / spell ranking
-  ui.rs            HUD (spell bar, inventory sell menu, shop, minimap)
+  main.rs             App entry + CLI (--mode, --hero) + plugin wiring
+  components.rs       Teams, vitals, attributes, abilities, unit tags
+  heroes.rs           Hero roster, select UI, spawn-on-pick
+  resources.rs        Match config + shared meshes/materials
+  map.rs              Battlefield + lane waypoints
+  units.rs            Hero / creep / tower / ancient factories
+  facing.rs           Turn-rate / facing-cone helpers
+  fog.rs              Fog of war + tree LoS
+  obstacle_course.rs  Firebreather / Heartpiercer training strip
+  movement.rs         Move orders + tree / building / unit collision
+  combat.rs           Attack windup/backswing, projectiles, death / gold / XP
+  progression.rs      Hero XP, attributes, and level-up growth
+  abilities.rs        QWER casting with cast point/backswing
+  items.rs            Shop, inventory, sell, actives, status effects
+  net/                Offline / host / client UDP session + hero snapshots
+  ai.rs               Lane following + aggro
+  waves.rs            Periodic creep spawns
+  camera.rs           Free camera (edge / arrows / F snap)
+  input.rs            RMB move / attack-move / stop / spell ranking
+  ui.rs               HUD (spell bar, inventory, shop gold, minimap)
 ```
 
 ## Extending
 
-Natural next layers: last-hit gold rules, fog of war, jungle neutrals, item recipes / sell-back, full unit replication, ability RPCs, and richer netcode (prediction / interpolation).
+Natural next layers: last-hit gold rules, jungle neutrals, item recipes, full unit replication, ability RPCs, and richer netcode (prediction / interpolation).

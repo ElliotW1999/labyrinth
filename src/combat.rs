@@ -40,7 +40,8 @@ fn tick_attack_cooldowns(time: Res<Time>, mut query: Query<&mut AttackCooldown>)
     }
 }
 
-/// Start foreswing when off cooldown, able to attack, and facing the target.
+/// Start foreswing when off cooldown, able to attack, and facing the target
+/// within the 11.5° cone.
 fn begin_attack_windups(
     time: Res<Time>,
     mut commands: Commands,
