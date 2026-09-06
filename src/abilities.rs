@@ -373,7 +373,15 @@ fn confirm_or_cancel_targeted_cast(
         With<PlayerHero>,
     >,
     enemies: Query<
-        (Entity, &Transform, &Team, &Health, &CombatStats, Option<&UnitRadius>),
+        (
+            Entity,
+            &Transform,
+            &Team,
+            &Health,
+            &CombatStats,
+            Option<&UnitRadius>,
+            &Visibility,
+        ),
         Without<PlayerHero>,
     >,
 ) {
@@ -409,8 +417,12 @@ fn confirm_or_cancel_targeted_cast(
 
     let unit_target = enemies
         .iter()
-        .filter(|(_, _, enemy_team, hp, _, _)| **enemy_team == team.enemy() && hp.is_alive())
-        .filter(|(_, tf, _, _, _, radius)| {
+        .filter(|(_, _, enemy_team, hp, _, _, vis)| {
+            **enemy_team == team.enemy()
+                && hp.is_alive()
+                && !matches!(*vis, Visibility::Hidden)
+        })
+        .filter(|(_, tf, _, _, _, radius, _)| {
             let r = radius.map(|r| r.0).unwrap_or(0.5);
             flat_distance(tf.translation, hit) < r + 1.4
         })
@@ -419,7 +431,7 @@ fn confirm_or_cancel_targeted_cast(
                 .partial_cmp(&flat_distance(b.1.translation, hit))
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
-        .map(|(e, tf, _, _, _, _)| (e, tf.translation));
+        .map(|(e, tf, _, _, _, _, _)| (e, tf.translation));
 
     if pending.unit_only && unit_target.is_none() {
         // Unit-targeted spells require a creep/hero under the cursor.
@@ -577,7 +589,7 @@ fn tick_ability_casting(
     mut hero: Query<
         (
             Entity,
-            &Transform,
+            &mut Transform,
             &Team,
             &mut AbilityCasting,
             &AbilityLoadout,
@@ -599,7 +611,7 @@ fn tick_ability_casting(
     let dt = time.delta_secs();
     let Ok((
         hero_entity,
-        transform,
+        mut transform,
         team,
         mut casting,
         loadout,
@@ -617,6 +629,12 @@ fn tick_ability_casting(
     }
 
     if !casting.fired {
+        // Hold cast point until the aim point is inside the facing cone.
+        let aim = casting.aim;
+        let dir = aim - transform.translation;
+        if !crate::facing::turn_toward(&mut transform, dir, stats.turn_rate, dt) {
+            return;
+        }
         casting.point_remaining = (casting.point_remaining - dt).max(0.0);
         if casting.point_remaining > 0.0 {
             return;
@@ -627,7 +645,6 @@ fn tick_ability_casting(
             return;
         };
         let ability = casting.ability;
-        let aim = casting.aim;
         let aoe = casting.aoe_radius;
         let unit_entity = casting.unit_target;
 
@@ -637,7 +654,7 @@ fn tick_ability_casting(
                     &mut commands,
                     &assets,
                     hero_entity,
-                    transform,
+                    &transform,
                     &stats,
                     &mut statuses,
                     aim,
@@ -666,7 +683,7 @@ fn tick_ability_casting(
                     &mut commands,
                     &assets,
                     hero_entity,
-                    transform,
+                    &transform,
                     *team,
                     aim,
                     aoe.max(1.2),
@@ -720,7 +737,7 @@ fn tick_ability_casting(
                 let hits = cast_instant(
                     &mut commands,
                     &assets,
-                    transform,
+                    &transform,
                     *team,
                     &slot,
                     &enemy_set.p1(),

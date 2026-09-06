@@ -136,6 +136,7 @@ fn handle_point_and_click(
         &Health,
         Option<&UnitRadius>,
         Option<&NetworkId>,
+        &Visibility,
     )>,
     shop_ui: Res<ShopUiState>,
     config: Res<NetConfig>,
@@ -169,8 +170,10 @@ fn handle_point_and_click(
 
     let clicked_enemy = enemies
         .iter()
-        .filter(|(_, _, team, hp, _, _)| **team == hero_team.enemy() && hp.is_alive())
-        .filter(|(_, tf, _, _, radius, _)| {
+        .filter(|(_, _, team, hp, _, _, vis)| {
+            **team == hero_team.enemy() && hp.is_alive() && !matches!(*vis, Visibility::Hidden)
+        })
+        .filter(|(_, tf, _, _, radius, _, _)| {
             let r = radius.map(|r| r.0).unwrap_or(0.5);
             flat_distance(tf.translation(), hit) < r + 1.2
         })
@@ -184,7 +187,7 @@ fn handle_point_and_click(
         let Some(mut transport) = transport else {
             return;
         };
-        if let Some((_, _, _, _, _, net_id)) = clicked_enemy {
+        if let Some((_, _, _, _, _, net_id, _)) = clicked_enemy {
             if let Some(id) = net_id {
                 client_send_command(
                     &mut transport,
@@ -213,7 +216,7 @@ fn handle_point_and_click(
         return;
     }
 
-    if let Some((enemy, enemy_tf, _, _, radius, _)) = clicked_enemy {
+    if let Some((enemy, enemy_tf, _, _, radius, _, _)) = clicked_enemy {
         commands
             .entity(hero_entity)
             .remove::<crate::components::AttackMoveOrder>()

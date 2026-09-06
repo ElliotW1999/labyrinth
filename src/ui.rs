@@ -23,6 +23,7 @@ impl Plugin for UiPlugin {
                 Update,
                 (
                     refresh_hud_text,
+                    refresh_shop_gold_button,
                     refresh_hero_name,
                     refresh_spell_bar,
                     handle_spell_level_clicks,
@@ -124,6 +125,9 @@ struct InventorySlotCd {
 struct ShopToggleButton;
 
 #[derive(Component)]
+struct ShopGoldLabel;
+
+#[derive(Component)]
 struct ShopPanel;
 
 #[derive(Component)]
@@ -169,7 +173,9 @@ enum MinimapDotKind {
 
 const MINIMAP_SIZE: f32 = 180.0;
 const MAX_MINIMAP_DOTS: usize = 64;
-const SHOP_BUTTON_SIZE: f32 = 44.0;
+const SHOP_BUTTON_WIDTH: f32 = 108.0;
+const SHOP_BUTTON_HEIGHT: f32 = 44.0;
+const INVENTORY_WIDTH: f32 = 336.0;
 
 fn spawn_hud(mut commands: Commands) {
     commands
@@ -249,24 +255,6 @@ fn spawn_hud(mut commands: Commands) {
                 ));
             });
 
-            // Inventory bar (above spell bar)
-            root.spawn(Node {
-                position_type: PositionType::Absolute,
-                bottom: px(100),
-                left: percent(50),
-                margin: UiRect::left(px(-168)),
-                flex_direction: FlexDirection::Row,
-                column_gap: px(6),
-                padding: UiRect::all(px(6)),
-                border_radius: BorderRadius::all(px(6)),
-                ..default()
-            })
-            .with_children(|bar| {
-                for i in 0..6 {
-                    spawn_inventory_slot(bar, i);
-                }
-            });
-
             // Bottom-center spell bar
             root.spawn((
                 SpellBarRoot,
@@ -289,10 +277,29 @@ fn spawn_hud(mut commands: Commands) {
                 }
             });
 
+            // Inventory sits between the spell bar and the minimap.
+            root.spawn(Node {
+                position_type: PositionType::Absolute,
+                bottom: px(18),
+                right: px(14.0 + MINIMAP_SIZE + 12.0),
+                width: px(INVENTORY_WIDTH),
+                flex_direction: FlexDirection::Row,
+                column_gap: px(6),
+                padding: UiRect::all(px(6)),
+                border_radius: BorderRadius::all(px(6)),
+                justify_content: JustifyContent::FlexEnd,
+                ..default()
+            })
+            .with_children(|bar| {
+                for i in 0..6 {
+                    spawn_inventory_slot(bar, i);
+                }
+            });
+
             // Help
             root.spawn((
                 Text::new(
-                    "1-3 hero select  |  RMB: move/attack  |  G: attack-move  |  ASDZXC: items  |  $ shop  |  Space: stop",
+                    "1-3 hero select  |  RMB: move/attack  |  G: attack-move  |  ASDZXC: items  |  shop gold  |  Space: stop",
                 ),
                 TextFont::from_font_size(14.0),
                 TextColor(Color::srgba(0.8, 0.85, 0.9, 0.8)),
@@ -310,7 +317,7 @@ fn spawn_hud(mut commands: Commands) {
                 Node {
                     position_type: PositionType::Absolute,
                     right: px(14),
-                    bottom: px(14.0 + SHOP_BUTTON_SIZE + 8.0),
+                    bottom: px(14.0 + SHOP_BUTTON_HEIGHT + 8.0),
                     width: px(MINIMAP_SIZE),
                     height: px(MINIMAP_SIZE),
                     border: UiRect::all(px(2)),
@@ -353,7 +360,7 @@ fn spawn_hud(mut commands: Commands) {
                 }
             });
 
-            // Shop toggle — bottom-right corner of the window
+            // Shop toggle with live gold — bottom-right corner
             root.spawn((
                 Button,
                 ShopToggleButton,
@@ -361,8 +368,8 @@ fn spawn_hud(mut commands: Commands) {
                     position_type: PositionType::Absolute,
                     right: px(14),
                     bottom: px(14),
-                    width: px(SHOP_BUTTON_SIZE),
-                    height: px(SHOP_BUTTON_SIZE),
+                    width: px(SHOP_BUTTON_WIDTH),
+                    height: px(SHOP_BUTTON_HEIGHT),
                     align_items: AlignItems::Center,
                     justify_content: JustifyContent::Center,
                     border: UiRect::all(px(2)),
@@ -375,8 +382,9 @@ fn spawn_hud(mut commands: Commands) {
             ))
             .with_children(|btn| {
                 btn.spawn((
-                    Text::new("$"),
-                    TextFont::from_font_size(24.0),
+                    ShopGoldLabel,
+                    Text::new("$ 0"),
+                    TextFont::from_font_size(18.0),
                     TextColor(Color::srgb(0.1, 0.08, 0.02)),
                 ));
             });
@@ -756,6 +764,19 @@ fn refresh_hud_text(
             mr = stats.magic_resist,
         ));
     }
+}
+
+fn refresh_shop_gold_button(
+    hero: Query<&PlayerWallet, With<PlayerHero>>,
+    mut label: Query<&mut Text, With<ShopGoldLabel>>,
+) {
+    let Ok(wallet) = hero.single() else {
+        return;
+    };
+    let Ok(mut text) = label.single_mut() else {
+        return;
+    };
+    *text = Text::new(format!("$ {}", wallet.gold));
 }
 
 fn refresh_buffs_text(
@@ -1159,10 +1180,10 @@ fn refresh_net_status(
 fn refresh_minimap(
     config: Res<MatchConfig>,
     hero: Query<(&Transform, &Team), With<PlayerHero>>,
-    creeps: Query<(&Transform, &Team), With<Creep>>,
+    creeps: Query<(&Transform, &Team, &Visibility), With<Creep>>,
     towers: Query<(&Transform, &Team), (With<Tower>, Without<Ancient>)>,
     ancients: Query<&Transform, With<Ancient>>,
-    mut dots: Query<(&mut MinimapDot, &mut Node, &mut BackgroundColor, &mut Visibility)>,
+    mut dots: Query<(&mut MinimapDot, &mut Node, &mut BackgroundColor, &mut Visibility), Without<Creep>>,
 ) {
     let Ok((hero_tf, hero_team)) = hero.single() else {
         return;
@@ -1172,7 +1193,11 @@ fn refresh_minimap(
     let mut entries: Vec<(MinimapDotKind, Vec3)> = Vec::new();
     entries.push((MinimapDotKind::Hero, hero_tf.translation));
 
-    for (tf, team) in &creeps {
+    for (tf, team, vis) in &creeps {
+        // Fog of war: hidden enemy creeps stay off the minimap.
+        if matches!(*vis, Visibility::Hidden) {
+            continue;
+        }
         let kind = if *team == *hero_team {
             MinimapDotKind::AllyCreep
         } else {

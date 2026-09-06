@@ -81,9 +81,12 @@ fn apply_move_targets(
 
         let dir = to_target / distance;
         let facing = turn_toward(&mut transform, dir, stats.turn_rate, dt);
-        // Still allow movement while turning (soft turn-rate), but prefer facing.
+        // Do not begin moving until the destination is within the facing cone.
+        if !facing {
+            continue;
+        }
 
-        let step = stats.move_speed * dt * if facing { 1.0 } else { 0.55 };
+        let step = stats.move_speed * dt;
         let mut next = if step >= distance {
             destination
         } else {

@@ -161,7 +161,7 @@ fn player_attack_move(
         (Entity, &Transform, &CombatStats, &Team, &AttackMoveOrder),
         With<PlayerHero>,
     >,
-    enemies: Query<(Entity, &Transform, &Team, &Health, Option<&UnitRadius>)>,
+    enemies: Query<(Entity, &Transform, &Team, &Health, Option<&UnitRadius>, &Visibility)>,
     mut commands: Commands,
 ) {
     let Ok((entity, transform, stats, hero_team, order)) = hero.single() else {
@@ -170,8 +170,10 @@ fn player_attack_move(
 
     let in_range = enemies
         .iter()
-        .filter(|(_, _, team, hp, _)| **team == hero_team.enemy() && hp.is_alive())
-        .filter(|(_, tf, _, _, radius)| {
+        .filter(|(_, _, team, hp, _, vis)| {
+            **team == hero_team.enemy() && hp.is_alive() && !matches!(*vis, Visibility::Hidden)
+        })
+        .filter(|(_, tf, _, _, radius, _)| {
             let r = radius.map(|r| r.0).unwrap_or(0.5);
             flat_distance(transform.translation, tf.translation) <= stats.attack_range + r
         })
@@ -181,7 +183,7 @@ fn player_attack_move(
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
-    if let Some((enemy, _, _, _, _)) = in_range {
+    if let Some((enemy, _, _, _, _, _)) = in_range {
         commands.entity(entity).insert(AttackTarget(enemy));
         commands.entity(entity).remove::<MoveTarget>();
         return;

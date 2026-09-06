@@ -22,7 +22,7 @@ pub struct MatchConfig {
 impl Default for MatchConfig {
     fn default() -> Self {
         Self {
-            map_half_extent: 60.0,
+            map_half_extent: 70.0,
             creep_wave_interval: 30.0,
             creeps_per_wave: 4,
         }
