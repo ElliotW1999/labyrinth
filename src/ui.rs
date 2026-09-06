@@ -8,7 +8,8 @@ use crate::components::{
 };
 use crate::heroes::HeroKind;
 use crate::items::{
-    Inventory, ItemId, ItemShop, PurchaseItemRequest, ShopUiState, StatusEffects, StatusKind,
+    Inventory, InventoryContextMenu, ItemId, ItemShop, PurchaseItemRequest, SellItemRequest,
+    ShopUiState, StatusEffects, StatusKind,
 };
 use crate::net::NetStatus;
 use crate::resources::MatchConfig;
@@ -26,6 +27,8 @@ impl Plugin for UiPlugin {
                     refresh_spell_bar,
                     handle_spell_level_clicks,
                     refresh_inventory_bar,
+                    handle_inventory_context_menu,
+                    handle_inventory_sell_clicks,
                     refresh_buffs_text,
                     handle_shop_toggle_button,
                     sync_shop_panel_visibility,
@@ -139,6 +142,12 @@ struct ItemTooltip;
 
 #[derive(Component)]
 struct ItemTooltipText;
+
+#[derive(Component)]
+struct InventorySellMenu;
+
+#[derive(Component)]
+struct InventorySellButton;
 
 #[derive(Component)]
 struct MinimapRoot;
@@ -468,6 +477,49 @@ fn spawn_hud(mut commands: Commands) {
                     TextColor(Color::srgb(0.95, 0.95, 1.0)),
                 ));
             });
+
+            // Inventory sell dropdown (opened via RMB on a slot)
+            root.spawn((
+                InventorySellMenu,
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: px(40),
+                    bottom: px(175),
+                    width: px(140),
+                    padding: UiRect::all(px(6)),
+                    flex_direction: FlexDirection::Column,
+                    row_gap: px(4),
+                    border: UiRect::all(px(1)),
+                    border_radius: BorderRadius::all(px(6)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.08, 0.09, 0.12, 0.96)),
+                BorderColor::all(Color::srgb(0.7, 0.75, 0.85)),
+                Visibility::Hidden,
+                ZIndex(70),
+            ))
+            .with_children(|menu| {
+                menu.spawn((
+                    Button,
+                    InventorySellButton,
+                    Node {
+                        width: percent(100),
+                        height: px(28),
+                        align_items: AlignItems::Center,
+                        justify_content: JustifyContent::Center,
+                        border_radius: BorderRadius::all(px(4)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.35, 0.25, 0.2)),
+                ))
+                .with_children(|btn| {
+                    btn.spawn((
+                        Text::new("Sell (50%)"),
+                        TextFont::from_font_size(14.0),
+                        TextColor(Color::WHITE),
+                    ));
+                });
+            });
         });
 }
 
@@ -695,8 +747,9 @@ fn refresh_hud_text(
     }
     if let Ok(mut text) = texts.p5().single_mut() {
         *text = Text::new(format!(
-            "AD {ad:.0}  AS {aspeed:.2}  Rng {rng:.0}  Arm {arm:.1}  MR {mr:.1}",
+            "AD {ad:.0}  IAS {ias:.0}  APS {aspeed:.2}  Rng {rng:.0}  Arm {arm:.1}  MR {mr:.1}",
             ad = stats.attack_damage,
+            ias = stats.attack_speed_rating(attrs.agility),
             aspeed = stats.attack_speed,
             rng = stats.attack_range,
             arm = stats.armor,
@@ -802,6 +855,64 @@ fn refresh_spell_bar(
         } else {
             Color::srgb(0.15, 0.15, 0.18)
         });
+    }
+}
+
+fn handle_inventory_context_menu(
+    mouse: Res<ButtonInput<MouseButton>>,
+    keys: Res<ButtonInput<KeyCode>>,
+    slots: Query<(&Interaction, &InventorySlotIcon)>,
+    inv: Query<&Inventory, With<PlayerHero>>,
+    mut menu: ResMut<InventoryContextMenu>,
+    mut menu_vis: Query<&mut Visibility, With<InventorySellMenu>>,
+) {
+    if mouse.just_pressed(MouseButton::Right) {
+        let Ok(inventory) = inv.single() else {
+            return;
+        };
+        for (interaction, slot) in &slots {
+            if *interaction == Interaction::None {
+                continue;
+            }
+            if inventory.slots.get(slot.index).and_then(|s| s.as_ref()).is_some() {
+                menu.slot = Some(slot.index);
+                if let Ok(mut vis) = menu_vis.single_mut() {
+                    *vis = Visibility::Visible;
+                }
+                return;
+            }
+        }
+        menu.slot = None;
+        if let Ok(mut vis) = menu_vis.single_mut() {
+            *vis = Visibility::Hidden;
+        }
+    }
+    if keys.just_pressed(KeyCode::Escape) {
+        menu.slot = None;
+        if let Ok(mut vis) = menu_vis.single_mut() {
+            *vis = Visibility::Hidden;
+        }
+    }
+}
+
+fn handle_inventory_sell_clicks(
+    interactions: Query<&Interaction, (Changed<Interaction>, With<InventorySellButton>)>,
+    menu: Res<InventoryContextMenu>,
+    mut sell: MessageWriter<SellItemRequest>,
+    mut menu_state: ResMut<InventoryContextMenu>,
+    mut menu_vis: Query<&mut Visibility, With<InventorySellMenu>>,
+) {
+    for interaction in &interactions {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        if let Some(slot) = menu.slot {
+            sell.write(SellItemRequest { slot });
+        }
+        menu_state.slot = None;
+        if let Ok(mut vis) = menu_vis.single_mut() {
+            *vis = Visibility::Hidden;
+        }
     }
 }
 

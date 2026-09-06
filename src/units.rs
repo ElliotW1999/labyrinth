@@ -92,18 +92,12 @@ pub fn spawn_creep(
         team,
         Creep { lane },
         Health::new(280.0),
-        CombatStats {
-            attack_damage: 18.0,
-            attack_range: 4.5,
-            attack_speed: 0.9,
-            armor: 1.0,
-            magic_resist: 0.5,
-            move_speed: 7.5,
-        },
+        CombatStats::simple(18.0, 4.5, 0.9, 1.0, 0.5, 7.5),
         AttackCooldown(0.0),
         UnitRadius(0.4),
         GoldBounty(35),
         XpBounty(45),
+        crate::items::StatusEffects::default(),
         crate::ai::LaneFollower {
             waypoints: crate::map::lane_path(team, lane),
             index: 0,
@@ -132,14 +126,7 @@ pub fn spawn_tower(
         Tower,
         lane,
         Health::new(1800.0),
-        CombatStats {
-            attack_damage: 90.0,
-            attack_range: 14.0,
-            attack_speed: 0.85,
-            armor: 12.0,
-            magic_resist: 8.0,
-            move_speed: 0.0,
-        },
+        CombatStats::simple(90.0, 14.0, 0.85, 12.0, 8.0, 0.0),
         AttackCooldown(0.0),
         UnitRadius(0.9),
         GoldBounty(120),
@@ -158,6 +145,12 @@ pub fn spawn_ancient(
         Team::Dire => assets.tower_dire_mat.clone(),
     };
 
+    let mut stats = CombatStats::simple(0.0, 0.0, 0.0, 15.0, 12.0, 0.0);
+    stats.attack_point = 0.0;
+    stats.attack_backswing = 0.0;
+    stats.base_attack_speed = 20.0;
+    stats.recompute_attack_speed(0.0);
+
     commands.spawn((
         Name::new(format!("{team:?} Ancient")),
         Mesh3d(assets.ancient_mesh.clone()),
@@ -166,14 +159,7 @@ pub fn spawn_ancient(
         team,
         Ancient,
         Health::new(4000.0),
-        CombatStats {
-            attack_damage: 0.0,
-            attack_range: 0.0,
-            attack_speed: 0.0,
-            armor: 15.0,
-            magic_resist: 12.0,
-            move_speed: 0.0,
-        },
+        stats,
         UnitRadius(1.8),
         GoldBounty(0),
         XpBounty(400),

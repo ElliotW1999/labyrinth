@@ -4,11 +4,15 @@ use bevy::prelude::*;
 
 use crate::combat::{apply_damage, flat_distance, cursor_ground_hit, spawn_spell_bolt};
 use crate::components::{
-    AbilityCastKind, AbilityId, AbilityLoadout, AttackMoveOrder, AttackTarget, CombatStats,
-    DamageType, Ground, Health, Lifetime, Mana, MoveTarget, PlayerHero, QueuedAbilityCast, SpellFx,
-    Team, UnitRadius,
+    AbilityCastKind, AbilityCasting, AbilityId, AbilityLoadout, AbilitySlot, AttackMoveOrder,
+    AttackSwing, AttackTarget, CombatStats, DamageType, Ground, Health, Lifetime, Mana, MoveTarget,
+    PlayerHero, QueuedAbilityCast, SpellFx, Team, UnitRadius,
 };
-use crate::items::{apply_forceful, apply_phased, apply_status, StatusEffect, StatusEffects};
+use crate::items::{
+    apply_debuff_immunity, apply_disarm, apply_forceful, apply_phased, apply_root, apply_silence,
+    apply_stun,
+    apply_status, StatusEffect, StatusEffects,
+};
 use crate::resources::SharedAssets;
 
 pub struct AbilitiesPlugin;
@@ -25,6 +29,7 @@ impl Plugin for AbilitiesPlugin {
                     update_targeting_indicators,
                     confirm_or_cancel_targeted_cast,
                     resolve_queued_ability_casts,
+                    tick_ability_casting,
                     despawn_indicators,
                     animate_spell_fx,
                     apply_pending_damage,
@@ -47,6 +52,8 @@ pub struct PendingTargetedCast {
     pub ability: AbilityId,
     pub cast_range: f32,
     pub aoe_radius: f32,
+    /// When true, confirm requires a creep/hero under the cursor.
+    pub unit_only: bool,
 }
 
 #[derive(Component)]
@@ -80,21 +87,20 @@ fn begin_or_cast_from_hotkeys(
         (
             Entity,
             &Transform,
-            &Team,
             &mut AbilityLoadout,
             &mut Mana,
-            &mut CombatStats,
-            &mut StatusEffects,
+            &StatusEffects,
         ),
         With<PlayerHero>,
     >,
-    enemies: Query<(Entity, &Transform, &Team, &Health, &CombatStats), Without<PlayerHero>>,
 ) {
-    let Ok((hero_entity, transform, team, mut loadout, mut mana, mut stats, mut statuses)) =
-        hero.single_mut()
-    else {
+    let Ok((hero_entity, transform, mut loadout, mut mana, statuses)) = hero.single_mut() else {
         return;
     };
+
+    if !statuses.can_cast() {
+        return;
+    }
 
     // Ctrl+QWER is reserved for spending skill points.
     if keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight) {
@@ -117,7 +123,10 @@ fn begin_or_cast_from_hotkeys(
         if targeting.active.is_some() {
             clear_targeting(&mut commands, &mut targeting);
         }
-        commands.entity(hero_entity).remove::<QueuedAbilityCast>();
+        commands
+            .entity(hero_entity)
+            .remove::<QueuedAbilityCast>()
+            .remove::<AbilityCasting>();
 
         let Some(slot) = loadout.slots.get(index).cloned() else {
             continue;
@@ -138,15 +147,14 @@ fn begin_or_cast_from_hotkeys(
                     continue;
                 }
                 slot_mut.cooldown_remaining = slot_mut.cooldown;
-                cast_instant(
+                start_ability_cast(
                     &mut commands,
-                    &assets,
-                    transform,
-                    *team,
+                    hero_entity,
+                    index,
                     slot_mut,
-                    &enemies,
-                    &mut stats,
-                    &mut statuses,
+                    transform.translation,
+                    0.0,
+                    None,
                 );
             }
             AbilityCastKind::Targeted {
@@ -158,6 +166,7 @@ fn begin_or_cast_from_hotkeys(
                     ability: slot.id,
                     cast_range,
                     aoe_radius,
+                    unit_only: false,
                 });
                 spawn_indicators(
                     &mut commands,
@@ -167,8 +176,51 @@ fn begin_or_cast_from_hotkeys(
                     aoe_radius,
                 );
             }
+            AbilityCastKind::UnitTargeted { cast_range } => {
+                targeting.active = Some(PendingTargetedCast {
+                    slot: index,
+                    ability: slot.id,
+                    cast_range,
+                    aoe_radius: 0.85,
+                    unit_only: true,
+                });
+                spawn_indicators(
+                    &mut commands,
+                    &assets,
+                    transform.translation,
+                    cast_range,
+                    0.85,
+                );
+            }
         }
     }
+}
+
+fn start_ability_cast(
+    commands: &mut Commands,
+    hero: Entity,
+    slot: usize,
+    ability: &AbilitySlot,
+    aim: Vec3,
+    aoe_radius: f32,
+    unit_target: Option<Entity>,
+) {
+    commands
+        .entity(hero)
+        .remove::<MoveTarget>()
+        .remove::<AttackTarget>()
+        .remove::<AttackMoveOrder>()
+        .remove::<AttackSwing>()
+        .insert(AbilityCasting {
+            slot,
+            ability: ability.id,
+            aoe_radius,
+            aim,
+            unit_target,
+            point_remaining: ability.cast_point.clamp(0.0, 0.5),
+            backswing_remaining: ability.cast_backswing.clamp(0.0, 0.5),
+            fired: false,
+        });
 }
 
 fn cast_instant(
@@ -180,7 +232,8 @@ fn cast_instant(
     enemies: &Query<(Entity, &Transform, &Team, &Health, &CombatStats), Without<PlayerHero>>,
     stats: &mut CombatStats,
     statuses: &mut StatusEffects,
-) {
+) -> Vec<(Entity, AbilityId)> {
+    let mut cc_hits = Vec::new();
     match slot.id {
         AbilityId::Shockwave | AbilityId::Flurry | AbilityId::FrostNova => {
             let origin = transform.translation;
@@ -201,14 +254,17 @@ fn cast_instant(
                 if flat_distance(origin, enemy_tf.translation) <= radius {
                     let amount = apply_damage(damage, DamageType::Magical, enemy_stats);
                     commands.entity(enemy_entity).insert(PendingDamage { amount });
+                    if slot.id == AbilityId::FrostNova || slot.id == AbilityId::Flurry {
+                        cc_hits.push((enemy_entity, slot.id));
+                    }
                 }
             }
-            // Shockwave briefly lets the caster soft-push through the pack.
             if slot.id == AbilityId::Shockwave {
                 apply_forceful(statuses, 2.0);
             }
         }
         AbilityId::Barrier => {
+            apply_debuff_immunity(statuses, stats, slot.barrier_duration());
             apply_status(
                 statuses,
                 stats,
@@ -228,6 +284,7 @@ fn cast_instant(
         }
         _ => {}
     }
+    cc_hits
 }
 
 fn fire_dash(
@@ -304,17 +361,14 @@ fn confirm_or_cancel_targeted_cast(
     camera: Query<(&Camera, &GlobalTransform)>,
     ground: Query<&GlobalTransform, With<Ground>>,
     mut commands: Commands,
-    assets: Res<SharedAssets>,
     mut hero: Query<
         (
             Entity,
             &Transform,
             &Team,
-            &CombatStats,
             &mut AbilityLoadout,
             &mut Mana,
-            &mut Health,
-            &mut StatusEffects,
+            &StatusEffects,
         ),
         With<PlayerHero>,
     >,
@@ -339,11 +393,15 @@ fn confirm_or_cancel_targeted_cast(
         return;
     }
 
-    let Ok((hero_entity, transform, team, stats, mut loadout, mut mana, mut health, mut statuses)) =
-        hero.single_mut()
+    let Ok((hero_entity, transform, team, mut loadout, mut mana, statuses)) = hero.single_mut()
     else {
         return;
     };
+
+    if !statuses.can_cast() {
+        clear_targeting(&mut commands, &mut targeting);
+        return;
+    }
 
     let Some(hit) = cursor_ground_hit(&windows, &camera, &ground) else {
         return;
@@ -362,6 +420,11 @@ fn confirm_or_cancel_targeted_cast(
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
         .map(|(e, tf, _, _, _, _)| (e, tf.translation));
+
+    if pending.unit_only && unit_target.is_none() {
+        // Unit-targeted spells require a creep/hero under the cursor.
+        return;
+    }
 
     let aim = unit_target.map(|(_, pos)| pos).unwrap_or(hit);
     let dist = flat_distance(transform.translation, aim);
@@ -393,95 +456,31 @@ fn confirm_or_cancel_targeted_cast(
         return;
     }
     slot.cooldown_remaining = slot.cooldown;
-    let ability = pending.ability;
     let aoe = pending.aoe_radius;
-    let bolt_damage = slot.bolt_damage();
-    let nova_damage = slot.nova_damage();
-    let nova_heal = slot.nova_heal();
-    let dash_distance = slot.dash_distance();
+    let slot_snapshot = slot.clone();
     clear_targeting(&mut commands, &mut targeting);
 
-    match ability {
-        AbilityId::Dash | AbilityId::Blink => {
-            fire_dash(
-                &mut commands,
-                &assets,
-                hero_entity,
-                transform,
-                stats,
-                &mut statuses,
-                aim,
-                dash_distance,
-            );
-        }
-        AbilityId::Bolt | AbilityId::ArcMissile | AbilityId::Execute => {
-            let mut damage = bolt_damage;
-            if ability == AbilityId::Execute {
-                if let Some((enemy, _)) = unit_target {
-                    if let Ok((_, _, _, hp, _, _)) = enemies.get(enemy) {
-                        if hp.current / hp.max.max(1.0) < 0.35 {
-                            damage *= 1.55;
-                        }
-                    }
-                }
-            }
-            fire_bolt(
-                &mut commands,
-                &assets,
-                hero_entity,
-                transform,
-                *team,
-                aim,
-                aoe,
-                damage,
-                unit_target,
-            );
-        }
-        AbilityId::Nova | AbilityId::Meteor | AbilityId::Caltrops => {
-            if nova_heal > 0.0 {
-                health.current = (health.current + nova_heal).min(health.max);
-            }
-            let ground_damage = if ability == AbilityId::Caltrops {
-                bolt_damage
-            } else {
-                nova_damage
-            };
-            spawn_expanding_ring(
-                &mut commands,
-                &assets,
-                aim,
-                aoe,
-                assets.nova_mat.clone(),
-                0.55,
-            );
-            for (enemy_entity, enemy_tf, enemy_team, enemy_hp, enemy_stats, _) in &enemies {
-                if *enemy_team == *team || !enemy_hp.is_alive() {
-                    continue;
-                }
-                if flat_distance(aim, enemy_tf.translation) <= aoe {
-                    let amount = apply_damage(ground_damage, DamageType::Magical, enemy_stats);
-                    commands.entity(enemy_entity).insert(PendingDamage { amount });
-                }
-            }
-        }
-        _ => {}
-    }
+    start_ability_cast(
+        &mut commands,
+        hero_entity,
+        pending.slot,
+        &slot_snapshot,
+        aim,
+        aoe,
+        unit_target.map(|(e, _)| e),
+    );
 }
 
 fn resolve_queued_ability_casts(
     mut commands: Commands,
-    assets: Res<SharedAssets>,
     mut hero: Query<
         (
             Entity,
             &Transform,
-            &Team,
-            &CombatStats,
             &QueuedAbilityCast,
             &mut AbilityLoadout,
             &mut Mana,
-            &mut Health,
-            &mut StatusEffects,
+            &StatusEffects,
         ),
         With<PlayerHero>,
     >,
@@ -493,13 +492,10 @@ fn resolve_queued_ability_casts(
     let Ok((
         hero_entity,
         transform,
-        team,
-        stats,
         queued,
         mut loadout,
         mut mana,
-        mut health,
-        mut statuses,
+        statuses,
     )) = hero.single_mut()
     else {
         return;
@@ -524,6 +520,25 @@ fn resolve_queued_ability_casts(
     }
 
     let queued = *queued;
+    if !statuses.can_cast() {
+        commands
+            .entity(hero_entity)
+            .remove::<QueuedAbilityCast>()
+            .remove::<MoveTarget>();
+        return;
+    }
+    // Unit-targeted queue requires a living unit target.
+    if matches!(
+        AbilitySlot::fresh(queued.ability).cast_kind(),
+        AbilityCastKind::UnitTargeted { .. }
+    ) && unit_target.is_none()
+    {
+        commands
+            .entity(hero_entity)
+            .remove::<QueuedAbilityCast>()
+            .remove::<MoveTarget>();
+        return;
+    }
     let Some(slot) = loadout.slot_mut(queued.slot) else {
         commands.entity(hero_entity).remove::<QueuedAbilityCast>();
         return;
@@ -536,81 +551,205 @@ fn resolve_queued_ability_casts(
         return;
     }
     slot.cooldown_remaining = slot.cooldown;
-    let bolt_damage = slot.bolt_damage();
-    let nova_damage = slot.nova_damage();
-    let nova_heal = slot.nova_heal();
-    let dash_distance = slot.dash_distance();
     let aoe = queued.aoe_radius;
+    let slot_snapshot = slot.clone();
 
     commands
         .entity(hero_entity)
         .remove::<QueuedAbilityCast>()
         .remove::<MoveTarget>();
 
-    match queued.ability {
-        AbilityId::Dash | AbilityId::Blink => {
-            fire_dash(
-                &mut commands,
-                &assets,
-                hero_entity,
-                transform,
-                stats,
-                &mut statuses,
-                aim,
-                dash_distance,
-            );
+    start_ability_cast(
+        &mut commands,
+        hero_entity,
+        queued.slot,
+        &slot_snapshot,
+        aim,
+        aoe,
+        unit_target.map(|(e, _)| e),
+    );
+}
+
+fn tick_ability_casting(
+    time: Res<Time>,
+    mut commands: Commands,
+    assets: Res<SharedAssets>,
+    mut hero: Query<
+        (
+            Entity,
+            &Transform,
+            &Team,
+            &mut AbilityCasting,
+            &AbilityLoadout,
+            &mut Health,
+            &mut StatusEffects,
+            &mut CombatStats,
+        ),
+        With<PlayerHero>,
+    >,
+    mut enemy_set: ParamSet<(
+        Query<
+            (Entity, &Transform, &Team, &Health, &CombatStats, Option<&UnitRadius>),
+            Without<PlayerHero>,
+        >,
+        Query<(Entity, &Transform, &Team, &Health, &CombatStats), Without<PlayerHero>>,
+        Query<(&mut StatusEffects, &mut CombatStats), Without<PlayerHero>>,
+    )>,
+) {
+    let dt = time.delta_secs();
+    let Ok((
+        hero_entity,
+        transform,
+        team,
+        mut casting,
+        loadout,
+        mut health,
+        mut statuses,
+        mut stats,
+    )) = hero.single_mut()
+    else {
+        return;
+    };
+
+    if !casting.fired && !statuses.can_cast() {
+        commands.entity(hero_entity).remove::<AbilityCasting>();
+        return;
+    }
+
+    if !casting.fired {
+        casting.point_remaining = (casting.point_remaining - dt).max(0.0);
+        if casting.point_remaining > 0.0 {
+            return;
         }
-        AbilityId::Bolt | AbilityId::ArcMissile | AbilityId::Execute => {
-            let mut damage = bolt_damage;
-            if queued.ability == AbilityId::Execute {
-                if let Some((enemy, _)) = unit_target {
-                    if let Ok((_, _, _, hp, _, _)) = enemies.get(enemy) {
-                        if hp.current / hp.max.max(1.0) < 0.35 {
-                            damage *= 1.55;
+        casting.fired = true;
+        let Some(slot) = loadout.slots.get(casting.slot).cloned() else {
+            commands.entity(hero_entity).remove::<AbilityCasting>();
+            return;
+        };
+        let ability = casting.ability;
+        let aim = casting.aim;
+        let aoe = casting.aoe_radius;
+        let unit_entity = casting.unit_target;
+
+        match ability {
+            AbilityId::Dash | AbilityId::Blink => {
+                fire_dash(
+                    &mut commands,
+                    &assets,
+                    hero_entity,
+                    transform,
+                    &stats,
+                    &mut statuses,
+                    aim,
+                    slot.dash_distance(),
+                );
+            }
+            AbilityId::Bolt | AbilityId::ArcMissile | AbilityId::Execute => {
+                let mut damage = slot.bolt_damage();
+                let unit_target = unit_entity.and_then(|e| {
+                    enemy_set
+                        .p0()
+                        .get(e)
+                        .ok()
+                        .map(|(_, tf, _, _, _, _)| (e, tf.translation))
+                });
+                if ability == AbilityId::Execute {
+                    if let Some((enemy, _)) = unit_target {
+                        if let Ok((_, _, _, hp, _, _)) = enemy_set.p0().get(enemy) {
+                            if hp.current / hp.max.max(1.0) < 0.35 {
+                                damage *= 1.55;
+                            }
+                        }
+                    }
+                }
+                fire_bolt(
+                    &mut commands,
+                    &assets,
+                    hero_entity,
+                    transform,
+                    *team,
+                    aim,
+                    aoe.max(1.2),
+                    damage,
+                    unit_target,
+                );
+            }
+            AbilityId::Nova | AbilityId::Meteor | AbilityId::Caltrops => {
+                let nova_heal = slot.nova_heal();
+                if nova_heal > 0.0 {
+                    health.current = (health.current + nova_heal).min(health.max);
+                }
+                let ground_damage = if ability == AbilityId::Caltrops {
+                    slot.bolt_damage()
+                } else {
+                    slot.nova_damage()
+                };
+                spawn_expanding_ring(
+                    &mut commands,
+                    &assets,
+                    aim,
+                    aoe,
+                    assets.nova_mat.clone(),
+                    0.55,
+                );
+                let mut meteor_hits = Vec::new();
+                for (enemy_entity, enemy_tf, enemy_team, enemy_hp, enemy_stats, _) in
+                    enemy_set.p0().iter()
+                {
+                    if *enemy_team == *team || !enemy_hp.is_alive() {
+                        continue;
+                    }
+                    if flat_distance(aim, enemy_tf.translation) <= aoe {
+                        let amount = apply_damage(ground_damage, DamageType::Magical, enemy_stats);
+                        commands.entity(enemy_entity).insert(PendingDamage { amount });
+                        if ability == AbilityId::Meteor {
+                            meteor_hits.push(enemy_entity);
+                        }
+                    }
+                }
+                for enemy in meteor_hits {
+                    if let Ok((mut st, mut st_stats)) = enemy_set.p2().get_mut(enemy) {
+                        apply_stun(&mut st, &mut st_stats, 1.1);
+                    }
+                }
+            }
+            AbilityId::Shockwave
+            | AbilityId::Flurry
+            | AbilityId::FrostNova
+            | AbilityId::Barrier => {
+                let hits = cast_instant(
+                    &mut commands,
+                    &assets,
+                    transform,
+                    *team,
+                    &slot,
+                    &enemy_set.p1(),
+                    &mut stats,
+                    &mut statuses,
+                );
+                for (enemy, id) in hits {
+                    if let Ok((mut st, mut st_stats)) = enemy_set.p2().get_mut(enemy) {
+                        if id == AbilityId::FrostNova {
+                            apply_root(&mut st, &mut st_stats, 1.4);
+                        }
+                        if id == AbilityId::Flurry {
+                            apply_silence(&mut st, &mut st_stats, 1.2);
+                            apply_disarm(&mut st, &mut st_stats, 1.0);
                         }
                     }
                 }
             }
-            fire_bolt(
-                &mut commands,
-                &assets,
-                hero_entity,
-                transform,
-                *team,
-                aim,
-                aoe,
-                damage,
-                unit_target,
-            );
         }
-        AbilityId::Nova | AbilityId::Meteor | AbilityId::Caltrops => {
-            if nova_heal > 0.0 {
-                health.current = (health.current + nova_heal).min(health.max);
-            }
-            let ground_damage = if queued.ability == AbilityId::Caltrops {
-                bolt_damage
-            } else {
-                nova_damage
-            };
-            spawn_expanding_ring(
-                &mut commands,
-                &assets,
-                aim,
-                aoe,
-                assets.nova_mat.clone(),
-                0.55,
-            );
-            for (enemy_entity, enemy_tf, enemy_team, enemy_hp, enemy_stats, _) in &enemies {
-                if *enemy_team == *team || !enemy_hp.is_alive() {
-                    continue;
-                }
-                if flat_distance(aim, enemy_tf.translation) <= aoe {
-                    let amount = apply_damage(ground_damage, DamageType::Magical, enemy_stats);
-                    commands.entity(enemy_entity).insert(PendingDamage { amount });
-                }
-            }
+
+        if casting.backswing_remaining <= 0.0 {
+            commands.entity(hero_entity).remove::<AbilityCasting>();
         }
-        _ => {}
+        return;
+    }
+
+    casting.backswing_remaining = (casting.backswing_remaining - dt).max(0.0);
+    if casting.backswing_remaining <= 0.0 {
+        commands.entity(hero_entity).remove::<AbilityCasting>();
     }
 }
 

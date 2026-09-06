@@ -13,7 +13,9 @@ pub struct ItemsPlugin;
 impl Plugin for ItemsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ShopUiState>()
+            .init_resource::<InventoryContextMenu>()
             .add_message::<PurchaseItemRequest>()
+            .add_message::<SellItemRequest>()
             .add_systems(
                 Startup,
                 spawn_shops.after(crate::resources::load_shared_assets),
@@ -25,6 +27,7 @@ impl Plugin for ItemsPlugin {
                     tick_status_effects,
                     handle_item_hotkeys,
                     try_purchase_from_ui,
+                    try_sell_from_ui,
                 ),
             );
     }
@@ -112,6 +115,11 @@ pub struct StatusEffect {
     pub ignore_unit_collision: bool,
     /// When true, this unit soft-pushes overlapping creeps/heroes (off by default).
     pub force_unit_push: bool,
+    pub silenced: bool,
+    pub stunned: bool,
+    pub rooted: bool,
+    pub disarmed: bool,
+    pub debuff_immune: bool,
 }
 
 impl StatusEffect {
@@ -127,6 +135,18 @@ impl StatusEffect {
             heal_per_sec: 0.0,
             ignore_unit_collision: false,
             force_unit_push: false,
+            silenced: false,
+            stunned: false,
+            rooted: false,
+            disarmed: false,
+            debuff_immune: false,
+        }
+    }
+
+    pub fn debuff(id: &'static str, duration: f32) -> Self {
+        Self {
+            kind: StatusKind::Debuff,
+            ..Self::buff(id, duration)
         }
     }
 
@@ -144,6 +164,41 @@ impl StatusEffect {
             ..Self::buff("forceful", duration)
         }
     }
+
+    pub fn silenced(duration: f32) -> Self {
+        Self {
+            silenced: true,
+            ..Self::debuff("silence", duration)
+        }
+    }
+
+    pub fn stunned(duration: f32) -> Self {
+        Self {
+            stunned: true,
+            ..Self::debuff("stun", duration)
+        }
+    }
+
+    pub fn rooted(duration: f32) -> Self {
+        Self {
+            rooted: true,
+            ..Self::debuff("root", duration)
+        }
+    }
+
+    pub fn disarmed(duration: f32) -> Self {
+        Self {
+            disarmed: true,
+            ..Self::debuff("disarm", duration)
+        }
+    }
+
+    pub fn debuff_immunity(duration: f32) -> Self {
+        Self {
+            debuff_immune: true,
+            ..Self::buff("spell_immunity", duration)
+        }
+    }
 }
 
 impl StatusEffects {
@@ -157,6 +212,48 @@ impl StatusEffects {
         self.effects
             .iter()
             .any(|e| e.force_unit_push && e.remaining > 0.0)
+    }
+
+    pub fn is_silenced(&self) -> bool {
+        self.effects
+            .iter()
+            .any(|e| e.silenced && e.remaining > 0.0)
+    }
+
+    pub fn is_stunned(&self) -> bool {
+        self.effects
+            .iter()
+            .any(|e| e.stunned && e.remaining > 0.0)
+    }
+
+    pub fn is_rooted(&self) -> bool {
+        self.effects
+            .iter()
+            .any(|e| (e.rooted || e.stunned) && e.remaining > 0.0)
+    }
+
+    pub fn is_disarmed(&self) -> bool {
+        self.effects
+            .iter()
+            .any(|e| (e.disarmed || e.stunned) && e.remaining > 0.0)
+    }
+
+    pub fn has_debuff_immunity(&self) -> bool {
+        self.effects
+            .iter()
+            .any(|e| e.debuff_immune && e.remaining > 0.0)
+    }
+
+    pub fn can_move(&self) -> bool {
+        !self.is_rooted()
+    }
+
+    pub fn can_attack(&self) -> bool {
+        !self.is_disarmed()
+    }
+
+    pub fn can_cast(&self) -> bool {
+        !self.is_silenced() && !self.is_stunned()
     }
 }
 
@@ -301,6 +398,7 @@ pub struct ItemPassives {
     pub armor: f32,
     pub magic_resist: f32,
     pub move_speed: f32,
+    pub attack_speed_flat: f32,
 }
 
 impl ItemId {
@@ -322,6 +420,7 @@ impl ItemId {
             },
             ItemId::BladeOfAsh => ItemPassives {
                 attack_damage: 18.0,
+                attack_speed_flat: 15.0,
                 ..default()
             },
             ItemId::AegisCharm => ItemPassives {
@@ -332,6 +431,7 @@ impl ItemId {
             ItemId::VialOfLight => ItemPassives::default(),
             ItemId::StormRod => ItemPassives {
                 attack_damage: 12.0,
+                attack_speed_flat: 10.0,
                 ..default()
             },
             ItemId::WardstoneCloak => ItemPassives {
@@ -343,7 +443,13 @@ impl ItemId {
     }
 }
 
-pub fn apply_passives(passives: ItemPassives, health: &mut Health, mana: &mut Mana, stats: &mut CombatStats) {
+pub fn apply_passives(
+    passives: ItemPassives,
+    health: &mut Health,
+    mana: &mut Mana,
+    stats: &mut CombatStats,
+    agility: f32,
+) {
     if passives.max_health != 0.0 {
         health.max += passives.max_health;
         health.current = (health.current + passives.max_health).min(health.max);
@@ -357,6 +463,32 @@ pub fn apply_passives(passives: ItemPassives, health: &mut Health, mana: &mut Ma
     stats.armor += passives.armor;
     stats.magic_resist += passives.magic_resist;
     stats.move_speed += passives.move_speed;
+    stats.attack_speed_flat += passives.attack_speed_flat;
+    stats.recompute_attack_speed(agility);
+}
+
+pub fn remove_passives(
+    passives: ItemPassives,
+    health: &mut Health,
+    mana: &mut Mana,
+    stats: &mut CombatStats,
+    agility: f32,
+) {
+    if passives.max_health != 0.0 {
+        health.max = (health.max - passives.max_health).max(1.0);
+        health.current = health.current.min(health.max);
+    }
+    if passives.max_mana != 0.0 {
+        mana.max = (mana.max - passives.max_mana).max(0.0);
+        mana.current = mana.current.min(mana.max);
+    }
+    mana.regen_per_sec = (mana.regen_per_sec - passives.mana_regen).max(0.0);
+    stats.attack_damage -= passives.attack_damage;
+    stats.armor -= passives.armor;
+    stats.magic_resist -= passives.magic_resist;
+    stats.move_speed -= passives.move_speed;
+    stats.attack_speed_flat -= passives.attack_speed_flat;
+    stats.recompute_attack_speed(agility);
 }
 
 fn spawn_shops(
@@ -453,13 +585,17 @@ pub fn apply_forceful(statuses: &mut StatusEffects, duration: f32) {
     statuses.effects.push(StatusEffect::forceful(duration));
 }
 
-/// Apply a timed buff and immediately add its flat modifiers to combat stats.
+/// Apply a timed buff/debuff and immediately add its flat modifiers to combat stats.
+/// Debuffs are ignored while the unit has debuff immunity.
 pub fn apply_status(
     statuses: &mut StatusEffects,
     stats: &mut CombatStats,
     effect: StatusEffect,
-) {
-    // Refresh same-id buffs by replacing.
+) -> bool {
+    if effect.kind == StatusKind::Debuff && statuses.has_debuff_immunity() {
+        return false;
+    }
+    // Refresh same-id effects by replacing.
     if let Some(existing) = statuses.effects.iter().position(|e| e.id == effect.id) {
         let old = statuses.effects.remove(existing);
         stats.attack_damage -= old.attack_damage;
@@ -472,6 +608,33 @@ pub fn apply_status(
     stats.magic_resist += effect.magic_resist;
     stats.move_speed += effect.move_speed;
     statuses.effects.push(effect);
+    true
+}
+
+pub fn apply_silence(statuses: &mut StatusEffects, stats: &mut CombatStats, duration: f32) -> bool {
+    apply_status(statuses, stats, StatusEffect::silenced(duration))
+}
+
+pub fn apply_stun(statuses: &mut StatusEffects, stats: &mut CombatStats, duration: f32) -> bool {
+    apply_status(statuses, stats, StatusEffect::stunned(duration))
+}
+
+pub fn apply_root(statuses: &mut StatusEffects, stats: &mut CombatStats, duration: f32) -> bool {
+    apply_status(statuses, stats, StatusEffect::rooted(duration))
+}
+
+pub fn apply_disarm(statuses: &mut StatusEffects, stats: &mut CombatStats, duration: f32) -> bool {
+    apply_status(statuses, stats, StatusEffect::disarmed(duration))
+}
+
+pub fn apply_debuff_immunity(
+    statuses: &mut StatusEffects,
+    stats: &mut CombatStats,
+    duration: f32,
+) -> bool {
+    // Purge existing debuffs when gaining immunity.
+    statuses.effects.retain(|e| e.kind != StatusKind::Debuff);
+    apply_status(statuses, stats, StatusEffect::debuff_immunity(duration))
 }
 
 fn handle_item_hotkeys(
@@ -626,6 +789,17 @@ pub struct PurchaseItemRequest {
     pub item: ItemId,
 }
 
+#[derive(Message, Debug, Clone, Copy)]
+pub struct SellItemRequest {
+    pub slot: usize,
+}
+
+/// Right-click inventory context menu state.
+#[derive(Resource, Debug, Clone, Copy, Default)]
+pub struct InventoryContextMenu {
+    pub slot: Option<usize>,
+}
+
 fn try_purchase_from_ui(
     mut events: MessageReader<PurchaseItemRequest>,
     mut hero: Query<
@@ -637,12 +811,13 @@ fn try_purchase_from_ui(
             &mut Health,
             &mut Mana,
             &mut CombatStats,
+            &crate::components::HeroAttributes,
         ),
         With<PlayerHero>,
     >,
     shops: Query<(&Transform, &ItemShop)>,
 ) {
-    let Ok((hero_tf, hero_team, mut wallet, mut inv, mut health, mut mana, mut stats)) =
+    let Ok((hero_tf, hero_team, mut wallet, mut inv, mut health, mut mana, mut stats, attrs)) =
         hero.single_mut()
     else {
         return;
@@ -663,12 +838,61 @@ fn try_purchase_from_ui(
             continue;
         }
         wallet.gold -= item.cost();
-        apply_passives(item.passives(), &mut health, &mut mana, &mut stats);
+        apply_passives(
+            item.passives(),
+            &mut health,
+            &mut mana,
+            &mut stats,
+            attrs.agility,
+        );
         let _ = inv.try_add(*item);
     }
 }
 
-/// Shared helper for purchases (used by tests and future sell/buy flows).
+fn try_sell_from_ui(
+    mut events: MessageReader<SellItemRequest>,
+    mut menu: ResMut<InventoryContextMenu>,
+    mut hero: Query<
+        (
+            &Transform,
+            &Team,
+            &mut PlayerWallet,
+            &mut Inventory,
+            &mut Health,
+            &mut Mana,
+            &mut CombatStats,
+            &crate::components::HeroAttributes,
+        ),
+        With<PlayerHero>,
+    >,
+    shops: Query<(&Transform, &ItemShop)>,
+) {
+    let Ok((hero_tf, hero_team, mut wallet, mut inv, mut health, mut mana, mut stats, attrs)) =
+        hero.single_mut()
+    else {
+        return;
+    };
+    let near_shop = shops.iter().any(|(shop_tf, shop)| {
+        shop.team == *hero_team
+            && flat_distance(hero_tf.translation, shop_tf.translation) <= shop.purchase_range
+    });
+    for SellItemRequest { slot } in events.read() {
+        if try_sell_item(
+            &mut wallet,
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            *slot,
+            near_shop,
+            attrs.agility,
+        ) {
+            menu.slot = None;
+        }
+    }
+}
+
+/// Shared helper for purchases (used by tests).
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn try_buy_item(
     wallet: &mut PlayerWallet,
@@ -678,13 +902,36 @@ pub fn try_buy_item(
     stats: &mut CombatStats,
     item: ItemId,
     in_range: bool,
+    agility: f32,
 ) -> bool {
     if !in_range || wallet.gold < item.cost() || inv.first_empty().is_none() {
         return false;
     }
     wallet.gold -= item.cost();
-    apply_passives(item.passives(), health, mana, stats);
+    apply_passives(item.passives(), health, mana, stats, agility);
     inv.try_add(item)
+}
+
+/// Sell inventory slot for half the shop cost. Must be in shop range.
+pub fn try_sell_item(
+    wallet: &mut PlayerWallet,
+    inv: &mut Inventory,
+    health: &mut Health,
+    mana: &mut Mana,
+    stats: &mut CombatStats,
+    slot: usize,
+    in_range: bool,
+    agility: f32,
+) -> bool {
+    if !in_range {
+        return false;
+    }
+    let Some(item) = inv.slots.get_mut(slot).and_then(|s| s.take()) else {
+        return false;
+    };
+    remove_passives(item.id.passives(), health, mana, stats, agility);
+    wallet.gold += item.id.cost() / 2;
+    true
 }
 
 #[cfg(test)]
@@ -697,14 +944,7 @@ mod tests {
         let mut inv = Inventory::empty();
         let mut health = Health::new(720.0);
         let mut mana = Mana::new(320.0, 12.0);
-        let mut stats = CombatStats {
-            attack_damage: 55.0,
-            attack_range: 8.0,
-            attack_speed: 1.1,
-            armor: 4.0,
-            magic_resist: 3.0,
-            move_speed: 12.0,
-        };
+        let mut stats = CombatStats::simple(55.0, 8.0, 1.1, 4.0, 3.0, 12.0);
         assert!(try_buy_item(
             &mut wallet,
             &mut inv,
@@ -712,7 +952,8 @@ mod tests {
             &mut mana,
             &mut stats,
             ItemId::IronBracer,
-            true
+            true,
+            18.0,
         ));
         assert_eq!(wallet.gold, 300);
         assert!(inv.slots[0].is_some());
@@ -726,14 +967,7 @@ mod tests {
         let mut inv = Inventory::empty();
         let mut health = Health::new(720.0);
         let mut mana = Mana::new(320.0, 12.0);
-        let mut stats = CombatStats {
-            attack_damage: 55.0,
-            attack_range: 8.0,
-            attack_speed: 1.1,
-            armor: 4.0,
-            magic_resist: 3.0,
-            move_speed: 12.0,
-        };
+        let mut stats = CombatStats::simple(55.0, 8.0, 1.1, 4.0, 3.0, 12.0);
         assert!(!try_buy_item(
             &mut wallet,
             &mut inv,
@@ -741,7 +975,8 @@ mod tests {
             &mut mana,
             &mut stats,
             ItemId::SwiftBoots,
-            true
+            true,
+            18.0,
         ));
         wallet.gold = 500;
         assert!(!try_buy_item(
@@ -751,7 +986,8 @@ mod tests {
             &mut mana,
             &mut stats,
             ItemId::SwiftBoots,
-            false
+            false,
+            18.0,
         ));
     }
 
@@ -767,14 +1003,7 @@ mod tests {
     #[test]
     fn status_buff_applies_and_expires_modifiers() {
         let mut statuses = StatusEffects::default();
-        let mut stats = CombatStats {
-            attack_damage: 10.0,
-            attack_range: 8.0,
-            attack_speed: 1.0,
-            armor: 2.0,
-            magic_resist: 1.0,
-            move_speed: 10.0,
-        };
+        let mut stats = CombatStats::simple(10.0, 8.0, 1.0, 2.0, 1.0, 10.0);
         apply_status(
             &mut statuses,
             &mut stats,
@@ -812,5 +1041,64 @@ mod tests {
         assert!(!statuses.is_phased());
         statuses.effects[0].remaining = 0.0;
         assert!(!statuses.can_push_units());
+    }
+
+    #[test]
+    fn sell_refunds_half_and_removes_passives() {
+        let mut wallet = PlayerWallet { gold: 600 };
+        let mut inv = Inventory::empty();
+        let mut health = Health::new(720.0);
+        let mut mana = Mana::new(320.0, 12.0);
+        let mut stats = CombatStats::simple(55.0, 8.0, 1.1, 4.0, 3.0, 12.0);
+        assert!(try_buy_item(
+            &mut wallet,
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            ItemId::IronBracer,
+            true,
+            18.0,
+        ));
+        assert!(try_sell_item(
+            &mut wallet,
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            0,
+            true,
+            18.0,
+        ));
+        assert_eq!(wallet.gold, 450); // 600 - 300 + 150
+        assert!(inv.slots[0].is_none());
+        assert_eq!(health.max, 720.0);
+        assert_eq!(stats.armor, 4.0);
+    }
+
+    #[test]
+    fn debuff_immunity_blocks_stun() {
+        let mut statuses = StatusEffects::default();
+        let mut stats = CombatStats::simple(10.0, 8.0, 1.0, 2.0, 1.0, 10.0);
+        assert!(apply_debuff_immunity(&mut statuses, &mut stats, 5.0));
+        assert!(!apply_stun(&mut statuses, &mut stats, 2.0));
+        assert!(!statuses.is_stunned());
+    }
+
+    #[test]
+    fn attack_speed_formula_clamps() {
+        let mut stats = CombatStats::simple(10.0, 8.0, 1.0, 0.0, 0.0, 10.0);
+        stats.base_attack_speed = 100.0;
+        stats.attack_speed_flat = 50.0;
+        stats.attack_speed_mult = 0.5;
+        stats.base_attack_time = 1.0;
+        let ias = stats.attack_speed_rating(20.0); // (100+20+50)*1.5 = 255
+        assert!((ias - 255.0).abs() < 0.01);
+        stats.attack_speed_flat = 1000.0;
+        assert_eq!(stats.attack_speed_rating(0.0), 700.0);
+        stats.base_attack_speed = 1.0;
+        stats.attack_speed_flat = 0.0;
+        stats.attack_speed_mult = 0.0;
+        assert_eq!(stats.attack_speed_rating(0.0), 20.0);
     }
 }

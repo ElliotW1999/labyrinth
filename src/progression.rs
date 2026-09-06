@@ -121,14 +121,7 @@ mod tests {
         let mut attrs = HeroAttributes::starter();
         let mut health = Health::new(400.0);
         let mut mana = Mana::new(200.0, 5.0);
-        let mut stats = CombatStats {
-            attack_damage: 55.0,
-            attack_range: 8.0,
-            attack_speed: 1.0,
-            armor: 2.0,
-            magic_resist: 2.0,
-            move_speed: 12.0,
-        };
+        let mut stats = CombatStats::simple(55.0, 8.0, 1.0, 2.0, 2.0, 12.0);
         attrs.apply_to(&mut health, &mut mana, &mut stats);
         let hp_before = health.max;
         let armor_before = stats.armor;
