@@ -55,9 +55,12 @@ The HUD shows connection status. Host sim runs combat / creeps / AI; clients app
 | Ctrl+Q / W / E / R | Spend a skill point to rank that ability |
 | Spell bar `+` | Rank up when highlighted |
 | A S D Z X C | Use inventory item in that slot (actives only) |
-| RMB inventory slot | Open sell menu (50% refund; must be near shop) |
+| Esc | Main menu (New Game / Settings / Quit) |
+| RMB inventory slot | Open sell menu at cursor (LMB Sell = 50% refund near shop) |
 | `$` shop button (bottom-right, shows gold) | Toggle item shop panel |
 | Click outside shop / Esc | Close shop panel |
+| LMB minimap | Move camera to that map position |
+| RMB minimap | Issue move order to that map position |
 | Arrow keys / screen edge | Pan camera on the XZ plane |
 | F | Snap camera to hero (no continuous lock) |
 
@@ -81,14 +84,14 @@ Each hero has its own base Str/Agi/Int and per-level growth.
 
 ### Fog of war
 
-- Enemy heroes/creeps are hidden outside team vision; buildings and trees stay visible
+- Unrevealed ground shows a **transparent grey** overlay; enemy heroes/creeps are hidden outside team vision (buildings and trees stay visible)
 - Heroes and towers have generous vision; creeps have half that range
 - Trees block line of sight for heroes, creeps, and towers
 - Northern **obstacle course** is fog-free
 
-### Obstacle course (north strip)
+### Obstacle course (north / screen-top strip)
 
-- **Firebreather** — fires orbs on a timer
+- **Firebreather** — fires orbs along its facing (does not target units)
 - **Heartpiercer** — fires an orb when its pressure plate is stepped on
 
 ### Status effects
@@ -126,7 +129,8 @@ Each hero has its own base Str/Agi/Int and per-level growth.
 ## What's included
 
 - Three-lane map with river, jungle pockets, tree obstacles, towers, ancients, and a northern obstacle course
-- Fog of war with tree line-of-sight (buildings always visible; course is fog-free)
+- Fog of war with transparent grey overlay and tree line-of-sight (buildings always visible; course is fog-free)
+- Esc main menu (New Game / Settings / Quit); borderless fullscreen
 - Selectable heroes (Vanguard / Skirmisher / Arcanist) with unique spells and Str/Agi/Int growth
 - Player hero with Str/Agi/Int, HP / mana / gold / XP / levels and rankable QWER abilities
 - Item shop (gold on the shop button), 6-slot inventory between spells and minimap, timed buffs / debuffs
@@ -136,7 +140,7 @@ Each hero has its own base Str/Agi/Int and per-level growth.
 - Targeted spells: confirm aim; if out of cast range the hero walks in then casts
 - Auto-attack combat with armor / magic resist mitigation; projectiles stop at the target
 - Tower and creep aggro AI
-- Free camera, spell bar, inventory tooltips, shop, skill points, and minimap
+- Free camera, spell bar, inventory sell-at-cursor, shop, skill points, and clickable minimap
 - Optional online 1v1 (UDP host/client) while default play stays fully offline
 
 ## Layout
@@ -150,7 +154,8 @@ src/
   map.rs              Battlefield + lane waypoints
   units.rs            Hero / creep / tower / ancient factories
   facing.rs           Turn-rate / facing-cone helpers
-  fog.rs              Fog of war + tree LoS
+  menu.rs             Esc main menu (New Game / Settings / Quit)
+  fog.rs              Fog of war + grey overlay + tree LoS
   obstacle_course.rs  Firebreather / Heartpiercer training strip
   movement.rs         Move orders + tree / building / unit collision
   combat.rs           Attack windup/backswing, projectiles, death / gold / XP

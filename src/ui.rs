@@ -2,6 +2,7 @@
 
 use bevy::prelude::*;
 
+use crate::camera::CameraFocus;
 use crate::components::{
     AbilityId, AbilityLoadout, Ancient, CombatStats, Creep, Health, HeroAttributes, HeroProgress,
     Mana, PlayerHero, PlayerWallet, Team, Tower,
@@ -11,6 +12,8 @@ use crate::items::{
     Inventory, InventoryContextMenu, ItemId, ItemShop, PurchaseItemRequest, SellItemRequest,
     ShopUiState, StatusEffects, StatusKind,
 };
+use crate::menu::MainMenuState;
+use crate::movement::order_hero_move;
 use crate::net::NetStatus;
 use crate::resources::MatchConfig;
 
@@ -18,7 +21,10 @@ pub struct UiPlugin;
 
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_hud)
+        app.init_resource::<UiPointerState>()
+            .add_systems(Startup, spawn_hud)
+            // Refresh hover flags before input / minimap / inventory systems.
+            .add_systems(PreUpdate, update_ui_pointer_state)
             .add_systems(
                 Update,
                 (
@@ -40,9 +46,21 @@ impl Plugin for UiPlugin {
                     update_item_tooltips,
                     refresh_net_status,
                     refresh_minimap,
+                    handle_minimap_clicks,
                 ),
             );
     }
+}
+
+/// Shared cursor/UI hit state for input systems (block world RMB, minimap orders).
+#[derive(Resource, Debug, Default, Clone)]
+pub struct UiPointerState {
+    /// Cursor is over a blocking HUD control (inventory, shop, buttons, menu…).
+    pub over_blocking_ui: bool,
+    /// Cursor is over the minimap.
+    pub over_minimap: bool,
+    /// Normalized 0–1 position inside the minimap (x right, y down).
+    pub minimap_uv: Option<Vec2>,
 }
 
 #[derive(Component)]
@@ -148,13 +166,17 @@ struct ItemTooltip;
 struct ItemTooltipText;
 
 #[derive(Component)]
-struct InventorySellMenu;
+pub(crate) struct InventorySellMenu;
 
 #[derive(Component)]
 struct InventorySellButton;
 
 #[derive(Component)]
 struct MinimapRoot;
+
+/// Marker for HUD regions where RMB must not issue world move/attack orders.
+#[derive(Component)]
+struct BlocksWorldRmb;
 
 #[derive(Component)]
 struct MinimapDot {
@@ -190,14 +212,19 @@ fn spawn_hud(mut commands: Commands) {
         ))
         .with_children(|root| {
             // Top-left status panel
-            root.spawn(Node {
-                position_type: PositionType::Absolute,
-                top: px(12),
-                left: px(12),
-                flex_direction: FlexDirection::Column,
-                row_gap: px(4),
-                ..default()
-            })
+            root.spawn((
+                BlocksWorldRmb,
+                Node {
+                    position_type: PositionType::Absolute,
+                    top: px(12),
+                    left: px(12),
+                    flex_direction: FlexDirection::Column,
+                    row_gap: px(4),
+                    padding: UiRect::all(px(6)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.05, 0.07, 0.1, 0.35)),
+            ))
             .with_children(|panel| {
                 panel.spawn((
                     HudVitals,
@@ -258,6 +285,7 @@ fn spawn_hud(mut commands: Commands) {
             // Bottom-center spell bar
             root.spawn((
                 SpellBarRoot,
+                BlocksWorldRmb,
                 Node {
                     position_type: PositionType::Absolute,
                     bottom: px(18),
@@ -278,18 +306,22 @@ fn spawn_hud(mut commands: Commands) {
             });
 
             // Inventory sits between the spell bar and the minimap.
-            root.spawn(Node {
-                position_type: PositionType::Absolute,
-                bottom: px(18),
-                right: px(14.0 + MINIMAP_SIZE + 12.0),
-                width: px(INVENTORY_WIDTH),
-                flex_direction: FlexDirection::Row,
-                column_gap: px(6),
-                padding: UiRect::all(px(6)),
-                border_radius: BorderRadius::all(px(6)),
-                justify_content: JustifyContent::FlexEnd,
-                ..default()
-            })
+            root.spawn((
+                BlocksWorldRmb,
+                Node {
+                    position_type: PositionType::Absolute,
+                    bottom: px(18),
+                    right: px(14.0 + MINIMAP_SIZE + 12.0),
+                    width: px(INVENTORY_WIDTH),
+                    flex_direction: FlexDirection::Row,
+                    column_gap: px(6),
+                    padding: UiRect::all(px(6)),
+                    border_radius: BorderRadius::all(px(6)),
+                    justify_content: JustifyContent::FlexEnd,
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.05, 0.07, 0.1, 0.55)),
+            ))
             .with_children(|bar| {
                 for i in 0..6 {
                     spawn_inventory_slot(bar, i);
@@ -298,8 +330,9 @@ fn spawn_hud(mut commands: Commands) {
 
             // Help
             root.spawn((
+                BlocksWorldRmb,
                 Text::new(
-                    "1-3 hero select  |  RMB: move/attack  |  G: attack-move  |  ASDZXC: items  |  shop gold  |  Space: stop",
+                    "1-3 hero select  |  RMB: move/attack  |  G: attack-move  |  ASDZXC: items  |  shop gold  |  Esc: menu",
                 ),
                 TextFont::from_font_size(14.0),
                 TextColor(Color::srgba(0.8, 0.85, 0.9, 0.8)),
@@ -364,6 +397,7 @@ fn spawn_hud(mut commands: Commands) {
             root.spawn((
                 Button,
                 ShopToggleButton,
+                BlocksWorldRmb,
                 Node {
                     position_type: PositionType::Absolute,
                     right: px(14),
@@ -407,6 +441,7 @@ fn spawn_hud(mut commands: Commands) {
             // Shop panel (starts hidden)
             root.spawn((
                 ShopPanel,
+                BlocksWorldRmb,
                 Node {
                     position_type: PositionType::Absolute,
                     left: percent(50),
@@ -486,13 +521,14 @@ fn spawn_hud(mut commands: Commands) {
                 ));
             });
 
-            // Inventory sell dropdown (opened via RMB on a slot)
+            // Inventory sell dropdown (opened via RMB on a slot; positioned at cursor)
             root.spawn((
                 InventorySellMenu,
+                BlocksWorldRmb,
                 Node {
                     position_type: PositionType::Absolute,
-                    left: px(40),
-                    bottom: px(175),
+                    left: px(0),
+                    top: px(0),
                     width: px(140),
                     padding: UiRect::all(px(6)),
                     flex_direction: FlexDirection::Column,
@@ -881,57 +917,177 @@ fn refresh_spell_bar(
 
 fn handle_inventory_context_menu(
     mouse: Res<ButtonInput<MouseButton>>,
-    keys: Res<ButtonInput<KeyCode>>,
+    windows: Query<&Window>,
     slots: Query<(&Interaction, &InventorySlotIcon)>,
     inv: Query<&Inventory, With<PlayerHero>>,
     mut menu: ResMut<InventoryContextMenu>,
-    mut menu_vis: Query<&mut Visibility, With<InventorySellMenu>>,
+    mut menu_q: Query<(&mut Visibility, &mut Node), With<InventorySellMenu>>,
+    main_menu: Res<MainMenuState>,
 ) {
-    if mouse.just_pressed(MouseButton::Right) {
-        let Ok(inventory) = inv.single() else {
-            return;
-        };
-        for (interaction, slot) in &slots {
-            if *interaction == Interaction::None {
-                continue;
-            }
-            if inventory.slots.get(slot.index).and_then(|s| s.as_ref()).is_some() {
-                menu.slot = Some(slot.index);
-                if let Ok(mut vis) = menu_vis.single_mut() {
-                    *vis = Visibility::Visible;
+    if main_menu.open {
+        return;
+    }
+    if !mouse.just_pressed(MouseButton::Right) {
+        return;
+    }
+    let Ok(inventory) = inv.single() else {
+        return;
+    };
+    let Ok((mut vis, mut node)) = menu_q.single_mut() else {
+        return;
+    };
+
+    for (interaction, slot) in &slots {
+        if *interaction == Interaction::None {
+            continue;
+        }
+        if inventory.slots.get(slot.index).and_then(|s| s.as_ref()).is_some() {
+            menu.slot = Some(slot.index);
+            *vis = Visibility::Visible;
+            if let Ok(window) = windows.single() {
+                if let Some(cursor) = window.cursor_position() {
+                    let scale = window.scale_factor();
+                    let logical = cursor / scale;
+                    node.left = px(logical.x);
+                    node.top = px(logical.y);
+                    node.bottom = Val::Auto;
+                    node.right = Val::Auto;
                 }
-                return;
             }
-        }
-        menu.slot = None;
-        if let Ok(mut vis) = menu_vis.single_mut() {
-            *vis = Visibility::Hidden;
+            return;
         }
     }
-    if keys.just_pressed(KeyCode::Escape) {
-        menu.slot = None;
-        if let Ok(mut vis) = menu_vis.single_mut() {
-            *vis = Visibility::Hidden;
-        }
-    }
+    menu.slot = None;
+    *vis = Visibility::Hidden;
 }
 
 fn handle_inventory_sell_clicks(
-    interactions: Query<&Interaction, (Changed<Interaction>, With<InventorySellButton>)>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    interactions: Query<&Interaction, With<InventorySellButton>>,
     mut sell: MessageWriter<SellItemRequest>,
     mut menu: ResMut<InventoryContextMenu>,
     mut menu_vis: Query<&mut Visibility, With<InventorySellMenu>>,
 ) {
-    for interaction in &interactions {
-        if *interaction != Interaction::Pressed {
-            continue;
+    if !mouse.just_pressed(MouseButton::Left) {
+        return;
+    }
+    let over_sell = interactions
+        .iter()
+        .any(|i| matches!(*i, Interaction::Hovered | Interaction::Pressed));
+    if !over_sell {
+        return;
+    }
+    if let Some(slot) = menu.slot {
+        sell.write(SellItemRequest { slot });
+    }
+    menu.slot = None;
+    if let Ok(mut vis) = menu_vis.single_mut() {
+        *vis = Visibility::Hidden;
+    }
+}
+
+fn cursor_in_node(cursor: Vec2, node: &ComputedNode, gt: &UiGlobalTransform) -> Option<Vec2> {
+    let (_, _, translation) = gt.to_scale_angle_translation();
+    let size = node.size();
+    if size.x <= 1.0 || size.y <= 1.0 {
+        return None;
+    }
+    let min = translation - size * 0.5;
+    let max = translation + size * 0.5;
+    if cursor.x >= min.x && cursor.x <= max.x && cursor.y >= min.y && cursor.y <= max.y {
+        Some(Vec2::new(
+            ((cursor.x - min.x) / size.x).clamp(0.0, 1.0),
+            ((cursor.y - min.y) / size.y).clamp(0.0, 1.0),
+        ))
+    } else {
+        None
+    }
+}
+
+fn update_ui_pointer_state(
+    windows: Query<&Window>,
+    shop: Res<ShopUiState>,
+    sell: Res<InventoryContextMenu>,
+    main_menu: Res<MainMenuState>,
+    buttons: Query<&Interaction, With<Button>>,
+    block_nodes: Query<
+        (&ComputedNode, &UiGlobalTransform, Option<&InheritedVisibility>),
+        With<BlocksWorldRmb>,
+    >,
+    minimap: Query<(&ComputedNode, &UiGlobalTransform), With<MinimapRoot>>,
+    mut state: ResMut<UiPointerState>,
+) {
+    state.over_blocking_ui = false;
+    state.over_minimap = false;
+    state.minimap_uv = None;
+
+    if main_menu.open || shop.open || sell.slot.is_some() {
+        state.over_blocking_ui = true;
+    }
+    if buttons.iter().any(|i| *i != Interaction::None) {
+        state.over_blocking_ui = true;
+    }
+
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let Some(cursor) = window.cursor_position() else {
+        return;
+    };
+
+    if !state.over_blocking_ui {
+        for (node, gt, vis) in &block_nodes {
+            if vis.is_some_and(|v| !v.get()) {
+                continue;
+            }
+            if cursor_in_node(cursor, node, gt).is_some() {
+                state.over_blocking_ui = true;
+                break;
+            }
         }
-        if let Some(slot) = menu.slot {
-            sell.write(SellItemRequest { slot });
+    }
+
+    if let Ok((node, gt)) = minimap.single() {
+        if let Some(uv) = cursor_in_node(cursor, node, gt) {
+            state.over_minimap = true;
+            state.minimap_uv = Some(uv);
+            // Minimap is interactive but not a "blocking" UI for the special RMB path.
         }
-        menu.slot = None;
-        if let Ok(mut vis) = menu_vis.single_mut() {
-            *vis = Visibility::Hidden;
+    }
+}
+
+fn handle_minimap_clicks(
+    mouse: Res<ButtonInput<MouseButton>>,
+    pointer: Res<UiPointerState>,
+    config: Res<MatchConfig>,
+    main_menu: Res<MainMenuState>,
+    mut focus: ResMut<CameraFocus>,
+    hero: Query<Entity, With<PlayerHero>>,
+    mut commands: Commands,
+) {
+    if main_menu.open {
+        return;
+    }
+    let Some(uv) = pointer.minimap_uv else {
+        return;
+    };
+    if !pointer.over_minimap {
+        return;
+    }
+    let extent = config.map_half_extent;
+    // Minimap: x right, y down maps to +X / +Z (matches world_to_minimap).
+    let world = Vec3::new(
+        (uv.x * 2.0 - 1.0) * extent,
+        0.0,
+        (uv.y * 2.0 - 1.0) * extent,
+    );
+
+    if mouse.just_pressed(MouseButton::Left) {
+        focus.position = world;
+    }
+    if mouse.just_pressed(MouseButton::Right) {
+        if let Ok(hero_entity) = hero.single() {
+            order_hero_move(&mut commands, hero_entity, world);
         }
     }
 }

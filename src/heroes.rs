@@ -268,7 +268,7 @@ impl HeroDef {
 }
 
 #[derive(Component)]
-struct HeroSelectRoot;
+pub(crate) struct HeroSelectRoot;
 
 #[derive(Component, Debug, Clone, Copy)]
 struct HeroSelectButton {
@@ -297,7 +297,11 @@ fn spawn_hero_select_ui(mut commands: Commands, choice: Res<LocalHeroChoice>) {
     if choice.from_cli && choice.hero.is_some() {
         return;
     }
+    spawn_hero_select_ui_force(&mut commands);
+}
 
+/// Rebuild the hero select overlay (e.g. after New Game).
+pub(crate) fn spawn_hero_select_ui_force(commands: &mut Commands) {
     commands
         .spawn((
             Name::new("Hero Select"),

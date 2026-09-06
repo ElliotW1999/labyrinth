@@ -9,11 +9,13 @@ use crate::components::{
     PlayerHero, Team, UnitRadius,
 };
 use crate::items::ShopUiState;
+use crate::menu::MainMenuState;
 use crate::movement::{order_attack_move, order_hero_move, order_hero_stop};
 use crate::net::{
     client_send_command, should_send_orders_over_network, ClientToServer, NetConfig, NetworkId,
     NetTransport,
 };
+use crate::ui::UiPointerState;
 
 pub struct InputPlugin;
 
@@ -26,7 +28,8 @@ impl Plugin for InputPlugin {
                 handle_point_and_click,
                 handle_attack_move,
                 handle_spell_rank_hotkeys,
-            ),
+            )
+                .run_if(|menu: Res<MainMenuState>| !menu.open),
         );
     }
 }
@@ -139,6 +142,7 @@ fn handle_point_and_click(
         &Visibility,
     )>,
     shop_ui: Res<ShopUiState>,
+    pointer: Res<UiPointerState>,
     config: Res<NetConfig>,
     transport: Option<ResMut<NetTransport>>,
     mut targeting: ResMut<AbilityTargeting>,
@@ -159,7 +163,10 @@ fn handle_point_and_click(
         return;
     }
 
-    let _ = shop_ui.open;
+    // RMB on UI must not move the hero. Minimap RMB is handled separately.
+    if pointer.over_minimap || shop_ui.open || pointer.over_blocking_ui {
+        return;
+    }
 
     let Some(hit) = cursor_ground_hit(&windows, &camera, &ground) else {
         return;
@@ -241,12 +248,16 @@ fn handle_attack_move(
     camera: Query<(&Camera, &GlobalTransform)>,
     ground: Query<&GlobalTransform, With<Ground>>,
     hero: Query<Entity, With<PlayerHero>>,
+    pointer: Res<UiPointerState>,
     config: Res<NetConfig>,
     transport: Option<ResMut<NetTransport>>,
     mut targeting: ResMut<AbilityTargeting>,
     mut commands: Commands,
 ) {
     if !keys.just_pressed(KeyCode::KeyG) {
+        return;
+    }
+    if pointer.over_blocking_ui && !pointer.over_minimap {
         return;
     }
     cancel_targeting_if_any(&mut commands, &mut targeting);
