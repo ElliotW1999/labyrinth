@@ -10,6 +10,7 @@ use crate::components::{
 };
 use crate::items::{
     apply_debuff_immunity, apply_disarm, apply_forceful, apply_phased, apply_root, apply_silence,
+    apply_stun,
     apply_status, StatusEffect, StatusEffects,
 };
 use crate::resources::SharedAssets;
@@ -691,13 +692,24 @@ fn tick_ability_casting(
                     assets.nova_mat.clone(),
                     0.55,
                 );
-                for (enemy_entity, enemy_tf, enemy_team, enemy_hp, enemy_stats, _) in enemy_set.p0().iter() {
+                let mut meteor_hits = Vec::new();
+                for (enemy_entity, enemy_tf, enemy_team, enemy_hp, enemy_stats, _) in
+                    enemy_set.p0().iter()
+                {
                     if *enemy_team == *team || !enemy_hp.is_alive() {
                         continue;
                     }
                     if flat_distance(aim, enemy_tf.translation) <= aoe {
                         let amount = apply_damage(ground_damage, DamageType::Magical, enemy_stats);
                         commands.entity(enemy_entity).insert(PendingDamage { amount });
+                        if ability == AbilityId::Meteor {
+                            meteor_hits.push(enemy_entity);
+                        }
+                    }
+                }
+                for enemy in meteor_hits {
+                    if let Ok((mut st, mut st_stats)) = enemy_set.p2().get_mut(enemy) {
+                        apply_stun(&mut st, &mut st_stats, 1.1);
                     }
                 }
             }

@@ -67,7 +67,7 @@ The HUD shows connection status. Host sim runs combat / creeps / AI; clients app
 | --- | --- | --- |
 | Vanguard | Strength | Dash, Shockwave (brief **forceful** push), Bolt (unit), Nova |
 | Skirmisher | Agility | Blink, Flurry (silence+disarm), Caltrops, Execute (unit, bonus vs low HP) |
-| Arcanist | Intelligence | Missile, Frost (root), Barrier (debuff immunity), Meteor |
+| Arcanist | Intelligence | Missile, Frost (root), Barrier (debuff immunity), Meteor (stun) |
 
 Each hero has its own base Str/Agi/Int and per-level growth.
 

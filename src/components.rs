@@ -176,6 +176,7 @@ pub struct HeroAttributes {
 }
 
 impl HeroAttributes {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn starter() -> Self {
         Self {
             strength: 20.0,
