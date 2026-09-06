@@ -55,14 +55,20 @@ fn begin_attack_windups(
         Option<&StatusEffects>,
         Has<PlayerHero>,
     )>,
-    targets: Query<(Entity, &Transform, &Team, &Health, Option<&UnitRadius>)>,
+    // GlobalTransform (not Transform) so this stays disjoint from attackers' &mut Transform.
+    targets: Query<(Entity, &GlobalTransform, &Team, &Health, Option<&UnitRadius>)>,
 ) {
     let dt = time.delta_secs();
     let target_snapshots: Vec<_> = targets
         .iter()
         .filter(|(_, _, _, hp, _)| hp.is_alive())
         .map(|(e, t, team, _, radius)| {
-            (e, t.translation, *team, radius.map(|r| r.0).unwrap_or(0.5))
+            (
+                e,
+                t.translation(),
+                *team,
+                radius.map(|r| r.0).unwrap_or(0.5),
+            )
         })
         .collect();
 
@@ -570,5 +576,15 @@ mod tests {
         let a = Vec3::new(0.0, 10.0, 0.0);
         let b = Vec3::new(3.0, -4.0, 4.0);
         assert!((flat_distance(a, b) - 5.0).abs() < 1e-4);
+    }
+
+    /// Regression: turn-rate windups need &mut Transform on attackers without
+    /// conflicting with target position reads (Bevy B0001).
+    #[test]
+    fn begin_attack_windups_system_initializes() {
+        let mut world = World::new();
+        world.init_resource::<Time>();
+        let mut system = IntoSystem::into_system(begin_attack_windups);
+        system.initialize(&mut world);
     }
 }
