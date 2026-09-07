@@ -1,4 +1,16 @@
-# keep existing if present
+# Rust
+/target/
+**/*.rs.bk
 
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Bevy
+wasm/
+
+# Python generators
 __pycache__/
 scripts/__pycache__/
