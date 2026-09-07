@@ -1,0 +1,5 @@
+Item: Spark Pendant
+Rust id: ItemId::SparkPendant
+Cooldown: 25.0
+Pseudocode:
+On use: deal 90 magical damage to enemies in a 4.5 radius and restore 40 mana to self

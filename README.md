@@ -140,6 +140,19 @@ Required columns: `Hero_name`, `is_melee`, `Ability_Q/W/E/R_Name`, `base_STR/AGI
 - Six inventory slots; RMB → **Sell (50%)** near shop; actives use ASDZXC
 - Heroes carry a `StatusEffects` list for buffs / debuffs
 - Unit soft-push is **off by default**; the **forceful** buff enables it (e.g. Vanguard Shockwave). **Phased** (Dash/Blink) ignores unit push.
+- **Heartwood Band** (550g) — 3 passive(s), passive-only; components: Iron Bracer
+- **Spark Pendant** (750g) — 2 passive(s), active stub; components: Mana Crystal, Blade of Ash
+
+### Adding items (ItemGenerator)
+
+Append shop items via CSV — patches `src/items.rs` markers (enum, passives, optional active stub + recipe components) and writes active pseudocode under `data/item_actives/`.
+
+```bash
+python3 scripts/ItemGenerator.py data/items.example.csv
+python3 scripts/ItemGenerator.py data/items.example.csv --dry-run
+```
+
+Required: `Item_name`, `cost`. Optional: `short_label`, `description`, `passive_1`…`passive_5` (`stat=value`, e.g. `max_health=100`), `has_active`, `active_cooldown`, `active_pseudocode`, `components` (`;`-separated item names), `color_r/g/b`. Rows whose `Item_name` already exists are skipped. Actives are stubbed until you implement the pseudocode.
 ## What's included
 
 - Three-lane map with river, jungle pockets, tree obstacles, towers, ancients, and a northern obstacle course
@@ -184,8 +197,11 @@ src/
   ui.rs               HUD (spell bar, inventory, shop gold, minimap)
 scripts/
   HeroGenerator.py     CSV → add HeroId + stub AbilityIds
+  ItemGenerator.py    CSV → add ItemId + passives / active stubs / components
 data/
   heroes.example.csv  Sample input for HeroGenerator
+  items.example.csv   Sample input for ItemGenerator
+  item_actives/       Active pseudocode dumps from ItemGenerator
 ```
 
 ## Extending

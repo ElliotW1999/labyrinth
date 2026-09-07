@@ -10,3 +10,7 @@
 
 # Bevy
 wasm/
+
+# Python generators
+__pycache__/
+scripts/__pycache__/

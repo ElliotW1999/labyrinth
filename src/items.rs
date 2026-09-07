@@ -259,6 +259,7 @@ impl StatusEffects {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ItemId {
+    // <item_generator:item_enum>
     IronBracer,
     SwiftBoots,
     ManaCrystal,
@@ -267,11 +268,15 @@ pub enum ItemId {
     VialOfLight,
     StormRod,
     WardstoneCloak,
+    HeartwoodBand,
+    SparkPendant,
+    // </item_generator:item_enum>
 }
 
 impl ItemId {
     pub fn all() -> &'static [ItemId] {
         &[
+            // <item_generator:item_all>
             ItemId::IronBracer,
             ItemId::SwiftBoots,
             ItemId::ManaCrystal,
@@ -280,11 +285,15 @@ impl ItemId {
             ItemId::VialOfLight,
             ItemId::StormRod,
             ItemId::WardstoneCloak,
+            ItemId::HeartwoodBand,
+            ItemId::SparkPendant,
+            // </item_generator:item_all>
         ]
     }
 
     pub fn name(self) -> &'static str {
         match self {
+            // <item_generator:item_name>
             ItemId::IronBracer => "Iron Bracer",
             ItemId::SwiftBoots => "Swift Boots",
             ItemId::ManaCrystal => "Mana Crystal",
@@ -293,11 +302,15 @@ impl ItemId {
             ItemId::VialOfLight => "Vial of Light",
             ItemId::StormRod => "Storm Rod",
             ItemId::WardstoneCloak => "Wardstone Cloak",
+            ItemId::HeartwoodBand => "Heartwood Band",
+            ItemId::SparkPendant => "Spark Pendant",
+            // </item_generator:item_name>
         }
     }
 
     pub fn short_label(self) -> &'static str {
         match self {
+            // <item_generator:item_short_label>
             ItemId::IronBracer => "IB",
             ItemId::SwiftBoots => "SB",
             ItemId::ManaCrystal => "MC",
@@ -306,11 +319,15 @@ impl ItemId {
             ItemId::VialOfLight => "VL",
             ItemId::StormRod => "SR",
             ItemId::WardstoneCloak => "WC",
+            ItemId::HeartwoodBand => "HB",
+            ItemId::SparkPendant => "SP",
+            // </item_generator:item_short_label>
         }
     }
 
     pub fn cost(self) -> u32 {
         match self {
+            // <item_generator:item_cost>
             ItemId::IronBracer => 300,
             ItemId::SwiftBoots => 450,
             ItemId::ManaCrystal => 350,
@@ -319,11 +336,15 @@ impl ItemId {
             ItemId::VialOfLight => 400,
             ItemId::StormRod => 900,
             ItemId::WardstoneCloak => 650,
+            ItemId::HeartwoodBand => 550,
+            ItemId::SparkPendant => 750,
+            // </item_generator:item_cost>
         }
     }
 
     pub fn description(self) -> &'static str {
         match self {
+            // <item_generator:item_description>
             ItemId::IronBracer => "+100 HP, +4 Armor",
             ItemId::SwiftBoots => "+2.5 Move Speed",
             ItemId::ManaCrystal => "+80 Mana, +4 Mana Regen",
@@ -332,6 +353,9 @@ impl ItemId {
             ItemId::VialOfLight => "Active: Heal 180 HP",
             ItemId::StormRod => "+12 AD. Active: 140 magic AoE",
             ItemId::WardstoneCloak => "+80 HP, +4 MR. Active: +8 Armor 5s",
+            ItemId::HeartwoodBand => "+150 HP. +3 Armor. +2 Mana Regen",
+            ItemId::SparkPendant => "+10 Attack Damage. +60 Mana. Active: On use: deal 90 magical damage to enemies in a 4.5 radius and restore 40 mana to self",
+            // </item_generator:item_description>
         }
     }
 
@@ -351,6 +375,7 @@ impl ItemId {
 
     pub fn placeholder_color(self) -> Color {
         match self {
+            // <item_generator:item_color>
             ItemId::IronBracer => Color::srgb(0.55, 0.55, 0.6),
             ItemId::SwiftBoots => Color::srgb(0.35, 0.7, 0.45),
             ItemId::ManaCrystal => Color::srgb(0.3, 0.45, 0.95),
@@ -359,6 +384,9 @@ impl ItemId {
             ItemId::VialOfLight => Color::srgb(0.95, 0.9, 0.55),
             ItemId::StormRod => Color::srgb(0.45, 0.35, 0.95),
             ItemId::WardstoneCloak => Color::srgb(0.4, 0.55, 0.5),
+            ItemId::HeartwoodBand => Color::srgb(0.405294, 0.452353, 0.558235),
+            ItemId::SparkPendant => Color::srgb(0.85, 0.55, 0.25),
+            // </item_generator:item_color>
         }
     }
 
@@ -367,7 +395,34 @@ impl ItemId {
             ItemId::VialOfLight => Some(40.0),
             ItemId::StormRod => Some(30.0),
             ItemId::WardstoneCloak => Some(35.0),
+            // <item_generator:active_cooldown>
+            ItemId::SparkPendant => Some(25.0),
+            // </item_generator:active_cooldown>
             _ => None,
+        }
+    }
+
+    /// Pseudocode for actives (ItemGenerator fills this for stub kits).
+    pub fn active_pseudocode(self) -> Option<&'static str> {
+        match self {
+            // <item_generator:active_pseudocode>
+            ItemId::VialOfLight => Some("Heal self for 180 HP"),
+            ItemId::StormRod => Some("Deal 140 magical damage in 5.5 radius around caster"),
+            ItemId::WardstoneCloak => Some("Gain +8 armor for 5 seconds"),
+            ItemId::SparkPendant => Some("On use: deal 90 magical damage to enemies in a 4.5 radius and restore 40 mana to self"),
+            // </item_generator:active_pseudocode>
+            _ => None,
+        }
+    }
+
+    /// Optional recipe components (empty = basic item). Recipe combining is TBD.
+    pub fn recipe_components(self) -> &'static [ItemId] {
+        match self {
+            // <item_generator:recipe_components>
+            ItemId::HeartwoodBand => &[ItemId::IronBracer],
+            ItemId::SparkPendant => &[ItemId::ManaCrystal, ItemId::BladeOfAsh],
+            // </item_generator:recipe_components>
+            _ => &[],
         }
     }
 
@@ -404,6 +459,7 @@ pub struct ItemPassives {
 impl ItemId {
     pub fn passives(self) -> ItemPassives {
         match self {
+            // <item_generator:item_passives>
             ItemId::IronBracer => ItemPassives {
                 max_health: 100.0,
                 armor: 4.0,
@@ -439,6 +495,18 @@ impl ItemId {
                 magic_resist: 4.0,
                 ..default()
             },
+            ItemId::HeartwoodBand => ItemPassives {
+                max_health: 150.0,
+                armor: 3.0,
+                mana_regen: 2.0,
+                ..default()
+            },
+            ItemId::SparkPendant => ItemPassives {
+                attack_damage: 10.0,
+                max_mana: 60.0,
+                ..default()
+            },
+            // </item_generator:item_passives>
         }
     }
 }
@@ -761,6 +829,13 @@ fn try_use_item(
             );
             spawn_heal_fx(commands, assets, transform.translation);
         }
+        // <item_generator:active_arms>
+        // Generated actives: stub until pseudocode is implemented.
+        ItemId::SparkPendant => {
+            // ACTIVE_PSEUDOCODE: On use: deal 90 magical damage to enemies in a 4.5 radius and restore 40 mana to self
+            // TODO: implement active from ItemGenerator active_pseudocode
+        }
+        // </item_generator:active_arms>
         _ => return,
     }
 
