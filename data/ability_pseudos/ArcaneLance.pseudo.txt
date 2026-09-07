@@ -1,0 +1,13 @@
+Ability: Arcane Lance
+Rust id: AbilityId::ArcaneLance
+Type: UnitTarget
+Ultimate: False
+Max rank: 7
+Cast point / backswing: 0.2 / 0.3
+Mana: 50.0 + 7.0/level
+Damage (Magical): 95.0 + 32.0/level
+Cast range: 11.0 + 0.6/level
+AoE: 0.0 + 0.0/level
+Cooldown: 7.0 + -0.3/level (min 3.5)
+Pseudocode:
+Fire a magical bolt at the target unit dealing damage_at(rank). If target HP < 35%, deal 25% bonus damage

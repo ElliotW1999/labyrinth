@@ -126,6 +126,22 @@ Required columns: `Hero_name`, `is_melee`, `Ability_Q/W/E/R_Name`, `base_STR/AGI
 - Ultimates: up to 4 ranks; unlocked at overall levels 6 / 12 / 18 / 24
 - Each rank scales damage, cooldown, range, and mana cost
 - **Unit-targeted** spells (Bolt, Execute) require clicking a creep or hero
+- **Seismic Slam** (Untargeted) — stub; see `data/ability_pseudos/SeismicSlam.pseudo.txt`
+- **Arcane Lance** (UnitTarget) — stub; see `data/ability_pseudos/ArcaneLance.pseudo.txt`
+- **Cataclysm** (TargetArea, ultimate) — stub; see `data/ability_pseudos/Cataclysm.pseudo.txt`
+- **Stone Skin** (Passive) — stub; see `data/ability_pseudos/StoneSkin.pseudo.txt`
+- **Overcharge** (Toggle) — stub; see `data/ability_pseudos/Overcharge.pseudo.txt`
+
+### Adding abilities (AbilityGenerator)
+
+Append ability kits via CSV — patches `AbilityId` + `GeneratedAbilityDef` in `src/components.rs` and writes pseudocode under `data/ability_pseudos/`. Cast effects stay stubbed until you implement the pseudocode in `abilities.rs`.
+
+```bash
+python3 scripts/AbilityGenerator.py data/abilities.example.csv
+python3 scripts/AbilityGenerator.py data/abilities.example.csv --dry-run
+```
+
+Required: `Ability_name`, `ability_type` (`passive` / `untargeted` / `unit_target` / `target_area` / `target_point` / `toggle`), `pseudocode`. Optional scaling: `cast_point`, `cast_backswing`, `mana_cost_base`, `mana_cost_per_level` (alias `cost_per_level`), `damage_base`, `damage_per_level`, `cast_range_*`, `aoe_radius_*`, `cooldown_base`, `cooldown_per_level`, `cooldown_min`, `is_ultimate`, `max_rank`, `damage_type`. Rows whose ability name already exists are skipped.
 
 ### Attributes
 
@@ -198,10 +214,13 @@ src/
 scripts/
   HeroGenerator.py     CSV → add HeroId + stub AbilityIds
   ItemGenerator.py    CSV → add ItemId + passives / active stubs / components
+  AbilityGenerator.py CSV → add AbilityId + GeneratedAbilityDef + pseudocode
 data/
   heroes.example.csv  Sample input for HeroGenerator
   items.example.csv   Sample input for ItemGenerator
+  abilities.example.csv Sample input for AbilityGenerator
   item_actives/       Active pseudocode dumps from ItemGenerator
+  ability_pseudos/    Ability pseudocode dumps from AbilityGenerator
 ```
 
 ## Extending

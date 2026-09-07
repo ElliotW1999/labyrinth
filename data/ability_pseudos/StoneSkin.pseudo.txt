@@ -1,0 +1,13 @@
+Ability: Stone Skin
+Rust id: AbilityId::StoneSkin
+Type: Passive
+Ultimate: False
+Max rank: 4
+Cast point / backswing: 0.0 / 0.0
+Mana: 0.0 + 0.0/level
+Damage (Physical): 0.0 + 0.0/level
+Cast range: 0.0 + 0.0/level
+AoE: 0.0 + 0.0/level
+Cooldown: 0.0 + 0.0/level (min 0.0)
+Pseudocode:
+Permanently gain +4 armor per rank while ability is learned (rank > 0)
