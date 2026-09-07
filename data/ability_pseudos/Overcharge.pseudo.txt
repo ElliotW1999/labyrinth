@@ -1,0 +1,13 @@
+Ability: Overcharge
+Rust id: AbilityId::Overcharge
+Type: Toggle
+Ultimate: False
+Max rank: 7
+Cast point / backswing: 0.0 / 0.0
+Mana: 15.0 + 3.0/level
+Damage (Magical): 0.0 + 0.0/level
+Cast range: 0.0 + 0.0/level
+AoE: 0.0 + 0.0/level
+Cooldown: 1.0 + 0.0/level (min 0.5)
+Pseudocode:
+Toggle: while on, drain 8 mana/sec and gain +20% attack speed and +10 move speed; turn off if mana empty

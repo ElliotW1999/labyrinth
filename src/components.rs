@@ -250,6 +250,32 @@ pub enum DamageType {
     Magical,
 }
 
+/// Designer-facing ability activation category (AbilityGenerator).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum AbilityType {
+    Passive,
+    Untargeted,
+    UnitTarget,
+    TargetArea,
+    TargetPoint,
+    Toggle,
+}
+
+impl AbilityType {
+    #[allow(dead_code)]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AbilityType::Passive => "passive",
+            AbilityType::Untargeted => "untargeted",
+            AbilityType::UnitTarget => "unit_target",
+            AbilityType::TargetArea => "target_area",
+            AbilityType::TargetPoint => "target_point",
+            AbilityType::Toggle => "toggle",
+        }
+    }
+}
+
 /// How an ability is activated from the hotkey.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AbilityCastKind {
@@ -258,6 +284,77 @@ pub enum AbilityCastKind {
     Targeted { cast_range: f32, aoe_radius: f32 },
     /// Must be cast on a creep or hero.
     UnitTargeted { cast_range: f32 },
+}
+
+/// Data-driven kit filled by `scripts/AbilityGenerator.py`.
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
+pub struct GeneratedAbilityDef {
+    pub display_name: &'static str,
+    pub ability_type: AbilityType,
+    pub is_ultimate: bool,
+    pub max_rank: u32,
+    pub cast_point: f32,
+    pub cast_backswing: f32,
+    pub mana_cost_base: f32,
+    pub mana_cost_per_level: f32,
+    pub damage_base: f32,
+    pub damage_per_level: f32,
+    pub cast_range_base: f32,
+    pub cast_range_per_level: f32,
+    pub aoe_radius_base: f32,
+    pub aoe_radius_per_level: f32,
+    pub cooldown_base: f32,
+    /// Usually negative so higher ranks cool down faster.
+    pub cooldown_per_level: f32,
+    pub cooldown_min: f32,
+    pub damage_type: DamageType,
+    pub pseudocode: &'static str,
+}
+
+impl GeneratedAbilityDef {
+    pub fn cooldown_at(self, rank: u32) -> f32 {
+        let r = rank.max(1) as f32;
+        (self.cooldown_base + self.cooldown_per_level * (r - 1.0)).max(self.cooldown_min)
+    }
+
+    pub fn mana_cost_at(self, rank: u32) -> f32 {
+        let r = rank.max(1) as f32;
+        (self.mana_cost_base + self.mana_cost_per_level * (r - 1.0)).max(0.0)
+    }
+
+    pub fn damage_at(self, rank: u32) -> f32 {
+        let r = rank.max(1) as f32;
+        (self.damage_base + self.damage_per_level * (r - 1.0)).max(0.0)
+    }
+
+    pub fn cast_range_at(self, rank: u32) -> f32 {
+        let r = rank.max(1) as f32;
+        (self.cast_range_base + self.cast_range_per_level * (r - 1.0)).max(0.0)
+    }
+
+    pub fn aoe_radius_at(self, rank: u32) -> f32 {
+        let r = rank.max(1) as f32;
+        (self.aoe_radius_base + self.aoe_radius_per_level * (r - 1.0)).max(0.0)
+    }
+
+    pub fn cast_kind(self, rank: u32) -> AbilityCastKind {
+        let cast_range = self.cast_range_at(rank);
+        let aoe_radius = self.aoe_radius_at(rank);
+        match self.ability_type {
+            AbilityType::Passive => AbilityCastKind::Instant,
+            AbilityType::Untargeted | AbilityType::Toggle => AbilityCastKind::Instant,
+            AbilityType::UnitTarget => AbilityCastKind::UnitTargeted { cast_range },
+            AbilityType::TargetArea => AbilityCastKind::Targeted {
+                cast_range,
+                aoe_radius,
+            },
+            AbilityType::TargetPoint => AbilityCastKind::Targeted {
+                cast_range,
+                aoe_radius: aoe_radius.max(0.5),
+            },
+        }
+    }
 }
 
 #[derive(Component, Debug, Clone, Copy)]
@@ -391,11 +488,163 @@ pub enum AbilityId {
     Curse,
     Ward,
     Ritual,
-// </hero_generator:ability_enum>
+    // AbilityGenerator: Seismic Slam
+    SeismicSlam,
+    // AbilityGenerator: Arcane Lance
+    ArcaneLance,
+    // AbilityGenerator: Cataclysm
+    Cataclysm,
+    // AbilityGenerator: Stone Skin
+    StoneSkin,
+    // AbilityGenerator: Overcharge
+    Overcharge,
+    // </hero_generator:ability_enum>
 }
 
 impl AbilityId {
+    /// Lookup table for abilities created by AbilityGenerator.
+    pub fn generated(self) -> Option<&'static GeneratedAbilityDef> {
+        match self {
+            // <ability_generator:defs>
+            AbilityId::SeismicSlam => Some(&GeneratedAbilityDef {
+                display_name: "Seismic Slam",
+                ability_type: AbilityType::Untargeted,
+                is_ultimate: false,
+                max_rank: 7,
+                cast_point: 0.25,
+                cast_backswing: 0.35,
+                mana_cost_base: 55.0,
+                mana_cost_per_level: 8.0,
+                damage_base: 80.0,
+                damage_per_level: 30.0,
+                cast_range_base: 0.0,
+                cast_range_per_level: 0.0,
+                aoe_radius_base: 5.5,
+                aoe_radius_per_level: 0.35,
+                cooldown_base: 10.0,
+                cooldown_per_level: -0.4,
+                cooldown_min: 5.0,
+                damage_type: DamageType::Physical,
+                pseudocode: "Deal physical damage to enemies in aoe_radius around caster and briefly slow them by 30% for 1.5s",
+            }),
+            AbilityId::ArcaneLance => Some(&GeneratedAbilityDef {
+                display_name: "Arcane Lance",
+                ability_type: AbilityType::UnitTarget,
+                is_ultimate: false,
+                max_rank: 7,
+                cast_point: 0.2,
+                cast_backswing: 0.3,
+                mana_cost_base: 50.0,
+                mana_cost_per_level: 7.0,
+                damage_base: 95.0,
+                damage_per_level: 32.0,
+                cast_range_base: 11.0,
+                cast_range_per_level: 0.6,
+                aoe_radius_base: 0.0,
+                aoe_radius_per_level: 0.0,
+                cooldown_base: 7.0,
+                cooldown_per_level: -0.3,
+                cooldown_min: 3.5,
+                damage_type: DamageType::Magical,
+                pseudocode: "Fire a magical bolt at the target unit dealing damage_at(rank). If target HP < 35%, deal 25% bonus damage",
+            }),
+            AbilityId::Cataclysm => Some(&GeneratedAbilityDef {
+                display_name: "Cataclysm",
+                ability_type: AbilityType::TargetArea,
+                is_ultimate: true,
+                max_rank: 4,
+                cast_point: 0.4,
+                cast_backswing: 0.45,
+                mana_cost_base: 120.0,
+                mana_cost_per_level: 25.0,
+                damage_base: 200.0,
+                damage_per_level: 70.0,
+                cast_range_base: 10.0,
+                cast_range_per_level: 0.5,
+                aoe_radius_base: 5.0,
+                aoe_radius_per_level: 0.5,
+                cooldown_base: 55.0,
+                cooldown_per_level: -5.0,
+                cooldown_min: 30.0,
+                damage_type: DamageType::Magical,
+                pseudocode: "After 0.5s delay, deal magical damage in aoe at the point and stun enemies for 1.2s",
+            }),
+            AbilityId::StoneSkin => Some(&GeneratedAbilityDef {
+                display_name: "Stone Skin",
+                ability_type: AbilityType::Passive,
+                is_ultimate: false,
+                max_rank: 4,
+                cast_point: 0.0,
+                cast_backswing: 0.0,
+                mana_cost_base: 0.0,
+                mana_cost_per_level: 0.0,
+                damage_base: 0.0,
+                damage_per_level: 0.0,
+                cast_range_base: 0.0,
+                cast_range_per_level: 0.0,
+                aoe_radius_base: 0.0,
+                aoe_radius_per_level: 0.0,
+                cooldown_base: 0.0,
+                cooldown_per_level: 0.0,
+                cooldown_min: 0.0,
+                damage_type: DamageType::Physical,
+                pseudocode: "Permanently gain +4 armor per rank while ability is learned (rank > 0)",
+            }),
+            AbilityId::Overcharge => Some(&GeneratedAbilityDef {
+                display_name: "Overcharge",
+                ability_type: AbilityType::Toggle,
+                is_ultimate: false,
+                max_rank: 7,
+                cast_point: 0.0,
+                cast_backswing: 0.0,
+                mana_cost_base: 15.0,
+                mana_cost_per_level: 3.0,
+                damage_base: 0.0,
+                damage_per_level: 0.0,
+                cast_range_base: 0.0,
+                cast_range_per_level: 0.0,
+                aoe_radius_base: 0.0,
+                aoe_radius_per_level: 0.0,
+                cooldown_base: 1.0,
+                cooldown_per_level: 0.0,
+                cooldown_min: 0.5,
+                damage_type: DamageType::Magical,
+                pseudocode: "Toggle: while on, drain 8 mana/sec and gain +20% attack speed and +10 move speed; turn off if mana empty",
+            }),
+            // </ability_generator:defs>
+            _ => None,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn ability_type(self) -> AbilityType {
+        if let Some(def) = self.generated() {
+            return def.ability_type;
+        }
+        match self {
+            AbilityId::Dash | AbilityId::Blink => AbilityType::TargetPoint,
+            AbilityId::Shockwave
+            | AbilityId::Flurry
+            | AbilityId::FrostNova
+            | AbilityId::Barrier => AbilityType::Untargeted,
+            AbilityId::Bolt | AbilityId::Execute => AbilityType::UnitTarget,
+            AbilityId::ArcMissile
+            | AbilityId::Caltrops
+            | AbilityId::Nova
+            | AbilityId::Meteor => AbilityType::TargetArea,
+            _ => AbilityType::Untargeted,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn pseudocode(self) -> Option<&'static str> {
+        self.generated().map(|d| d.pseudocode)
+    }
+
     pub fn display_name(self) -> &'static str {
+        if let Some(def) = self.generated() {
+            return def.display_name;
+        }
         match self {
             // <hero_generator:ability_display_name>
             AbilityId::Dash => "Dash",
@@ -419,20 +668,27 @@ impl AbilityId {
             AbilityId::Curse => "Curse",
             AbilityId::Ward => "Ward",
             AbilityId::Ritual => "Ritual",
-// </hero_generator:ability_display_name>
+            // </hero_generator:ability_display_name>
+            _ => "Ability",
         }
     }
 
     pub fn is_ultimate(self) -> bool {
+        if let Some(def) = self.generated() {
+            return def.is_ultimate;
+        }
         matches!(
             self,
             // <hero_generator:ability_ultimates>
-            AbilityId::Nova | AbilityId::Execute | AbilityId::Meteor | AbilityId::Aegis | AbilityId::Ritual
+            AbilityId::Nova | AbilityId::Execute | AbilityId::Meteor | AbilityId::Aegis | AbilityId::Ritual | AbilityId::Cataclysm
             // </hero_generator:ability_ultimates>
         )
     }
 
     pub fn max_rank(self) -> u32 {
+        if let Some(def) = self.generated() {
+            return def.max_rank;
+        }
         if self.is_ultimate() { 4 } else { 7 }
     }
 
@@ -499,6 +755,13 @@ impl AbilitySlot {
 
     pub fn refresh_stats(&mut self) {
         let r = self.rank.max(1);
+        if let Some(def) = self.id.generated() {
+            self.cooldown = def.cooldown_at(r);
+            self.mana_cost = def.mana_cost_at(r);
+            self.cast_point = def.cast_point.clamp(0.0, 0.5);
+            self.cast_backswing = def.cast_backswing.clamp(0.0, 0.5);
+            return;
+        }
         match self.id {
             AbilityId::Dash | AbilityId::Blink => {
                 self.cooldown = (7.5 - r as f32 * 0.35).max(4.0);
@@ -563,6 +826,9 @@ impl AbilitySlot {
 
     pub fn cast_kind(&self) -> AbilityCastKind {
         let r = self.rank.max(1);
+        if let Some(def) = self.id.generated() {
+            return def.cast_kind(r);
+        }
         match self.id {
             AbilityId::Shockwave
             | AbilityId::Flurry
@@ -604,6 +870,9 @@ impl AbilitySlot {
     }
 
     pub fn shockwave_damage(&self) -> f32 {
+        if let Some(def) = self.id.generated() {
+            return def.damage_at(self.rank.max(1));
+        }
         match self.id {
             AbilityId::Flurry => 55.0 + self.rank as f32 * 22.0,
             AbilityId::FrostNova => 65.0 + self.rank as f32 * 26.0,
@@ -620,6 +889,9 @@ impl AbilitySlot {
     }
 
     pub fn bolt_damage(&self) -> f32 {
+        if let Some(def) = self.id.generated() {
+            return def.damage_at(self.rank.max(1));
+        }
         match self.id {
             AbilityId::ArcMissile => 85.0 + self.rank as f32 * 28.0,
             AbilityId::Execute => 110.0 + self.rank as f32 * 40.0,
@@ -629,6 +901,9 @@ impl AbilitySlot {
     }
 
     pub fn nova_damage(&self) -> f32 {
+        if let Some(def) = self.id.generated() {
+            return def.damage_at(self.rank.max(1));
+        }
         match self.id {
             AbilityId::Meteor => 180.0 + self.rank as f32 * 60.0,
             _ => 160.0 + self.rank as f32 * 55.0,
@@ -744,3 +1019,31 @@ pub struct HealthBarFill;
 
 #[derive(Component, Debug, Clone, Copy)]
 pub struct HasHealthBar;
+
+#[cfg(test)]
+mod ability_generator_tests {
+    use super::*;
+
+    #[test]
+    fn generated_abilities_expose_defs_and_scaling() {
+        let slam = AbilityId::SeismicSlam
+            .generated()
+            .expect("SeismicSlam should be generated");
+        assert_eq!(slam.ability_type, AbilityType::Untargeted);
+        assert_eq!(slam.damage_type, DamageType::Physical);
+        assert!(slam.pseudocode.contains("slow"));
+
+        let ult = AbilityId::Cataclysm.generated().expect("Cataclysm");
+        assert!(ult.is_ultimate);
+        assert_eq!(AbilityId::Cataclysm.max_rank(), 4);
+        assert!(ult.cooldown_at(1) > ult.cooldown_at(4));
+
+        let lance = AbilitySlot::fresh(AbilityId::ArcaneLance);
+        assert!(matches!(
+            lance.cast_kind(),
+            AbilityCastKind::UnitTargeted { .. }
+        ));
+        assert!(AbilityId::StoneSkin.ability_type() == AbilityType::Passive);
+        assert!(AbilityId::Overcharge.ability_type() == AbilityType::Toggle);
+    }
+}

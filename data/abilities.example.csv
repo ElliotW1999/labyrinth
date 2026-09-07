@@ -1,0 +1,7 @@
+Ability_name,ability_type,is_ultimate,cast_point,cast_backswing,mana_cost_base,mana_cost_per_level,damage_base,damage_per_level,cast_range_base,cast_range_per_level,aoe_radius_base,aoe_radius_per_level,cooldown_base,cooldown_per_level,cooldown_min,max_rank,damage_type,cost_per_level,pseudocode
+Dash,target_point,false,0.05,0.15,35,5,0,0,8,1.2,0.75,0,7.5,-0.35,4,7,magical,,Should be skipped — already exists
+Seismic Slam,untargeted,false,0.25,0.35,55,8,80,30,0,0,5.5,0.35,10,-0.4,5,7,physical,,Deal physical damage to enemies in aoe_radius around caster and briefly slow them by 30% for 1.5s
+Arcane Lance,unit_target,false,0.2,0.3,50,7,95,32,11,0.6,0,0,7,-0.3,3.5,7,magical,7,"Fire a magical bolt at the target unit dealing damage_at(rank). If target HP < 35%, deal 25% bonus damage"
+Cataclysm,target_area,true,0.4,0.45,120,25,200,70,10,0.5,5,0.5,55,-5,30,4,magical,,"After 0.5s delay, deal magical damage in aoe at the point and stun enemies for 1.2s"
+Stone Skin,passive,false,,,,,,,,,,,,,,4,physical,,Permanently gain +4 armor per rank while ability is learned (rank > 0)
+Overcharge,toggle,false,0,0,15,3,0,0,0,0,0,0,1,0,0.5,7,magical,,"Toggle: while on, drain 8 mana/sec and gain +20% attack speed and +10 move speed; turn off if mana empty"

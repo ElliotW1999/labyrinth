@@ -1,0 +1,13 @@
+Ability: Cataclysm
+Rust id: AbilityId::Cataclysm
+Type: TargetArea
+Ultimate: True
+Max rank: 4
+Cast point / backswing: 0.4 / 0.45
+Mana: 120.0 + 25.0/level
+Damage (Magical): 200.0 + 70.0/level
+Cast range: 10.0 + 0.5/level
+AoE: 5.0 + 0.5/level
+Cooldown: 55.0 + -5.0/level (min 30.0)
+Pseudocode:
+After 0.5s delay, deal magical damage in aoe at the point and stun enemies for 1.2s

@@ -1,0 +1,13 @@
+Ability: Seismic Slam
+Rust id: AbilityId::SeismicSlam
+Type: Untargeted
+Ultimate: False
+Max rank: 7
+Cast point / backswing: 0.25 / 0.35
+Mana: 55.0 + 8.0/level
+Damage (Physical): 80.0 + 30.0/level
+Cast range: 0.0 + 0.0/level
+AoE: 5.5 + 0.35/level
+Cooldown: 10.0 + -0.4/level (min 5.0)
+Pseudocode:
+Deal physical damage to enemies in aoe_radius around caster and briefly slow them by 30% for 1.5s
