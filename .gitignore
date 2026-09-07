@@ -1,12 +1,4 @@
-# Rust
-/target/
-**/*.rs.bk
+# keep existing if present
 
-# IDE / OS
-.idea/
-.vscode/
-*.swp
-.DS_Store
-
-# Bevy
-wasm/
+__pycache__/
+scripts/__pycache__/
