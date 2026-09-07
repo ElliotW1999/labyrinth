@@ -69,7 +69,7 @@ struct Cli {
     #[arg(long)]
     port: Option<u16>,
 
-    /// Skip select screen: `vanguard`, `skirmisher`, or `arcanist`.
+    /// Skip select screen: hero name from the roster (e.g. `vanguard`).
     #[arg(long)]
     hero: Option<String>,
 }
