@@ -756,6 +756,8 @@ fn tick_ability_casting(
                     }
                 }
             }
+            // Stub abilities from HeroGenerator — no gameplay effect yet.
+            _ => {}
         }
 
         if casting.backswing_remaining <= 0.0 {

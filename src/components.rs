@@ -364,6 +364,7 @@ pub struct Obstacle {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AbilityId {
+    // <hero_generator:ability_enum>
     // Vanguard
     Dash,
     Shockwave,
@@ -379,11 +380,24 @@ pub enum AbilityId {
     FrostNova,
     Barrier,
     Meteor,
+    
+    // Warden (generated stubs)
+    Bulwark,
+    ShieldBash,
+    Taunt,
+    Aegis,
+    // Hexer (generated stubs)
+    HexBolt,
+    Curse,
+    Ward,
+    Ritual,
+// </hero_generator:ability_enum>
 }
 
 impl AbilityId {
     pub fn display_name(self) -> &'static str {
         match self {
+            // <hero_generator:ability_display_name>
             AbilityId::Dash => "Dash",
             AbilityId::Shockwave => "Shockwave",
             AbilityId::Bolt => "Bolt",
@@ -396,13 +410,25 @@ impl AbilityId {
             AbilityId::FrostNova => "Frost",
             AbilityId::Barrier => "Barrier",
             AbilityId::Meteor => "Meteor",
+            
+            AbilityId::Bulwark => "Bulwark",
+            AbilityId::ShieldBash => "ShieldBash",
+            AbilityId::Taunt => "Taunt",
+            AbilityId::Aegis => "Aegis",
+            AbilityId::HexBolt => "HexBolt",
+            AbilityId::Curse => "Curse",
+            AbilityId::Ward => "Ward",
+            AbilityId::Ritual => "Ritual",
+// </hero_generator:ability_display_name>
         }
     }
 
     pub fn is_ultimate(self) -> bool {
         matches!(
             self,
-            AbilityId::Nova | AbilityId::Execute | AbilityId::Meteor
+            // <hero_generator:ability_ultimates>
+            AbilityId::Nova | AbilityId::Execute | AbilityId::Meteor | AbilityId::Aegis | AbilityId::Ritual
+            // </hero_generator:ability_ultimates>
         )
     }
 
@@ -436,6 +462,8 @@ impl AbilityId {
             }
             AbilityId::Nova | AbilityId::Execute | AbilityId::Meteor => Color::srgb(1.0, 0.75, 0.2),
             AbilityId::Barrier => Color::srgb(0.45, 0.7, 1.0),
+            // Generated / unimplemented kits use a neutral placeholder tint.
+            _ => Color::srgb(0.55, 0.6, 0.65),
         }
     }
 }
@@ -514,6 +542,20 @@ impl AbilitySlot {
                 self.cast_point = 0.35;
                 self.cast_backswing = 0.45;
             }
+            // Stub kits from HeroGenerator — castable Instant, no gameplay yet.
+            _ => {
+                if self.id.is_ultimate() {
+                    self.cooldown = (50.0 - r as f32 * 4.0).max(30.0);
+                    self.mana_cost = 100.0 + r as f32 * 20.0;
+                    self.cast_point = 0.3;
+                    self.cast_backswing = 0.35;
+                } else {
+                    self.cooldown = (8.0 - r as f32 * 0.35).max(4.0);
+                    self.mana_cost = 40.0 + r as f32 * 6.0;
+                    self.cast_point = 0.2;
+                    self.cast_backswing = 0.25;
+                }
+            }
         }
         self.cast_point = self.cast_point.clamp(0.0, 0.5);
         self.cast_backswing = self.cast_backswing.clamp(0.0, 0.5);
@@ -549,6 +591,8 @@ impl AbilitySlot {
                 cast_range: 9.5 + r as f32 * 0.6,
                 aoe_radius: 5.0 + r as f32 * 0.55,
             },
+            // Stub kits: Instant no-op until abilities are implemented.
+            _ => AbilityCastKind::Instant,
         }
     }
 

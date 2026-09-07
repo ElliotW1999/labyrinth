@@ -71,8 +71,22 @@ The HUD shows connection status. Host sim runs combat / creeps / AI; clients app
 | Vanguard | Strength | Dash, Shockwave (brief **forceful** push), Bolt (unit), Nova |
 | Skirmisher | Agility | Blink, Flurry (silence+disarm), Caltrops, Execute (unit, bonus vs low HP) |
 | Arcanist | Intelligence | Missile, Frost (root), Barrier (debuff immunity), Meteor (stun) |
+| Warden | Strength | Bulwark, ShieldBash, Taunt, Aegis (stubs — implement later) |
+| Hexer | Intelligence | HexBolt, Curse, Ward, Ritual (stubs — implement later) |
 
 Each hero has its own base Str/Agi/Int and per-level growth.
+
+### Adding heroes (HeroGenerator)
+
+Append kits via CSV — the script patches `src/heroes.rs` / `src/components.rs` (and the README table). Ability **gameplay** stays stubbed until you implement casts.
+
+```bash
+python3 scripts/HeroGenerator.py data/heroes.example.csv
+# preview only:
+python3 scripts/HeroGenerator.py data/heroes.example.csv --dry-run
+```
+
+Required columns: `Hero_name`, `is_melee`, `Ability_Q/W/E/R_Name`, `base_STR/AGI/INT`, `STR/AGI/INT_per_level`. Optional: `primary`, `blurb`, `base_health`, `base_mana`, `attack_damage`, `attack_range`, `move_speed`, `armor`, `magic_resist`, and other combat fields (see `scripts/HeroGenerator.py`). Rows whose `Hero_name` already exists are skipped.
 
 ### Combat timing
 
@@ -168,6 +182,10 @@ src/
   camera.rs           Free camera (edge / arrows / F snap)
   input.rs            RMB move / attack-move / stop / spell ranking
   ui.rs               HUD (spell bar, inventory, shop gold, minimap)
+scripts/
+  HeroGenerator.py     CSV → add HeroId + stub AbilityIds
+data/
+  heroes.example.csv  Sample input for HeroGenerator
 ```
 
 ## Extending

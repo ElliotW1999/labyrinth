@@ -33,70 +33,104 @@ pub struct HeroKind(pub HeroId);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HeroId {
+    // <hero_generator:hero_enum>
     /// Strength bruiser — dash, shockwave, bolt, nova.
     Vanguard,
     /// Agility skirmisher — blink, flurry, caltrops, execute.
     Skirmisher,
     /// Intelligence caster — missile, frost, barrier, meteor.
     Arcanist,
+    
+    /// Generated hero — abilities are stubs until implemented.
+    Warden,
+    /// Generated hero — abilities are stubs until implemented.
+    Hexer,
+// </hero_generator:hero_enum>
 }
 
 impl HeroId {
     pub fn all() -> &'static [HeroId] {
-        &[HeroId::Vanguard, HeroId::Skirmisher, HeroId::Arcanist]
+        &[
+            // <hero_generator:hero_all>
+            HeroId::Vanguard,
+            HeroId::Skirmisher,
+            HeroId::Arcanist,
+            
+            HeroId::Warden,
+            HeroId::Hexer,
+// </hero_generator:hero_all>
+        ]
     }
 
     pub fn from_cli(name: &str) -> Option<Self> {
-        match name.trim().to_ascii_lowercase().as_str() {
-            "vanguard" | "1" => Some(HeroId::Vanguard),
-            "skirmisher" | "2" => Some(HeroId::Skirmisher),
-            "arcanist" | "3" => Some(HeroId::Arcanist),
-            _ => None,
+        let key = name.trim().to_ascii_lowercase();
+        if let Ok(n) = key.parse::<usize>() {
+            if (1..=Self::all().len()).contains(&n) {
+                return Some(Self::all()[n - 1]);
+            }
         }
+        Self::all()
+            .iter()
+            .copied()
+            .find(|hero| hero.name().eq_ignore_ascii_case(&key))
     }
 
     pub fn as_u8(self) -> u8 {
-        match self {
-            HeroId::Vanguard => 0,
-            HeroId::Skirmisher => 1,
-            HeroId::Arcanist => 2,
-        }
+        Self::all()
+            .iter()
+            .position(|&h| h == self)
+            .unwrap_or(0) as u8
     }
 
     pub fn from_u8(value: u8) -> Self {
-        match value {
-            1 => HeroId::Skirmisher,
-            2 => HeroId::Arcanist,
-            _ => HeroId::Vanguard,
-        }
+        Self::all()
+            .get(value as usize)
+            .copied()
+            .unwrap_or(HeroId::Vanguard)
     }
 
     pub fn name(self) -> &'static str {
         match self {
+            // <hero_generator:hero_name>
             HeroId::Vanguard => "Vanguard",
             HeroId::Skirmisher => "Skirmisher",
             HeroId::Arcanist => "Arcanist",
+            
+            HeroId::Warden => "Warden",
+            HeroId::Hexer => "Hexer",
+// </hero_generator:hero_name>
         }
     }
 
     pub fn blurb(self) -> &'static str {
         match self {
+            // <hero_generator:hero_blurb>
             HeroId::Vanguard => "Str bruiser — dash in, shockwave, bolt, nova",
             HeroId::Skirmisher => "Agi duelist — blink, flurry, caltrops, execute",
             HeroId::Arcanist => "Int caster — missile, frost, barrier, meteor",
+            
+            HeroId::Warden => "Str tank — stub kit",
+            HeroId::Hexer => "Int support — stub kit",
+// </hero_generator:hero_blurb>
         }
     }
 
     pub fn primary_label(self) -> &'static str {
         match self {
+            // <hero_generator:hero_primary>
             HeroId::Vanguard => "STR",
             HeroId::Skirmisher => "AGI",
             HeroId::Arcanist => "INT",
+            
+            HeroId::Warden => "STR",
+            HeroId::Hexer => "INT",
+// </hero_generator:hero_primary>
         }
     }
 
     pub fn def(self) -> HeroDef {
         match self {
+            // <hero_generator:hero_def>
             HeroId::Vanguard => HeroDef {
                 id: self,
                 attributes: HeroAttributes {
@@ -193,6 +227,72 @@ impl HeroId {
                     AbilityId::Meteor,
                 ],
             },
+            
+            HeroId::Warden => HeroDef {
+                id: self,
+                attributes: HeroAttributes {
+                    strength: 24.0,
+                    agility: 14.0,
+                    intelligence: 12.0,
+                    str_per_level: 3.0,
+                    agi_per_level: 1.4,
+                    int_per_level: 1.2,
+                },
+                base_health: 340.0,
+                base_health_regen: 0.5,
+                base_mana: 90.0,
+                base_mana_regen: 0.8,
+                combat: hero_combat(
+                    55.0,
+                    1.8,
+                    1.7,
+                    0.3,
+                    0.35,
+                    crate::facing::HERO_TURN_RATE,
+                    2.0,
+                    0.7,
+                    11.5,
+                ),
+                abilities: [
+                    AbilityId::Bulwark,
+                    AbilityId::ShieldBash,
+                    AbilityId::Taunt,
+                    AbilityId::Aegis,
+                ],
+            },
+            HeroId::Hexer => HeroDef {
+                id: self,
+                attributes: HeroAttributes {
+                    strength: 13.0,
+                    agility: 15.0,
+                    intelligence: 25.0,
+                    str_per_level: 1.5,
+                    agi_per_level: 1.6,
+                    int_per_level: 3.1,
+                },
+                base_health: 300.0,
+                base_health_regen: 0.35,
+                base_mana: 140.0,
+                base_mana_regen: 1.4,
+                combat: hero_combat(
+                    48.0,
+                    9.5,
+                    1.7,
+                    0.3,
+                    0.35,
+                    crate::facing::HERO_TURN_RATE,
+                    0.8,
+                    1.2,
+                    11.5,
+                ),
+                abilities: [
+                    AbilityId::HexBolt,
+                    AbilityId::Curse,
+                    AbilityId::Ward,
+                    AbilityId::Ritual,
+                ],
+            },
+// </hero_generator:hero_def>
         }
     }
 
@@ -326,7 +426,11 @@ pub(crate) fn spawn_hero_select_ui_force(commands: &mut Commands) {
                 TextColor(Color::srgb(0.95, 0.97, 1.0)),
             ));
             root.spawn((
-                Text::new("Press 1 / 2 / 3  ·  or click a card  ·  Enter to confirm"),
+                Text::new({
+                    let n = HeroId::all().len();
+                    let keys = (1..=n).map(|i| i.to_string()).collect::<Vec<_>>().join(" / ");
+                    format!("Press {keys}  ·  or click a card  ·  Enter to confirm")
+                }),
                 TextFont::from_font_size(16.0),
                 TextColor(Color::srgb(0.7, 0.8, 0.9)),
             ));
@@ -402,12 +506,25 @@ fn handle_hero_select_input(
     if choice.spawned || roots.is_empty() {
         return;
     }
-    if keys.just_pressed(KeyCode::Digit1) || keys.just_pressed(KeyCode::Numpad1) {
-        choice.hero = Some(HeroId::Vanguard);
-    } else if keys.just_pressed(KeyCode::Digit2) || keys.just_pressed(KeyCode::Numpad2) {
-        choice.hero = Some(HeroId::Skirmisher);
-    } else if keys.just_pressed(KeyCode::Digit3) || keys.just_pressed(KeyCode::Numpad3) {
-        choice.hero = Some(HeroId::Arcanist);
+    const DIGITS: [(KeyCode, KeyCode); 9] = [
+        (KeyCode::Digit1, KeyCode::Numpad1),
+        (KeyCode::Digit2, KeyCode::Numpad2),
+        (KeyCode::Digit3, KeyCode::Numpad3),
+        (KeyCode::Digit4, KeyCode::Numpad4),
+        (KeyCode::Digit5, KeyCode::Numpad5),
+        (KeyCode::Digit6, KeyCode::Numpad6),
+        (KeyCode::Digit7, KeyCode::Numpad7),
+        (KeyCode::Digit8, KeyCode::Numpad8),
+        (KeyCode::Digit9, KeyCode::Numpad9),
+    ];
+    for (i, hero) in HeroId::all().iter().copied().enumerate() {
+        if i >= DIGITS.len() {
+            break;
+        }
+        let (digit, numpad) = DIGITS[i];
+        if keys.just_pressed(digit) || keys.just_pressed(numpad) {
+            choice.hero = Some(hero);
+        }
     }
     if keys.just_pressed(KeyCode::Enter) && choice.hero.is_none() {
         choice.hero = Some(HeroId::Vanguard);
