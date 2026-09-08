@@ -4,6 +4,9 @@ Desktop MOBA / action-RTS foundations (DotA / League-style), built as a native a
 
 Bevy was chosen over a browser stack and over rolling a custom engine from scratch: it is open source, ships a real desktop window, and its ECS scales cleanly to hundreds of units (creeps, towers, projectiles). The project is structured as small gameplay plugins so lanes, jungle, items, and netcode can be added without rewriting the core loop.
 
+<img width="1679" height="1049" alt="image" src="https://github.com/user-attachments/assets/92a874c7-4069-4d19-9c6a-7e346ac4546c" />
+
+
 ## Run
 
 Offline (default — **no server required**):
