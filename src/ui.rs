@@ -67,9 +67,6 @@ pub struct UiPointerState {
 struct HudRoot;
 
 #[derive(Component)]
-struct HudVitals;
-
-#[derive(Component)]
 struct HudHeroName;
 
 #[derive(Component)]
@@ -87,11 +84,37 @@ struct HudBuffs;
 #[derive(Component)]
 struct HudNet;
 
+/// Bottom combat cluster: icon | stats table | vitals + spell bar.
 #[derive(Component)]
-struct HudAttributes;
+struct HeroPanelRoot;
 
 #[derive(Component)]
-struct HudCombatStats;
+struct HeroIconPlaceholder;
+
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+enum HudStatId {
+    Str,
+    Agi,
+    Int,
+    Ad,
+    Aps,
+    Range,
+    Armor,
+    Mr,
+    Ms,
+}
+
+#[derive(Component)]
+struct HudHealthBarFill;
+
+#[derive(Component)]
+struct HudHealthBarText;
+
+#[derive(Component)]
+struct HudManaBarFill;
+
+#[derive(Component)]
+struct HudManaBarText;
 
 #[derive(Component)]
 struct SpellBarRoot;
@@ -198,6 +221,11 @@ const MAX_MINIMAP_DOTS: usize = 64;
 const SHOP_BUTTON_WIDTH: f32 = 108.0;
 const SHOP_BUTTON_HEIGHT: f32 = 44.0;
 const INVENTORY_WIDTH: f32 = 336.0;
+const HERO_ICON_SIZE: f32 = 84.0;
+const STATS_TABLE_WIDTH: f32 = 168.0;
+const SPELL_CLUSTER_WIDTH: f32 = 352.0;
+/// Approximate half-width of the bottom hero panel for centering.
+const HERO_PANEL_HALF_WIDTH: f32 = 320.0;
 
 fn spawn_hud(mut commands: Commands) {
     commands
@@ -211,7 +239,7 @@ fn spawn_hud(mut commands: Commands) {
             },
         ))
         .with_children(|root| {
-            // Top-left status panel
+            // Top-left status panel (match meta — vitals/stats live in the bottom cluster)
             root.spawn((
                 BlocksWorldRmb,
                 Node {
@@ -226,12 +254,6 @@ fn spawn_hud(mut commands: Commands) {
                 BackgroundColor(Color::srgba(0.05, 0.07, 0.1, 0.35)),
             ))
             .with_children(|panel| {
-                panel.spawn((
-                    HudVitals,
-                    Text::new("HP -- / --   MP -- / --"),
-                    TextFont::from_font_size(20.0),
-                    TextColor(Color::srgb(0.92, 0.95, 1.0)),
-                ));
                 panel.spawn((
                     HudHeroName,
                     Text::new("Hero: —"),
@@ -268,41 +290,114 @@ fn spawn_hud(mut commands: Commands) {
                     TextFont::from_font_size(14.0),
                     TextColor(Color::srgb(0.7, 0.85, 1.0)),
                 ));
-                panel.spawn((
-                    HudAttributes,
-                    Text::new("STR --  AGI --  INT --"),
-                    TextFont::from_font_size(16.0),
-                    TextColor(Color::srgb(0.95, 0.8, 0.55)),
-                ));
-                panel.spawn((
-                    HudCombatStats,
-                    Text::new("AD --  AS --  Rng --  Arm --  MR --"),
-                    TextFont::from_font_size(14.0),
-                    TextColor(Color::srgb(0.75, 0.85, 0.95)),
-                ));
             });
 
-            // Bottom-center spell bar
+            // Bottom-center: icon | stats table | HP/MP + abilities
             root.spawn((
-                SpellBarRoot,
+                HeroPanelRoot,
                 BlocksWorldRmb,
                 Node {
                     position_type: PositionType::Absolute,
                     bottom: px(18),
                     left: percent(50),
-                    margin: UiRect::left(px(-170)),
+                    margin: UiRect::left(px(-HERO_PANEL_HALF_WIDTH)),
                     flex_direction: FlexDirection::Row,
-                    column_gap: px(10),
+                    align_items: AlignItems::FlexEnd,
+                    column_gap: px(12),
                     padding: UiRect::all(px(8)),
                     border_radius: BorderRadius::all(px(8)),
                     ..default()
                 },
-                BackgroundColor(Color::srgba(0.05, 0.07, 0.1, 0.72)),
+                BackgroundColor(Color::srgba(0.05, 0.07, 0.1, 0.78)),
             ))
-            .with_children(|bar| {
-                for i in 0..4 {
-                    spawn_spell_icon(bar, i, AbilityId::Dash);
-                }
+            .with_children(|panel| {
+                panel
+                    .spawn((
+                        HeroIconPlaceholder,
+                        Node {
+                            width: px(HERO_ICON_SIZE),
+                            height: px(HERO_ICON_SIZE),
+                            align_items: AlignItems::Center,
+                            justify_content: JustifyContent::Center,
+                            border: UiRect::all(px(2)),
+                            border_radius: BorderRadius::all(px(6)),
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgba(0.12, 0.14, 0.18, 0.95)),
+                        BorderColor::all(Color::srgb(0.35, 0.4, 0.48)),
+                    ))
+                    .with_children(|icon| {
+                        icon.spawn((
+                            Text::new("ICON"),
+                            TextFont::from_font_size(14.0),
+                            TextColor(Color::srgba(0.65, 0.7, 0.78, 0.85)),
+                        ));
+                    });
+
+                panel
+                    .spawn((
+                        Node {
+                            width: px(STATS_TABLE_WIDTH),
+                            flex_direction: FlexDirection::Column,
+                            row_gap: px(2),
+                            padding: UiRect::axes(px(6), px(4)),
+                            border_radius: BorderRadius::all(px(4)),
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgba(0.08, 0.1, 0.14, 0.9)),
+                    ))
+                    .with_children(|table| {
+                        spawn_stat_row(table, "STR", "--", HudStatId::Str, Color::srgb(0.95, 0.55, 0.45));
+                        spawn_stat_row(table, "AGI", "--", HudStatId::Agi, Color::srgb(0.45, 0.9, 0.55));
+                        spawn_stat_row(table, "INT", "--", HudStatId::Int, Color::srgb(0.45, 0.7, 1.0));
+                        spawn_stat_divider(table);
+                        spawn_stat_row(table, "AD", "--", HudStatId::Ad, Color::srgb(0.9, 0.9, 0.95));
+                        spawn_stat_row(table, "APS", "--", HudStatId::Aps, Color::srgb(0.9, 0.9, 0.95));
+                        spawn_stat_row(table, "RNG", "--", HudStatId::Range, Color::srgb(0.9, 0.9, 0.95));
+                        spawn_stat_row(table, "ARM", "--", HudStatId::Armor, Color::srgb(0.9, 0.9, 0.95));
+                        spawn_stat_row(table, "MR", "--", HudStatId::Mr, Color::srgb(0.9, 0.9, 0.95));
+                        spawn_stat_row(table, "MS", "--", HudStatId::Ms, Color::srgb(0.9, 0.9, 0.95));
+                    });
+
+                panel
+                    .spawn(Node {
+                        width: px(SPELL_CLUSTER_WIDTH),
+                        flex_direction: FlexDirection::Column,
+                        row_gap: px(6),
+                        ..default()
+                    })
+                    .with_children(|cluster| {
+                        spawn_vital_bar(
+                            cluster,
+                            HudHealthBarFill,
+                            HudHealthBarText,
+                            Color::srgb(0.18, 0.72, 0.28),
+                            "HP -- / --",
+                        );
+                        spawn_vital_bar(
+                            cluster,
+                            HudManaBarFill,
+                            HudManaBarText,
+                            Color::srgb(0.25, 0.45, 0.95),
+                            "MP -- / --",
+                        );
+
+                        cluster
+                            .spawn((
+                                SpellBarRoot,
+                                Node {
+                                    flex_direction: FlexDirection::Row,
+                                    column_gap: px(10),
+                                    justify_content: JustifyContent::SpaceBetween,
+                                    ..default()
+                                },
+                            ))
+                            .with_children(|bar| {
+                                for i in 0..4 {
+                                    spawn_spell_icon(bar, i, AbilityId::Dash);
+                                }
+                            });
+                    });
             });
 
             // Inventory sits between the spell bar and the minimap.
@@ -338,7 +433,7 @@ fn spawn_hud(mut commands: Commands) {
                 TextColor(Color::srgba(0.8, 0.85, 0.9, 0.8)),
                 Node {
                     position_type: PositionType::Absolute,
-                    bottom: px(155),
+                    bottom: px(210),
                     left: px(16),
                     ..default()
                 },
@@ -567,6 +662,96 @@ fn spawn_hud(mut commands: Commands) {
         });
 }
 
+fn spawn_stat_row(
+    parent: &mut ChildSpawnerCommands,
+    label: &str,
+    value: &str,
+    id: HudStatId,
+    value_color: Color,
+) {
+    parent
+        .spawn(Node {
+            width: percent(100),
+            flex_direction: FlexDirection::Row,
+            justify_content: JustifyContent::SpaceBetween,
+            align_items: AlignItems::Center,
+            ..default()
+        })
+        .with_children(|row| {
+            row.spawn((
+                Text::new(label.to_string()),
+                TextFont::from_font_size(12.0),
+                TextColor(Color::srgba(0.65, 0.7, 0.78, 0.95)),
+            ));
+            row.spawn((
+                id,
+                Text::new(value.to_string()),
+                TextFont::from_font_size(13.0),
+                TextColor(value_color),
+            ));
+        });
+}
+
+fn spawn_stat_divider(parent: &mut ChildSpawnerCommands) {
+    parent.spawn((
+        Node {
+            width: percent(100),
+            height: px(1),
+            margin: UiRect::vertical(px(3)),
+            ..default()
+        },
+        BackgroundColor(Color::srgba(0.35, 0.4, 0.48, 0.55)),
+    ));
+}
+
+fn spawn_vital_bar<Fill: Component, Label: Component>(
+    parent: &mut ChildSpawnerCommands,
+    fill_marker: Fill,
+    text_marker: Label,
+    fill_color: Color,
+    initial_text: &str,
+) {
+    parent
+        .spawn((
+            Node {
+                width: percent(100),
+                height: px(22),
+                border_radius: BorderRadius::all(px(4)),
+                overflow: Overflow::clip(),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.06, 0.07, 0.09, 0.95)),
+        ))
+        .with_children(|bar| {
+            bar.spawn((
+                fill_marker,
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: px(0),
+                    top: px(0),
+                    width: percent(100),
+                    height: percent(100),
+                    border_radius: BorderRadius::all(px(4)),
+                    ..default()
+                },
+                BackgroundColor(fill_color),
+            ));
+            bar.spawn((
+                text_marker,
+                Text::new(initial_text.to_string()),
+                TextFont::from_font_size(13.0),
+                TextColor(Color::srgb(0.95, 0.97, 1.0)),
+                Node {
+                    position_type: PositionType::Relative,
+                    ..default()
+                },
+                ZIndex(1),
+            ));
+        });
+}
+
 fn spawn_inventory_slot(parent: &mut ChildSpawnerCommands, index: usize) {
     let hotkey = ItemId::inventory_hotkey(index).unwrap_or("?");
     parent
@@ -737,30 +922,46 @@ fn refresh_hud_text(
         ),
         With<PlayerHero>,
     >,
-    mut texts: ParamSet<(
-        Query<&mut Text, With<HudVitals>>,
-        Query<&mut Text, With<HudLevel>>,
-        Query<&mut Text, With<HudGold>>,
-        Query<&mut Text, With<HudSkillPoints>>,
-        Query<&mut Text, With<HudAttributes>>,
-        Query<&mut Text, With<HudCombatStats>>,
-    )>,
+    mut level_text: Query<&mut Text, With<HudLevel>>,
+    mut gold_text: Query<&mut Text, (With<HudGold>, Without<HudLevel>)>,
+    mut skill_text: Query<&mut Text, (With<HudSkillPoints>, Without<HudLevel>, Without<HudGold>)>,
+    mut hp_text: Query<
+        &mut Text,
+        (
+            With<HudHealthBarText>,
+            Without<HudLevel>,
+            Without<HudGold>,
+            Without<HudSkillPoints>,
+        ),
+    >,
+    mut mp_text: Query<
+        &mut Text,
+        (
+            With<HudManaBarText>,
+            Without<HudLevel>,
+            Without<HudGold>,
+            Without<HudSkillPoints>,
+            Without<HudHealthBarText>,
+        ),
+    >,
+    mut stats_text: Query<
+        (&HudStatId, &mut Text),
+        (
+            Without<HudLevel>,
+            Without<HudGold>,
+            Without<HudSkillPoints>,
+            Without<HudHealthBarText>,
+            Without<HudManaBarText>,
+        ),
+    >,
+    mut hp_fill: Query<&mut Node, With<HudHealthBarFill>>,
+    mut mp_fill: Query<&mut Node, (With<HudManaBarFill>, Without<HudHealthBarFill>)>,
 ) {
     let Ok((health, mana, wallet, progress, attrs, stats)) = hero.single() else {
         return;
     };
 
-    if let Ok(mut text) = texts.p0().single_mut() {
-        *text = Text::new(format!(
-            "HP {hp:.0} / {hp_max:.0} (+{hpr:.1}/s)   MP {mp:.0} / {mp_max:.0}",
-            hp = health.current.max(0.0),
-            hp_max = health.max,
-            hpr = health.regen_per_sec,
-            mp = mana.current,
-            mp_max = mana.max,
-        ));
-    }
-    if let Ok(mut text) = texts.p1().single_mut() {
+    if let Ok(mut text) = level_text.single_mut() {
         if progress.level >= 25 {
             *text = Text::new(format!("Level {}   MAX", progress.level));
         } else {
@@ -770,10 +971,10 @@ fn refresh_hud_text(
             ));
         }
     }
-    if let Ok(mut text) = texts.p2().single_mut() {
+    if let Ok(mut text) = gold_text.single_mut() {
         *text = Text::new(format!("Gold: {}", wallet.gold));
     }
-    if let Ok(mut text) = texts.p3().single_mut() {
+    if let Ok(mut text) = skill_text.single_mut() {
         let label = if progress.skill_points > 0 {
             format!("Skill Points: {}  (Ctrl+QWER or +)", progress.skill_points)
         } else {
@@ -781,24 +982,47 @@ fn refresh_hud_text(
         };
         *text = Text::new(label);
     }
-    if let Ok(mut text) = texts.p4().single_mut() {
+
+    let hp_frac = if health.max <= 0.0 {
+        0.0
+    } else {
+        (health.current / health.max).clamp(0.0, 1.0)
+    };
+    let mp_frac = if mana.max <= 0.0 {
+        0.0
+    } else {
+        (mana.current / mana.max).clamp(0.0, 1.0)
+    };
+    if let Ok(mut node) = hp_fill.single_mut() {
+        node.width = percent(hp_frac * 100.0);
+    }
+    if let Ok(mut node) = mp_fill.single_mut() {
+        node.width = percent(mp_frac * 100.0);
+    }
+    if let Ok(mut text) = hp_text.single_mut() {
         *text = Text::new(format!(
-            "STR {s:.0}  AGI {a:.0}  INT {i:.0}",
-            s = attrs.strength,
-            a = attrs.agility,
-            i = attrs.intelligence,
+            "{:.0} / {:.0}",
+            health.current.max(0.0),
+            health.max
         ));
     }
-    if let Ok(mut text) = texts.p5().single_mut() {
-        *text = Text::new(format!(
-            "AD {ad:.0}  IAS {ias:.0}  APS {aspeed:.2}  Rng {rng:.0}  Arm {arm:.1}  MR {mr:.1}",
-            ad = stats.attack_damage,
-            ias = stats.attack_speed_rating(attrs.agility),
-            aspeed = stats.attack_speed,
-            rng = stats.attack_range,
-            arm = stats.armor,
-            mr = stats.magic_resist,
-        ));
+    if let Ok(mut text) = mp_text.single_mut() {
+        *text = Text::new(format!("{:.0} / {:.0}", mana.current, mana.max));
+    }
+
+    for (id, mut text) in &mut stats_text {
+        let value = match *id {
+            HudStatId::Str => format!("{:.0}", attrs.strength),
+            HudStatId::Agi => format!("{:.0}", attrs.agility),
+            HudStatId::Int => format!("{:.0}", attrs.intelligence),
+            HudStatId::Ad => format!("{:.0}", stats.attack_damage),
+            HudStatId::Aps => format!("{:.2}", stats.attack_speed),
+            HudStatId::Range => format!("{:.0}", stats.attack_range),
+            HudStatId::Armor => format!("{:.1}", stats.armor),
+            HudStatId::Mr => format!("{:.1}", stats.magic_resist),
+            HudStatId::Ms => format!("{:.0}", stats.move_speed),
+        };
+        *text = Text::new(value);
     }
 }
 

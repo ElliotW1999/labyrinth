@@ -31,7 +31,7 @@ impl Default for CameraRig {
             height: scale::u(42.0),
             back: scale::u(18.0),
             pan_speed: scale::u(36.0),
-            edge_size: 24.0, // screen pixels
+            edge_size: 28.0, // screen pixels
         }
     }
 }
@@ -56,9 +56,17 @@ pub struct GameCamera;
 
 fn spawn_camera(mut commands: Commands, rig: Res<CameraRig>, focus: Res<CameraFocus>) {
     let eye = focus.position + Vec3::new(0.0, rig.height, rig.back);
+    // Default Bevy far plane is 1000 — too short for the scaled MOBA world
+    // (eye↔focus ≈ 1200+). Towers/trees near that boundary flicker as you pan.
+    let projection = PerspectiveProjection {
+        near: 2.0,
+        far: 16_000.0,
+        ..default()
+    };
     commands.spawn((
         Name::new("Game Camera"),
         Camera3d::default(),
+        Projection::from(projection),
         Transform::from_translation(eye).looking_at(focus.position, Vec3::Y),
         GameCamera,
     ));

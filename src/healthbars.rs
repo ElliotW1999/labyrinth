@@ -126,10 +126,10 @@ fn cull_orphan_health_bars(
 /// Bar width ≈ unit diameter so it sits over the body without dwarfing it.
 fn bar_width(radius: Option<&UnitRadius>) -> f32 {
     let r = radius.map(|u| u.0).unwrap_or(scale::u(0.5));
-    (r * 2.2).clamp(scale::u(0.8), scale::u(4.0))
+    (r * 2.4).clamp(scale::u(1.0), scale::u(5.0))
 }
 
 fn bar_height(radius: Option<&UnitRadius>) -> f32 {
     let r = radius.map(|u| u.0).unwrap_or(scale::u(0.5));
-    r * 2.5 + scale::u(0.8)
+    r * 2.6 + scale::u(1.0)
 }
