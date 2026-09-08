@@ -39,10 +39,18 @@ impl Plugin for UiPlugin {
                     refresh_buffs_text,
                     handle_shop_toggle_button,
                     sync_shop_panel_visibility,
+                    handle_shop_item_clicks,
+                    handle_shop_detail_clicks,
+                    sync_shop_detail_panel,
                     handle_shop_buy_clicks,
                     handle_shop_backdrop_close,
                     handle_shop_close_keys,
                     refresh_shop_status,
+                ),
+            )
+            .add_systems(
+                Update,
+                (
                     update_item_tooltips,
                     refresh_net_status,
                     refresh_minimap,
@@ -172,6 +180,31 @@ struct ShopGoldLabel;
 struct ShopPanel;
 
 #[derive(Component)]
+struct ShopDetailPanel;
+
+#[derive(Component)]
+struct ShopDetailTitle;
+
+#[derive(Component)]
+struct ShopDetailBody;
+
+#[derive(Component)]
+struct ShopDetailComponentButton {
+    index: usize,
+}
+
+#[derive(Component)]
+struct ShopDetailComponentLabel {
+    index: usize,
+}
+
+#[derive(Component)]
+struct ShopDetailBuyButton;
+
+#[derive(Component)]
+struct ShopDetailCloseButton;
+
+#[derive(Component)]
 struct ShopStatusText;
 
 #[derive(Component)]
@@ -221,11 +254,12 @@ const MAX_MINIMAP_DOTS: usize = 64;
 const SHOP_BUTTON_WIDTH: f32 = 108.0;
 const SHOP_BUTTON_HEIGHT: f32 = 44.0;
 const INVENTORY_WIDTH: f32 = 336.0;
+const MAX_SHOP_DETAIL_COMPONENTS: usize = 5;
 const HERO_ICON_SIZE: f32 = 84.0;
-const STATS_TABLE_WIDTH: f32 = 168.0;
+const STATS_TABLE_WIDTH: f32 = 200.0;
 const SPELL_CLUSTER_WIDTH: f32 = 352.0;
 /// Approximate half-width of the bottom hero panel for centering.
-const HERO_PANEL_HALF_WIDTH: f32 = 320.0;
+const HERO_PANEL_HALF_WIDTH: f32 = 340.0;
 
 fn spawn_hud(mut commands: Commands) {
     commands
@@ -338,25 +372,45 @@ fn spawn_hud(mut commands: Commands) {
                     .spawn((
                         Node {
                             width: px(STATS_TABLE_WIDTH),
-                            flex_direction: FlexDirection::Column,
-                            row_gap: px(2),
+                            flex_direction: FlexDirection::Row,
+                            column_gap: px(10),
                             padding: UiRect::axes(px(6), px(4)),
                             border_radius: BorderRadius::all(px(4)),
+                            align_items: AlignItems::FlexStart,
                             ..default()
                         },
                         BackgroundColor(Color::srgba(0.08, 0.1, 0.14, 0.9)),
                     ))
                     .with_children(|table| {
-                        spawn_stat_row(table, "STR", "--", HudStatId::Str, Color::srgb(0.95, 0.55, 0.45));
-                        spawn_stat_row(table, "AGI", "--", HudStatId::Agi, Color::srgb(0.45, 0.9, 0.55));
-                        spawn_stat_row(table, "INT", "--", HudStatId::Int, Color::srgb(0.45, 0.7, 1.0));
-                        spawn_stat_divider(table);
-                        spawn_stat_row(table, "AD", "--", HudStatId::Ad, Color::srgb(0.9, 0.9, 0.95));
-                        spawn_stat_row(table, "APS", "--", HudStatId::Aps, Color::srgb(0.9, 0.9, 0.95));
-                        spawn_stat_row(table, "RNG", "--", HudStatId::Range, Color::srgb(0.9, 0.9, 0.95));
-                        spawn_stat_row(table, "ARM", "--", HudStatId::Armor, Color::srgb(0.9, 0.9, 0.95));
-                        spawn_stat_row(table, "MR", "--", HudStatId::Mr, Color::srgb(0.9, 0.9, 0.95));
-                        spawn_stat_row(table, "MS", "--", HudStatId::Ms, Color::srgb(0.9, 0.9, 0.95));
+                        // Primary attributes column (left)
+                        table
+                            .spawn(Node {
+                                flex_direction: FlexDirection::Column,
+                                row_gap: px(2),
+                                min_width: px(58),
+                                ..default()
+                            })
+                            .with_children(|col| {
+                                spawn_stat_row(col, "STR", "--", HudStatId::Str, Color::srgb(0.95, 0.55, 0.45));
+                                spawn_stat_row(col, "AGI", "--", HudStatId::Agi, Color::srgb(0.45, 0.9, 0.55));
+                                spawn_stat_row(col, "INT", "--", HudStatId::Int, Color::srgb(0.45, 0.7, 1.0));
+                            });
+                        // Combat stats column (right)
+                        table
+                            .spawn(Node {
+                                flex_direction: FlexDirection::Column,
+                                row_gap: px(2),
+                                flex_grow: 1.0,
+                                ..default()
+                            })
+                            .with_children(|col| {
+                                spawn_stat_row(col, "AD", "--", HudStatId::Ad, Color::srgb(0.9, 0.9, 0.95));
+                                spawn_stat_row(col, "APS", "--", HudStatId::Aps, Color::srgb(0.9, 0.9, 0.95));
+                                spawn_stat_row(col, "RNG", "--", HudStatId::Range, Color::srgb(0.9, 0.9, 0.95));
+                                spawn_stat_row(col, "ARM", "--", HudStatId::Armor, Color::srgb(0.9, 0.9, 0.95));
+                                spawn_stat_row(col, "MR", "--", HudStatId::Mr, Color::srgb(0.9, 0.9, 0.95));
+                                spawn_stat_row(col, "MS", "--", HudStatId::Ms, Color::srgb(0.9, 0.9, 0.95));
+                            });
                     });
 
                 panel
@@ -364,6 +418,7 @@ fn spawn_hud(mut commands: Commands) {
                         width: px(SPELL_CLUSTER_WIDTH),
                         flex_direction: FlexDirection::Column,
                         row_gap: px(6),
+                        align_items: AlignItems::Center,
                         ..default()
                     })
                     .with_children(|cluster| {
@@ -388,7 +443,8 @@ fn spawn_hud(mut commands: Commands) {
                                 Node {
                                     flex_direction: FlexDirection::Row,
                                     column_gap: px(10),
-                                    justify_content: JustifyContent::SpaceBetween,
+                                    justify_content: JustifyContent::Center,
+                                    width: percent(100),
                                     ..default()
                                 },
                             ))
@@ -563,7 +619,7 @@ fn spawn_hud(mut commands: Commands) {
                 ));
                 panel.spawn((
                     ShopStatusText,
-                    Text::new("Stand near your base shop to buy. Hover for details."),
+                    Text::new("Stand near your base shop. Click an item for components / buy."),
                     TextFont::from_font_size(13.0),
                     TextColor(Color::srgb(0.75, 0.85, 0.9)),
                 ));
@@ -578,7 +634,7 @@ fn spawn_hud(mut commands: Commands) {
                         ..default()
                     })
                     .with_children(|grid| {
-                        for &item in ItemId::all() {
+                        for item in ItemId::shop_listed() {
                             spawn_shop_item(grid, item);
                         }
                     });
@@ -587,6 +643,111 @@ fn spawn_hud(mut commands: Commands) {
                     TextFont::from_font_size(12.0),
                     TextColor(Color::srgba(0.7, 0.75, 0.8, 0.8)),
                 ));
+            });
+
+            // Item components / buy detail popup
+            root.spawn((
+                ShopDetailPanel,
+                BlocksWorldRmb,
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: percent(50),
+                    top: percent(50),
+                    margin: UiRect::new(px(-170), px(0), px(-200), px(0)),
+                    width: px(340),
+                    flex_direction: FlexDirection::Column,
+                    row_gap: px(8),
+                    padding: UiRect::all(px(14)),
+                    border: UiRect::all(px(2)),
+                    border_radius: BorderRadius::all(px(10)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.07, 0.09, 0.13, 0.98)),
+                BorderColor::all(Color::srgb(0.55, 0.7, 0.95)),
+                Visibility::Hidden,
+                ZIndex(55),
+            ))
+            .with_children(|panel| {
+                panel.spawn((
+                    ShopDetailTitle,
+                    Text::new("Item"),
+                    TextFont::from_font_size(22.0),
+                    TextColor(Color::srgb(0.95, 0.95, 1.0)),
+                ));
+                panel.spawn((
+                    ShopDetailBody,
+                    Text::new(""),
+                    TextFont::from_font_size(13.0),
+                    TextColor(Color::srgb(0.8, 0.85, 0.9)),
+                ));
+                panel.spawn((
+                    Text::new("Components"),
+                    TextFont::from_font_size(14.0),
+                    TextColor(Color::srgb(1.0, 0.85, 0.45)),
+                ));
+                panel
+                    .spawn(Node {
+                        width: percent(100),
+                        flex_direction: FlexDirection::Column,
+                        row_gap: px(6),
+                        ..default()
+                    })
+                    .with_children(|list| {
+                        for i in 0..MAX_SHOP_DETAIL_COMPONENTS {
+                            spawn_shop_detail_component_row(list, i);
+                        }
+                    });
+                panel
+                    .spawn(Node {
+                        width: percent(100),
+                        flex_direction: FlexDirection::Row,
+                        column_gap: px(8),
+                        justify_content: JustifyContent::FlexEnd,
+                        margin: UiRect::top(px(4)),
+                        ..default()
+                    })
+                    .with_children(|row| {
+                        row.spawn((
+                            Button,
+                            ShopDetailCloseButton,
+                            Node {
+                                width: px(88),
+                                height: px(32),
+                                align_items: AlignItems::Center,
+                                justify_content: JustifyContent::Center,
+                                border_radius: BorderRadius::all(px(5)),
+                                ..default()
+                            },
+                            BackgroundColor(Color::srgb(0.25, 0.28, 0.34)),
+                        ))
+                        .with_children(|btn| {
+                            btn.spawn((
+                                Text::new("Back"),
+                                TextFont::from_font_size(14.0),
+                                TextColor(Color::WHITE),
+                            ));
+                        });
+                        row.spawn((
+                            Button,
+                            ShopDetailBuyButton,
+                            Node {
+                                width: px(100),
+                                height: px(32),
+                                align_items: AlignItems::Center,
+                                justify_content: JustifyContent::Center,
+                                border_radius: BorderRadius::all(px(5)),
+                                ..default()
+                            },
+                            BackgroundColor(Color::srgb(0.2, 0.55, 0.3)),
+                        ))
+                        .with_children(|btn| {
+                            btn.spawn((
+                                Text::new("Buy"),
+                                TextFont::from_font_size(14.0),
+                                TextColor(Color::WHITE),
+                            ));
+                        });
+                    });
             });
 
             // Shared item tooltip (shop + inventory)
@@ -692,18 +853,6 @@ fn spawn_stat_row(
         });
 }
 
-fn spawn_stat_divider(parent: &mut ChildSpawnerCommands) {
-    parent.spawn((
-        Node {
-            width: percent(100),
-            height: px(1),
-            margin: UiRect::vertical(px(3)),
-            ..default()
-        },
-        BackgroundColor(Color::srgba(0.35, 0.4, 0.48, 0.55)),
-    ));
-}
-
 fn spawn_vital_bar<Fill: Component, Label: Component>(
     parent: &mut ChildSpawnerCommands,
     fill_marker: Fill,
@@ -748,6 +897,36 @@ fn spawn_vital_bar<Fill: Component, Label: Component>(
                     ..default()
                 },
                 ZIndex(1),
+            ));
+        });
+}
+
+fn spawn_shop_detail_component_row(parent: &mut ChildSpawnerCommands, index: usize) {
+    parent
+        .spawn((
+            Button,
+            ShopDetailComponentButton { index },
+            Node {
+                width: percent(100),
+                height: px(34),
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::SpaceBetween,
+                padding: UiRect::axes(px(8), px(4)),
+                border_radius: BorderRadius::all(px(5)),
+                border: UiRect::all(px(1)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.12, 0.14, 0.18, 0.95)),
+            BorderColor::all(Color::srgb(0.35, 0.4, 0.48)),
+            Visibility::Hidden,
+        ))
+        .with_children(|row| {
+            row.spawn((
+                ShopDetailComponentLabel { index },
+                Text::new(""),
+                TextFont::from_font_size(13.0),
+                TextColor(Color::srgb(0.92, 0.94, 0.98)),
             ));
         });
 }
@@ -1385,14 +1564,17 @@ fn handle_shop_toggle_button(
     for interaction in &interactions {
         if *interaction == Interaction::Pressed {
             shop_ui.open = !shop_ui.open;
+            if !shop_ui.open {
+                shop_ui.detail = None;
+            }
         }
     }
 }
 
 fn sync_shop_panel_visibility(
     shop_ui: Res<ShopUiState>,
-    mut panel: Query<&mut Visibility, (With<ShopPanel>, Without<ShopBackdrop>)>,
-    mut backdrop: Query<&mut Visibility, (With<ShopBackdrop>, Without<ShopPanel>)>,
+    mut panel: Query<&mut Visibility, (With<ShopPanel>, Without<ShopBackdrop>, Without<ShopDetailPanel>)>,
+    mut backdrop: Query<&mut Visibility, (With<ShopBackdrop>, Without<ShopPanel>, Without<ShopDetailPanel>)>,
 ) {
     let vis = if shop_ui.open {
         Visibility::Visible
@@ -1407,6 +1589,115 @@ fn sync_shop_panel_visibility(
     }
 }
 
+fn handle_shop_item_clicks(
+    interactions: Query<(&Interaction, &ShopBuyButton), Changed<Interaction>>,
+    mut shop_ui: ResMut<ShopUiState>,
+) {
+    if !shop_ui.open {
+        return;
+    }
+    for (interaction, button) in &interactions {
+        if *interaction == Interaction::Pressed {
+            shop_ui.detail = Some(button.item);
+        }
+    }
+}
+
+fn handle_shop_detail_clicks(
+    mut shop_ui: ResMut<ShopUiState>,
+    close: Query<&Interaction, (Changed<Interaction>, With<ShopDetailCloseButton>)>,
+    comps: Query<(&Interaction, &ShopDetailComponentButton), Changed<Interaction>>,
+) {
+    let Some(current) = shop_ui.detail else {
+        return;
+    };
+    for interaction in &close {
+        if *interaction == Interaction::Pressed {
+            shop_ui.detail = None;
+            return;
+        }
+    }
+    let comps_list = current.recipe_components();
+    for (interaction, button) in &comps {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        if let Some(comp) = comps_list.get(button.index).copied() {
+            shop_ui.detail = Some(comp);
+            return;
+        }
+    }
+}
+
+fn sync_shop_detail_panel(
+    shop_ui: Res<ShopUiState>,
+    mut panel: Query<&mut Visibility, (With<ShopDetailPanel>, Without<ShopPanel>)>,
+    mut title: Query<&mut Text, With<ShopDetailTitle>>,
+    mut body: Query<&mut Text, (With<ShopDetailBody>, Without<ShopDetailTitle>)>,
+    mut rows: Query<(
+        &ShopDetailComponentButton,
+        &mut Visibility,
+        &mut BackgroundColor,
+        &mut BorderColor,
+    )>,
+    mut labels: Query<(&ShopDetailComponentLabel, &mut Text), Without<ShopDetailBody>>,
+) {
+    let Ok(mut panel_vis) = panel.single_mut() else {
+        return;
+    };
+    let Some(item) = shop_ui.detail.filter(|_| shop_ui.open) else {
+        *panel_vis = Visibility::Hidden;
+        return;
+    };
+    *panel_vis = Visibility::Visible;
+
+    if let Ok(mut text) = title.single_mut() {
+        *text = Text::new(item.name().to_string());
+    }
+    if let Ok(mut text) = body.single_mut() {
+        let kind = if item.is_recipe() {
+            "Recipe"
+        } else if item.has_active() {
+            "Active item"
+        } else {
+            "Passive item"
+        };
+        *text = Text::new(format!(
+            "Cost: {cost}g\n{kind}\n{desc}",
+            cost = item.cost(),
+            desc = item.description(),
+        ));
+    }
+
+    let comps = item.recipe_components();
+    for (button, mut vis, mut bg, mut border) in &mut rows {
+        if let Some(comp) = comps.get(button.index).copied() {
+            *vis = Visibility::Visible;
+            *bg = BackgroundColor(Color::srgba(
+                comp.placeholder_color().to_srgba().red,
+                comp.placeholder_color().to_srgba().green,
+                comp.placeholder_color().to_srgba().blue,
+                0.55,
+            ));
+            *border = BorderColor::all(if comp.is_recipe() {
+                Color::srgb(0.85, 0.75, 0.35)
+            } else {
+                Color::srgb(0.45, 0.5, 0.58)
+            });
+        } else {
+            *vis = Visibility::Hidden;
+        }
+    }
+    for (label, mut text) in &mut labels {
+        if let Some(comp) = comps.get(label.index).copied() {
+            let tag = if comp.is_recipe() { " [recipe]" } else { "" };
+            *text = Text::new(format!("{} — {}g{}", comp.name(), comp.cost(), tag));
+        } else {
+            *text = Text::new("");
+        }
+    }
+}
+
 fn handle_shop_backdrop_close(
     interactions: Query<&Interaction, (Changed<Interaction>, With<ShopBackdrop>)>,
     mut shop_ui: ResMut<ShopUiState>,
@@ -1414,27 +1705,33 @@ fn handle_shop_backdrop_close(
     for interaction in &interactions {
         if *interaction == Interaction::Pressed {
             shop_ui.open = false;
+            shop_ui.detail = None;
         }
     }
 }
 
 fn handle_shop_close_keys(keys: Res<ButtonInput<KeyCode>>, mut shop_ui: ResMut<ShopUiState>) {
-    if shop_ui.open && keys.just_pressed(KeyCode::Escape) {
+    if !shop_ui.open || !keys.just_pressed(KeyCode::Escape) {
+        return;
+    }
+    if shop_ui.detail.is_some() {
+        shop_ui.detail = None;
+    } else {
         shop_ui.open = false;
     }
 }
 
 fn handle_shop_buy_clicks(
-    interactions: Query<(&Interaction, &ShopBuyButton), Changed<Interaction>>,
+    interactions: Query<&Interaction, (Changed<Interaction>, With<ShopDetailBuyButton>)>,
     shop_ui: Res<ShopUiState>,
     mut writer: MessageWriter<PurchaseItemRequest>,
 ) {
-    if !shop_ui.open {
+    let Some(item) = shop_ui.detail.filter(|_| shop_ui.open) else {
         return;
-    }
-    for (interaction, button) in &interactions {
+    };
+    for interaction in &interactions {
         if *interaction == Interaction::Pressed {
-            writer.write(PurchaseItemRequest { item: button.item });
+            writer.write(PurchaseItemRequest { item });
         }
     }
 }

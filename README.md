@@ -58,7 +58,8 @@ The HUD shows connection status. Host sim runs combat / creeps / AI; clients app
 | Esc | Main menu (New Game / Settings / Quit) |
 | RMB inventory slot | Open sell menu at cursor (LMB Sell = 50% refund near shop) |
 | `$` shop button (bottom-right, shows gold) | Toggle item shop panel |
-| Click outside shop / Esc | Close shop panel |
+| LMB shop item | Open components / buy popup (recipes hidden from grid) |
+| Click outside shop / Esc | Close detail first, then shop panel |
 | LMB minimap | Move camera to that map position |
 | RMB minimap | Issue move order to that map position |
 | Arrow keys / screen edge | Pan camera on the XZ plane |
@@ -163,7 +164,7 @@ Required: `Ability_name`, `ability_type` (`passive` / `untargeted` / `unit_targe
 
 ### Items
 
-- Gold shop near each base; buy in range via the HUD shop (icons + names; hover for details)
+- Gold shop near each base; click an item for its build tree (components + recipe scraps); buy from the detail popup. Recipes are hidden from the default shop grid.
 - Six inventory slots; RMB → **Sell (50%)** near shop; actives use ASDZXC
 - Heroes carry a `StatusEffects` list for buffs / debuffs
 - Heroes and creeps soft-separate by collision radius; the **forceful** buff pushes harder (e.g. Vanguard Shockwave). **Phased** (Dash/Blink) ignores unit push.
