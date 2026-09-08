@@ -28,7 +28,8 @@ pub struct CameraRig {
 impl Default for CameraRig {
     fn default() -> Self {
         Self {
-            height: scale::u(42.0),
+            // Slightly closer to the ground than the original u(42) rig.
+            height: scale::u(42.0) * 0.9,
             back: scale::u(18.0),
             pan_speed: scale::u(36.0),
             edge_size: 28.0, // screen pixels

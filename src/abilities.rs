@@ -90,18 +90,18 @@ fn begin_or_cast_from_hotkeys(
     mut targeting: ResMut<AbilityTargeting>,
     mut commands: Commands,
     assets: Res<SharedAssets>,
-    mut hero: Query<
+    hero: Query<
         (
             Entity,
             &Transform,
-            &mut AbilityLoadout,
-            &mut Mana,
+            &AbilityLoadout,
+            &Mana,
             &StatusEffects,
         ),
         With<PlayerHero>,
     >,
 ) {
-    let Ok((hero_entity, transform, mut loadout, mut mana, statuses)) = hero.single_mut() else {
+    let Ok((hero_entity, transform, loadout, mana, statuses)) = hero.single() else {
         return;
     };
 
@@ -147,18 +147,12 @@ fn begin_or_cast_from_hotkeys(
 
         match slot.cast_kind() {
             AbilityCastKind::Instant => {
-                let Some(slot_mut) = loadout.slot_mut(index) else {
-                    continue;
-                };
-                if !mana.try_spend(slot_mut.mana_cost) {
-                    continue;
-                }
-                slot_mut.cooldown_remaining = slot_mut.cooldown;
+                // Mana + cooldown apply when the cast point completes, not at press.
                 start_ability_cast(
                     &mut commands,
                     hero_entity,
                     index,
-                    slot_mut,
+                    &slot,
                     transform.translation,
                     0.0,
                     None,
@@ -394,13 +388,13 @@ fn confirm_or_cancel_targeted_cast(
     camera: Query<(&Camera, &GlobalTransform)>,
     ground: Query<&GlobalTransform, With<Ground>>,
     mut commands: Commands,
-    mut hero: Query<
+    hero: Query<
         (
             Entity,
             &Transform,
             &Team,
-            &mut AbilityLoadout,
-            &mut Mana,
+            &AbilityLoadout,
+            &Mana,
             &StatusEffects,
         ),
         With<PlayerHero>,
@@ -439,7 +433,7 @@ fn confirm_or_cancel_targeted_cast(
         return;
     }
 
-    let Ok((hero_entity, transform, team, mut loadout, mut mana, statuses)) = hero.single_mut()
+    let Ok((hero_entity, transform, team, loadout, mana, statuses)) = hero.single()
     else {
         return;
     };
@@ -497,24 +491,23 @@ fn confirm_or_cancel_targeted_cast(
         return;
     }
 
-    let Some(slot) = loadout.slot_mut(pending.slot) else {
+    let Some(slot) = loadout.slots.get(pending.slot).cloned() else {
         clear_targeting(&mut commands, &mut targeting);
         return;
     };
-    if slot.rank == 0 || slot.cooldown_remaining > 0.0 || !mana.try_spend(slot.mana_cost) {
+    if slot.rank == 0 || slot.cooldown_remaining > 0.0 || mana.current < slot.mana_cost {
         clear_targeting(&mut commands, &mut targeting);
         return;
     }
-    slot.cooldown_remaining = slot.cooldown;
+    // Mana + cooldown apply when the cast point completes (cancel during cast point is free).
     let aoe = pending.aoe_radius;
-    let slot_snapshot = slot.clone();
     clear_targeting(&mut commands, &mut targeting);
 
     start_ability_cast(
         &mut commands,
         hero_entity,
         pending.slot,
-        &slot_snapshot,
+        &slot,
         aim,
         aoe,
         unit_target.map(|(e, _)| e),
@@ -523,13 +516,13 @@ fn confirm_or_cancel_targeted_cast(
 
 fn resolve_queued_ability_casts(
     mut commands: Commands,
-    mut hero: Query<
+    hero: Query<
         (
             Entity,
             &Transform,
             &QueuedAbilityCast,
-            &mut AbilityLoadout,
-            &mut Mana,
+            &AbilityLoadout,
+            &Mana,
             &StatusEffects,
         ),
         With<PlayerHero>,
@@ -543,10 +536,10 @@ fn resolve_queued_ability_casts(
         hero_entity,
         transform,
         queued,
-        mut loadout,
-        mut mana,
+        loadout,
+        mana,
         statuses,
-    )) = hero.single_mut()
+    )) = hero.single()
     else {
         return;
     };
@@ -589,20 +582,19 @@ fn resolve_queued_ability_casts(
             .remove::<MoveTarget>();
         return;
     }
-    let Some(slot) = loadout.slot_mut(queued.slot) else {
+    let Some(slot) = loadout.slots.get(queued.slot).cloned() else {
         commands.entity(hero_entity).remove::<QueuedAbilityCast>();
         return;
     };
-    if slot.rank == 0 || slot.cooldown_remaining > 0.0 || !mana.try_spend(slot.mana_cost) {
+    if slot.rank == 0 || slot.cooldown_remaining > 0.0 || mana.current < slot.mana_cost {
         commands
             .entity(hero_entity)
             .remove::<QueuedAbilityCast>()
             .remove::<MoveTarget>();
         return;
     }
-    slot.cooldown_remaining = slot.cooldown;
+    // Mana + cooldown apply when the cast point completes.
     let aoe = queued.aoe_radius;
-    let slot_snapshot = slot.clone();
 
     commands
         .entity(hero_entity)
@@ -613,7 +605,7 @@ fn resolve_queued_ability_casts(
         &mut commands,
         hero_entity,
         queued.slot,
-        &slot_snapshot,
+        &slot,
         aim,
         aoe,
         unit_target.map(|(e, _)| e),
@@ -630,7 +622,8 @@ fn tick_ability_casting(
             &mut Transform,
             &Team,
             &mut AbilityCasting,
-            &AbilityLoadout,
+            &mut AbilityLoadout,
+            &mut Mana,
             &mut Health,
             &mut StatusEffects,
             &mut CombatStats,
@@ -652,7 +645,8 @@ fn tick_ability_casting(
         mut transform,
         team,
         mut casting,
-        loadout,
+        mut loadout,
+        mut mana,
         mut health,
         mut statuses,
         mut stats,
@@ -677,11 +671,23 @@ fn tick_ability_casting(
         if casting.point_remaining > 0.0 {
             return;
         }
-        casting.fired = true;
-        let Some(slot) = loadout.slots.get(casting.slot).cloned() else {
+
+        // Commit mana + cooldown only once the cast point finishes without cancel.
+        let Some(slot_mut) = loadout.slot_mut(casting.slot) else {
             commands.entity(hero_entity).remove::<AbilityCasting>();
             return;
         };
+        if slot_mut.rank == 0
+            || slot_mut.cooldown_remaining > 0.0
+            || !mana.try_spend(slot_mut.mana_cost)
+        {
+            commands.entity(hero_entity).remove::<AbilityCasting>();
+            return;
+        }
+        slot_mut.cooldown_remaining = slot_mut.cooldown;
+        let slot = slot_mut.clone();
+
+        casting.fired = true;
         let ability = casting.ability;
         let aoe = casting.aoe_radius;
         let unit_entity = casting.unit_target;
