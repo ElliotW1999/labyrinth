@@ -122,10 +122,16 @@ struct HudHealthBarFill;
 struct HudHealthBarText;
 
 #[derive(Component)]
+struct HudHealthRegenText;
+
+#[derive(Component)]
 struct HudManaBarFill;
 
 #[derive(Component)]
 struct HudManaBarText;
+
+#[derive(Component)]
+struct HudManaRegenText;
 
 #[derive(Component)]
 struct SpellBarRoot;
@@ -261,8 +267,13 @@ const MAX_SHOP_DETAIL_COMPONENTS: usize = 5;
 const HERO_ICON_SIZE: f32 = 84.0;
 const STATS_TABLE_WIDTH: f32 = 200.0;
 const SPELL_CLUSTER_WIDTH: f32 = 352.0;
-/// Approximate half-width of the bottom hero panel for centering.
-const HERO_PANEL_HALF_WIDTH: f32 = 340.0;
+const HERO_PANEL_COLUMN_GAP: f32 = 12.0;
+/// Icon + stats sitting to the left of the QWER cluster.
+const HERO_PANEL_LEADING_WIDTH: f32 =
+    HERO_ICON_SIZE + HERO_PANEL_COLUMN_GAP + STATS_TABLE_WIDTH + HERO_PANEL_COLUMN_GAP;
+/// Offset so the QWER ability row is horizontally centered on the full screen.
+const HERO_PANEL_QWER_CENTER_OFFSET: f32 =
+    HERO_PANEL_LEADING_WIDTH + SPELL_CLUSTER_WIDTH * 0.5;
 
 fn spawn_hud(mut commands: Commands) {
     commands
@@ -330,7 +341,8 @@ fn spawn_hud(mut commands: Commands) {
                 ));
             });
 
-            // Bottom-center: icon | stats table | HP/MP + abilities
+            // Bottom cluster: icon | stats | HP/MP + abilities.
+            // Positioned so the QWER row is centered on the full screen (clears inventory).
             root.spawn((
                 HeroPanelRoot,
                 BlocksWorldRmb,
@@ -338,10 +350,10 @@ fn spawn_hud(mut commands: Commands) {
                     position_type: PositionType::Absolute,
                     bottom: px(18),
                     left: percent(50),
-                    margin: UiRect::left(px(-HERO_PANEL_HALF_WIDTH)),
+                    margin: UiRect::left(px(-HERO_PANEL_QWER_CENTER_OFFSET)),
                     flex_direction: FlexDirection::Row,
                     align_items: AlignItems::FlexEnd,
-                    column_gap: px(12),
+                    column_gap: px(HERO_PANEL_COLUMN_GAP),
                     padding: UiRect::all(px(8)),
                     border_radius: BorderRadius::all(px(8)),
                     ..default()
@@ -444,6 +456,7 @@ fn spawn_hud(mut commands: Commands) {
                             cluster,
                             HudHealthBarFill,
                             HudHealthBarText,
+                            HudHealthRegenText,
                             Color::srgb(0.18, 0.72, 0.28),
                             "HP -- / --",
                         );
@@ -451,6 +464,7 @@ fn spawn_hud(mut commands: Commands) {
                             cluster,
                             HudManaBarFill,
                             HudManaBarText,
+                            HudManaRegenText,
                             Color::srgb(0.25, 0.45, 0.95),
                             "MP -- / --",
                         );
@@ -871,10 +885,11 @@ fn spawn_stat_row(
         });
 }
 
-fn spawn_vital_bar<Fill: Component, Label: Component>(
+fn spawn_vital_bar<Fill: Component, Label: Component, Regen: Component>(
     parent: &mut ChildSpawnerCommands,
     fill_marker: Fill,
     text_marker: Label,
+    regen_marker: Regen,
     fill_color: Color,
     initial_text: &str,
 ) {
@@ -906,16 +921,34 @@ fn spawn_vital_bar<Fill: Component, Label: Component>(
                 BackgroundColor(fill_color),
             ));
             bar.spawn((
-                text_marker,
-                Text::new(initial_text.to_string()),
-                TextFont::from_font_size(13.0),
-                TextColor(Color::srgb(0.95, 0.97, 1.0)),
                 Node {
-                    position_type: PositionType::Relative,
+                    position_type: PositionType::Absolute,
+                    left: px(0),
+                    top: px(0),
+                    width: percent(100),
+                    height: percent(100),
+                    flex_direction: FlexDirection::Row,
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::SpaceBetween,
+                    padding: UiRect::axes(px(8), px(0)),
                     ..default()
                 },
                 ZIndex(1),
-            ));
+            ))
+            .with_children(|row| {
+                row.spawn((
+                    text_marker,
+                    Text::new(initial_text.to_string()),
+                    TextFont::from_font_size(13.0),
+                    TextColor(Color::srgb(0.95, 0.97, 1.0)),
+                ));
+                row.spawn((
+                    regen_marker,
+                    Text::new("+0.0"),
+                    TextFont::from_font_size(12.0),
+                    TextColor(Color::srgb(0.85, 0.95, 0.88)),
+                ));
+            });
         });
 }
 
@@ -1146,6 +1179,29 @@ fn refresh_hud_text(
             Without<HudHealthBarText>,
         ),
     >,
+    mut hp_regen_text: Query<
+        &mut Text,
+        (
+            With<HudHealthRegenText>,
+            Without<HudLevel>,
+            Without<HudGold>,
+            Without<HudSkillPoints>,
+            Without<HudHealthBarText>,
+            Without<HudManaBarText>,
+        ),
+    >,
+    mut mp_regen_text: Query<
+        &mut Text,
+        (
+            With<HudManaRegenText>,
+            Without<HudLevel>,
+            Without<HudGold>,
+            Without<HudSkillPoints>,
+            Without<HudHealthBarText>,
+            Without<HudManaBarText>,
+            Without<HudHealthRegenText>,
+        ),
+    >,
     mut stats_text: Query<
         (&HudStatId, &mut Text),
         (
@@ -1154,6 +1210,8 @@ fn refresh_hud_text(
             Without<HudSkillPoints>,
             Without<HudHealthBarText>,
             Without<HudManaBarText>,
+            Without<HudHealthRegenText>,
+            Without<HudManaRegenText>,
         ),
     >,
     mut hp_fill: Query<&mut Node, With<HudHealthBarFill>>,
@@ -1210,6 +1268,12 @@ fn refresh_hud_text(
     }
     if let Ok(mut text) = mp_text.single_mut() {
         *text = Text::new(format!("{:.0} / {:.0}", mana.current, mana.max));
+    }
+    if let Ok(mut text) = hp_regen_text.single_mut() {
+        *text = Text::new(format!("+{:.1}", health.regen_per_sec.max(0.0)));
+    }
+    if let Ok(mut text) = mp_regen_text.single_mut() {
+        *text = Text::new(format!("+{:.1}", mana.regen_per_sec.max(0.0)));
     }
 
     for (id, mut text) in &mut stats_text {

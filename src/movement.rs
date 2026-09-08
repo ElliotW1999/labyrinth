@@ -112,9 +112,13 @@ fn apply_move_targets(
 }
 
 fn resolve_obstacle_collisions(
+    // Only mobile units — never the camera, health bars, FX, or other Transform entities.
+    // A broad Transform query was shoving the free cam around trees/buildings at the
+    // bottom of the screen (eye sits near those obstacles in XZ).
     mut units: Query<
-        (&mut Transform, Option<&UnitRadius>),
+        (&mut Transform, &UnitRadius),
         (
+            With<UnitRadius>,
             Without<Obstacle>,
             Without<Tower>,
             Without<Ancient>,
@@ -128,8 +132,7 @@ fn resolve_obstacle_collisions(
         .collect();
 
     for (mut transform, radius) in &mut units {
-        let unit_r = radius.map(|r| r.0).unwrap_or(scale::u(0.5));
-        let separated = separate_from_circles(transform.translation, unit_r, &snaps);
+        let separated = separate_from_circles(transform.translation, radius.0, &snaps);
         transform.translation.x = separated.x;
         transform.translation.z = separated.z;
     }
@@ -137,8 +140,13 @@ fn resolve_obstacle_collisions(
 
 fn resolve_building_collisions(
     mut mobiles: Query<
-        (&mut Transform, Option<&UnitRadius>),
-        (Without<Tower>, Without<Ancient>, Without<Obstacle>),
+        (&mut Transform, &UnitRadius),
+        (
+            With<UnitRadius>,
+            Without<Tower>,
+            Without<Ancient>,
+            Without<Obstacle>,
+        ),
     >,
     buildings: Query<(&Transform, &UnitRadius), Or<(With<Tower>, With<Ancient>)>>,
 ) {
@@ -147,8 +155,7 @@ fn resolve_building_collisions(
         .map(|(tf, r)| (tf.translation, r.0))
         .collect();
     for (mut transform, radius) in &mut mobiles {
-        let unit_r = radius.map(|r| r.0).unwrap_or(scale::u(0.5));
-        let separated = separate_from_circles(transform.translation, unit_r, &snaps);
+        let separated = separate_from_circles(transform.translation, radius.0, &snaps);
         transform.translation.x = separated.x;
         transform.translation.z = separated.z;
     }
