@@ -240,13 +240,21 @@ fn spawn_tree_obstacles(commands: &mut Commands, assets: &SharedAssets) {
     ];
 
     for (i, pos) in trees.into_iter().enumerate() {
-        commands.spawn((
-            Name::new(format!("Tree {i}")),
-            Mesh3d(assets.tree_mesh.clone()),
-            MeshMaterial3d(assets.tree_mat.clone()),
-            Transform::from_translation(pos),
-            Obstacle { radius: scale::u(1.1) },
-        ));
+        commands
+            .spawn((
+                Name::new(format!("Tree {i}")),
+                Mesh3d(assets.tree_mesh.clone()),
+                MeshMaterial3d(assets.tree_mat.clone()),
+                Transform::from_translation(pos),
+                Obstacle { radius: scale::u(1.1) },
+            ))
+            .with_children(|parent| {
+                parent.spawn((
+                    Mesh3d(assets.tree_canopy_mesh.clone()),
+                    MeshMaterial3d(assets.tree_canopy_mat.clone()),
+                    Transform::from_xyz(0.0, scale::u(1.6), 0.0),
+                ));
+            });
     }
 }
 

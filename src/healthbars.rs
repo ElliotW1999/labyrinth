@@ -1,8 +1,12 @@
-//! Billboard health bars floating above living units.
+//! Health bars floating above living units, plus screen-space hero nameplates.
 
 use bevy::prelude::*;
 
-use crate::components::{HasHealthBar, Health, HealthBar, HealthBarFill, UnitRadius};
+use crate::camera::GameCamera;
+use crate::components::{
+    HasHealthBar, Health, HealthBar, HealthBarFill, UnitRadius, WorldHeroNameLabel, WorldNameLayer,
+};
+use crate::heroes::HeroKind;
 use crate::resources::SharedAssets;
 use crate::scale;
 
@@ -15,7 +19,9 @@ impl Plugin for HealthBarPlugin {
             (
                 attach_health_bars,
                 sync_health_bars,
+                sync_world_hero_names,
                 cull_orphan_health_bars,
+                cull_orphan_world_names,
             )
                 .chain(),
         );
@@ -25,9 +31,15 @@ impl Plugin for HealthBarPlugin {
 fn attach_health_bars(
     mut commands: Commands,
     assets: Res<SharedAssets>,
-    units: Query<(Entity, Option<&UnitRadius>), (With<Health>, Without<HasHealthBar>)>,
+    units: Query<
+        (Entity, Option<&UnitRadius>, Option<&HeroKind>),
+        (With<Health>, Without<HasHealthBar>),
+    >,
+    layer: Query<Entity, With<WorldNameLayer>>,
 ) {
-    for (entity, radius) in &units {
+    let layer_entity = layer.single().ok();
+
+    for (entity, radius, hero_kind) in &units {
         let width = bar_width(radius);
 
         commands
@@ -52,6 +64,29 @@ fn attach_health_bars(
                     Transform::from_xyz(0.0, 0.0, 0.0).with_scale(Vec3::new(width, 1.0, 1.0)),
                 ));
             });
+
+        if let (Some(kind), Some(layer_e)) = (hero_kind, layer_entity) {
+            commands.entity(layer_e).with_children(|parent| {
+                parent.spawn((
+                    Name::new(format!("WorldName:{}", kind.0.name())),
+                    WorldHeroNameLabel { owner: entity },
+                    Text::new(kind.0.name()),
+                    TextFont::from_font_size(14.0),
+                    TextColor(Color::srgb(0.95, 0.96, 1.0)),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: px(-100.0),
+                        top: px(-100.0),
+                        padding: UiRect::axes(px(6), px(2)),
+                        border_radius: BorderRadius::all(px(3)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.05, 0.07, 0.1, 0.72)),
+                    Visibility::Hidden,
+                    ZIndex(5),
+                ));
+            });
+        }
 
         commands.entity(entity).insert(HasHealthBar);
     }
@@ -111,6 +146,43 @@ fn sync_health_bars(
     }
 }
 
+fn sync_world_hero_names(
+    camera: Query<(&Camera, &GlobalTransform), With<GameCamera>>,
+    owners: Query<
+        (&GlobalTransform, &HeroKind, Option<&UnitRadius>, &Visibility),
+        Without<WorldHeroNameLabel>,
+    >,
+    mut labels: Query<(&WorldHeroNameLabel, &mut Node, &mut Visibility, &mut Text)>,
+) {
+    let Ok((camera, cam_gt)) = camera.single() else {
+        return;
+    };
+
+    for (label, mut node, mut vis, mut text) in &mut labels {
+        let Ok((owner_gt, kind, radius, owner_vis)) = owners.get(label.owner) else {
+            *vis = Visibility::Hidden;
+            continue;
+        };
+        if matches!(*owner_vis, Visibility::Hidden) {
+            *vis = Visibility::Hidden;
+            continue;
+        }
+
+        let world_pos =
+            owner_gt.translation() + Vec3::Y * (bar_height(radius) + scale::u(0.85));
+        let Ok(screen) = camera.world_to_viewport(cam_gt, world_pos) else {
+            *vis = Visibility::Hidden;
+            continue;
+        };
+
+        *text = Text::new(kind.0.name());
+        // Approximate half-width so the label sits centered above the bar.
+        node.left = px(screen.x - 36.0);
+        node.top = px(screen.y - 16.0);
+        *vis = Visibility::Visible;
+    }
+}
+
 fn cull_orphan_health_bars(
     mut commands: Commands,
     bars: Query<(Entity, &HealthBar)>,
@@ -118,6 +190,18 @@ fn cull_orphan_health_bars(
 ) {
     for (entity, bar) in &bars {
         if owners.get(bar.owner).is_err() {
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
+fn cull_orphan_world_names(
+    mut commands: Commands,
+    labels: Query<(Entity, &WorldHeroNameLabel)>,
+    owners: Query<Entity, With<HeroKind>>,
+) {
+    for (entity, label) in &labels {
+        if owners.get(label.owner).is_err() {
             commands.entity(entity).despawn();
         }
     }
