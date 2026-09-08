@@ -74,8 +74,9 @@ pub(crate) fn load_shared_assets(
     // Elongated dart — local forward is -Z after look_to.
     assets.projectile_mesh = meshes.add(Cuboid::new(scale::u(0.18), scale::u(0.18), scale::u(0.85)));
     // Health bars / indicators are scaled in world units via Transform — keep mesh size = 1.
-    assets.health_bar_bg_mesh = meshes.add(Cuboid::new(1.0, 0.12, 0.08));
-    assets.health_bar_fill_mesh = meshes.add(Cuboid::new(1.0, 0.1, 0.09));
+    // Y/Z are thick enough to read clearly from the high MOBA camera.
+    assets.health_bar_bg_mesh = meshes.add(Cuboid::new(1.0, 3.2, 0.55));
+    assets.health_bar_fill_mesh = meshes.add(Cuboid::new(1.0, 2.7, 0.65));
 
     assets.radiant_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.25, 0.55, 0.95),
