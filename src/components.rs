@@ -351,7 +351,7 @@ impl GeneratedAbilityDef {
             },
             AbilityType::TargetPoint => AbilityCastKind::Targeted {
                 cast_range,
-                aoe_radius: aoe_radius.max(0.5),
+                aoe_radius: aoe_radius.max(crate::scale::u(0.5)),
             },
         }
     }
@@ -503,10 +503,10 @@ pub enum AbilityId {
 
 impl AbilityId {
     /// Lookup table for abilities created by AbilityGenerator.
-    pub fn generated(self) -> Option<&'static GeneratedAbilityDef> {
+    pub fn generated(self) -> Option<GeneratedAbilityDef> {
         match self {
             // <ability_generator:defs>
-            AbilityId::SeismicSlam => Some(&GeneratedAbilityDef {
+            AbilityId::SeismicSlam => Some(GeneratedAbilityDef {
                 display_name: "Seismic Slam",
                 ability_type: AbilityType::Untargeted,
                 is_ultimate: false,
@@ -517,17 +517,17 @@ impl AbilityId {
                 mana_cost_per_level: 8.0,
                 damage_base: 80.0,
                 damage_per_level: 30.0,
-                cast_range_base: 0.0,
-                cast_range_per_level: 0.0,
-                aoe_radius_base: 5.5,
-                aoe_radius_per_level: 0.35,
+                cast_range_base: crate::scale::u(0.0),
+                cast_range_per_level: crate::scale::u(0.0),
+                aoe_radius_base: crate::scale::u(5.5),
+                aoe_radius_per_level: crate::scale::u(0.35),
                 cooldown_base: 10.0,
                 cooldown_per_level: -0.4,
                 cooldown_min: 5.0,
                 damage_type: DamageType::Physical,
                 pseudocode: "Deal physical damage to enemies in aoe_radius around caster and briefly slow them by 30% for 1.5s",
             }),
-            AbilityId::ArcaneLance => Some(&GeneratedAbilityDef {
+            AbilityId::ArcaneLance => Some(GeneratedAbilityDef {
                 display_name: "Arcane Lance",
                 ability_type: AbilityType::UnitTarget,
                 is_ultimate: false,
@@ -538,17 +538,17 @@ impl AbilityId {
                 mana_cost_per_level: 7.0,
                 damage_base: 95.0,
                 damage_per_level: 32.0,
-                cast_range_base: 11.0,
-                cast_range_per_level: 0.6,
-                aoe_radius_base: 0.0,
-                aoe_radius_per_level: 0.0,
+                cast_range_base: crate::scale::u(11.0),
+                cast_range_per_level: crate::scale::u(0.6),
+                aoe_radius_base: crate::scale::u(0.0),
+                aoe_radius_per_level: crate::scale::u(0.0),
                 cooldown_base: 7.0,
                 cooldown_per_level: -0.3,
                 cooldown_min: 3.5,
                 damage_type: DamageType::Magical,
                 pseudocode: "Fire a magical bolt at the target unit dealing damage_at(rank). If target HP < 35%, deal 25% bonus damage",
             }),
-            AbilityId::Cataclysm => Some(&GeneratedAbilityDef {
+            AbilityId::Cataclysm => Some(GeneratedAbilityDef {
                 display_name: "Cataclysm",
                 ability_type: AbilityType::TargetArea,
                 is_ultimate: true,
@@ -559,17 +559,17 @@ impl AbilityId {
                 mana_cost_per_level: 25.0,
                 damage_base: 200.0,
                 damage_per_level: 70.0,
-                cast_range_base: 10.0,
-                cast_range_per_level: 0.5,
-                aoe_radius_base: 5.0,
-                aoe_radius_per_level: 0.5,
+                cast_range_base: crate::scale::u(10.0),
+                cast_range_per_level: crate::scale::u(0.5),
+                aoe_radius_base: crate::scale::u(5.0),
+                aoe_radius_per_level: crate::scale::u(0.5),
                 cooldown_base: 55.0,
                 cooldown_per_level: -5.0,
                 cooldown_min: 30.0,
                 damage_type: DamageType::Magical,
                 pseudocode: "After 0.5s delay, deal magical damage in aoe at the point and stun enemies for 1.2s",
             }),
-            AbilityId::StoneSkin => Some(&GeneratedAbilityDef {
+            AbilityId::StoneSkin => Some(GeneratedAbilityDef {
                 display_name: "Stone Skin",
                 ability_type: AbilityType::Passive,
                 is_ultimate: false,
@@ -580,17 +580,17 @@ impl AbilityId {
                 mana_cost_per_level: 0.0,
                 damage_base: 0.0,
                 damage_per_level: 0.0,
-                cast_range_base: 0.0,
-                cast_range_per_level: 0.0,
-                aoe_radius_base: 0.0,
-                aoe_radius_per_level: 0.0,
+                cast_range_base: crate::scale::u(0.0),
+                cast_range_per_level: crate::scale::u(0.0),
+                aoe_radius_base: crate::scale::u(0.0),
+                aoe_radius_per_level: crate::scale::u(0.0),
                 cooldown_base: 0.0,
                 cooldown_per_level: 0.0,
                 cooldown_min: 0.0,
                 damage_type: DamageType::Physical,
                 pseudocode: "Permanently gain +4 armor per rank while ability is learned (rank > 0)",
             }),
-            AbilityId::Overcharge => Some(&GeneratedAbilityDef {
+            AbilityId::Overcharge => Some(GeneratedAbilityDef {
                 display_name: "Overcharge",
                 ability_type: AbilityType::Toggle,
                 is_ultimate: false,
@@ -601,10 +601,10 @@ impl AbilityId {
                 mana_cost_per_level: 3.0,
                 damage_base: 0.0,
                 damage_per_level: 0.0,
-                cast_range_base: 0.0,
-                cast_range_per_level: 0.0,
-                aoe_radius_base: 0.0,
-                aoe_radius_per_level: 0.0,
+                cast_range_base: crate::scale::u(0.0),
+                cast_range_per_level: crate::scale::u(0.0),
+                aoe_radius_base: crate::scale::u(0.0),
+                aoe_radius_per_level: crate::scale::u(0.0),
                 cooldown_base: 1.0,
                 cooldown_per_level: 0.0,
                 cooldown_min: 0.5,
@@ -836,26 +836,26 @@ impl AbilitySlot {
             | AbilityId::Barrier => AbilityCastKind::Instant,
             AbilityId::Dash | AbilityId::Blink => AbilityCastKind::Targeted {
                 cast_range: self.dash_distance(),
-                aoe_radius: 0.75,
+                aoe_radius: crate::scale::u(0.75),
             },
             AbilityId::Bolt | AbilityId::Execute => AbilityCastKind::UnitTargeted {
-                cast_range: 10.0 + r as f32 * 0.8,
+                cast_range: crate::scale::u(10.0) + r as f32 * crate::scale::u(0.8),
             },
             AbilityId::ArcMissile => AbilityCastKind::Targeted {
-                cast_range: 10.0 + r as f32 * 0.8,
-                aoe_radius: 1.4 + r as f32 * 0.15,
+                cast_range: crate::scale::u(10.0) + r as f32 * crate::scale::u(0.8),
+                aoe_radius: crate::scale::u(1.4) + r as f32 * crate::scale::u(0.15),
             },
             AbilityId::Caltrops => AbilityCastKind::Targeted {
-                cast_range: 9.0 + r as f32 * 0.6,
-                aoe_radius: 2.2 + r as f32 * 0.2,
+                cast_range: crate::scale::u(9.0) + r as f32 * crate::scale::u(0.6),
+                aoe_radius: crate::scale::u(2.2) + r as f32 * crate::scale::u(0.2),
             },
             AbilityId::Nova => AbilityCastKind::Targeted {
-                cast_range: 8.5 + r as f32 * 0.7,
-                aoe_radius: 4.5 + r as f32 * 0.5,
+                cast_range: crate::scale::u(8.5) + r as f32 * crate::scale::u(0.7),
+                aoe_radius: crate::scale::u(4.5) + r as f32 * crate::scale::u(0.5),
             },
             AbilityId::Meteor => AbilityCastKind::Targeted {
-                cast_range: 9.5 + r as f32 * 0.6,
-                aoe_radius: 5.0 + r as f32 * 0.55,
+                cast_range: crate::scale::u(9.5) + r as f32 * crate::scale::u(0.6),
+                aoe_radius: crate::scale::u(5.0) + r as f32 * crate::scale::u(0.55),
             },
             // Stub kits: Instant no-op until abilities are implemented.
             _ => AbilityCastKind::Instant,
@@ -864,8 +864,8 @@ impl AbilitySlot {
 
     pub fn dash_distance(&self) -> f32 {
         match self.id {
-            AbilityId::Blink => 9.0 + self.rank as f32 * 1.1,
-            _ => 8.0 + self.rank as f32 * 1.2,
+            AbilityId::Blink => crate::scale::u(9.0) + self.rank as f32 * crate::scale::u(1.1),
+            _ => crate::scale::u(8.0) + self.rank as f32 * crate::scale::u(1.2),
         }
     }
 
@@ -882,9 +882,9 @@ impl AbilitySlot {
 
     pub fn shockwave_radius(&self) -> f32 {
         match self.id {
-            AbilityId::Flurry => 5.5 + self.rank as f32 * 0.4,
-            AbilityId::FrostNova => 6.0 + self.rank as f32 * 0.5,
-            _ => 6.5 + self.rank as f32 * 0.55,
+            AbilityId::Flurry => crate::scale::u(5.5) + self.rank as f32 * crate::scale::u(0.4),
+            AbilityId::FrostNova => crate::scale::u(6.0) + self.rank as f32 * crate::scale::u(0.5),
+            _ => crate::scale::u(6.5) + self.rank as f32 * crate::scale::u(0.55),
         }
     }
 
@@ -1032,6 +1032,7 @@ mod ability_generator_tests {
         assert_eq!(slam.ability_type, AbilityType::Untargeted);
         assert_eq!(slam.damage_type, DamageType::Physical);
         assert!(slam.pseudocode.contains("slow"));
+        assert!(slam.aoe_radius_base > 100.0); // scaled world units
 
         let ult = AbilityId::Cataclysm.generated().expect("Cataclysm");
         assert!(ult.is_ultimate);

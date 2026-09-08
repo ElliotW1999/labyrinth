@@ -185,7 +185,7 @@ def load_csv(path: Path) -> list[HeroRow]:
             for slot_name, ability in (("Q", q), ("W", w), ("E", e), ("R", r)):
                 if not ability:
                     raise SystemExit(f"Row {i}: Ability_{slot_name}_Name is required")
-            attack_range_default = 1.8 if is_melee else 9.5
+            attack_range_default = 128.0 if is_melee else 500.0
             attack_damage_default = 55.0 if is_melee else 48.0
             blurb = row.get("blurb") or default_blurb(name, primary, q, w, e, r)
             rust_id = to_pascal_case(name)
@@ -227,7 +227,7 @@ def load_csv(path: Path) -> list[HeroRow]:
                     magic_resist=parse_float(
                         row, "magic_resist", 0.7 if primary != "INT" else 1.2
                     ),
-                    move_speed=parse_float(row, "move_speed", 11.5),
+                    move_speed=parse_float(row, "move_speed", 300.0),
                 )
             )
         return rows

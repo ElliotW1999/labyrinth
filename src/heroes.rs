@@ -7,6 +7,7 @@ use crate::components::{
 };
 use crate::net::{NetConfig, NetMode, NetSession};
 use crate::resources::SharedAssets;
+use crate::scale;
 use crate::units::spawn_hero_entity;
 
 /// Which hero the local player picked (or will pick).
@@ -147,14 +148,14 @@ impl HeroId {
                 base_mana_regen: 0.8,
                 combat: hero_combat(
                     58.0,
-                    5.5,
+                    scale::MELEE_ATTACK_RANGE,
                     1.7,
                     0.3,
                     0.35,
                     crate::facing::HERO_TURN_RATE,
                     2.0,
                     0.7,
-                    11.5,
+                    scale::HERO_MOVE_SPEED,
                 ),
                 abilities: [
                     AbilityId::Dash,
@@ -179,14 +180,14 @@ impl HeroId {
                 base_mana_regen: 0.9,
                 combat: hero_combat(
                     52.0,
-                    6.5,
+                    scale::SHORT_ATTACK_RANGE,
                     1.5,
                     0.25,
                     0.3,
                     crate::facing::HERO_TURN_RATE,
                     1.2,
                     0.6,
-                    12.8,
+                    scale::HERO_MOVE_SPEED_FAST,
                 ),
                 abilities: [
                     AbilityId::Blink,
@@ -211,14 +212,14 @@ impl HeroId {
                 base_mana_regen: 1.4,
                 combat: hero_combat(
                     48.0,
-                    9.5,
+                    scale::RANGED_ATTACK_RANGE,
                     1.6,
                     0.35,
                     0.4,
                     crate::facing::HERO_TURN_RATE,
                     0.8,
                     1.2,
-                    11.2,
+                    scale::HERO_MOVE_SPEED_SLOW,
                 ),
                 abilities: [
                     AbilityId::ArcMissile,
@@ -244,14 +245,14 @@ impl HeroId {
                 base_mana_regen: 0.8,
                 combat: hero_combat(
                     55.0,
-                    1.8,
+                    scale::MELEE_ATTACK_RANGE,
                     1.7,
                     0.3,
                     0.35,
                     crate::facing::HERO_TURN_RATE,
                     2.0,
                     0.7,
-                    11.5,
+                    scale::HERO_MOVE_SPEED,
                 ),
                 abilities: [
                     AbilityId::Bulwark,
@@ -276,14 +277,14 @@ impl HeroId {
                 base_mana_regen: 1.4,
                 combat: hero_combat(
                     48.0,
-                    9.5,
+                    scale::RANGED_ATTACK_RANGE,
                     1.7,
                     0.3,
                     0.35,
                     crate::facing::HERO_TURN_RATE,
                     0.8,
                     1.2,
-                    11.5,
+                    scale::HERO_MOVE_SPEED,
                 ),
                 abilities: [
                     AbilityId::HexBolt,
@@ -589,7 +590,7 @@ fn maybe_spawn_local_hero(
                 Team::Radiant,
                 true,
                 1,
-                Vec3::new(-44.0, 0.9, -44.0),
+                scale::v(-44.0, 0.9, -44.0),
                 hero,
             );
             choice.spawned = true;
@@ -601,7 +602,7 @@ fn maybe_spawn_local_hero(
                 Team::Radiant,
                 true,
                 1,
-                Vec3::new(-44.0, 0.9, -44.0),
+                scale::v(-44.0, 0.9, -44.0),
                 hero,
             );
             session.local_hero_id = Some(1);

@@ -16,6 +16,7 @@ use crate::components::{
     AttackTarget, CombatStats, Health, MoveTarget, Team, UnitRadius,
 };
 use crate::heroes::{HeroId, HeroKind, LocalHeroChoice};
+use crate::scale;
 use crate::movement::{order_attack_move, order_hero_move, order_hero_stop};
 use crate::units::spawn_hero_entity;
 
@@ -148,7 +149,7 @@ fn host_recv_and_apply(
                         Team::Dire,
                         false,
                         id,
-                        Vec3::new(44.0, 0.9, 44.0),
+                        scale::v(44.0, 0.9, 44.0),
                         remote_kind,
                     );
                     session.remote_hero_id = Some(id);
@@ -220,7 +221,7 @@ fn apply_attack_order(
     enemy_tf: &GlobalTransform,
     radius: Option<&UnitRadius>,
 ) {
-    let reach = stats.attack_range + radius.map(|r| r.0).unwrap_or(0.5);
+    let reach = stats.attack_range + radius.map(|r| r.0).unwrap_or(scale::u(0.5));
     let dist = flat_distance(hero_tf.translation, enemy_tf.translation());
     commands.entity(hero_entity).insert(AttackTarget(enemy));
     if dist > reach * 0.9 {
@@ -321,8 +322,8 @@ fn client_recv_and_apply(
 
                 let team = team_from_u8(team);
                 let spawn_pos = match team {
-                    Team::Radiant => Vec3::new(-44.0, 0.9, -44.0),
-                    Team::Dire => Vec3::new(44.0, 0.9, 44.0),
+                    Team::Radiant => scale::v(-44.0, 0.9, -44.0),
+                    Team::Dire => scale::v(44.0, 0.9, 44.0),
                 };
                 let local = spawn_hero_entity(
                     &mut commands,
@@ -342,7 +343,7 @@ fn client_recv_and_apply(
                     Team::Radiant,
                     false,
                     remote_id,
-                    Vec3::new(-44.0, 0.9, -44.0),
+                    scale::v(-44.0, 0.9, -44.0),
                     HeroId::from_u8(opponent_kind),
                 );
                 session.remote_hero_id = Some(remote_id);

@@ -4,6 +4,7 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
 use crate::components::PlayerHero;
+use crate::scale;
 
 pub struct CameraPlugin;
 
@@ -27,10 +28,10 @@ pub struct CameraRig {
 impl Default for CameraRig {
     fn default() -> Self {
         Self {
-            height: 42.0,
-            back: 18.0,
-            pan_speed: 36.0,
-            edge_size: 24.0,
+            height: scale::u(42.0),
+            back: scale::u(18.0),
+            pan_speed: scale::u(36.0),
+            edge_size: 24.0, // screen pixels
         }
     }
 }
@@ -45,7 +46,7 @@ pub struct CameraFocus {
 impl Default for CameraFocus {
     fn default() -> Self {
         Self {
-            position: Vec3::new(-44.0, 0.0, -44.0),
+            position: scale::v(-44.0, 0.0, -44.0),
         }
     }
 }

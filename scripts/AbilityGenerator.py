@@ -214,10 +214,10 @@ def defaults_for_type(ability_type: str, is_ultimate: bool) -> dict[str, float |
             "mana_cost_per_level": 20.0,
             "damage_base": 160.0,
             "damage_per_level": 55.0,
-            "cast_range_base": 9.0,
-            "cast_range_per_level": 0.5,
-            "aoe_radius_base": 4.5,
-            "aoe_radius_per_level": 0.4,
+            "cast_range_base": 234.0,
+            "cast_range_per_level": 13.0,
+            "aoe_radius_base": 117.0,
+            "aoe_radius_per_level": 10.4,
             "cooldown_base": 50.0,
             "cooldown_per_level": -4.0,
             "cooldown_min": 30.0,
@@ -230,8 +230,8 @@ def defaults_for_type(ability_type: str, is_ultimate: bool) -> dict[str, float |
         "mana_cost_per_level": 6.0,
         "damage_base": 70.0,
         "damage_per_level": 25.0,
-        "cast_range_base": 8.0,
-        "cast_range_per_level": 0.5,
+        "cast_range_base": 208.0,
+        "cast_range_per_level": 13.0,
         "aoe_radius_base": 0.0,
         "aoe_radius_per_level": 0.0,
         "cooldown_base": 8.0,
@@ -242,7 +242,7 @@ def defaults_for_type(ability_type: str, is_ultimate: bool) -> dict[str, float |
     if ability_type == "UnitTarget":
         base.update(
             {
-                "cast_range_base": 10.0,
+                "cast_range_base": 260.0,
                 "damage_base": 90.0,
                 "damage_per_level": 30.0,
                 "aoe_radius_base": 0.0,
@@ -251,13 +251,13 @@ def defaults_for_type(ability_type: str, is_ultimate: bool) -> dict[str, float |
     elif ability_type == "TargetArea":
         base.update(
             {
-                "aoe_radius_base": 3.0,
-                "aoe_radius_per_level": 0.25,
+                "aoe_radius_base": 78.0,
+                "aoe_radius_per_level": 6.5,
                 "damage_base": 100.0,
             }
         )
     elif ability_type == "TargetPoint":
-        base.update({"aoe_radius_base": 0.75, "cast_range_base": 8.5})
+        base.update({"aoe_radius_base": 19.5, "cast_range_base": 221.0})
     elif ability_type == "Toggle":
         base.update(
             {
@@ -270,7 +270,7 @@ def defaults_for_type(ability_type: str, is_ultimate: bool) -> dict[str, float |
             }
         )
     elif ability_type == "Untargeted":
-        base.update({"cast_range_base": 0.0, "aoe_radius_base": 5.0})
+        base.update({"cast_range_base": 0.0, "aoe_radius_base": 130.0})
     return base
 
 
@@ -379,7 +379,7 @@ def load_csv(path: Path) -> list[AbilityRow]:
 
 
 def def_arm(ability: AbilityRow) -> str:
-    return f"""            AbilityId::{ability.rust_id} => Some(&GeneratedAbilityDef {{
+    return f"""            AbilityId::{ability.rust_id} => Some(GeneratedAbilityDef {{
                 display_name: "{rust_escape(ability.name)}",
                 ability_type: AbilityType::{ability.ability_type},
                 is_ultimate: {"true" if ability.is_ultimate else "false"},

@@ -10,6 +10,7 @@ use crate::heroes::{HeroId, HeroKind};
 use crate::items::{Inventory, StatusEffects};
 use crate::net::{NetworkId, NetworkedHero};
 use crate::resources::SharedAssets;
+use crate::scale;
 
 pub struct UnitsPlugin;
 
@@ -60,7 +61,7 @@ pub fn spawn_hero_entity(
         crate::components::HeroProgress::new(),
     ));
     entity.insert((
-        UnitRadius(0.5),
+        UnitRadius(scale::u(0.5)),
         GoldBounty(0),
         attrs,
         Inventory::empty(),
@@ -88,13 +89,13 @@ pub fn spawn_creep(
         Name::new(format!("{team:?} Creep ({lane:?})")),
         Mesh3d(assets.unit_mesh.clone()),
         MeshMaterial3d(mat),
-        Transform::from_translation(position + Vec3::Y * 0.7).with_scale(Vec3::splat(0.75)),
+        Transform::from_translation(position + Vec3::Y * scale::u(0.7)).with_scale(Vec3::splat(0.75)),
         team,
         Creep { lane },
         Health::new(280.0),
-        CombatStats::simple(18.0, 4.5, 0.9, 1.0, 0.5, 7.5),
+        CombatStats::simple(18.0, scale::CREEP_ATTACK_RANGE, 0.9, 1.0, 0.5, scale::CREEP_MOVE_SPEED),
         AttackCooldown(0.0),
-        UnitRadius(0.4),
+        UnitRadius(scale::u(0.4)),
         GoldBounty(35),
         XpBounty(45),
         crate::items::StatusEffects::default(),
@@ -126,9 +127,9 @@ pub fn spawn_tower(
         Tower,
         lane,
         Health::new(1800.0),
-        CombatStats::simple(90.0, 14.0, 0.85, 12.0, 8.0, 0.0),
+        CombatStats::simple(90.0, scale::TOWER_ATTACK_RANGE, 0.85, 12.0, 8.0, 0.0),
         AttackCooldown(0.0),
-        UnitRadius(0.9),
+        UnitRadius(scale::u(0.9)),
         GoldBounty(120),
         XpBounty(150),
     ));
@@ -160,7 +161,7 @@ pub fn spawn_ancient(
         Ancient,
         Health::new(4000.0),
         stats,
-        UnitRadius(1.8),
+        UnitRadius(scale::u(1.8)),
         GoldBounty(0),
         XpBounty(400),
     ));

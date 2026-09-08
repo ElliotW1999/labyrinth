@@ -4,6 +4,7 @@ use bevy::prelude::*;
 
 use crate::components::{Lane, Team};
 use crate::resources::{MatchConfig, SharedAssets};
+use crate::scale;
 use crate::units::spawn_creep;
 
 pub struct WavesPlugin;
@@ -57,7 +58,7 @@ fn spawn_waves(
 fn spawn_wave_set(commands: &mut Commands, assets: &SharedAssets, count: usize) {
     for lane in [Lane::Top, Lane::Mid, Lane::Bot] {
         for i in 0..count {
-            let offset = Vec3::new(i as f32 * 1.2, 0.0, i as f32 * 0.3);
+            let offset = Vec3::new(i as f32 * scale::u(1.2), 0.0, i as f32 * scale::u(0.3));
             spawn_creep(
                 commands,
                 assets,
@@ -78,16 +79,16 @@ fn spawn_wave_set(commands: &mut Commands, assets: &SharedAssets, count: usize) 
 
 fn radiant_spawn(lane: Lane) -> Vec3 {
     match lane {
-        Lane::Mid => Vec3::new(-45.0, 0.0, -45.0),
-        Lane::Top => Vec3::new(-48.0, 0.0, -40.0),
-        Lane::Bot => Vec3::new(-40.0, 0.0, -48.0),
+        Lane::Mid => scale::v(-45.0, 0.0, -45.0),
+        Lane::Top => scale::v(-48.0, 0.0, -40.0),
+        Lane::Bot => scale::v(-40.0, 0.0, -48.0),
     }
 }
 
 fn dire_spawn(lane: Lane) -> Vec3 {
     match lane {
-        Lane::Mid => Vec3::new(45.0, 0.0, 45.0),
-        Lane::Top => Vec3::new(45.0, 0.0, 48.0),
-        Lane::Bot => Vec3::new(48.0, 0.0, 45.0),
+        Lane::Mid => scale::v(45.0, 0.0, 45.0),
+        Lane::Top => scale::v(45.0, 0.0, 48.0),
+        Lane::Bot => scale::v(48.0, 0.0, 45.0),
     }
 }

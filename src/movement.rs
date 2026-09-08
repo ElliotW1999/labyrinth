@@ -9,6 +9,7 @@ use crate::components::{
 };
 use crate::facing::turn_toward;
 use crate::items::StatusEffects;
+use crate::scale;
 use crate::net::NetworkedHero;
 
 pub struct MovementPlugin;
@@ -68,13 +69,13 @@ fn apply_move_targets(
             continue;
         }
 
-        let unit_r = radius.map(|r| r.0).unwrap_or(0.5);
+        let unit_r = radius.map(|r| r.0).unwrap_or(scale::u(0.5));
         let mut destination = target.position;
         destination.y = transform.translation.y;
 
         let to_target = destination - transform.translation;
         let distance = to_target.length();
-        if distance < 0.15 {
+        if distance < scale::u(0.15) {
             commands.entity(entity).remove::<MoveTarget>();
             continue;
         }
@@ -96,7 +97,7 @@ fn apply_move_targets(
         next = separate_from_circles(next, unit_r, &blockers);
         if flat_distance(destination, next) > 0.01
             && is_blocked(destination, unit_r, &blockers)
-            && flat_distance(transform.translation, next) < 0.05
+            && flat_distance(transform.translation, next) < scale::u(0.05)
         {
             commands.entity(entity).remove::<MoveTarget>();
             continue;
@@ -104,7 +105,7 @@ fn apply_move_targets(
 
         transform.translation = next;
 
-        if flat_distance(transform.translation, destination) < 0.2 {
+        if flat_distance(transform.translation, destination) < scale::u(0.2) {
             commands.entity(entity).remove::<MoveTarget>();
         }
     }
@@ -127,7 +128,7 @@ fn resolve_obstacle_collisions(
         .collect();
 
     for (mut transform, radius) in &mut units {
-        let unit_r = radius.map(|r| r.0).unwrap_or(0.5);
+        let unit_r = radius.map(|r| r.0).unwrap_or(scale::u(0.5));
         let separated = separate_from_circles(transform.translation, unit_r, &snaps);
         transform.translation.x = separated.x;
         transform.translation.z = separated.z;
@@ -146,7 +147,7 @@ fn resolve_building_collisions(
         .map(|(tf, r)| (tf.translation, r.0))
         .collect();
     for (mut transform, radius) in &mut mobiles {
-        let unit_r = radius.map(|r| r.0).unwrap_or(0.5);
+        let unit_r = radius.map(|r| r.0).unwrap_or(scale::u(0.5));
         let separated = separate_from_circles(transform.translation, unit_r, &snaps);
         transform.translation.x = separated.x;
         transform.translation.z = separated.z;
@@ -173,7 +174,7 @@ fn resolve_unit_collisions(
             (
                 e,
                 tf.translation,
-                radius.map(|r| r.0).unwrap_or(0.5),
+                radius.map(|r| r.0).unwrap_or(scale::u(0.5)),
                 statuses.map(|s| s.is_phased()).unwrap_or(false),
                 statuses.map(|s| s.can_push_units()).unwrap_or(false),
             )

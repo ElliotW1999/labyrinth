@@ -24,6 +24,7 @@ mod net;
 mod obstacle_course;
 mod progression;
 mod resources;
+mod scale;
 mod ui;
 mod units;
 mod waves;

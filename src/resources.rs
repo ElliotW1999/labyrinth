@@ -2,6 +2,8 @@
 
 use bevy::prelude::*;
 
+use crate::scale;
+
 pub struct ResourcesPlugin;
 
 impl Plugin for ResourcesPlugin {
@@ -22,7 +24,7 @@ pub struct MatchConfig {
 impl Default for MatchConfig {
     fn default() -> Self {
         Self {
-            map_half_extent: 70.0,
+            map_half_extent: scale::u(70.0),
             creep_wave_interval: 30.0,
             creeps_per_wave: 4,
         }
@@ -66,13 +68,13 @@ pub(crate) fn load_shared_assets(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    assets.unit_mesh = meshes.add(Capsule3d::new(0.35, 0.9));
-    assets.tower_mesh = meshes.add(Cylinder::new(0.7, 3.2));
-    assets.ancient_mesh = meshes.add(Cuboid::new(3.5, 2.5, 3.5));
+    assets.unit_mesh = meshes.add(Capsule3d::new(scale::u(0.35), scale::u(0.9)));
+    assets.tower_mesh = meshes.add(Cylinder::new(scale::u(0.7), scale::u(3.2)));
+    assets.ancient_mesh = meshes.add(Cuboid::new(scale::u(3.5), scale::u(2.5), scale::u(3.5)));
     // Elongated dart — local forward is -Z after look_to.
-    assets.projectile_mesh = meshes.add(Cuboid::new(0.18, 0.18, 0.85));
-    assets.health_bar_bg_mesh = meshes.add(Cuboid::new(1.0, 0.12, 0.08));
-    assets.health_bar_fill_mesh = meshes.add(Cuboid::new(1.0, 0.1, 0.09));
+    assets.projectile_mesh = meshes.add(Cuboid::new(scale::u(0.18), scale::u(0.18), scale::u(0.85)));
+    assets.health_bar_bg_mesh = meshes.add(Cuboid::new(scale::u(1.0), scale::u(0.12), scale::u(0.08)));
+    assets.health_bar_fill_mesh = meshes.add(Cuboid::new(scale::u(1.0), scale::u(0.1), scale::u(0.09)));
 
     assets.radiant_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.25, 0.55, 0.95),
@@ -140,20 +142,20 @@ pub(crate) fn load_shared_assets(
         perceptual_roughness: 1.0,
         ..default()
     });
-    assets.tree_mesh = meshes.add(Cylinder::new(0.85, 3.5));
+    assets.tree_mesh = meshes.add(Cylinder::new(scale::u(0.85), scale::u(3.5)));
     assets.tree_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.16, 0.38, 0.18),
         perceptual_roughness: 0.9,
         ..default()
     });
-    assets.spell_bolt_mesh = meshes.add(Sphere::new(0.35));
+    assets.spell_bolt_mesh = meshes.add(Sphere::new(scale::u(0.35)));
     assets.spell_bolt_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.75, 0.35, 1.0),
         emissive: LinearRgba::rgb(6.0, 1.5, 10.0),
         unlit: true,
         ..default()
     });
-    assets.indicator_ring_mesh = meshes.add(Cylinder::new(1.0, 0.05));
+    assets.indicator_ring_mesh = meshes.add(Cylinder::new(scale::u(1.0), scale::u(0.05)));
     assets.indicator_range_mat = materials.add(StandardMaterial {
         base_color: Color::srgba(0.3, 0.7, 1.0, 0.22),
         emissive: LinearRgba::rgb(0.2, 0.5, 1.0),
