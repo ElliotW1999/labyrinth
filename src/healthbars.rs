@@ -217,3 +217,32 @@ fn bar_height(radius: Option<&UnitRadius>) -> f32 {
     let r = radius.map(|u| u.0).unwrap_or(scale::u(0.5));
     r * 2.6 + scale::u(1.0)
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::ecs::system::IntoSystem;
+
+    #[test]
+    fn sync_health_bars_system_initializes() {
+        let mut world = World::new();
+        let mut system = IntoSystem::into_system(sync_health_bars);
+        system.initialize(&mut world);
+    }
+
+    #[test]
+    fn sync_world_hero_names_system_initializes() {
+        let mut world = World::new();
+        let mut system = IntoSystem::into_system(sync_world_hero_names);
+        system.initialize(&mut world);
+    }
+
+    #[test]
+    fn attach_health_bars_system_initializes() {
+        let mut world = World::new();
+        world.init_resource::<SharedAssets>();
+        let mut system = IntoSystem::into_system(attach_health_bars);
+        system.initialize(&mut world);
+    }
+}
