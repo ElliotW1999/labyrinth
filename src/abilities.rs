@@ -182,7 +182,7 @@ fn begin_or_cast_from_hotkeys(
                     slot: index,
                     ability: slot.id,
                     cast_range,
-                    aoe_radius: scale::u(0.85),
+                    aoe_radius: 20.0,
                     unit_only: true,
                 });
                 spawn_indicators(
@@ -190,7 +190,7 @@ fn begin_or_cast_from_hotkeys(
                     &assets,
                     transform.translation,
                     cast_range,
-                    0.85,
+                    20.0,
                 );
             }
         }
@@ -891,12 +891,13 @@ fn spawn_dash_ghosts(
 ) {
     for i in 1..5 {
         let t = i as f32 / 5.0;
-        let pos = from.lerp(to, t) + Vec3::Y * 0.9;
+        let pos = from.lerp(to, t) + Vec3::Y * scale::u(0.9);
         commands.spawn((
             Name::new("Dash Ghost"),
             Mesh3d(assets.unit_mesh.clone()),
             MeshMaterial3d(assets.dash_ghost_mat.clone()),
-            Transform::from_translation(pos).with_scale(Vec3::splat(scale::u(0.9))),
+            // unit_mesh is already in world units — do not multiply by scale::u again.
+            Transform::from_translation(pos).with_scale(Vec3::splat(0.9)),
             SpellFx {
                 age: 0.0,
                 lifetime: 0.35,
@@ -921,7 +922,7 @@ fn spawn_expanding_ring(
         Mesh3d(assets.indicator_ring_mesh.clone()),
         MeshMaterial3d(material),
         Transform::from_translation(Vec3::new(origin.x, scale::u(0.12), origin.z))
-            .with_scale(Vec3::new(scale::u(0.4), 1.0, scale::u(0.4))),
+            .with_scale(Vec3::new(0.4, 1.0, 0.4)),
         SpellFx {
             age: 0.0,
             lifetime,

@@ -69,7 +69,7 @@ fn begin_attack_windups(
                 e,
                 t.translation(),
                 *team,
-                radius.map(|r| r.0).unwrap_or(0.5),
+                radius.map(|r| r.0).unwrap_or(scale::u(0.5)),
             )
         })
         .collect();
@@ -304,9 +304,12 @@ fn apply_projectile_hits(
                 if unit_entity != home.target || *team == projectile.team || !health.is_alive() {
                     continue;
                 }
-                let reach = projectile.radius + radius.map(|r| r.0).unwrap_or(0.5);
-                let vertical = (impact.y - (unit_tf.translation.y + 1.0)).abs();
-                if flat_distance(impact, unit_tf.translation) <= reach && vertical < 2.5 {
+                let reach = projectile.radius + radius.map(|r| r.0).unwrap_or(scale::u(0.5));
+                // Aim point is unit.y + scale::u(1); keep the vertical pad in world units.
+                let vertical =
+                    (impact.y - (unit_tf.translation.y + scale::u(1.0))).abs();
+                if flat_distance(impact, unit_tf.translation) <= reach && vertical < scale::u(2.5)
+                {
                     let dmg = apply_damage(projectile.damage, projectile.damage_type, stats);
                     health.current -= dmg;
                     primary_hit = Some(unit_entity);

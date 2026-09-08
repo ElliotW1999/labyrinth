@@ -73,8 +73,9 @@ pub(crate) fn load_shared_assets(
     assets.ancient_mesh = meshes.add(Cuboid::new(scale::u(3.5), scale::u(2.5), scale::u(3.5)));
     // Elongated dart — local forward is -Z after look_to.
     assets.projectile_mesh = meshes.add(Cuboid::new(scale::u(0.18), scale::u(0.18), scale::u(0.85)));
-    assets.health_bar_bg_mesh = meshes.add(Cuboid::new(scale::u(1.0), scale::u(0.12), scale::u(0.08)));
-    assets.health_bar_fill_mesh = meshes.add(Cuboid::new(scale::u(1.0), scale::u(0.1), scale::u(0.09)));
+    // Health bars / indicators are scaled in world units via Transform — keep mesh size = 1.
+    assets.health_bar_bg_mesh = meshes.add(Cuboid::new(1.0, 0.12, 0.08));
+    assets.health_bar_fill_mesh = meshes.add(Cuboid::new(1.0, 0.1, 0.09));
 
     assets.radiant_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.25, 0.55, 0.95),
@@ -155,7 +156,7 @@ pub(crate) fn load_shared_assets(
         unlit: true,
         ..default()
     });
-    assets.indicator_ring_mesh = meshes.add(Cylinder::new(scale::u(1.0), scale::u(0.05)));
+    assets.indicator_ring_mesh = meshes.add(Cylinder::new(1.0, 0.05));
     assets.indicator_range_mat = materials.add(StandardMaterial {
         base_color: Color::srgba(0.3, 0.7, 1.0, 0.22),
         emissive: LinearRgba::rgb(0.2, 0.5, 1.0),
