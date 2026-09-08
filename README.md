@@ -195,7 +195,8 @@ Required: `Item_name`, `cost`. Optional: `short_label`, `description`, `passive_
 - Targeted spells: confirm aim; if out of cast range the hero walks in then casts
 - Auto-attack combat with armor / magic resist mitigation; projectiles stop at the target
 - Tower and creep aggro AI
-- Free camera (extended far clip for the scaled map), bottom HUD with hero icon placeholder / stats table / HP+MP bars / spell bar, inventory sell-at-cursor, shop, skill points, and clickable minimap
+- Free camera (extended far clip for the scaled map), bottom HUD with hero icon + name / stats table / HP+MP bars / spell bar, inventory sell-at-cursor, shop, skill points, and clickable minimap
+- Heroes/creeps show facing noses; towers/ancients/trees use multi-part meshes; hero names appear above world health bars
 - Optional online 1v1 (UDP host/client) while default play stays fully offline
 
 ## Layout
