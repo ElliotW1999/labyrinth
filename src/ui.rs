@@ -1654,16 +1654,46 @@ fn handle_shop_detail_clicks(
 
 fn sync_shop_detail_panel(
     shop_ui: Res<ShopUiState>,
-    mut panel: Query<&mut Visibility, (With<ShopDetailPanel>, Without<ShopPanel>)>,
-    mut title: Query<&mut Text, With<ShopDetailTitle>>,
-    mut body: Query<&mut Text, (With<ShopDetailBody>, Without<ShopDetailTitle>)>,
-    mut rows: Query<(
-        &ShopDetailComponentButton,
+    mut panel: Query<
         &mut Visibility,
-        &mut BackgroundColor,
-        &mut BorderColor,
-    )>,
-    mut labels: Query<(&ShopDetailComponentLabel, &mut Text), Without<ShopDetailBody>>,
+        (
+            With<ShopDetailPanel>,
+            Without<ShopPanel>,
+            Without<ShopDetailComponentButton>,
+        ),
+    >,
+    mut title: Query<
+        &mut Text,
+        (
+            With<ShopDetailTitle>,
+            Without<ShopDetailBody>,
+            Without<ShopDetailComponentLabel>,
+        ),
+    >,
+    mut body: Query<
+        &mut Text,
+        (
+            With<ShopDetailBody>,
+            Without<ShopDetailTitle>,
+            Without<ShopDetailComponentLabel>,
+        ),
+    >,
+    mut rows: Query<
+        (
+            &ShopDetailComponentButton,
+            &mut Visibility,
+            &mut BackgroundColor,
+            &mut BorderColor,
+        ),
+        (With<ShopDetailComponentButton>, Without<ShopDetailPanel>),
+    >,
+    mut labels: Query<
+        (&ShopDetailComponentLabel, &mut Text),
+        (
+            Without<ShopDetailBody>,
+            Without<ShopDetailTitle>,
+        ),
+    >,
 ) {
     let Ok(mut panel_vis) = panel.single_mut() else {
         return;
@@ -1963,6 +1993,15 @@ fn world_to_minimap(pos: Vec3, half_extent: f32) -> (f32, f32) {
 mod tests {
     use super::*;
 
+    /// Regression: shop detail panel Visibility/Text queries must be disjoint (Bevy B0001).
+    #[test]
+    fn sync_shop_detail_panel_system_initializes() {
+        let mut world = World::new();
+        world.init_resource::<ShopUiState>();
+        let mut system = IntoSystem::into_system(sync_shop_detail_panel);
+        system.initialize(&mut world);
+    }
+
     /// Regression: sell clicks must not take Res + ResMut of the same menu (Bevy B0002).
     #[test]
     fn inventory_sell_clicks_system_initializes() {
@@ -1970,6 +2009,20 @@ mod tests {
         world.init_resource::<InventoryContextMenu>();
         world.init_resource::<Messages<SellItemRequest>>();
         let mut system = IntoSystem::into_system(handle_inventory_sell_clicks);
+        system.initialize(&mut world);
+    }
+
+    #[test]
+    fn refresh_hero_name_system_initializes() {
+        let mut world = World::new();
+        let mut system = IntoSystem::into_system(refresh_hero_name);
+        system.initialize(&mut world);
+    }
+
+    #[test]
+    fn refresh_hud_text_system_initializes() {
+        let mut world = World::new();
+        let mut system = IntoSystem::into_system(refresh_hud_text);
         system.initialize(&mut world);
     }
 }
