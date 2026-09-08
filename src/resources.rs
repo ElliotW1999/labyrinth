@@ -34,15 +34,24 @@ impl Default for MatchConfig {
 #[derive(Resource, Default)]
 pub struct SharedAssets {
     pub unit_mesh: Handle<Mesh>,
+    pub unit_shoulder_mesh: Handle<Mesh>,
+    pub facing_nose_mesh: Handle<Mesh>,
     pub tower_mesh: Handle<Mesh>,
+    pub tower_cap_mesh: Handle<Mesh>,
+    pub tower_base_mesh: Handle<Mesh>,
     pub ancient_mesh: Handle<Mesh>,
+    pub ancient_spire_mesh: Handle<Mesh>,
     pub projectile_mesh: Handle<Mesh>,
     pub health_bar_bg_mesh: Handle<Mesh>,
     pub health_bar_fill_mesh: Handle<Mesh>,
     pub radiant_mat: Handle<StandardMaterial>,
     pub dire_mat: Handle<StandardMaterial>,
+    pub radiant_accent_mat: Handle<StandardMaterial>,
+    pub dire_accent_mat: Handle<StandardMaterial>,
     pub tower_radiant_mat: Handle<StandardMaterial>,
     pub tower_dire_mat: Handle<StandardMaterial>,
+    pub tower_radiant_accent_mat: Handle<StandardMaterial>,
+    pub tower_dire_accent_mat: Handle<StandardMaterial>,
     pub projectile_radiant_mat: Handle<StandardMaterial>,
     pub projectile_dire_mat: Handle<StandardMaterial>,
     pub health_bar_bg_mat: Handle<StandardMaterial>,
@@ -52,7 +61,9 @@ pub struct SharedAssets {
     pub river_mat: Handle<StandardMaterial>,
     pub jungle_mat: Handle<StandardMaterial>,
     pub tree_mesh: Handle<Mesh>,
+    pub tree_canopy_mesh: Handle<Mesh>,
     pub tree_mat: Handle<StandardMaterial>,
+    pub tree_canopy_mat: Handle<StandardMaterial>,
     pub spell_bolt_mesh: Handle<Mesh>,
     pub spell_bolt_mat: Handle<StandardMaterial>,
     pub indicator_range_mat: Handle<StandardMaterial>,
@@ -70,8 +81,15 @@ pub(crate) fn load_shared_assets(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     assets.unit_mesh = meshes.add(Capsule3d::new(scale::u(0.35), scale::u(0.9)));
+    // Shoulders / arms — sit beside the capsule to break the silhouette.
+    assets.unit_shoulder_mesh = meshes.add(Cuboid::new(scale::u(0.85), scale::u(0.28), scale::u(0.28)));
+    // Facing marker — elongated along local -Z (Bevy forward after yaw).
+    assets.facing_nose_mesh = meshes.add(Cuboid::new(scale::u(0.22), scale::u(0.18), scale::u(0.7)));
     assets.tower_mesh = meshes.add(Cylinder::new(scale::u(0.7), scale::u(3.2)));
+    assets.tower_cap_mesh = meshes.add(Cone::new(scale::u(0.95), scale::u(1.1)));
+    assets.tower_base_mesh = meshes.add(Cylinder::new(scale::u(1.15), scale::u(0.35)));
     assets.ancient_mesh = meshes.add(Cuboid::new(scale::u(3.5), scale::u(2.5), scale::u(3.5)));
+    assets.ancient_spire_mesh = meshes.add(Cuboid::new(scale::u(0.7), scale::u(3.2), scale::u(0.7)));
     // Elongated dart — local forward is -Z after look_to.
     assets.projectile_mesh = meshes.add(Cuboid::new(scale::u(0.18), scale::u(0.18), scale::u(0.85)));
     // Health bars / indicators are scaled in world units via Transform — keep mesh size = 1.
@@ -89,6 +107,18 @@ pub(crate) fn load_shared_assets(
         perceptual_roughness: 0.7,
         ..default()
     });
+    assets.radiant_accent_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.55, 0.85, 1.0),
+        emissive: LinearRgba::rgb(0.8, 2.0, 4.0),
+        perceptual_roughness: 0.4,
+        ..default()
+    });
+    assets.dire_accent_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(1.0, 0.55, 0.25),
+        emissive: LinearRgba::rgb(4.0, 1.2, 0.3),
+        perceptual_roughness: 0.4,
+        ..default()
+    });
     assets.tower_radiant_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.15, 0.35, 0.75),
         perceptual_roughness: 0.55,
@@ -99,6 +129,20 @@ pub(crate) fn load_shared_assets(
         base_color: Color::srgb(0.7, 0.18, 0.15),
         perceptual_roughness: 0.55,
         metallic: 0.2,
+        ..default()
+    });
+    assets.tower_radiant_accent_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.35, 0.65, 1.0),
+        emissive: LinearRgba::rgb(0.4, 1.2, 3.0),
+        perceptual_roughness: 0.35,
+        metallic: 0.35,
+        ..default()
+    });
+    assets.tower_dire_accent_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(1.0, 0.4, 0.25),
+        emissive: LinearRgba::rgb(3.0, 0.8, 0.2),
+        perceptual_roughness: 0.35,
+        metallic: 0.35,
         ..default()
     });
     assets.projectile_radiant_mat = materials.add(StandardMaterial {
@@ -145,9 +189,15 @@ pub(crate) fn load_shared_assets(
         perceptual_roughness: 1.0,
         ..default()
     });
-    assets.tree_mesh = meshes.add(Cylinder::new(scale::u(0.85), scale::u(3.5)));
+    assets.tree_mesh = meshes.add(Cylinder::new(scale::u(0.55), scale::u(3.2)));
+    assets.tree_canopy_mesh = meshes.add(Sphere::new(scale::u(1.6)));
     assets.tree_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.16, 0.38, 0.18),
+        base_color: Color::srgb(0.28, 0.18, 0.1),
+        perceptual_roughness: 0.95,
+        ..default()
+    });
+    assets.tree_canopy_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.14, 0.42, 0.18),
         perceptual_roughness: 0.9,
         ..default()
     });

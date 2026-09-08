@@ -1023,6 +1023,16 @@ pub struct HealthBarFill;
 #[derive(Component, Debug, Clone, Copy)]
 pub struct HasHealthBar;
 
+/// Screen-space label that tracks a hero above their world health bar.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct WorldHeroNameLabel {
+    pub owner: Entity,
+}
+
+/// Marker on the HUD root used to parent [`WorldHeroNameLabel`] entities.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct WorldNameLayer;
+
 #[cfg(test)]
 mod ability_generator_tests {
     use super::*;

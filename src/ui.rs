@@ -5,7 +5,7 @@ use bevy::prelude::*;
 use crate::camera::CameraFocus;
 use crate::components::{
     AbilityId, AbilityLoadout, Ancient, CombatStats, Creep, Health, HeroAttributes, HeroProgress,
-    Mana, PlayerHero, PlayerWallet, Team, Tower,
+    Mana, PlayerHero, PlayerWallet, Team, Tower, WorldNameLayer,
 };
 use crate::heroes::HeroKind;
 use crate::items::{
@@ -98,6 +98,9 @@ struct HeroPanelRoot;
 
 #[derive(Component)]
 struct HeroIconPlaceholder;
+
+#[derive(Component)]
+struct HudHeroIconName;
 
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 enum HudStatId {
@@ -266,6 +269,7 @@ fn spawn_hud(mut commands: Commands) {
         .spawn((
             Name::new("HUD"),
             HudRoot,
+            WorldNameLayer,
             Node {
                 width: percent(100),
                 height: percent(100),
@@ -346,25 +350,39 @@ fn spawn_hud(mut commands: Commands) {
             ))
             .with_children(|panel| {
                 panel
-                    .spawn((
-                        HeroIconPlaceholder,
-                        Node {
-                            width: px(HERO_ICON_SIZE),
-                            height: px(HERO_ICON_SIZE),
-                            align_items: AlignItems::Center,
-                            justify_content: JustifyContent::Center,
-                            border: UiRect::all(px(2)),
-                            border_radius: BorderRadius::all(px(6)),
-                            ..default()
-                        },
-                        BackgroundColor(Color::srgba(0.12, 0.14, 0.18, 0.95)),
-                        BorderColor::all(Color::srgb(0.35, 0.4, 0.48)),
-                    ))
-                    .with_children(|icon| {
-                        icon.spawn((
-                            Text::new("ICON"),
-                            TextFont::from_font_size(14.0),
-                            TextColor(Color::srgba(0.65, 0.7, 0.78, 0.85)),
+                    .spawn(Node {
+                        flex_direction: FlexDirection::Column,
+                        align_items: AlignItems::Center,
+                        row_gap: px(4),
+                        ..default()
+                    })
+                    .with_children(|col| {
+                        col.spawn((
+                            HeroIconPlaceholder,
+                            Node {
+                                width: px(HERO_ICON_SIZE),
+                                height: px(HERO_ICON_SIZE),
+                                align_items: AlignItems::Center,
+                                justify_content: JustifyContent::Center,
+                                border: UiRect::all(px(2)),
+                                border_radius: BorderRadius::all(px(6)),
+                                ..default()
+                            },
+                            BackgroundColor(Color::srgba(0.12, 0.14, 0.18, 0.95)),
+                            BorderColor::all(Color::srgb(0.35, 0.4, 0.48)),
+                        ))
+                        .with_children(|icon| {
+                            icon.spawn((
+                                Text::new("ICON"),
+                                TextFont::from_font_size(14.0),
+                                TextColor(Color::srgba(0.65, 0.7, 0.78, 0.85)),
+                            ));
+                        });
+                        col.spawn((
+                            HudHeroIconName,
+                            Text::new("—"),
+                            TextFont::from_font_size(13.0),
+                            TextColor(Color::srgb(0.9, 0.92, 0.96)),
                         ));
                     });
 
@@ -1074,19 +1092,24 @@ fn spawn_spell_icon(parent: &mut ChildSpawnerCommands, index: usize, id: Ability
 
 fn refresh_hero_name(
     hero: Query<&HeroKind, With<PlayerHero>>,
-    mut text_q: Query<&mut Text, With<HudHeroName>>,
+    mut texts: ParamSet<(
+        Query<&mut Text, With<HudHeroName>>,
+        Query<&mut Text, (With<HudHeroIconName>, Without<HudHeroName>)>,
+    )>,
 ) {
     let Ok(kind) = hero.single() else {
         return;
     };
-    let Ok(mut text) = text_q.single_mut() else {
-        return;
-    };
-    *text = Text::new(format!(
-        "Hero: {} ({})",
-        kind.0.name(),
-        kind.0.primary_label()
-    ));
+    if let Ok(mut text) = texts.p0().single_mut() {
+        *text = Text::new(format!(
+            "Hero: {} ({})",
+            kind.0.name(),
+            kind.0.primary_label()
+        ));
+    }
+    if let Ok(mut text) = texts.p1().single_mut() {
+        *text = Text::new(kind.0.name());
+    }
 }
 
 fn refresh_hud_text(
