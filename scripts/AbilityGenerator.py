@@ -257,7 +257,8 @@ def defaults_for_type(ability_type: str, is_ultimate: bool) -> dict[str, float |
             }
         )
     elif ability_type == "TargetPoint":
-        base.update({"aoe_radius_base": 19.5, "cast_range_base": 221.0})
+        # aoe_radius doubles as projectile corridor width for skillshots
+        base.update({"aoe_radius_base": 90.0, "cast_range_base": 550.0})
     elif ability_type == "Toggle":
         base.update(
             {

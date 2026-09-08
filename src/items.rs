@@ -38,6 +38,8 @@ impl Plugin for ItemsPlugin {
 #[derive(Resource, Debug, Clone, Copy, Default)]
 pub struct ShopUiState {
     pub open: bool,
+    /// Item shown in the components / detail popup (None = closed).
+    pub detail: Option<ItemId>,
 }
 
 /// World shop marker near a team base.
@@ -271,6 +273,8 @@ pub enum ItemId {
     WardstoneCloak,
     HeartwoodBand,
     SparkPendant,
+    RecipeHeartwoodBand,
+    RecipeSparkPendant,
     // </item_generator:item_enum>
 }
 
@@ -288,8 +292,23 @@ impl ItemId {
             ItemId::WardstoneCloak,
             ItemId::HeartwoodBand,
             ItemId::SparkPendant,
+            ItemId::RecipeHeartwoodBand,
+            ItemId::RecipeSparkPendant,
             // </item_generator:item_all>
         ]
+    }
+
+    /// Items shown in the default shop grid (recipes are inspect-only via builds).
+    pub fn shop_listed() -> impl Iterator<Item = ItemId> {
+        Self::all().iter().copied().filter(|id| !id.is_recipe())
+    }
+
+    /// Recipe scraps used in builds — hidden from the default shop list.
+    pub fn is_recipe(self) -> bool {
+        matches!(
+            self,
+            ItemId::RecipeHeartwoodBand | ItemId::RecipeSparkPendant
+        )
     }
 
     pub fn name(self) -> &'static str {
@@ -305,6 +324,8 @@ impl ItemId {
             ItemId::WardstoneCloak => "Wardstone Cloak",
             ItemId::HeartwoodBand => "Heartwood Band",
             ItemId::SparkPendant => "Spark Pendant",
+            ItemId::RecipeHeartwoodBand => "Recipe: Heartwood Band",
+            ItemId::RecipeSparkPendant => "Recipe: Spark Pendant",
             // </item_generator:item_name>
         }
     }
@@ -322,6 +343,8 @@ impl ItemId {
             ItemId::WardstoneCloak => "WC",
             ItemId::HeartwoodBand => "HB",
             ItemId::SparkPendant => "SP",
+            ItemId::RecipeHeartwoodBand => "R-HB",
+            ItemId::RecipeSparkPendant => "R-SP",
             // </item_generator:item_short_label>
         }
     }
@@ -339,6 +362,8 @@ impl ItemId {
             ItemId::WardstoneCloak => 650,
             ItemId::HeartwoodBand => 550,
             ItemId::SparkPendant => 750,
+            ItemId::RecipeHeartwoodBand => 250,
+            ItemId::RecipeSparkPendant => 200,
             // </item_generator:item_cost>
         }
     }
@@ -356,22 +381,34 @@ impl ItemId {
             ItemId::WardstoneCloak => "+80 HP, +4 MR. Active: +8 Armor 5s",
             ItemId::HeartwoodBand => "+150 HP. +3 Armor. +2 Mana Regen",
             ItemId::SparkPendant => "+10 Attack Damage. +60 Mana. Active: On use: deal 90 magical damage to enemies in a 4.5 radius and restore 40 mana to self",
+            ItemId::RecipeHeartwoodBand => "Combines with components into Heartwood Band",
+            ItemId::RecipeSparkPendant => "Combines with components into Spark Pendant",
             // </item_generator:item_description>
         }
     }
 
     pub fn tooltip_body(self) -> String {
-        let kind = if self.has_active() {
+        let kind = if self.is_recipe() {
+            "Recipe"
+        } else if self.has_active() {
             "Active item"
         } else {
             "Passive item"
         };
-        format!(
+        let mut body = format!(
             "{name}\nCost: {cost}g\n{kind}\n{desc}",
             name = self.name(),
             cost = self.cost(),
             desc = self.description(),
-        )
+        );
+        let comps = self.recipe_components();
+        if !comps.is_empty() {
+            body.push_str("\nComponents:");
+            for c in comps {
+                body.push_str(&format!("\n• {} ({}g)", c.name(), c.cost()));
+            }
+        }
+        body
     }
 
     pub fn placeholder_color(self) -> Color {
@@ -387,6 +424,8 @@ impl ItemId {
             ItemId::WardstoneCloak => Color::srgb(0.4, 0.55, 0.5),
             ItemId::HeartwoodBand => Color::srgb(0.405294, 0.452353, 0.558235),
             ItemId::SparkPendant => Color::srgb(0.85, 0.55, 0.25),
+            ItemId::RecipeHeartwoodBand => Color::srgb(0.55, 0.5, 0.35),
+            ItemId::RecipeSparkPendant => Color::srgb(0.6, 0.45, 0.25),
             // </item_generator:item_color>
         }
     }
@@ -416,12 +455,16 @@ impl ItemId {
         }
     }
 
-    /// Optional recipe components (empty = basic item). Recipe combining is TBD.
+    /// Build tree components (other items and/or a recipe scrap). Empty = basic item.
     pub fn recipe_components(self) -> &'static [ItemId] {
         match self {
             // <item_generator:recipe_components>
-            ItemId::HeartwoodBand => &[ItemId::IronBracer],
-            ItemId::SparkPendant => &[ItemId::ManaCrystal, ItemId::BladeOfAsh],
+            ItemId::HeartwoodBand => &[ItemId::IronBracer, ItemId::RecipeHeartwoodBand],
+            ItemId::SparkPendant => &[
+                ItemId::ManaCrystal,
+                ItemId::BladeOfAsh,
+                ItemId::RecipeSparkPendant,
+            ],
             // </item_generator:recipe_components>
             _ => &[],
         }
@@ -507,6 +550,7 @@ impl ItemId {
                 max_mana: 60.0,
                 ..default()
             },
+            ItemId::RecipeHeartwoodBand | ItemId::RecipeSparkPendant => ItemPassives::default(),
             // </item_generator:item_passives>
         }
     }
@@ -1176,5 +1220,20 @@ mod tests {
         stats.attack_speed_flat = 0.0;
         stats.attack_speed_mult = 0.0;
         assert_eq!(stats.attack_speed_rating(0.0), 20.0);
+    }
+
+    #[test]
+    fn recipes_hidden_from_shop_and_listed_in_builds() {
+        assert!(ItemId::RecipeHeartwoodBand.is_recipe());
+        assert!(ItemId::RecipeSparkPendant.is_recipe());
+        assert!(!ItemId::shop_listed().any(|id| id.is_recipe()));
+        assert!(ItemId::shop_listed().any(|id| id == ItemId::HeartwoodBand));
+        let hb = ItemId::HeartwoodBand.recipe_components();
+        assert!(hb.contains(&ItemId::IronBracer));
+        assert!(hb.contains(&ItemId::RecipeHeartwoodBand));
+        let sp = ItemId::SparkPendant.recipe_components();
+        assert!(sp.contains(&ItemId::ManaCrystal));
+        assert!(sp.contains(&ItemId::BladeOfAsh));
+        assert!(sp.contains(&ItemId::RecipeSparkPendant));
     }
 }

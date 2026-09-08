@@ -280,8 +280,13 @@ impl AbilityType {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AbilityCastKind {
     Instant,
-    /// Ground / point target (optional soft unit lock for bolts).
+    /// Ground / area target (AoE ring at aim).
     Targeted { cast_range: f32, aoe_radius: f32 },
+    /// Ground point / skillshot: trajectory from caster to aim with projectile width.
+    PointTargeted {
+        cast_range: f32,
+        projectile_width: f32,
+    },
     /// Must be cast on a creep or hero.
     UnitTargeted { cast_range: f32 },
 }
@@ -349,9 +354,9 @@ impl GeneratedAbilityDef {
                 cast_range,
                 aoe_radius,
             },
-            AbilityType::TargetPoint => AbilityCastKind::Targeted {
+            AbilityType::TargetPoint => AbilityCastKind::PointTargeted {
                 cast_range,
-                aoe_radius: aoe_radius.max(20.0),
+                projectile_width: aoe_radius.max(40.0),
             },
         }
     }
@@ -628,10 +633,8 @@ impl AbilityId {
             | AbilityId::FrostNova
             | AbilityId::Barrier => AbilityType::Untargeted,
             AbilityId::Bolt | AbilityId::Execute => AbilityType::UnitTarget,
-            AbilityId::ArcMissile
-            | AbilityId::Caltrops
-            | AbilityId::Nova
-            | AbilityId::Meteor => AbilityType::TargetArea,
+            AbilityId::ArcMissile => AbilityType::TargetPoint,
+            AbilityId::Caltrops | AbilityId::Nova | AbilityId::Meteor => AbilityType::TargetArea,
             _ => AbilityType::Untargeted,
         }
     }
@@ -834,16 +837,16 @@ impl AbilitySlot {
             | AbilityId::Flurry
             | AbilityId::FrostNova
             | AbilityId::Barrier => AbilityCastKind::Instant,
-            AbilityId::Dash | AbilityId::Blink => AbilityCastKind::Targeted {
+            AbilityId::Dash | AbilityId::Blink => AbilityCastKind::PointTargeted {
                 cast_range: self.dash_distance(),
-                aoe_radius: 20.0,
+                projectile_width: 48.0,
             },
             AbilityId::Bolt | AbilityId::Execute => AbilityCastKind::UnitTargeted {
                 cast_range: crate::scale::ABILITY_UNIT_CAST_RANGE + r as f32 * 25.0,
             },
-            AbilityId::ArcMissile => AbilityCastKind::Targeted {
+            AbilityId::ArcMissile => AbilityCastKind::PointTargeted {
                 cast_range: crate::scale::ABILITY_GROUND_CAST_RANGE + r as f32 * 20.0,
-                aoe_radius: 40.0 + r as f32 * 5.0,
+                projectile_width: crate::scale::ABILITY_PROJECTILE_WIDTH + r as f32 * 8.0,
             },
             AbilityId::Caltrops => AbilityCastKind::Targeted {
                 cast_range: crate::scale::ABILITY_GROUND_CAST_RANGE + r as f32 * 15.0,
@@ -1046,5 +1049,24 @@ mod ability_generator_tests {
         ));
         assert!(AbilityId::StoneSkin.ability_type() == AbilityType::Passive);
         assert!(AbilityId::Overcharge.ability_type() == AbilityType::Toggle);
+    }
+
+    #[test]
+    fn target_point_uses_point_targeted_cast_kind() {
+        let mut missile = AbilitySlot::fresh(AbilityId::ArcMissile);
+        missile.rank = 1;
+        assert!(matches!(
+            missile.cast_kind(),
+            AbilityCastKind::PointTargeted { .. }
+        ));
+        let mut dash = AbilitySlot::fresh(AbilityId::Dash);
+        dash.rank = 1;
+        assert!(matches!(
+            dash.cast_kind(),
+            AbilityCastKind::PointTargeted { .. }
+        ));
+        let mut nova = AbilitySlot::fresh(AbilityId::Nova);
+        nova.rank = 1;
+        assert!(matches!(nova.cast_kind(), AbilityCastKind::Targeted { .. }));
     }
 }

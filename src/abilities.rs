@@ -52,9 +52,12 @@ pub struct PendingTargetedCast {
     pub slot: usize,
     pub ability: AbilityId,
     pub cast_range: f32,
+    /// AoE radius (area) or projectile width (point).
     pub aoe_radius: f32,
     /// When true, confirm requires a creep/hero under the cursor.
     pub unit_only: bool,
+    /// When true, show trajectory corridor instead of an AoE disc.
+    pub point_target: bool,
 }
 
 #[derive(Component)]
@@ -62,6 +65,9 @@ struct RangeIndicator;
 
 #[derive(Component)]
 struct AoeIndicator;
+
+#[derive(Component)]
+struct TrajectoryIndicator;
 
 fn tick_ability_cooldowns(time: Res<Time>, mut query: Query<&mut AbilityLoadout>) {
     let dt = time.delta_secs();
@@ -168,6 +174,7 @@ fn begin_or_cast_from_hotkeys(
                     cast_range,
                     aoe_radius,
                     unit_only: false,
+                    point_target: false,
                 });
                 spawn_indicators(
                     &mut commands,
@@ -175,6 +182,28 @@ fn begin_or_cast_from_hotkeys(
                     transform.translation,
                     cast_range,
                     aoe_radius,
+                    false,
+                );
+            }
+            AbilityCastKind::PointTargeted {
+                cast_range,
+                projectile_width,
+            } => {
+                targeting.active = Some(PendingTargetedCast {
+                    slot: index,
+                    ability: slot.id,
+                    cast_range,
+                    aoe_radius: projectile_width,
+                    unit_only: false,
+                    point_target: true,
+                });
+                spawn_indicators(
+                    &mut commands,
+                    &assets,
+                    transform.translation,
+                    cast_range,
+                    projectile_width,
+                    true,
                 );
             }
             AbilityCastKind::UnitTargeted { cast_range } => {
@@ -184,6 +213,7 @@ fn begin_or_cast_from_hotkeys(
                     cast_range,
                     aoe_radius: 20.0,
                     unit_only: true,
+                    point_target: false,
                 });
                 spawn_indicators(
                     &mut commands,
@@ -191,6 +221,7 @@ fn begin_or_cast_from_hotkeys(
                     transform.translation,
                     cast_range,
                     20.0,
+                    false,
                 );
             }
         }
@@ -358,6 +389,7 @@ fn confirm_or_cancel_targeted_cast(
     mouse: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
     mut targeting: ResMut<AbilityTargeting>,
+    shop_ui: Res<crate::items::ShopUiState>,
     windows: Query<&Window>,
     camera: Query<(&Camera, &GlobalTransform)>,
     ground: Query<&GlobalTransform, With<Ground>>,
@@ -395,6 +427,11 @@ fn confirm_or_cancel_targeted_cast(
         || mouse.just_pressed(MouseButton::Right);
     if cancel {
         clear_targeting(&mut commands, &mut targeting);
+        return;
+    }
+
+    // Don't confirm casts while the shop / detail UI is absorbing clicks.
+    if shop_ui.open || shop_ui.detail.is_some() {
         return;
     }
 
@@ -784,6 +821,7 @@ fn update_targeting_indicators(
         (
             With<RangeIndicator>,
             Without<AoeIndicator>,
+            Without<TrajectoryIndicator>,
             Without<PlayerHero>,
         ),
     >,
@@ -792,6 +830,16 @@ fn update_targeting_indicators(
         (
             With<AoeIndicator>,
             Without<RangeIndicator>,
+            Without<TrajectoryIndicator>,
+            Without<PlayerHero>,
+        ),
+    >,
+    mut traj_q: Query<
+        &mut Transform,
+        (
+            With<TrajectoryIndicator>,
+            Without<RangeIndicator>,
+            Without<AoeIndicator>,
             Without<PlayerHero>,
         ),
     >,
@@ -811,7 +859,7 @@ fn update_targeting_indicators(
     }
 
     let in_range = flat_distance(hero_pos, cursor) <= pending.cast_range;
-    let aoe_pos = if in_range {
+    let aim = if in_range {
         cursor
     } else {
         let dir = cursor - hero_pos;
@@ -823,9 +871,27 @@ fn update_targeting_indicators(
         }
     };
 
-    for mut tf in &mut aoe_q {
-        tf.translation = Vec3::new(aoe_pos.x, scale::u(0.1), aoe_pos.z);
-        tf.scale = Vec3::new(pending.aoe_radius, 1.0, pending.aoe_radius);
+    if pending.point_target {
+        let flat = Vec3::new(aim.x - hero_pos.x, 0.0, aim.z - hero_pos.z);
+        let length = flat.length().max(1.0);
+        let mid = Vec3::new(
+            (hero_pos.x + aim.x) * 0.5,
+            scale::u(0.12),
+            (hero_pos.z + aim.z) * 0.5,
+        );
+        let width = pending.aoe_radius.max(1.0);
+        for mut tf in &mut traj_q {
+            tf.translation = mid;
+            tf.scale = Vec3::new(width, 1.0, length);
+            if let Ok(dir) = Dir3::new(flat) {
+                tf.look_to(dir, Vec3::Y);
+            }
+        }
+    } else {
+        for mut tf in &mut aoe_q {
+            tf.translation = Vec3::new(aim.x, scale::u(0.1), aim.z);
+            tf.scale = Vec3::new(pending.aoe_radius, 1.0, pending.aoe_radius);
+        }
     }
 }
 
@@ -834,7 +900,8 @@ fn spawn_indicators(
     assets: &SharedAssets,
     hero_pos: Vec3,
     cast_range: f32,
-    aoe_radius: f32,
+    radius_or_width: f32,
+    point_target: bool,
 ) {
     commands.spawn((
         Name::new("Range Indicator"),
@@ -844,14 +911,25 @@ fn spawn_indicators(
         Transform::from_translation(Vec3::new(hero_pos.x, scale::u(0.08), hero_pos.z))
             .with_scale(Vec3::new(cast_range, 1.0, cast_range)),
     ));
-    commands.spawn((
-        Name::new("AoE Indicator"),
-        AoeIndicator,
-        Mesh3d(assets.indicator_ring_mesh.clone()),
-        MeshMaterial3d(assets.indicator_aoe_mat.clone()),
-        Transform::from_translation(Vec3::new(hero_pos.x, scale::u(0.1), hero_pos.z))
-            .with_scale(Vec3::new(aoe_radius, 1.0, aoe_radius)),
-    ));
+    if point_target {
+        commands.spawn((
+            Name::new("Trajectory Indicator"),
+            TrajectoryIndicator,
+            Mesh3d(assets.indicator_beam_mesh.clone()),
+            MeshMaterial3d(assets.indicator_aoe_mat.clone()),
+            Transform::from_translation(Vec3::new(hero_pos.x, scale::u(0.12), hero_pos.z))
+                .with_scale(Vec3::new(radius_or_width, 1.0, 1.0)),
+        ));
+    } else {
+        commands.spawn((
+            Name::new("AoE Indicator"),
+            AoeIndicator,
+            Mesh3d(assets.indicator_ring_mesh.clone()),
+            MeshMaterial3d(assets.indicator_aoe_mat.clone()),
+            Transform::from_translation(Vec3::new(hero_pos.x, scale::u(0.1), hero_pos.z))
+                .with_scale(Vec3::new(radius_or_width, 1.0, radius_or_width)),
+        ));
+    }
 }
 
 pub fn clear_targeting(commands: &mut Commands, targeting: &mut AbilityTargeting) {
@@ -865,7 +943,14 @@ struct ClearIndicators;
 fn despawn_indicators(
     mut commands: Commands,
     clear: Option<Res<ClearIndicators>>,
-    indicators: Query<Entity, Or<(With<RangeIndicator>, With<AoeIndicator>)>>,
+    indicators: Query<
+        Entity,
+        Or<(
+            With<RangeIndicator>,
+            With<AoeIndicator>,
+            With<TrajectoryIndicator>,
+        )>,
+    >,
 ) {
     if clear.is_none() {
         return;

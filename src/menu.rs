@@ -177,6 +177,7 @@ fn toggle_main_menu(
     }
     if shop.open {
         shop.open = false;
+        shop.detail = None;
         return;
     }
     if sell.slot.is_some() {

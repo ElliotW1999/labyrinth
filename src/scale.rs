@@ -47,6 +47,8 @@ pub const ABILITY_INSTANT_AOE: f32 = 220.0;
 /// Targeted ground AoE radius (Nova / Meteor / Caltrops).
 pub const ABILITY_GROUND_AOE: f32 = 250.0;
 pub const ABILITY_ULT_AOE: f32 = 320.0;
+/// Skillshot / TargetPoint projectile corridor width.
+pub const ABILITY_PROJECTILE_WIDTH: f32 = 90.0;
 
 /// Multiplier from the pre-rescale prototype world into current units.
 /// Chosen so legacy hero MS `11.5` maps to [`HERO_MOVE_SPEED`] (`11.5 * 26 ≈ 299`).

@@ -58,6 +58,7 @@ pub struct SharedAssets {
     pub indicator_range_mat: Handle<StandardMaterial>,
     pub indicator_aoe_mat: Handle<StandardMaterial>,
     pub indicator_ring_mesh: Handle<Mesh>,
+    pub indicator_beam_mesh: Handle<Mesh>,
     pub shockwave_mat: Handle<StandardMaterial>,
     pub nova_mat: Handle<StandardMaterial>,
     pub dash_ghost_mat: Handle<StandardMaterial>,
@@ -158,6 +159,8 @@ pub(crate) fn load_shared_assets(
         ..default()
     });
     assets.indicator_ring_mesh = meshes.add(Cylinder::new(1.0, 0.05));
+    // Unit cuboid: X = width, Z = length — scaled for TargetPoint trajectories.
+    assets.indicator_beam_mesh = meshes.add(Cuboid::new(1.0, 0.08, 1.0));
     assets.indicator_range_mat = materials.add(StandardMaterial {
         base_color: Color::srgba(0.3, 0.7, 1.0, 0.22),
         emissive: LinearRgba::rgb(0.2, 0.5, 1.0),
