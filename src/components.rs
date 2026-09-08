@@ -351,7 +351,7 @@ impl GeneratedAbilityDef {
             },
             AbilityType::TargetPoint => AbilityCastKind::Targeted {
                 cast_range,
-                aoe_radius: aoe_radius.max(crate::scale::u(0.5)),
+                aoe_radius: aoe_radius.max(20.0),
             },
         }
     }
@@ -517,10 +517,10 @@ impl AbilityId {
                 mana_cost_per_level: 8.0,
                 damage_base: 80.0,
                 damage_per_level: 30.0,
-                cast_range_base: crate::scale::u(0.0),
-                cast_range_per_level: crate::scale::u(0.0),
-                aoe_radius_base: crate::scale::u(5.5),
-                aoe_radius_per_level: crate::scale::u(0.35),
+                cast_range_base: 0.0,
+                cast_range_per_level: 0.0,
+                aoe_radius_base: crate::scale::ABILITY_INSTANT_AOE,
+                aoe_radius_per_level: 15.0,
                 cooldown_base: 10.0,
                 cooldown_per_level: -0.4,
                 cooldown_min: 5.0,
@@ -538,10 +538,10 @@ impl AbilityId {
                 mana_cost_per_level: 7.0,
                 damage_base: 95.0,
                 damage_per_level: 32.0,
-                cast_range_base: crate::scale::u(11.0),
-                cast_range_per_level: crate::scale::u(0.6),
-                aoe_radius_base: crate::scale::u(0.0),
-                aoe_radius_per_level: crate::scale::u(0.0),
+                cast_range_base: crate::scale::ABILITY_UNIT_CAST_RANGE,
+                cast_range_per_level: 20.0,
+                aoe_radius_base: 0.0,
+                aoe_radius_per_level: 0.0,
                 cooldown_base: 7.0,
                 cooldown_per_level: -0.3,
                 cooldown_min: 3.5,
@@ -559,10 +559,10 @@ impl AbilityId {
                 mana_cost_per_level: 25.0,
                 damage_base: 200.0,
                 damage_per_level: 70.0,
-                cast_range_base: crate::scale::u(10.0),
-                cast_range_per_level: crate::scale::u(0.5),
-                aoe_radius_base: crate::scale::u(5.0),
-                aoe_radius_per_level: crate::scale::u(0.5),
+                cast_range_base: crate::scale::ABILITY_GROUND_CAST_RANGE,
+                cast_range_per_level: 15.0,
+                aoe_radius_base: crate::scale::ABILITY_ULT_AOE,
+                aoe_radius_per_level: 20.0,
                 cooldown_base: 55.0,
                 cooldown_per_level: -5.0,
                 cooldown_min: 30.0,
@@ -580,10 +580,10 @@ impl AbilityId {
                 mana_cost_per_level: 0.0,
                 damage_base: 0.0,
                 damage_per_level: 0.0,
-                cast_range_base: crate::scale::u(0.0),
-                cast_range_per_level: crate::scale::u(0.0),
-                aoe_radius_base: crate::scale::u(0.0),
-                aoe_radius_per_level: crate::scale::u(0.0),
+                cast_range_base: 0.0,
+                cast_range_per_level: 0.0,
+                aoe_radius_base: 0.0,
+                aoe_radius_per_level: 0.0,
                 cooldown_base: 0.0,
                 cooldown_per_level: 0.0,
                 cooldown_min: 0.0,
@@ -601,10 +601,10 @@ impl AbilityId {
                 mana_cost_per_level: 3.0,
                 damage_base: 0.0,
                 damage_per_level: 0.0,
-                cast_range_base: crate::scale::u(0.0),
-                cast_range_per_level: crate::scale::u(0.0),
-                aoe_radius_base: crate::scale::u(0.0),
-                aoe_radius_per_level: crate::scale::u(0.0),
+                cast_range_base: 0.0,
+                cast_range_per_level: 0.0,
+                aoe_radius_base: 0.0,
+                aoe_radius_per_level: 0.0,
                 cooldown_base: 1.0,
                 cooldown_per_level: 0.0,
                 cooldown_min: 0.5,
@@ -836,26 +836,26 @@ impl AbilitySlot {
             | AbilityId::Barrier => AbilityCastKind::Instant,
             AbilityId::Dash | AbilityId::Blink => AbilityCastKind::Targeted {
                 cast_range: self.dash_distance(),
-                aoe_radius: crate::scale::u(0.75),
+                aoe_radius: 20.0,
             },
             AbilityId::Bolt | AbilityId::Execute => AbilityCastKind::UnitTargeted {
-                cast_range: crate::scale::u(10.0) + r as f32 * crate::scale::u(0.8),
+                cast_range: crate::scale::ABILITY_UNIT_CAST_RANGE + r as f32 * 25.0,
             },
             AbilityId::ArcMissile => AbilityCastKind::Targeted {
-                cast_range: crate::scale::u(10.0) + r as f32 * crate::scale::u(0.8),
-                aoe_radius: crate::scale::u(1.4) + r as f32 * crate::scale::u(0.15),
+                cast_range: crate::scale::ABILITY_GROUND_CAST_RANGE + r as f32 * 20.0,
+                aoe_radius: 40.0 + r as f32 * 5.0,
             },
             AbilityId::Caltrops => AbilityCastKind::Targeted {
-                cast_range: crate::scale::u(9.0) + r as f32 * crate::scale::u(0.6),
-                aoe_radius: crate::scale::u(2.2) + r as f32 * crate::scale::u(0.2),
+                cast_range: crate::scale::ABILITY_GROUND_CAST_RANGE + r as f32 * 15.0,
+                aoe_radius: crate::scale::ABILITY_GROUND_AOE + r as f32 * 15.0,
             },
             AbilityId::Nova => AbilityCastKind::Targeted {
-                cast_range: crate::scale::u(8.5) + r as f32 * crate::scale::u(0.7),
-                aoe_radius: crate::scale::u(4.5) + r as f32 * crate::scale::u(0.5),
+                cast_range: crate::scale::ABILITY_GROUND_CAST_RANGE + r as f32 * 20.0,
+                aoe_radius: crate::scale::ABILITY_GROUND_AOE + r as f32 * 20.0,
             },
             AbilityId::Meteor => AbilityCastKind::Targeted {
-                cast_range: crate::scale::u(9.5) + r as f32 * crate::scale::u(0.6),
-                aoe_radius: crate::scale::u(5.0) + r as f32 * crate::scale::u(0.55),
+                cast_range: crate::scale::ABILITY_GROUND_CAST_RANGE + r as f32 * 15.0,
+                aoe_radius: crate::scale::ABILITY_ULT_AOE + r as f32 * 25.0,
             },
             // Stub kits: Instant no-op until abilities are implemented.
             _ => AbilityCastKind::Instant,
@@ -864,8 +864,8 @@ impl AbilitySlot {
 
     pub fn dash_distance(&self) -> f32 {
         match self.id {
-            AbilityId::Blink => crate::scale::u(9.0) + self.rank as f32 * crate::scale::u(1.1),
-            _ => crate::scale::u(8.0) + self.rank as f32 * crate::scale::u(1.2),
+            AbilityId::Blink => crate::scale::ABILITY_BLINK_RANGE + self.rank as f32 * 25.0,
+            _ => crate::scale::ABILITY_DASH_RANGE + self.rank as f32 * 30.0,
         }
     }
 
@@ -882,9 +882,9 @@ impl AbilitySlot {
 
     pub fn shockwave_radius(&self) -> f32 {
         match self.id {
-            AbilityId::Flurry => crate::scale::u(5.5) + self.rank as f32 * crate::scale::u(0.4),
-            AbilityId::FrostNova => crate::scale::u(6.0) + self.rank as f32 * crate::scale::u(0.5),
-            _ => crate::scale::u(6.5) + self.rank as f32 * crate::scale::u(0.55),
+            AbilityId::Flurry => crate::scale::ABILITY_INSTANT_AOE + self.rank as f32 * 15.0,
+            AbilityId::FrostNova => crate::scale::ABILITY_INSTANT_AOE + self.rank as f32 * 20.0,
+            _ => crate::scale::ABILITY_INSTANT_AOE + self.rank as f32 * 25.0,
         }
     }
 

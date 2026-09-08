@@ -2,7 +2,6 @@
 
 use bevy::prelude::*;
 
-use crate::camera::GameCamera;
 use crate::components::{HasHealthBar, Health, HealthBar, HealthBarFill, UnitRadius};
 use crate::resources::SharedAssets;
 use crate::scale;
@@ -35,14 +34,16 @@ fn attach_health_bars(
             .spawn((
                 Name::new("HealthBar"),
                 HealthBar { owner: entity },
+                // Fixed world orientation (no camera billboard).
                 Transform::default(),
                 Visibility::default(),
             ))
             .with_children(|parent| {
+                // Mesh is 1×1 unit; scale X to the desired world width.
                 parent.spawn((
                     Mesh3d(assets.health_bar_bg_mesh.clone()),
                     MeshMaterial3d(assets.health_bar_bg_mat.clone()),
-                    Transform::from_xyz(0.0, 0.0, -0.01).with_scale(Vec3::new(width, 1.0, 1.0)),
+                    Transform::from_xyz(0.0, 0.0, -0.02).with_scale(Vec3::new(width, 1.0, 1.0)),
                 ));
                 parent.spawn((
                     HealthBarFill,
@@ -57,17 +58,16 @@ fn attach_health_bars(
 }
 
 fn sync_health_bars(
-    camera: Query<&GlobalTransform, With<GameCamera>>,
     owners: Query<(&Health, &GlobalTransform, Option<&UnitRadius>), Without<HealthBar>>,
-    mut bars: Query<(&HealthBar, &mut Transform, &Children), (With<HealthBar>, Without<GameCamera>)>,
-    mut fills: Query<&mut Transform, (With<HealthBarFill>, Without<HealthBar>, Without<GameCamera>)>,
+    mut bars: Query<(&HealthBar, &mut Transform, &Children), With<HealthBar>>,
+    mut fills: Query<&mut Transform, (With<HealthBarFill>, Without<HealthBar>)>,
+    mut backgrounds: Query<
+        &mut Transform,
+        (Without<HealthBarFill>, Without<HealthBar>, With<Mesh3d>),
+    >,
 ) {
-    let Ok(cam_gt) = camera.single() else {
-        return;
-    };
-    let cam_pos = cam_gt.translation();
-
     let mut fill_updates: Vec<(Entity, f32, f32)> = Vec::new();
+    let mut bg_updates: Vec<(Entity, f32)> = Vec::new();
 
     for (bar, mut bar_tf, children) in &mut bars {
         let Ok((health, owner_gt, radius)) = owners.get(bar.owner) else {
@@ -78,15 +78,8 @@ fn sync_health_bars(
         let width = bar_width(radius);
         let owner_pos = owner_gt.translation();
         bar_tf.translation = owner_pos + Vec3::Y * height;
-
-        let mut to_cam = cam_pos - bar_tf.translation;
-        to_cam.y = 0.0;
-        if to_cam.length_squared() > 0.0001 {
-            if let Ok(dir) = Dir3::new(to_cam) {
-                bar_tf.look_to(dir, Vec3::Y);
-                bar_tf.rotate_y(std::f32::consts::PI);
-            }
-        }
+        // Keep axis-aligned — do not rotate with the camera.
+        bar_tf.rotation = Quat::IDENTITY;
 
         let fraction = if health.max <= 0.0 {
             0.0
@@ -94,8 +87,19 @@ fn sync_health_bars(
             (health.current / health.max).clamp(0.0, 1.0)
         };
 
-        for child in children.iter() {
-            fill_updates.push((child, width, fraction));
+        for (i, child) in children.iter().enumerate() {
+            if i == 0 {
+                bg_updates.push((child, width));
+            } else {
+                fill_updates.push((child, width, fraction));
+            }
+        }
+    }
+
+    for (child, width) in bg_updates {
+        if let Ok(mut bg_tf) = backgrounds.get_mut(child) {
+            bg_tf.scale = Vec3::new(width, 1.0, 1.0);
+            bg_tf.translation.x = 0.0;
         }
     }
 
@@ -119,18 +123,13 @@ fn cull_orphan_health_bars(
     }
 }
 
+/// Bar width ≈ unit diameter so it sits over the body without dwarfing it.
 fn bar_width(radius: Option<&UnitRadius>) -> f32 {
-    match radius {
-        Some(UnitRadius(r)) if *r > scale::u(1.2) => scale::u(2.4),
-        Some(UnitRadius(r)) if *r > scale::u(0.7) => scale::u(1.6),
-        _ => scale::u(1.1),
-    }
+    let r = radius.map(|u| u.0).unwrap_or(scale::u(0.5));
+    (r * 2.2).clamp(scale::u(0.8), scale::u(4.0))
 }
 
 fn bar_height(radius: Option<&UnitRadius>) -> f32 {
-    match radius {
-        Some(UnitRadius(r)) if *r > scale::u(1.2) => scale::u(3.4),
-        Some(UnitRadius(r)) if *r > scale::u(0.7) => scale::u(3.8),
-        _ => scale::u(2.2),
-    }
+    let r = radius.map(|u| u.0).unwrap_or(scale::u(0.5));
+    r * 2.5 + scale::u(0.8)
 }

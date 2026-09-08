@@ -99,7 +99,7 @@ Distances use MOBA-style units (not meters):
 | Ranged hero attack range | **500** |
 | Hero move speed | **~300** units/second |
 
-Map layout, meshes, collision radii, vision, and ability ranges were scaled from the old prototype world by **26×** (`src/scale.rs`) so object sizes stay consistent with those combat numbers.
+Map layout, meshes, collision radii, and vision were scaled from the old prototype world by **26×** (`src/scale.rs`). Ability cast/AoE ranges use dedicated MOBA-tuned constants (not raw ×26 legacy).
 
 - Units only **start** moving, attacking, or casting once the aim/target is within **11.5°** of facing
 - **Turn rate** is radians per **0.03s** (heroes default **0.6**, creeps **0.5**)
@@ -128,7 +128,7 @@ Map layout, meshes, collision radii, vision, and ability ranges were scaled from
 | Root | Blocks movement |
 | Disarm | Blocks attacking |
 | Debuff immunity | Blocks new debuffs (Barrier) |
-| Phased / Forceful | Collision ignore / soft-push |
+| Phased / Forceful | Collision ignore / stronger soft-separation |
 
 ### Ability ranks
 
@@ -166,7 +166,7 @@ Required: `Ability_name`, `ability_type` (`passive` / `untargeted` / `unit_targe
 - Gold shop near each base; buy in range via the HUD shop (icons + names; hover for details)
 - Six inventory slots; RMB → **Sell (50%)** near shop; actives use ASDZXC
 - Heroes carry a `StatusEffects` list for buffs / debuffs
-- Unit soft-push is **off by default**; the **forceful** buff enables it (e.g. Vanguard Shockwave). **Phased** (Dash/Blink) ignores unit push.
+- Heroes and creeps soft-separate by collision radius; the **forceful** buff pushes harder (e.g. Vanguard Shockwave). **Phased** (Dash/Blink) ignores unit push.
 - **Heartwood Band** (550g) — 3 passive(s), passive-only; components: Iron Bracer
 - **Spark Pendant** (750g) — 2 passive(s), active stub; components: Mana Crystal, Blade of Ash
 
@@ -190,7 +190,7 @@ Required: `Item_name`, `cost`. Optional: `short_label`, `description`, `passive_
 - Item shop (gold on the shop button), 6-slot inventory between spells and minimap, timed buffs / debuffs
 - Creep waves that path down each lane
 - Explicit right-click attack orders and G attack-move (path to cursor, attack in range)
-- Building/tree collision; unit soft-push only while **forceful**
+- Building/tree collision; heroes/creeps soft-separate by radius (**forceful** shoves harder)
 - Targeted spells: confirm aim; if out of cast range the hero walks in then casts
 - Auto-attack combat with armor / magic resist mitigation; projectiles stop at the target
 - Tower and creep aggro AI

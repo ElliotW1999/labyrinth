@@ -114,7 +114,7 @@ pub struct StatusEffect {
     pub heal_per_sec: f32,
     /// When true, skip collision with creeps and heroes (buildings/trees still block).
     pub ignore_unit_collision: bool,
-    /// When true, this unit soft-pushes overlapping creeps/heroes (off by default).
+    /// When true, this unit claims more separation against overlapping creeps/heroes.
     pub force_unit_push: bool,
     pub silenced: bool,
     pub stunned: bool,
@@ -648,7 +648,7 @@ pub fn apply_phased(statuses: &mut StatusEffects, duration: f32) {
     statuses.effects.push(StatusEffect::phased(duration));
 }
 
-/// Apply a forceful buff so this unit soft-pushes overlapping units.
+/// Apply a forceful buff so this unit claims more separation against overlaps.
 pub fn apply_forceful(statuses: &mut StatusEffects, duration: f32) {
     statuses.effects.retain(|e| e.id != "forceful");
     statuses.effects.push(StatusEffect::forceful(duration));

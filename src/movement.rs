@@ -154,8 +154,8 @@ fn resolve_building_collisions(
     }
 }
 
-/// Soft circular separation between heroes and creeps — only while a unit has the
-/// **forceful** buff. Phased units neither push nor are pushed.
+/// Soft circular separation between heroes and creeps by `UnitRadius`.
+/// Phased units neither push nor are pushed. Forceful units shove harder.
 fn resolve_unit_collisions(
     mut units: Query<(
         Entity,
@@ -188,13 +188,9 @@ fn resolve_unit_collisions(
     let mut pushes: Vec<(Entity, Vec3)> = Vec::new();
     for i in 0..snaps.len() {
         for j in (i + 1)..snaps.len() {
-            let (a_e, a_pos, a_r, a_phase, a_push) = snaps[i];
-            let (b_e, b_pos, b_r, b_phase, b_push) = snaps[j];
+            let (a_e, a_pos, a_r, a_phase, a_force) = snaps[i];
+            let (b_e, b_pos, b_r, b_phase, b_force) = snaps[j];
             if a_phase || b_phase {
-                continue;
-            }
-            // Default: units overlap freely. Soft-separate only if someone is forceful.
-            if !a_push && !b_push {
                 continue;
             }
             let min_dist = a_r + b_r;
@@ -209,11 +205,16 @@ fn resolve_unit_collisions(
                 continue;
             }
             let overlap = min_dist - dist;
+            // Forceful units claim more of the separation so they clear space assertively.
+            let (a_share, b_share) = match (a_force, b_force) {
+                (true, false) => (0.75, 0.25),
+                (false, true) => (0.25, 0.75),
+                _ => (0.5, 0.5),
+            };
             let nx = dx / dist;
             let nz = dz / dist;
-            let half = overlap * 0.5;
-            pushes.push((a_e, Vec3::new(nx * half, 0.0, nz * half)));
-            pushes.push((b_e, Vec3::new(-nx * half, 0.0, -nz * half)));
+            pushes.push((a_e, Vec3::new(nx * overlap * a_share, 0.0, nz * overlap * a_share)));
+            pushes.push((b_e, Vec3::new(-nx * overlap * b_share, 0.0, -nz * overlap * b_share)));
         }
     }
 
