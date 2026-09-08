@@ -88,7 +88,18 @@ python3 scripts/HeroGenerator.py data/heroes.example.csv --dry-run
 
 Required columns: `Hero_name`, `is_melee`, `Ability_Q/W/E/R_Name`, `base_STR/AGI/INT`, `STR/AGI/INT_per_level`. Optional: `primary`, `blurb`, `base_health`, `base_mana`, `attack_damage`, `attack_range`, `move_speed`, `armor`, `magic_resist`, and other combat fields (see `scripts/HeroGenerator.py`). Rows whose `Hero_name` already exists are skipped.
 
-### Combat timing
+### World units
+
+Distances use MOBA-style units (not meters):
+
+| Measure | Target |
+| --- | --- |
+| Tower attack range | **700** |
+| Melee hero attack range | **128** |
+| Ranged hero attack range | **500** |
+| Hero move speed | **~300** units/second |
+
+Map layout, meshes, collision radii, vision, and ability ranges were scaled from the old prototype world by **26×** (`src/scale.rs`) so object sizes stay consistent with those combat numbers.
 
 - Units only **start** moving, attacking, or casting once the aim/target is within **11.5°** of facing
 - **Turn rate** is radians per **0.03s** (heroes default **0.6**, creeps **0.5**)
@@ -192,6 +203,7 @@ Required: `Item_name`, `cost`. Optional: `short_label`, `description`, `passive_
 src/
   main.rs             App entry + CLI (--mode, --hero) + plugin wiring
   components.rs       Teams, vitals, attributes, abilities, unit tags
+  scale.rs            MOBA-style world units (ranges, MS, legacy×26 helper)
   heroes.rs           Hero roster, select UI, spawn-on-pick
   resources.rs        Match config + shared meshes/materials
   map.rs              Battlefield + lane waypoints

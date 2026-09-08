@@ -7,6 +7,7 @@ use crate::components::{
     CombatStats, DamageType, Health, Lifetime, Mana, PlayerHero, PlayerWallet, SpellFx, Team,
 };
 use crate::resources::SharedAssets;
+use crate::scale;
 
 pub struct ItemsPlugin;
 
@@ -466,7 +467,7 @@ impl ItemId {
                 ..default()
             },
             ItemId::SwiftBoots => ItemPassives {
-                move_speed: 2.5,
+                move_speed: scale::u(2.5),
                 ..default()
             },
             ItemId::ManaCrystal => ItemPassives {
@@ -564,7 +565,7 @@ fn spawn_shops(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let mesh = meshes.add(Cuboid::new(2.4, 2.0, 2.4));
+    let mesh = meshes.add(Cuboid::new(scale::u(2.4), scale::u(2.0), scale::u(2.4)));
     let radiant_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.95, 0.75, 0.25),
         emissive: LinearRgba::rgb(2.0, 1.2, 0.2),
@@ -585,10 +586,10 @@ fn spawn_shops(
         Name::new("Radiant Item Shop"),
         Mesh3d(mesh.clone()),
         MeshMaterial3d(radiant_mat),
-        Transform::from_xyz(-52.0, 1.0, -40.0),
+        Transform::from_xyz(scale::u(-52.0), scale::u(1.0), scale::u(-40.0)),
         ItemShop {
             team: Team::Radiant,
-            purchase_range: 14.0,
+            purchase_range: scale::u(14.0),
         },
     ));
     // Near Dire base (for future Dire heroes / symmetry).
@@ -596,10 +597,10 @@ fn spawn_shops(
         Name::new("Dire Item Shop"),
         Mesh3d(mesh),
         MeshMaterial3d(dire_mat),
-        Transform::from_xyz(52.0, 1.0, 40.0),
+        Transform::from_xyz(scale::u(52.0), scale::u(1.0), scale::u(40.0)),
         ItemShop {
             team: Team::Dire,
-            purchase_range: 14.0,
+            purchase_range: scale::u(14.0),
         },
     ));
 }
@@ -793,7 +794,7 @@ fn try_use_item(
         }
         ItemId::StormRod => {
             let origin = transform.translation;
-            let radius = 5.5;
+            let radius = scale::u(5.5);
             for (_e, enemy_tf, enemy_team, enemy_hp, enemy_stats) in enemies.iter() {
                 if *enemy_team != team.enemy() || !enemy_hp.is_alive() {
                     continue;
@@ -807,7 +808,7 @@ fn try_use_item(
                 Name::new("Storm Rod Pulse"),
                 Mesh3d(assets.indicator_ring_mesh.clone()),
                 MeshMaterial3d(assets.shockwave_mat.clone()),
-                Transform::from_translation(origin + Vec3::Y * 0.15)
+                Transform::from_translation(origin + Vec3::Y * scale::u(0.15))
                     .with_scale(Vec3::new(radius, 1.0, radius)),
                 SpellFx {
                     age: 0.0,
@@ -848,12 +849,12 @@ fn spawn_heal_fx(commands: &mut Commands, assets: &SharedAssets, at: Vec3) {
         Name::new("Item Heal FX"),
         Mesh3d(assets.indicator_ring_mesh.clone()),
         MeshMaterial3d(assets.nova_mat.clone()),
-        Transform::from_translation(at + Vec3::Y * 0.2).with_scale(Vec3::splat(1.5)),
+        Transform::from_translation(at + Vec3::Y * scale::u(0.2)).with_scale(Vec3::splat(scale::u(1.5))),
         SpellFx {
             age: 0.0,
             lifetime: 0.5,
-            start_scale: 1.0,
-            end_scale: 3.0,
+            start_scale: scale::u(1.0),
+            end_scale: scale::u(3.0),
         },
         Lifetime(0.5),
     ));

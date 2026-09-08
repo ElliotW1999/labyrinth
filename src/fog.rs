@@ -5,6 +5,7 @@ use bevy::prelude::*;
 use crate::components::{Creep, Health, Obstacle, PlayerHero, Team, Tower, UnitRadius};
 use crate::net::NetworkedHero;
 use crate::resources::MatchConfig;
+use crate::scale;
 
 pub struct FogPlugin;
 
@@ -48,13 +49,9 @@ impl FogRect {
     }
 }
 
-/// Generous hero / tower day vision.
-pub const HERO_VISION_RANGE: f32 = 26.0;
-pub const TOWER_VISION_RANGE: f32 = 26.0;
-/// Creep vision is half of hero vision.
-pub const CREEP_VISION_RANGE: f32 = HERO_VISION_RANGE * 0.5;
+pub use crate::scale::{CREEP_VISION_RANGE, HERO_VISION_RANGE, TOWER_VISION_RANGE};
 
-const FOG_TILE_SIZE: f32 = 8.0;
+const FOG_TILE_SIZE: f32 = scale::u(8.0);
 /// Slightly grey, mostly transparent fog veil.
 const FOG_ALPHA: f32 = 0.38;
 
@@ -116,7 +113,7 @@ fn spawn_fog_overlay(
                     },
                     Mesh3d(fog_assets.mesh.clone()),
                     MeshMaterial3d(fog_assets.fog_mat.clone()),
-                    Transform::from_xyz(cx, 0.55, cz),
+                    Transform::from_xyz(cx, scale::u(0.55), cz),
                 ));
             }
             z += FOG_TILE_SIZE;
@@ -320,7 +317,7 @@ pub fn line_blocked_by_trees(from: Vec3, to: Vec3, trees: &[(Vec3, f32)]) -> boo
         return false;
     }
     for (tree, radius) in trees {
-        let r = (*radius + 0.15).max(0.2);
+        let r = (*radius + scale::u(0.15)).max(scale::u(0.2));
         let acx = tree.x - ax;
         let acz = tree.z - az;
         let t = ((acx * abx + acz * abz) / ab_len_sq).clamp(0.0, 1.0);
@@ -344,17 +341,17 @@ mod tests {
 
     #[test]
     fn tree_blocks_mid_segment() {
-        let from = Vec3::new(0.0, 0.0, 0.0);
-        let to = Vec3::new(10.0, 0.0, 0.0);
-        let trees = [(Vec3::new(5.0, 1.0, 0.0), 1.0)];
+        let from = Vec3::ZERO;
+        let to = scale::v(10.0, 0.0, 0.0);
+        let trees = [(scale::v(5.0, 1.0, 0.0), scale::u(1.0))];
         assert!(line_blocked_by_trees(from, to, &trees));
     }
 
     #[test]
     fn open_line_is_clear() {
-        let from = Vec3::new(0.0, 0.0, 0.0);
-        let to = Vec3::new(10.0, 0.0, 0.0);
-        let trees = [(Vec3::new(5.0, 1.0, 4.0), 1.0)];
+        let from = Vec3::ZERO;
+        let to = scale::v(10.0, 0.0, 0.0);
+        let trees = [(scale::v(5.0, 1.0, 4.0), scale::u(1.0))];
         assert!(!line_blocked_by_trees(from, to, &trees));
     }
 }

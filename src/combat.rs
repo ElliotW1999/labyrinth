@@ -11,6 +11,7 @@ use crate::facing::turn_toward;
 use crate::items::StatusEffects;
 use crate::progression::add_xp;
 use crate::resources::SharedAssets;
+use crate::scale;
 
 pub struct CombatPlugin;
 
@@ -235,7 +236,7 @@ fn fly_projectiles(
 
         if let Some(ref mut home) = home {
             if let Ok(target_tf) = homes.get(home.target) {
-                home.last_pos = target_tf.translation() + Vec3::Y * 1.0;
+                home.last_pos = target_tf.translation() + Vec3::Y * scale::u(1.0);
                 destination = home.last_pos;
             } else {
                 // Target died or despawned — finish at last known location.
@@ -382,7 +383,7 @@ fn despawn_dead(
         With<PlayerHero>,
     >,
 ) {
-    const XP_SHARE_RADIUS: f32 = 18.0;
+    const XP_SHARE_RADIUS: f32 = scale::u(18.0);
 
     for (entity, transform, health, gold_bounty, xp_bounty, team) in &dead {
         if health.is_alive() {
@@ -431,7 +432,8 @@ pub fn flat_distance(a: Vec3, b: Vec3) -> f32 {
 }
 
 fn projectile_speed_for(attack_range: f32) -> f32 {
-    (18.0 + attack_range * 1.5).clamp(20.0, 45.0)
+    // ~900–1500 u/s — scales with attack range in the new world units.
+    (500.0 + attack_range * 1.2).clamp(700.0, 1500.0)
 }
 
 pub fn cursor_ground_hit(
@@ -459,8 +461,8 @@ fn spawn_auto_attack(
     damage: f32,
     speed: f32,
 ) {
-    let start = origin + Vec3::Y * 1.1;
-    let aim = (target_pos + Vec3::Y * 1.0) - start;
+    let start = origin + Vec3::Y * scale::u(1.1);
+    let aim = (target_pos + Vec3::Y * scale::u(1.0)) - start;
     let mut transform = Transform::from_translation(start);
     if let Ok(dir) = Dir3::new(aim) {
         transform.look_to(dir, Vec3::Y);
@@ -480,14 +482,14 @@ fn spawn_auto_attack(
             damage,
             speed,
             team,
-            radius: 0.7,
+            radius: scale::u(0.7),
             lifetime: 2.5,
             damage_type: DamageType::Physical,
             splash_radius: 0.0,
         },
         ProjectileHome {
             target,
-            last_pos: target_pos + Vec3::Y * 1.0,
+            last_pos: target_pos + Vec3::Y * scale::u(1.0),
         },
         ProjectileStyle::AutoAttack,
         Lifetime(2.5),
@@ -504,8 +506,8 @@ pub fn spawn_spell_bolt(
     damage: f32,
     splash_radius: f32,
 ) {
-    let start = origin + Vec3::Y * 1.2;
-    let aim = (target_pos + Vec3::Y * 1.0) - start;
+    let start = origin + Vec3::Y * scale::u(1.2);
+    let aim = (target_pos + Vec3::Y * scale::u(1.0)) - start;
     let mut transform = Transform::from_translation(start);
     if let Ok(dir) = Dir3::new(aim) {
         transform.look_to(dir, Vec3::Y);
@@ -518,9 +520,9 @@ pub fn spawn_spell_bolt(
         transform,
         Projectile {
             damage,
-            speed: 34.0,
+            speed: scale::u(34.0),
             team,
-            radius: 0.85,
+            radius: scale::u(0.85),
             lifetime: 2.5,
             damage_type: DamageType::Magical,
             splash_radius,
@@ -532,7 +534,7 @@ pub fn spawn_spell_bolt(
     if let Some(target) = target {
         entity.insert(ProjectileHome {
             target,
-            last_pos: target_pos + Vec3::Y * 1.0,
+            last_pos: target_pos + Vec3::Y * scale::u(1.0),
         });
     } else {
         let dist = flat_distance(origin, target_pos);

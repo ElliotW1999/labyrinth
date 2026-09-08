@@ -6,6 +6,7 @@
 use bevy::prelude::*;
 
 use crate::combat::flat_distance;
+use crate::scale;
 use crate::components::{
     AttackMoveOrder, AttackTarget, CombatStats, Creep, Health, MoveTarget, PlayerHero, Team, Tower,
     UnitRadius,
@@ -51,7 +52,7 @@ fn follow_lane_waypoints(
             continue;
         }
         let waypoint = follower.waypoints[follower.index];
-        if flat_distance(transform.translation, waypoint) < 1.2 {
+        if flat_distance(transform.translation, waypoint) < scale::u(1.2) {
             follower.index += 1;
             if follower.index >= follower.waypoints.len() {
                 commands.entity(entity).remove::<MoveTarget>();
@@ -83,7 +84,7 @@ fn acquire_targets(
     let snaps: Vec<_> = candidates
         .iter()
         .filter(|(_, _, _, hp, _)| hp.is_alive())
-        .map(|(e, t, team, _, radius)| (e, t.translation, *team, radius.map(|r| r.0).unwrap_or(0.5)))
+        .map(|(e, t, team, _, radius)| (e, t.translation, *team, radius.map(|r| r.0).unwrap_or(scale::u(0.5))))
         .collect();
 
     for (entity, transform, team, stats, current, is_tower) in &mut seekers {
@@ -96,7 +97,7 @@ fn acquire_targets(
                 *e == *target
                     && *target_team == team.enemy()
                     && flat_distance(transform.translation, *pos)
-                        <= stats.attack_range + *radius + 1.5
+                        <= stats.attack_range + *radius + scale::u(1.5)
             });
             if still_valid {
                 continue;
@@ -107,7 +108,7 @@ fn acquire_targets(
         let aggro_range = if is_tower {
             stats.attack_range
         } else {
-            stats.attack_range + 3.0
+            stats.attack_range + scale::u(3.0)
         };
 
         let best = snaps
@@ -174,7 +175,7 @@ fn player_attack_move(
             **team == hero_team.enemy() && hp.is_alive() && !matches!(*vis, Visibility::Hidden)
         })
         .filter(|(_, tf, _, _, radius, _)| {
-            let r = radius.map(|r| r.0).unwrap_or(0.5);
+            let r = radius.map(|r| r.0).unwrap_or(scale::u(0.5));
             flat_distance(transform.translation, tf.translation) <= stats.attack_range + r
         })
         .min_by(|a, b| {
@@ -192,7 +193,7 @@ fn player_attack_move(
     // No enemy in range — keep pathing to the attack-move destination.
     commands.entity(entity).remove::<AttackTarget>();
     let dest = order.destination;
-    if flat_distance(transform.translation, dest) < 0.35 {
+    if flat_distance(transform.translation, dest) < scale::u(0.35) {
         commands
             .entity(entity)
             .remove::<AttackMoveOrder>()
@@ -219,7 +220,7 @@ pub fn player_chase_attack_target(
         commands.entity(entity).remove::<AttackTarget>();
         return;
     };
-    let reach = stats.attack_range + radius.map(|r| r.0).unwrap_or(0.5);
+    let reach = stats.attack_range + radius.map(|r| r.0).unwrap_or(scale::u(0.5));
     let dist = flat_distance(transform.translation, target_tf.translation);
     if dist > reach * 0.9 {
         commands.entity(entity).insert(MoveTarget {

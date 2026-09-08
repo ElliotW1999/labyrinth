@@ -15,6 +15,7 @@ use crate::net::{
     client_send_command, should_send_orders_over_network, ClientToServer, NetConfig, NetworkId,
     NetTransport,
 };
+use crate::scale;
 use crate::ui::UiPointerState;
 
 pub struct InputPlugin;
@@ -108,7 +109,7 @@ fn order_attack_target(
     enemy_tf: &GlobalTransform,
     radius: Option<&UnitRadius>,
 ) {
-    let reach = stats.attack_range + radius.map(|r| r.0).unwrap_or(0.5);
+    let reach = stats.attack_range + radius.map(|r| r.0).unwrap_or(scale::u(0.5));
     let dist = flat_distance(hero_tf.translation, enemy_tf.translation());
     commands
         .entity(hero_entity)
@@ -181,8 +182,8 @@ fn handle_point_and_click(
             **team == hero_team.enemy() && hp.is_alive() && !matches!(*vis, Visibility::Hidden)
         })
         .filter(|(_, tf, _, _, radius, _, _)| {
-            let r = radius.map(|r| r.0).unwrap_or(0.5);
-            flat_distance(tf.translation(), hit) < r + 1.2
+            let r = radius.map(|r| r.0).unwrap_or(scale::u(0.5));
+            flat_distance(tf.translation(), hit) < r + scale::u(1.2)
         })
         .min_by(|a, b| {
             flat_distance(a.1.translation(), hit)

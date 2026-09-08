@@ -14,6 +14,7 @@ use crate::items::{
     apply_status, StatusEffect, StatusEffects,
 };
 use crate::resources::SharedAssets;
+use crate::scale;
 
 pub struct AbilitiesPlugin;
 
@@ -181,7 +182,7 @@ fn begin_or_cast_from_hotkeys(
                     slot: index,
                     ability: slot.id,
                     cast_range,
-                    aoe_radius: 0.85,
+                    aoe_radius: scale::u(0.85),
                     unit_only: true,
                 });
                 spawn_indicators(
@@ -277,7 +278,7 @@ fn cast_instant(
                 commands,
                 assets,
                 transform.translation,
-                2.5,
+                scale::u(2.5),
                 assets.nova_mat.clone(),
                 0.4,
             );
@@ -423,8 +424,8 @@ fn confirm_or_cancel_targeted_cast(
                 && !matches!(*vis, Visibility::Hidden)
         })
         .filter(|(_, tf, _, _, _, radius, _)| {
-            let r = radius.map(|r| r.0).unwrap_or(0.5);
-            flat_distance(tf.translation, hit) < r + 1.4
+            let r = radius.map(|r| r.0).unwrap_or(scale::u(0.5));
+            flat_distance(tf.translation, hit) < r + scale::u(1.4)
         })
         .min_by(|a, b| {
             flat_distance(a.1.translation, hit)
@@ -805,7 +806,7 @@ fn update_targeting_indicators(
     let cursor = cursor_ground_hit(&windows, &camera, &ground).unwrap_or(hero_pos);
 
     for mut tf in &mut range_q {
-        tf.translation = Vec3::new(hero_pos.x, 0.08, hero_pos.z);
+        tf.translation = Vec3::new(hero_pos.x, scale::u(0.08), hero_pos.z);
         tf.scale = Vec3::new(pending.cast_range, 1.0, pending.cast_range);
     }
 
@@ -823,7 +824,7 @@ fn update_targeting_indicators(
     };
 
     for mut tf in &mut aoe_q {
-        tf.translation = Vec3::new(aoe_pos.x, 0.1, aoe_pos.z);
+        tf.translation = Vec3::new(aoe_pos.x, scale::u(0.1), aoe_pos.z);
         tf.scale = Vec3::new(pending.aoe_radius, 1.0, pending.aoe_radius);
     }
 }
@@ -840,7 +841,7 @@ fn spawn_indicators(
         RangeIndicator,
         Mesh3d(assets.indicator_ring_mesh.clone()),
         MeshMaterial3d(assets.indicator_range_mat.clone()),
-        Transform::from_translation(Vec3::new(hero_pos.x, 0.08, hero_pos.z))
+        Transform::from_translation(Vec3::new(hero_pos.x, scale::u(0.08), hero_pos.z))
             .with_scale(Vec3::new(cast_range, 1.0, cast_range)),
     ));
     commands.spawn((
@@ -848,7 +849,7 @@ fn spawn_indicators(
         AoeIndicator,
         Mesh3d(assets.indicator_ring_mesh.clone()),
         MeshMaterial3d(assets.indicator_aoe_mat.clone()),
-        Transform::from_translation(Vec3::new(hero_pos.x, 0.1, hero_pos.z))
+        Transform::from_translation(Vec3::new(hero_pos.x, scale::u(0.1), hero_pos.z))
             .with_scale(Vec3::new(aoe_radius, 1.0, aoe_radius)),
     ));
 }
@@ -895,7 +896,7 @@ fn spawn_dash_ghosts(
             Name::new("Dash Ghost"),
             Mesh3d(assets.unit_mesh.clone()),
             MeshMaterial3d(assets.dash_ghost_mat.clone()),
-            Transform::from_translation(pos).with_scale(Vec3::splat(0.9)),
+            Transform::from_translation(pos).with_scale(Vec3::splat(scale::u(0.9))),
             SpellFx {
                 age: 0.0,
                 lifetime: 0.35,
@@ -919,8 +920,8 @@ fn spawn_expanding_ring(
         Name::new("Spell Ring"),
         Mesh3d(assets.indicator_ring_mesh.clone()),
         MeshMaterial3d(material),
-        Transform::from_translation(Vec3::new(origin.x, 0.12, origin.z))
-            .with_scale(Vec3::new(0.4, 1.0, 0.4)),
+        Transform::from_translation(Vec3::new(origin.x, scale::u(0.12), origin.z))
+            .with_scale(Vec3::new(scale::u(0.4), 1.0, scale::u(0.4))),
         SpellFx {
             age: 0.0,
             lifetime,

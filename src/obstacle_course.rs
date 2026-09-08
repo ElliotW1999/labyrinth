@@ -9,6 +9,7 @@ use crate::components::{
 use crate::fog::{FogFreeZones, FogRect};
 use crate::net::NetworkedHero;
 use crate::resources::SharedAssets;
+use crate::scale;
 
 pub struct ObstacleCoursePlugin;
 
@@ -70,10 +71,10 @@ pub struct HazardOrb {
 pub struct ObstacleCourseGround;
 
 // Screen-top from the default camera is world −Z.
-pub const COURSE_MIN_X: f32 = -28.0;
-pub const COURSE_MAX_X: f32 = 28.0;
-pub const COURSE_MIN_Z: f32 = -68.0;
-pub const COURSE_MAX_Z: f32 = -52.0;
+pub const COURSE_MIN_X: f32 = scale::u(-28.0);
+pub const COURSE_MAX_X: f32 = scale::u(28.0);
+pub const COURSE_MIN_Z: f32 = scale::u(-68.0);
+pub const COURSE_MAX_Z: f32 = scale::u(-52.0);
 
 fn spawn_obstacle_course(
     mut commands: Commands,
@@ -83,10 +84,10 @@ fn spawn_obstacle_course(
     mut fog_free: ResMut<FogFreeZones>,
 ) {
     fog_free.rects.push(FogRect {
-        min_x: COURSE_MIN_X - 2.0,
-        max_x: COURSE_MAX_X + 2.0,
-        min_z: COURSE_MIN_Z - 2.0,
-        max_z: COURSE_MAX_Z + 2.0,
+        min_x: COURSE_MIN_X - scale::u(2.0),
+        max_x: COURSE_MAX_X + scale::u(2.0),
+        min_z: COURSE_MIN_Z - scale::u(2.0),
+        max_z: COURSE_MAX_Z + scale::u(2.0),
     });
 
     let floor_mat = materials.add(StandardMaterial {
@@ -120,12 +121,12 @@ fn spawn_obstacle_course(
         ObstacleCourseGround,
         Mesh3d(meshes.add(Cuboid::new(size_x, 0.12, size_z))),
         MeshMaterial3d(floor_mat),
-        Transform::from_xyz(mid_x, 0.06, mid_z),
+        Transform::from_xyz(mid_x, scale::u(0.06), mid_z),
     ));
 
     // Firebreather — faces +X and only shoots along that facing.
     let mut fire_tf =
-        Transform::from_xyz(-22.0, 1.6, mid_z).with_scale(Vec3::new(0.7, 0.85, 0.7));
+        Transform::from_xyz(scale::u(-22.0), scale::u(1.6), mid_z).with_scale(Vec3::new(0.7, 0.85, 0.7));
     fire_tf.look_to(Dir3::X, Vec3::Y);
     commands.spawn((
         Name::new("Firebreather"),
@@ -136,10 +137,10 @@ fn spawn_obstacle_course(
             timer: 0.5,
             interval: 1.8,
             damage: 55.0,
-            range: 30.0,
-            speed: 22.0,
+            range: scale::u(30.0),
+            speed: scale::u(22.0),
         },
-        UnitRadius(0.7),
+        UnitRadius(scale::u(0.7)),
     ));
 
     let piercer = commands
@@ -147,34 +148,34 @@ fn spawn_obstacle_course(
             Name::new("Heartpiercer"),
             Mesh3d(assets.tower_mesh.clone()),
             MeshMaterial3d(pierce_mat),
-            Transform::from_xyz(22.0, 1.6, mid_z).with_scale(Vec3::new(0.7, 0.85, 0.7)),
+            Transform::from_xyz(scale::u(22.0), scale::u(1.6), mid_z).with_scale(Vec3::new(0.7, 0.85, 0.7)),
             Heartpiercer {
                 damage: 80.0,
                 cooldown: 1.2,
                 remaining: 0.0,
-                speed: 28.0,
+                speed: scale::u(28.0),
             },
-            UnitRadius(0.7),
+            UnitRadius(scale::u(0.7)),
         ))
         .id();
 
     commands.spawn((
         Name::new("Heartpiercer Plate"),
-        Mesh3d(meshes.add(Cuboid::new(4.0, 0.15, 4.0))),
+        Mesh3d(meshes.add(Cuboid::new(scale::u(4.0), scale::u(0.15), scale::u(4.0)))),
         MeshMaterial3d(plate_mat),
-        Transform::from_xyz(8.0, 0.12, mid_z),
+        Transform::from_xyz(scale::u(8.0), scale::u(0.12), mid_z),
         PressurePlate {
             piercer,
-            half_x: 2.0,
-            half_z: 2.0,
+            half_x: scale::u(2.0),
+            half_z: scale::u(2.0),
         },
     ));
 
     for (i, pos) in [
-        Vec3::new(-26.0, 1.75, COURSE_MIN_Z + 2.0),
-        Vec3::new(26.0, 1.75, COURSE_MIN_Z + 2.0),
-        Vec3::new(-26.0, 1.75, COURSE_MAX_Z - 2.0),
-        Vec3::new(26.0, 1.75, COURSE_MAX_Z - 2.0),
+        Vec3::new(scale::u(-26.0), scale::u(1.75), COURSE_MIN_Z + scale::u(2.0)),
+        Vec3::new(scale::u(26.0), scale::u(1.75), COURSE_MIN_Z + scale::u(2.0)),
+        Vec3::new(scale::u(-26.0), scale::u(1.75), COURSE_MAX_Z - scale::u(2.0)),
+        Vec3::new(scale::u(26.0), scale::u(1.75), COURSE_MAX_Z - scale::u(2.0)),
     ]
     .into_iter()
     .enumerate()
@@ -184,7 +185,7 @@ fn spawn_obstacle_course(
             Mesh3d(assets.tree_mesh.clone()),
             MeshMaterial3d(assets.tree_mat.clone()),
             Transform::from_translation(pos),
-            crate::components::Obstacle { radius: 1.0 },
+            crate::components::Obstacle { radius: scale::u(1.0) },
         ));
     }
 }
@@ -244,7 +245,7 @@ fn tick_heartpiercer_plates(
         }
 
         let stepped = walkers.iter().any(|(walker, radius)| {
-            let r = radius.map(|u| u.0).unwrap_or(0.4);
+            let r = radius.map(|u| u.0).unwrap_or(scale::u(0.4));
             let dx = (walker.translation.x - plate_tf.translation.x).abs();
             let dz = (walker.translation.z - plate_tf.translation.z).abs();
             dx <= plate.half_x + r && dz <= plate.half_z + r
@@ -273,7 +274,7 @@ fn spawn_hazard_orb(
     damage: f32,
     speed: f32,
 ) {
-    let start = origin + Vec3::Y * 1.4;
+    let start = origin + Vec3::Y * scale::u(1.4);
     let flat = Vec3::new(aim.x - origin.x, 0.0, aim.z - origin.z);
     let dir = if flat.length_squared() > 1e-4 {
         flat.normalize()
@@ -292,7 +293,7 @@ fn spawn_hazard_orb(
         transform.with_scale(Vec3::splat(1.35)),
         HazardOrb {
             damage,
-            radius: 0.85,
+            radius: scale::u(0.85),
             velocity: dir * speed,
         },
         Lifetime(2.8),
@@ -324,7 +325,7 @@ fn apply_hazard_hits(
             if !health.is_alive() {
                 continue;
             }
-            let r = radius.map(|u| u.0).unwrap_or(0.5);
+            let r = radius.map(|u| u.0).unwrap_or(scale::u(0.5));
             if flat_distance(orb_tf.translation, victim_tf.translation) <= orb.radius + r {
                 let amount = apply_damage(orb.damage, DamageType::Magical, stats);
                 health.current -= amount;

@@ -5,6 +5,7 @@ use bevy::prelude::*;
 use crate::camera::GameCamera;
 use crate::components::{HasHealthBar, Health, HealthBar, HealthBarFill, UnitRadius};
 use crate::resources::SharedAssets;
+use crate::scale;
 
 pub struct HealthBarPlugin;
 
@@ -120,16 +121,16 @@ fn cull_orphan_health_bars(
 
 fn bar_width(radius: Option<&UnitRadius>) -> f32 {
     match radius {
-        Some(UnitRadius(r)) if *r > 1.2 => 2.4,
-        Some(UnitRadius(r)) if *r > 0.7 => 1.6,
-        _ => 1.1,
+        Some(UnitRadius(r)) if *r > scale::u(1.2) => scale::u(2.4),
+        Some(UnitRadius(r)) if *r > scale::u(0.7) => scale::u(1.6),
+        _ => scale::u(1.1),
     }
 }
 
 fn bar_height(radius: Option<&UnitRadius>) -> f32 {
     match radius {
-        Some(UnitRadius(r)) if *r > 1.2 => 3.4,
-        Some(UnitRadius(r)) if *r > 0.7 => 3.8,
-        _ => 2.2,
+        Some(UnitRadius(r)) if *r > scale::u(1.2) => scale::u(3.4),
+        Some(UnitRadius(r)) if *r > scale::u(0.7) => scale::u(3.8),
+        _ => scale::u(2.2),
     }
 }
