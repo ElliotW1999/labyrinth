@@ -100,15 +100,19 @@ Distances use MOBA-style units (not meters):
 | Measure | Target |
 | --- | --- |
 | Tower attack range | **700** |
-| Melee hero attack range | **128** |
-| Ranged hero attack range | **500** |
+| Melee hero attack range | **150** |
+| Melee creep attack range | **100** |
+| Ranged creep / hero attack range | **500** |
+| Tree collision radius | **64** |
 | Hero move speed | **~300** units/second |
 
-Map layout, meshes, collision radii, and vision were scaled from the old prototype world by **26×** (`src/scale.rs`). Ability cast/AoE ranges use dedicated MOBA-tuned constants (not raw ×26 legacy).
+Map layout uses the legacy **26×** converter (`scale::u`). Unit / building / tree **body meshes and collision** use `scale::body`, anchored so trees are radius 64. Ability cast/AoE ranges stay as absolute MOBA numbers (not body-scaled).
 
 - Units only **start** moving, attacking, or casting once the aim/target is within **11.5°** of facing
 - **Turn rate** is radians per **0.03s** (heroes default **0.6**, creeps **0.5**)
 - Attacks use **foreswing** (0–0.5s) then fire, then **backswing** (0–0.5s; cancelled by move/stop/new orders)
+- **Melee** auto-attacks (range ≤ 150) deal damage instantly with a rectangular slash VFX; **ranged** attacks still use projectiles
+- A **white ring** on the ground shows the local hero's attack range
 - Attack speed rating: `(base AS + agility + flat bonuses) × (1 + mult)`, clamped **20–700**; APS = `(IAS/100) / BAT`
 - Abilities use **cast point** then fire, then cancellable **cast backswing**
 

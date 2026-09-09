@@ -1,4 +1,4 @@
-//! Auto-attack via animated projectiles, damage types, death, bounty, and XP.
+//! Auto-attack via melee slashes / ranged projectiles, damage types, death, bounty, and XP.
 
 use bevy::prelude::*;
 
@@ -19,10 +19,15 @@ impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Update,
+            (ensure_attack_range_ring, sync_attack_range_ring).chain(),
+        )
+        .add_systems(
+            Update,
             (
                 tick_attack_cooldowns,
                 begin_attack_windups,
                 tick_attack_swings,
+                animate_melee_slashes,
                 fly_projectiles,
                 apply_projectile_hits,
                 tick_lifetimes,
@@ -69,7 +74,7 @@ fn begin_attack_windups(
                 e,
                 t.translation(),
                 *team,
-                radius.map(|r| r.0).unwrap_or(scale::u(0.5)),
+                radius.map(|r| r.0).unwrap_or(scale::HERO_RADIUS),
             )
         })
         .collect();
@@ -161,7 +166,14 @@ fn tick_attack_swings(
         &mut AttackSwing,
         Option<&StatusEffects>,
     )>,
-    target_tfs: Query<&GlobalTransform>,
+    mut targets: Query<(
+        Entity,
+        &GlobalTransform,
+        &Team,
+        &mut Health,
+        &CombatStats,
+        Option<&UnitRadius>,
+    )>,
 ) {
     let dt = time.delta_secs();
     for (entity, transform, team, stats, mut cooldown, mut swing, statuses) in &mut attackers {
@@ -184,20 +196,39 @@ fn tick_attack_swings(
                     };
                     continue;
                 }
-                let target_pos = target_tfs
+                let target_pos = targets
                     .get(target)
-                    .map(|tf| tf.translation())
+                    .map(|(_, tf, _, _, _, _)| tf.translation())
                     .unwrap_or(transform.translation + *transform.forward() * 4.0);
-                spawn_auto_attack(
-                    &mut commands,
-                    &assets,
-                    *team,
-                    transform.translation,
-                    target,
-                    target_pos,
-                    damage,
-                    projectile_speed_for(stats.attack_range),
-                );
+
+                if scale::is_melee_attack_range(stats.attack_range) {
+                    apply_melee_hit(
+                        &mut targets,
+                        *team,
+                        transform.translation,
+                        target,
+                        damage,
+                        stats.attack_range,
+                    );
+                    spawn_melee_slash(
+                        &mut commands,
+                        &assets,
+                        *team,
+                        transform,
+                        stats.attack_range,
+                    );
+                } else {
+                    spawn_auto_attack(
+                        &mut commands,
+                        &assets,
+                        *team,
+                        transform.translation,
+                        target,
+                        target_pos,
+                        damage,
+                        projectile_speed_for(stats.attack_range),
+                    );
+                }
                 cooldown.0 = 1.0 / stats.attack_speed.max(0.05);
                 let back = stats.attack_backswing.clamp(0.0, 0.5);
                 if back > 0.0 {
@@ -236,7 +267,7 @@ fn fly_projectiles(
 
         if let Some(ref mut home) = home {
             if let Ok(target_tf) = homes.get(home.target) {
-                home.last_pos = target_tf.translation() + Vec3::Y * scale::u(1.0);
+                home.last_pos = target_tf.translation() + Vec3::Y * scale::body(1.0);
                 destination = home.last_pos;
             } else {
                 // Target died or despawned — finish at last known location.
@@ -304,11 +335,11 @@ fn apply_projectile_hits(
                 if unit_entity != home.target || *team == projectile.team || !health.is_alive() {
                     continue;
                 }
-                let reach = projectile.radius + radius.map(|r| r.0).unwrap_or(scale::u(0.5));
-                // Aim point is unit.y + scale::u(1); keep the vertical pad in world units.
+                let reach = projectile.radius + radius.map(|r| r.0).unwrap_or(scale::HERO_RADIUS);
+                // Aim point is unit.y + body(1); keep the vertical pad in world units.
                 let vertical =
-                    (impact.y - (unit_tf.translation.y + scale::u(1.0))).abs();
-                if flat_distance(impact, unit_tf.translation) <= reach && vertical < scale::u(2.5)
+                    (impact.y - (unit_tf.translation.y + scale::body(1.0))).abs();
+                if flat_distance(impact, unit_tf.translation) <= reach && vertical < scale::body(2.5)
                 {
                     let dmg = apply_damage(projectile.damage, projectile.damage_type, stats);
                     health.current -= dmg;
@@ -464,8 +495,8 @@ fn spawn_auto_attack(
     damage: f32,
     speed: f32,
 ) {
-    let start = origin + Vec3::Y * scale::u(1.1);
-    let aim = (target_pos + Vec3::Y * scale::u(1.0)) - start;
+    let start = origin + Vec3::Y * scale::body(1.1);
+    let aim = (target_pos + Vec3::Y * scale::body(1.0)) - start;
     let mut transform = Transform::from_translation(start);
     if let Ok(dir) = Dir3::new(aim) {
         transform.look_to(dir, Vec3::Y);
@@ -485,18 +516,161 @@ fn spawn_auto_attack(
             damage,
             speed,
             team,
-            radius: scale::u(0.7),
+            radius: scale::body(0.7),
             lifetime: 2.5,
             damage_type: DamageType::Physical,
             splash_radius: 0.0,
         },
         ProjectileHome {
             target,
-            last_pos: target_pos + Vec3::Y * scale::u(1.0),
+            last_pos: target_pos + Vec3::Y * scale::body(1.0),
         },
         ProjectileStyle::AutoAttack,
         Lifetime(2.5),
     ));
+}
+
+fn apply_melee_hit(
+    targets: &mut Query<(
+        Entity,
+        &GlobalTransform,
+        &Team,
+        &mut Health,
+        &CombatStats,
+        Option<&UnitRadius>,
+    )>,
+    attacker_team: Team,
+    origin: Vec3,
+    target: Entity,
+    damage: f32,
+    attack_range: f32,
+) {
+    let Ok((_, tf, team, mut health, stats, radius)) = targets.get_mut(target) else {
+        return;
+    };
+    if *team == attacker_team || !health.is_alive() {
+        return;
+    }
+    let reach = attack_range + radius.map(|r| r.0).unwrap_or(scale::HERO_RADIUS);
+    if flat_distance(origin, tf.translation()) > reach * 1.15 {
+        return;
+    }
+    health.current -= apply_damage(damage, DamageType::Physical, stats);
+}
+
+/// Crude sword slash: a rectangular block the length of attack range, pivoted at
+/// the unit midsection, swinging 90° over a short lifetime.
+fn spawn_melee_slash(
+    commands: &mut Commands,
+    assets: &SharedAssets,
+    team: Team,
+    attacker: &Transform,
+    attack_range: f32,
+) {
+    let mid_y = scale::body(0.9);
+    let thickness = scale::body(0.22);
+    let height = scale::body(0.35);
+    let length = attack_range.max(scale::body(0.5));
+
+    let facing_yaw = attacker.rotation.to_euler(EulerRot::YXZ).0;
+    let start_yaw = facing_yaw - std::f32::consts::FRAC_PI_4;
+
+    let material = match team {
+        Team::Radiant => assets.melee_slash_radiant_mat.clone(),
+        Team::Dire => assets.melee_slash_dire_mat.clone(),
+    };
+
+    // Pivot at midsection; cuboid extends along local -Z (forward).
+    let mut transform = Transform::from_translation(attacker.translation + Vec3::Y * mid_y)
+        .with_rotation(Quat::from_rotation_y(start_yaw))
+        .with_scale(Vec3::new(thickness, height, length));
+    // Shift so the near end sits at the pivot (mesh is centered on Z).
+    transform.translation += transform.forward() * (length * 0.5);
+
+    commands.spawn((
+        Name::new("Melee Slash"),
+        Mesh3d(assets.melee_slash_mesh.clone()),
+        MeshMaterial3d(material),
+        transform,
+        MeleeSlashFx {
+            elapsed: 0.0,
+            duration: 0.18,
+            yaw_start: start_yaw,
+            pivot: attacker.translation + Vec3::Y * mid_y,
+            length,
+        },
+        Lifetime(0.2),
+    ));
+}
+
+fn animate_melee_slashes(
+    time: Res<Time>,
+    mut slashes: Query<(&mut Transform, &mut MeleeSlashFx)>,
+) {
+    let dt = time.delta_secs();
+    for (mut transform, mut fx) in &mut slashes {
+        fx.elapsed = (fx.elapsed + dt).min(fx.duration);
+        let t = if fx.duration <= 1e-4 {
+            1.0
+        } else {
+            (fx.elapsed / fx.duration).clamp(0.0, 1.0)
+        };
+        // Ease-out swing through 90°.
+        let eased = 1.0 - (1.0 - t) * (1.0 - t);
+        let yaw = fx.yaw_start + eased * std::f32::consts::FRAC_PI_2;
+        transform.rotation = Quat::from_rotation_y(yaw);
+        transform.translation = fx.pivot + *transform.forward() * (fx.length * 0.5);
+    }
+}
+
+#[derive(Component, Debug, Clone, Copy)]
+struct MeleeSlashFx {
+    elapsed: f32,
+    duration: f32,
+    yaw_start: f32,
+    pivot: Vec3,
+    length: f32,
+}
+
+#[derive(Component, Debug, Clone, Copy)]
+struct AttackRangeRing;
+
+#[derive(Component, Debug, Clone, Copy)]
+struct HasAttackRangeRing;
+
+fn ensure_attack_range_ring(
+    mut commands: Commands,
+    assets: Res<SharedAssets>,
+    heroes: Query<(Entity, &CombatStats), (With<PlayerHero>, Without<HasAttackRangeRing>)>,
+) {
+    for (hero, stats) in &heroes {
+        let range = stats.attack_range.max(1.0);
+        commands.entity(hero).insert(HasAttackRangeRing);
+        commands.entity(hero).with_children(|parent| {
+            parent.spawn((
+                Name::new("Attack Range Ring"),
+                AttackRangeRing,
+                Mesh3d(assets.indicator_ring_mesh.clone()),
+                MeshMaterial3d(assets.attack_range_ring_mat.clone()),
+                Transform::from_xyz(0.0, 0.12, 0.0)
+                    .with_scale(Vec3::new(range, 1.0, range)),
+            ));
+        });
+    }
+}
+
+fn sync_attack_range_ring(
+    heroes: Query<&CombatStats, With<PlayerHero>>,
+    mut rings: Query<(&mut Transform, &ChildOf), With<AttackRangeRing>>,
+) {
+    for (mut transform, child_of) in &mut rings {
+        let Ok(stats) = heroes.get(child_of.parent()) else {
+            continue;
+        };
+        let range = stats.attack_range.max(1.0);
+        transform.scale = Vec3::new(range, 1.0, range);
+        transform.translation.y = 0.12;
+    }
 }
 
 pub fn spawn_spell_bolt(
@@ -509,8 +683,8 @@ pub fn spawn_spell_bolt(
     damage: f32,
     splash_radius: f32,
 ) {
-    let start = origin + Vec3::Y * scale::u(1.2);
-    let aim = (target_pos + Vec3::Y * scale::u(1.0)) - start;
+    let start = origin + Vec3::Y * scale::body(1.2);
+    let aim = (target_pos + Vec3::Y * scale::body(1.0)) - start;
     let mut transform = Transform::from_translation(start);
     if let Ok(dir) = Dir3::new(aim) {
         transform.look_to(dir, Vec3::Y);
@@ -525,7 +699,7 @@ pub fn spawn_spell_bolt(
             damage,
             speed: scale::u(34.0),
             team,
-            radius: scale::u(0.85),
+            radius: scale::body(0.85),
             lifetime: 2.5,
             damage_type: DamageType::Magical,
             splash_radius,
@@ -537,7 +711,7 @@ pub fn spawn_spell_bolt(
     if let Some(target) = target {
         entity.insert(ProjectileHome {
             target,
-            last_pos: target_pos + Vec3::Y * scale::u(1.0),
+            last_pos: target_pos + Vec3::Y * scale::body(1.0),
         });
     } else {
         let dist = flat_distance(origin, target_pos);

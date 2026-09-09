@@ -209,13 +209,13 @@ fn cull_orphan_world_names(
 
 /// Bar width ≈ unit diameter so it sits over the body without dwarfing it.
 fn bar_width(radius: Option<&UnitRadius>) -> f32 {
-    let r = radius.map(|u| u.0).unwrap_or(scale::u(0.5));
-    (r * 2.4).clamp(scale::u(1.0), scale::u(5.0))
+    let r = radius.map(|u| u.0).unwrap_or(scale::HERO_RADIUS);
+    (r * 2.4).clamp(scale::body(1.0), scale::body(8.0))
 }
 
 fn bar_height(radius: Option<&UnitRadius>) -> f32 {
-    let r = radius.map(|u| u.0).unwrap_or(scale::u(0.5));
-    r * 2.6 + scale::u(1.0)
+    let r = radius.map(|u| u.0).unwrap_or(scale::HERO_RADIUS);
+    r * 2.6 + scale::body(1.0)
 }
 
 

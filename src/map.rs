@@ -203,56 +203,64 @@ fn spawn_lane_strip(
 /// Placeholder trees blocking travel between lanes (jungle corridors).
 fn spawn_tree_obstacles(commands: &mut Commands, assets: &SharedAssets) {
     // Clusters sit off the lane strips so creep paths stay clear.
+    // Y = half trunk height so the cylinder sits on the ground.
+    let trunk_y = scale::body(3.2) * 0.5;
+    let canopy_y = scale::body(3.2) * 0.5 + scale::body(0.4);
     let trees = [
         // Between mid and top (NW jungle)
-        scale::v(-28.0, 1.75, 8.0),
-        scale::v(-22.0, 1.75, 14.0),
-        scale::v(-18.0, 1.75, 6.0),
-        scale::v(-32.0, 1.75, 16.0),
-        scale::v(-14.0, 1.75, 18.0),
-        scale::v(-24.0, 1.75, 22.0),
+        scale::v(-28.0, 0.0, 8.0),
+        scale::v(-22.0, 0.0, 14.0),
+        scale::v(-18.0, 0.0, 6.0),
+        scale::v(-32.0, 0.0, 16.0),
+        scale::v(-14.0, 0.0, 18.0),
+        scale::v(-24.0, 0.0, 22.0),
         // Between mid and bot (SW jungle)
-        scale::v(-8.0, 1.75, -28.0),
-        scale::v(-14.0, 1.75, -22.0),
-        scale::v(-6.0, 1.75, -18.0),
-        scale::v(-16.0, 1.75, -32.0),
-        scale::v(-18.0, 1.75, -14.0),
-        scale::v(-22.0, 1.75, -24.0),
+        scale::v(-8.0, 0.0, -28.0),
+        scale::v(-14.0, 0.0, -22.0),
+        scale::v(-6.0, 0.0, -18.0),
+        scale::v(-16.0, 0.0, -32.0),
+        scale::v(-18.0, 0.0, -14.0),
+        scale::v(-22.0, 0.0, -24.0),
         // Between mid and top (SE / dire jungle)
-        scale::v(28.0, 1.75, -8.0),
-        scale::v(22.0, 1.75, -14.0),
-        scale::v(18.0, 1.75, -6.0),
-        scale::v(32.0, 1.75, -16.0),
-        scale::v(14.0, 1.75, -18.0),
-        scale::v(24.0, 1.75, -22.0),
+        scale::v(28.0, 0.0, -8.0),
+        scale::v(22.0, 0.0, -14.0),
+        scale::v(18.0, 0.0, -6.0),
+        scale::v(32.0, 0.0, -16.0),
+        scale::v(14.0, 0.0, -18.0),
+        scale::v(24.0, 0.0, -22.0),
         // Between mid and bot (NE / dire jungle)
-        scale::v(8.0, 1.75, 28.0),
-        scale::v(14.0, 1.75, 22.0),
-        scale::v(6.0, 1.75, 18.0),
-        scale::v(16.0, 1.75, 32.0),
-        scale::v(18.0, 1.75, 14.0),
-        scale::v(22.0, 1.75, 24.0),
+        scale::v(8.0, 0.0, 28.0),
+        scale::v(14.0, 0.0, 22.0),
+        scale::v(6.0, 0.0, 18.0),
+        scale::v(16.0, 0.0, 32.0),
+        scale::v(18.0, 0.0, 14.0),
+        scale::v(22.0, 0.0, 24.0),
         // Extra river-bank blockers
-        scale::v(-8.0, 1.75, 8.0),
-        scale::v(8.0, 1.75, -8.0),
-        scale::v(-12.0, 1.75, -4.0),
-        scale::v(12.0, 1.75, 4.0),
+        scale::v(-8.0, 0.0, 8.0),
+        scale::v(8.0, 0.0, -8.0),
+        scale::v(-12.0, 0.0, -4.0),
+        scale::v(12.0, 0.0, 4.0),
     ];
 
     for (i, pos) in trees.into_iter().enumerate() {
+        let mut at = pos;
+        at.y = trunk_y;
         commands
             .spawn((
                 Name::new(format!("Tree {i}")),
                 Mesh3d(assets.tree_mesh.clone()),
                 MeshMaterial3d(assets.tree_mat.clone()),
-                Transform::from_translation(pos),
-                Obstacle { radius: scale::u(1.1) },
+                Transform::from_translation(at),
+                // Smooth cylinder hitbox matching the trunk mesh radius.
+                Obstacle {
+                    radius: scale::TREE_RADIUS,
+                },
             ))
             .with_children(|parent| {
                 parent.spawn((
                     Mesh3d(assets.tree_canopy_mesh.clone()),
                     MeshMaterial3d(assets.tree_canopy_mat.clone()),
-                    Transform::from_xyz(0.0, scale::u(1.6), 0.0),
+                    Transform::from_xyz(0.0, canopy_y - trunk_y, 0.0),
                 ));
             });
     }

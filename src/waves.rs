@@ -59,12 +59,15 @@ fn spawn_wave_set(commands: &mut Commands, assets: &SharedAssets, count: usize) 
     for lane in [Lane::Top, Lane::Mid, Lane::Bot] {
         for i in 0..count {
             let offset = Vec3::new(i as f32 * scale::u(1.2), 0.0, i as f32 * scale::u(0.3));
+            // Last creep in each pack is ranged; the rest are melee.
+            let ranged = count > 1 && i + 1 == count;
             spawn_creep(
                 commands,
                 assets,
                 Team::Radiant,
                 lane,
                 radiant_spawn(lane) + offset,
+                ranged,
             );
             spawn_creep(
                 commands,
@@ -72,6 +75,7 @@ fn spawn_wave_set(commands: &mut Commands, assets: &SharedAssets, count: usize) 
                 Team::Dire,
                 lane,
                 dire_spawn(lane) - offset,
+                ranged,
             );
         }
     }
