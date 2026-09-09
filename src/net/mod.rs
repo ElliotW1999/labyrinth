@@ -13,7 +13,7 @@ use bevy::prelude::*;
 
 use crate::combat::flat_distance;
 use crate::components::{
-    AttackTarget, CombatStats, Health, MoveTarget, Team, UnitRadius,
+    AttackTarget, CombatStats, Health, MoveTarget, Team, BoundRadius,
 };
 use crate::heroes::{HeroId, HeroKind, LocalHeroChoice};
 use crate::scale;
@@ -101,14 +101,14 @@ fn host_recv_and_apply(
     mut commands: Commands,
     assets: Res<crate::resources::SharedAssets>,
     choice: Res<LocalHeroChoice>,
-    heroes: Query<(Entity, &NetworkId, &Transform, &CombatStats, Option<&UnitRadius>)>,
+    heroes: Query<(Entity, &NetworkId, &Transform, &CombatStats, Option<&BoundRadius>)>,
     net_targets: Query<(
         Entity,
         &NetworkId,
         &GlobalTransform,
         &Team,
         &Health,
-        Option<&UnitRadius>,
+        Option<&BoundRadius>,
     )>,
     host_kind: Query<&HeroKind, With<crate::components::PlayerHero>>,
 ) {
@@ -188,12 +188,12 @@ fn host_recv_and_apply(
                 let Some(hero_entity) = session.remote_hero_entity else {
                     continue;
                 };
-                let Some((_, _, hero_tf, stats, _)) =
+                let Some((_, _, hero_tf, stats, hero_bound)) =
                     heroes.iter().find(|(e, ..)| *e == hero_entity)
                 else {
                     continue;
                 };
-                if let Some((enemy, _, enemy_tf, _, _, radius)) =
+                if let Some((enemy, _, enemy_tf, _, _, enemy_bound)) =
                     net_targets.iter().find(|(_, id, ..)| id.0 == target)
                 {
                     apply_attack_order(
@@ -201,9 +201,10 @@ fn host_recv_and_apply(
                         hero_entity,
                         hero_tf,
                         stats,
+                        hero_bound.map(|r| r.0).unwrap_or(scale::HERO_BOUND),
                         enemy,
                         enemy_tf,
-                        radius,
+                        enemy_bound.map(|r| r.0).unwrap_or(scale::HERO_BOUND),
                     );
                 }
             }
@@ -217,11 +218,12 @@ fn apply_attack_order(
     hero_entity: Entity,
     hero_tf: &Transform,
     stats: &CombatStats,
+    hero_bound: f32,
     enemy: Entity,
     enemy_tf: &GlobalTransform,
-    radius: Option<&UnitRadius>,
+    enemy_bound: f32,
 ) {
-    let reach = stats.attack_range + radius.map(|r| r.0).unwrap_or(scale::u(0.5));
+    let reach = scale::attack_reach(hero_bound, stats.attack_range, enemy_bound);
     let dist = flat_distance(hero_tf.translation, enemy_tf.translation());
     commands.entity(hero_entity).insert(AttackTarget(enemy));
     if dist > reach * 0.9 {

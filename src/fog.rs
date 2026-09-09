@@ -2,7 +2,9 @@
 
 use bevy::prelude::*;
 
-use crate::components::{Creep, Health, Obstacle, PlayerHero, Team, Tower, UnitRadius};
+use crate::components::{
+    BoundRadius, Creep, Health, Obstacle, ObstacleShape, PlayerHero, Team, Tower,
+};
 use crate::net::NetworkedHero;
 use crate::resources::MatchConfig;
 use crate::scale;
@@ -128,7 +130,7 @@ fn collect_vision(
         (
             &Transform,
             &Team,
-            Option<&UnitRadius>,
+            Option<&BoundRadius>,
             Has<Creep>,
             Has<Tower>,
             Has<NetworkedHero>,
@@ -185,7 +187,7 @@ fn update_unit_fog_visibility(
         (
             &Transform,
             &Team,
-            Option<&UnitRadius>,
+            Option<&BoundRadius>,
             Has<Creep>,
             Has<Tower>,
             Has<NetworkedHero>,
@@ -216,7 +218,7 @@ fn update_unit_fog_visibility(
 
     let tree_snaps: Vec<(Vec3, f32)> = trees
         .iter()
-        .map(|(tf, obs)| (tf.translation, obs.radius))
+        .map(|(tf, obs)| (tf.translation, obstacle_block_radius(obs)))
         .collect();
     let vision = collect_vision(*local_team, &sources);
 
@@ -245,7 +247,7 @@ fn update_fog_overlay_tiles(
         (
             &Transform,
             &Team,
-            Option<&UnitRadius>,
+            Option<&BoundRadius>,
             Has<Creep>,
             Has<Tower>,
             Has<NetworkedHero>,
@@ -258,7 +260,7 @@ fn update_fog_overlay_tiles(
 ) {
     let tree_snaps: Vec<(Vec3, f32)> = trees
         .iter()
-        .map(|(tf, obs)| (tf.translation, obs.radius))
+        .map(|(tf, obs)| (tf.translation, obstacle_block_radius(obs)))
         .collect();
 
     let vision = if let Ok(local_team) = local.single() {
@@ -304,6 +306,14 @@ fn flat_distance(a: Vec3, b: Vec3) -> f32 {
     (dx * dx + dz * dz).sqrt()
 }
 
+fn obstacle_block_radius(obs: &Obstacle) -> f32 {
+    match obs.shape {
+        ObstacleShape::Circle { radius } => radius,
+        // Circumradius of the AABB so LOS still treats trees as solid blockers.
+        ObstacleShape::Aabb { half_x, half_z } => (half_x * half_x + half_z * half_z).sqrt(),
+    }
+}
+
 /// True if the XZ segment from `from` to `to` clips a tree circle.
 pub fn line_blocked_by_trees(from: Vec3, to: Vec3, trees: &[(Vec3, f32)]) -> bool {
     let ax = from.x;
@@ -317,7 +327,7 @@ pub fn line_blocked_by_trees(from: Vec3, to: Vec3, trees: &[(Vec3, f32)]) -> boo
         return false;
     }
     for (tree, radius) in trees {
-        let r = (*radius + scale::u(0.15)).max(scale::u(0.2));
+        let r = (*radius + 4.0).max(8.0);
         let acx = tree.x - ax;
         let acz = tree.z - az;
         let t = ((acx * abx + acz * abz) / ab_len_sq).clamp(0.0, 1.0);
@@ -342,16 +352,16 @@ mod tests {
     #[test]
     fn tree_blocks_mid_segment() {
         let from = Vec3::ZERO;
-        let to = scale::v(10.0, 0.0, 0.0);
-        let trees = [(scale::v(5.0, 1.0, 0.0), scale::u(1.0))];
+        let to = scale::ground(10.0, 0.0);
+        let trees = [(scale::ground(5.0, 0.0), scale::TREE_COLLISION_HALF)];
         assert!(line_blocked_by_trees(from, to, &trees));
     }
 
     #[test]
     fn open_line_is_clear() {
         let from = Vec3::ZERO;
-        let to = scale::v(10.0, 0.0, 0.0);
-        let trees = [(scale::v(5.0, 1.0, 4.0), scale::u(1.0))];
+        let to = scale::ground(10.0, 0.0);
+        let trees = [(scale::ground(5.0, 4.0), 20.0)];
         assert!(!line_blocked_by_trees(from, to, &trees));
     }
 }

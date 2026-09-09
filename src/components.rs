@@ -415,6 +415,23 @@ pub struct Ancient;
 #[derive(Component, Debug, Clone, Copy)]
 pub struct Ground;
 
+/// Hull used for attack reach and AoE inclusion (edge-to-edge).
+#[derive(Component, Debug, Clone, Copy)]
+pub struct BoundRadius(pub f32);
+
+/// Soft-circle obstruction radius — collision circles must not intersect.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct CollisionRadius(pub f32);
+
+/// Axis-aligned square on XZ used for RMB / click targeting.
+/// Side length is `2 * half_extent` (= max(model width, length)).
+#[derive(Component, Debug, Clone, Copy)]
+pub struct SelectionBox {
+    pub half_extent: f32,
+}
+
+/// @deprecated Prefer [`BoundRadius`] / [`CollisionRadius`].
+#[allow(dead_code)]
 #[derive(Component, Debug, Clone, Copy)]
 pub struct UnitRadius(pub f32);
 
@@ -461,7 +478,29 @@ pub fn xp_required_for_level(level: u32) -> u32 {
 
 #[derive(Component, Debug, Clone, Copy)]
 pub struct Obstacle {
-    pub radius: f32,
+    pub shape: ObstacleShape,
+}
+
+impl Obstacle {
+    #[allow(dead_code)]
+    pub fn circle(radius: f32) -> Self {
+        Self {
+            shape: ObstacleShape::Circle { radius },
+        }
+    }
+
+    pub fn aabb(half_x: f32, half_z: f32) -> Self {
+        Self {
+            shape: ObstacleShape::Aabb { half_x, half_z },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
+pub enum ObstacleShape {
+    Circle { radius: f32 },
+    Aabb { half_x: f32, half_z: f32 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

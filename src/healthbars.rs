@@ -4,7 +4,8 @@ use bevy::prelude::*;
 
 use crate::camera::GameCamera;
 use crate::components::{
-    HasHealthBar, Health, HealthBar, HealthBarFill, UnitRadius, WorldHeroNameLabel, WorldNameLayer,
+    CollisionRadius, HasHealthBar, Health, HealthBar, HealthBarFill, WorldHeroNameLabel,
+    WorldNameLayer,
 };
 use crate::heroes::HeroKind;
 use crate::resources::SharedAssets;
@@ -32,7 +33,7 @@ fn attach_health_bars(
     mut commands: Commands,
     assets: Res<SharedAssets>,
     units: Query<
-        (Entity, Option<&UnitRadius>, Option<&HeroKind>),
+        (Entity, Option<&CollisionRadius>, Option<&HeroKind>),
         (With<Health>, Without<HasHealthBar>),
     >,
     layer: Query<Entity, With<WorldNameLayer>>,
@@ -93,7 +94,7 @@ fn attach_health_bars(
 }
 
 fn sync_health_bars(
-    owners: Query<(&Health, &GlobalTransform, Option<&UnitRadius>), Without<HealthBar>>,
+    owners: Query<(&Health, &GlobalTransform, Option<&CollisionRadius>), Without<HealthBar>>,
     mut bars: Query<(&HealthBar, &mut Transform, &Children), With<HealthBar>>,
     mut fills: Query<&mut Transform, (With<HealthBarFill>, Without<HealthBar>)>,
     mut backgrounds: Query<
@@ -149,7 +150,7 @@ fn sync_health_bars(
 fn sync_world_hero_names(
     camera: Query<(&Camera, &GlobalTransform), With<GameCamera>>,
     owners: Query<
-        (&GlobalTransform, &HeroKind, Option<&UnitRadius>, &Visibility),
+        (&GlobalTransform, &HeroKind, Option<&CollisionRadius>, &Visibility),
         Without<WorldHeroNameLabel>,
     >,
     mut labels: Query<(&WorldHeroNameLabel, &mut Node, &mut Visibility, &mut Text)>,
@@ -208,13 +209,13 @@ fn cull_orphan_world_names(
 }
 
 /// Bar width ≈ unit diameter so it sits over the body without dwarfing it.
-fn bar_width(radius: Option<&UnitRadius>) -> f32 {
-    let r = radius.map(|u| u.0).unwrap_or(scale::HERO_RADIUS);
+fn bar_width(radius: Option<&CollisionRadius>) -> f32 {
+    let r = radius.map(|u| u.0).unwrap_or(scale::HERO_COLLISION);
     (r * 2.4).clamp(scale::body(1.0), scale::body(8.0))
 }
 
-fn bar_height(radius: Option<&UnitRadius>) -> f32 {
-    let r = radius.map(|u| u.0).unwrap_or(scale::HERO_RADIUS);
+fn bar_height(radius: Option<&CollisionRadius>) -> f32 {
+    let r = radius.map(|u| u.0).unwrap_or(scale::HERO_COLLISION);
     r * 2.6 + scale::body(1.0)
 }
 

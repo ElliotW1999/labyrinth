@@ -24,7 +24,7 @@ pub struct MatchConfig {
 impl Default for MatchConfig {
     fn default() -> Self {
         Self {
-            map_half_extent: scale::u(70.0),
+            map_half_extent: scale::MAP_HALF,
             creep_wave_interval: 30.0,
             creeps_per_wave: 4,
         }
@@ -72,6 +72,10 @@ pub struct SharedAssets {
     pub indicator_range_mat: Handle<StandardMaterial>,
     pub indicator_aoe_mat: Handle<StandardMaterial>,
     pub attack_range_ring_mat: Handle<StandardMaterial>,
+    pub debug_bound_mat: Handle<StandardMaterial>,
+    pub debug_collision_mat: Handle<StandardMaterial>,
+    pub debug_selection_mat: Handle<StandardMaterial>,
+    pub debug_ring_mesh: Handle<Mesh>,
     pub indicator_ring_mesh: Handle<Mesh>,
     pub indicator_beam_mesh: Handle<Mesh>,
     pub shockwave_mat: Handle<StandardMaterial>,
@@ -223,10 +227,16 @@ pub(crate) fn load_shared_assets(
         perceptual_roughness: 1.0,
         ..default()
     });
-    // Trunk matches collision cylinder radius ([`scale::TREE_RADIUS`]).
-    assets.tree_mesh = meshes.add(Cylinder::new(scale::TREE_RADIUS, scale::body(3.2)));
+    // Trunk matches visual radius ([`scale::TREE_MODEL_RADIUS`]) — smaller than the 128×128 collision box.
+    assets.tree_mesh = meshes.add(Cylinder::new(
+        scale::TREE_MODEL_RADIUS,
+        scale::TREE_MODEL_HEIGHT,
+    ));
     // Foliar crown — wider short cylinder stacked on the trunk.
-    assets.tree_canopy_mesh = meshes.add(Cylinder::new(scale::body(1.8), scale::body(1.2)));
+    assets.tree_canopy_mesh = meshes.add(Cylinder::new(
+        scale::TREE_MODEL_RADIUS * 1.55,
+        scale::TREE_MODEL_HEIGHT * 0.35,
+    ));
     assets.tree_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.28, 0.18, 0.1),
         perceptual_roughness: 0.95,
@@ -271,6 +281,32 @@ pub(crate) fn load_shared_assets(
         cull_mode: None,
         ..default()
     });
+    assets.debug_bound_mat = materials.add(StandardMaterial {
+        base_color: Color::srgba(0.25, 0.95, 0.45, 0.85),
+        emissive: LinearRgba::rgb(0.2, 1.5, 0.4),
+        unlit: true,
+        alpha_mode: AlphaMode::Blend,
+        cull_mode: None,
+        ..default()
+    });
+    assets.debug_collision_mat = materials.add(StandardMaterial {
+        base_color: Color::srgba(0.95, 0.35, 0.2, 0.85),
+        emissive: LinearRgba::rgb(2.0, 0.5, 0.2),
+        unlit: true,
+        alpha_mode: AlphaMode::Blend,
+        cull_mode: None,
+        ..default()
+    });
+    assets.debug_selection_mat = materials.add(StandardMaterial {
+        base_color: Color::srgba(0.95, 0.9, 0.2, 0.9),
+        emissive: LinearRgba::rgb(2.0, 1.8, 0.3),
+        unlit: true,
+        alpha_mode: AlphaMode::Blend,
+        cull_mode: None,
+        ..default()
+    });
+    // Unit torus — scaled by radius for hollow bound/collision rings.
+    assets.debug_ring_mesh = meshes.add(Torus::new(0.94, 1.0));
     assets.shockwave_mat = materials.add(StandardMaterial {
         base_color: Color::srgba(0.4, 0.85, 1.0, 0.45),
         emissive: LinearRgba::rgb(1.0, 3.0, 5.0),

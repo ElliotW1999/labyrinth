@@ -3,8 +3,8 @@
 use bevy::prelude::*;
 
 use crate::components::{
-    Ancient, AttackCooldown, CombatStats, Creep, GoldBounty, Health, Lane, PlayerHero, PlayerWallet,
-    Team, Tower, UnitRadius, XpBounty,
+    Ancient, AttackCooldown, BoundRadius, CollisionRadius, CombatStats, Creep, GoldBounty, Health,
+    Lane, PlayerHero, PlayerWallet, SelectionBox, Team, Tower, XpBounty,
 };
 use crate::heroes::{HeroId, HeroKind};
 use crate::items::{Inventory, StatusEffects};
@@ -18,6 +18,19 @@ impl Plugin for UnitsPlugin {
     fn build(&self, _app: &mut App) {
         // Heroes spawn after local selection (see HeroesPlugin).
     }
+}
+
+/// Capsule mesh diameter used for selection boxes (before per-creep scale).
+fn unit_model_diameter() -> f32 {
+    scale::body(0.35) * 2.0
+}
+
+fn tower_model_diameter() -> f32 {
+    scale::body(0.7) * 2.0
+}
+
+fn ancient_model_side() -> f32 {
+    scale::body(3.5)
 }
 
 /// Spawn a playable hero. `local` adds `PlayerHero` (this machine's controlled unit).
@@ -43,6 +56,7 @@ pub fn spawn_hero_entity(
         format!("Remote {} ({team:?})", hero.name())
     };
 
+    let model_d = unit_model_diameter();
     let mut entity = commands.spawn((
         Name::new(name),
         Mesh3d(assets.unit_mesh.clone()),
@@ -61,7 +75,11 @@ pub fn spawn_hero_entity(
         crate::components::HeroProgress::new(),
     ));
     entity.insert((
-        UnitRadius(scale::HERO_RADIUS),
+        BoundRadius(scale::HERO_BOUND),
+        CollisionRadius(scale::HERO_COLLISION),
+        SelectionBox {
+            half_extent: scale::selection_half(model_d, model_d),
+        },
         GoldBounty(0),
         attrs,
         Inventory::empty(),
@@ -98,6 +116,13 @@ pub fn spawn_creep(
     } else {
         format!("{team:?} Creep ({lane:?})")
     };
+    let mesh_scale = if ranged { 0.7 } else { 0.75 };
+    let model_d = unit_model_diameter() * mesh_scale;
+    let (bound, collision) = if ranged {
+        (scale::RANGED_CREEP_BOUND, scale::RANGED_CREEP_COLLISION)
+    } else {
+        (scale::MELEE_CREEP_BOUND, scale::MELEE_CREEP_COLLISION)
+    };
 
     let id = commands
         .spawn((
@@ -105,7 +130,7 @@ pub fn spawn_creep(
             Mesh3d(assets.unit_mesh.clone()),
             MeshMaterial3d(mat),
             Transform::from_translation(position + Vec3::Y * scale::body(0.7))
-                .with_scale(Vec3::splat(if ranged { 0.7 } else { 0.75 })),
+                .with_scale(Vec3::splat(mesh_scale)),
             team,
             Creep { lane },
             Health::new(if ranged { 240.0 } else { 280.0 }),
@@ -118,16 +143,22 @@ pub fn spawn_creep(
                 scale::CREEP_MOVE_SPEED,
             ),
             AttackCooldown(0.0),
-            UnitRadius(scale::CREEP_RADIUS),
-            GoldBounty(35),
-            XpBounty(45),
-            crate::items::StatusEffects::default(),
-            crate::ai::LaneFollower {
-                waypoints: crate::map::lane_path(team, lane),
-                index: 0,
-            },
         ))
         .id();
+    commands.entity(id).insert((
+        BoundRadius(bound),
+        CollisionRadius(collision),
+        SelectionBox {
+            half_extent: scale::selection_half(model_d, model_d),
+        },
+        GoldBounty(35),
+        XpBounty(45),
+        crate::items::StatusEffects::default(),
+        crate::ai::LaneFollower {
+            waypoints: crate::map::lane_path(team, lane),
+            index: 0,
+        },
+    ));
     attach_mobile_unit_details(commands, id, assets, team, false);
 }
 
@@ -147,6 +178,7 @@ pub fn spawn_tower(
         Team::Dire => assets.tower_dire_accent_mat.clone(),
     };
 
+    let model_d = tower_model_diameter();
     commands
         .spawn((
             Name::new(format!("{team:?} Tower ({lane:?})")),
@@ -159,18 +191,20 @@ pub fn spawn_tower(
             Health::new(1800.0),
             CombatStats::simple(90.0, scale::TOWER_ATTACK_RANGE, 0.85, 12.0, 8.0, 0.0),
             AttackCooldown(0.0),
-            UnitRadius(scale::TOWER_RADIUS),
+            BoundRadius(scale::TOWER_BOUND),
+            CollisionRadius(scale::TOWER_COLLISION),
+            SelectionBox {
+                half_extent: scale::selection_half(model_d, model_d),
+            },
             GoldBounty(120),
             XpBounty(150),
         ))
         .with_children(|parent| {
-            // Base plinth
             parent.spawn((
                 Mesh3d(assets.tower_base_mesh.clone()),
                 MeshMaterial3d(accent.clone()),
                 Transform::from_xyz(0.0, scale::body(-1.4), 0.0),
             ));
-            // Cap / battlement tip
             parent.spawn((
                 Mesh3d(assets.tower_cap_mesh.clone()),
                 MeshMaterial3d(accent),
@@ -201,6 +235,7 @@ pub fn spawn_ancient(
     stats.recompute_attack_speed(0.0);
 
     let offset = scale::body(1.4);
+    let side = ancient_model_side();
     commands
         .spawn((
             Name::new(format!("{team:?} Ancient")),
@@ -211,7 +246,11 @@ pub fn spawn_ancient(
             Ancient,
             Health::new(4000.0),
             stats,
-            UnitRadius(scale::ANCIENT_RADIUS),
+            BoundRadius(scale::ANCIENT_BOUND),
+            CollisionRadius(scale::ANCIENT_COLLISION),
+            SelectionBox {
+                half_extent: scale::selection_half(side, side),
+            },
             GoldBounty(0),
             XpBounty(400),
         ))
@@ -249,7 +288,6 @@ fn attach_mobile_unit_details(
     };
 
     commands.entity(entity).with_children(|parent| {
-        // Facing dart along local -Z (same forward as turn_toward / look_to).
         parent.spawn((
             Name::new("FacingNose"),
             Mesh3d(assets.facing_nose_mesh.clone()),

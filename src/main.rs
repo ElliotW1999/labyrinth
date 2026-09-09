@@ -11,6 +11,7 @@ mod ai;
 mod camera;
 mod combat;
 mod components;
+mod debug_overlay;
 mod facing;
 mod fog;
 mod healthbars;
@@ -39,6 +40,7 @@ use abilities::AbilitiesPlugin;
 use ai::AiPlugin;
 use camera::CameraPlugin;
 use combat::CombatPlugin;
+use debug_overlay::DebugOverlayPlugin;
 use fog::FogPlugin;
 use healthbars::HealthBarPlugin;
 use heroes::{HeroId, HeroesPlugin, LocalHeroChoice};
@@ -145,6 +147,7 @@ fn main() {
             WavesPlugin,
             CameraPlugin,
             HealthBarPlugin,
+            DebugOverlayPlugin,
             FogPlugin,
             ObstacleCoursePlugin,
             UiPlugin,

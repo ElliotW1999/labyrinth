@@ -4,13 +4,13 @@ use bevy::prelude::*;
 
 use crate::combat::flat_distance;
 use crate::components::{
-    AbilityCasting, Ancient, AttackMoveOrder, AttackSwing, AttackTarget, CombatStats, Creep,
-    MoveTarget, Obstacle, PlayerHero, QueuedAbilityCast, Tower, UnitRadius,
+    AbilityCasting, Ancient, AttackMoveOrder, AttackSwing, AttackTarget, CollisionRadius,
+    CombatStats, Creep, MoveTarget, Obstacle, ObstacleShape, PlayerHero, QueuedAbilityCast, Tower,
 };
 use crate::facing::turn_toward;
 use crate::items::StatusEffects;
-use crate::scale;
 use crate::net::NetworkedHero;
+use crate::scale;
 
 pub struct MovementPlugin;
 
@@ -38,27 +38,34 @@ fn apply_move_targets(
             &mut Transform,
             &CombatStats,
             &MoveTarget,
-            Option<&UnitRadius>,
+            Option<&CollisionRadius>,
             Option<&StatusEffects>,
         ),
         (Without<Tower>, Without<Ancient>, Without<Obstacle>),
     >,
     obstacles: Query<(&Transform, &Obstacle), Without<MoveTarget>>,
-    // Without<MoveTarget> keeps this disjoint from `movers` (&mut Transform vs &Transform).
     buildings: Query<
-        (&Transform, &UnitRadius),
+        (&Transform, &CollisionRadius),
         (Or<(With<Tower>, With<Ancient>)>, Without<MoveTarget>),
     >,
     mut commands: Commands,
 ) {
     let dt = time.delta_secs();
-    let mut blockers: Vec<(Vec3, f32)> = obstacles
+    let circles: Vec<(Vec3, f32)> = buildings
         .iter()
-        .map(|(tf, obs)| (tf.translation, obs.radius))
+        .map(|(tf, radius)| (tf.translation, radius.0))
+        .chain(obstacles.iter().filter_map(|(tf, obs)| match obs.shape {
+            ObstacleShape::Circle { radius } => Some((tf.translation, radius)),
+            ObstacleShape::Aabb { .. } => None,
+        }))
         .collect();
-    for (tf, radius) in &buildings {
-        blockers.push((tf.translation, radius.0));
-    }
+    let aabbs: Vec<(Vec3, f32, f32)> = obstacles
+        .iter()
+        .filter_map(|(tf, obs)| match obs.shape {
+            ObstacleShape::Aabb { half_x, half_z } => Some((tf.translation, half_x, half_z)),
+            ObstacleShape::Circle { .. } => None,
+        })
+        .collect();
 
     for (entity, mut transform, stats, target, radius, statuses) in &mut movers {
         if stats.move_speed <= 0.0 {
@@ -69,20 +76,19 @@ fn apply_move_targets(
             continue;
         }
 
-        let unit_r = radius.map(|r| r.0).unwrap_or(scale::u(0.5));
+        let unit_r = radius.map(|r| r.0).unwrap_or(scale::HERO_COLLISION);
         let mut destination = target.position;
         destination.y = transform.translation.y;
 
         let to_target = destination - transform.translation;
         let distance = to_target.length();
-        if distance < scale::u(0.15) {
+        if distance < 4.0 {
             commands.entity(entity).remove::<MoveTarget>();
             continue;
         }
 
         let dir = to_target / distance;
         let facing = turn_toward(&mut transform, dir, stats.turn_rate, dt);
-        // Do not begin moving until the destination is within the facing cone.
         if !facing {
             continue;
         }
@@ -94,10 +100,11 @@ fn apply_move_targets(
             transform.translation + dir * step
         };
 
-        next = separate_from_circles(next, unit_r, &blockers);
+        next = separate_from_circles(next, unit_r, &circles);
+        next = separate_from_aabbs(next, unit_r, &aabbs);
         if flat_distance(destination, next) > 0.01
-            && is_blocked(destination, unit_r, &blockers)
-            && flat_distance(transform.translation, next) < scale::u(0.05)
+            && is_blocked(destination, unit_r, &circles, &aabbs)
+            && flat_distance(transform.translation, next) < 1.5
         {
             commands.entity(entity).remove::<MoveTarget>();
             continue;
@@ -105,20 +112,17 @@ fn apply_move_targets(
 
         transform.translation = next;
 
-        if flat_distance(transform.translation, destination) < scale::u(0.2) {
+        if flat_distance(transform.translation, destination) < 6.0 {
             commands.entity(entity).remove::<MoveTarget>();
         }
     }
 }
 
 fn resolve_obstacle_collisions(
-    // Only mobile units — never the camera, health bars, FX, or other Transform entities.
-    // A broad Transform query was shoving the free cam around trees/buildings at the
-    // bottom of the screen (eye sits near those obstacles in XZ).
     mut units: Query<
-        (&mut Transform, &UnitRadius),
+        (&mut Transform, &CollisionRadius),
         (
-            With<UnitRadius>,
+            With<CollisionRadius>,
             Without<Obstacle>,
             Without<Tower>,
             Without<Ancient>,
@@ -126,29 +130,40 @@ fn resolve_obstacle_collisions(
     >,
     obstacles: Query<(&Transform, &Obstacle)>,
 ) {
-    let snaps: Vec<(Vec3, f32)> = obstacles
+    let circles: Vec<(Vec3, f32)> = obstacles
         .iter()
-        .map(|(tf, obs)| (tf.translation, obs.radius))
+        .filter_map(|(tf, obs)| match obs.shape {
+            ObstacleShape::Circle { radius } => Some((tf.translation, radius)),
+            ObstacleShape::Aabb { .. } => None,
+        })
+        .collect();
+    let aabbs: Vec<(Vec3, f32, f32)> = obstacles
+        .iter()
+        .filter_map(|(tf, obs)| match obs.shape {
+            ObstacleShape::Aabb { half_x, half_z } => Some((tf.translation, half_x, half_z)),
+            ObstacleShape::Circle { .. } => None,
+        })
         .collect();
 
     for (mut transform, radius) in &mut units {
-        let separated = separate_from_circles(transform.translation, radius.0, &snaps);
-        transform.translation.x = separated.x;
-        transform.translation.z = separated.z;
+        let mut pos = separate_from_circles(transform.translation, radius.0, &circles);
+        pos = separate_from_aabbs(pos, radius.0, &aabbs);
+        transform.translation.x = pos.x;
+        transform.translation.z = pos.z;
     }
 }
 
 fn resolve_building_collisions(
     mut mobiles: Query<
-        (&mut Transform, &UnitRadius),
+        (&mut Transform, &CollisionRadius),
         (
-            With<UnitRadius>,
+            With<CollisionRadius>,
             Without<Tower>,
             Without<Ancient>,
             Without<Obstacle>,
         ),
     >,
-    buildings: Query<(&Transform, &UnitRadius), Or<(With<Tower>, With<Ancient>)>>,
+    buildings: Query<(&Transform, &CollisionRadius), Or<(With<Tower>, With<Ancient>)>>,
 ) {
     let snaps: Vec<(Vec3, f32)> = buildings
         .iter()
@@ -161,13 +176,12 @@ fn resolve_building_collisions(
     }
 }
 
-/// Soft circular separation between heroes and creeps by `UnitRadius`.
-/// Phased units neither push nor are pushed. Forceful units shove harder.
+/// Soft circular separation between heroes and creeps by [`CollisionRadius`].
 fn resolve_unit_collisions(
     mut units: Query<(
         Entity,
         &mut Transform,
-        Option<&UnitRadius>,
+        Option<&CollisionRadius>,
         Option<&StatusEffects>,
         Has<PlayerHero>,
         Has<NetworkedHero>,
@@ -181,7 +195,7 @@ fn resolve_unit_collisions(
             (
                 e,
                 tf.translation,
-                radius.map(|r| r.0).unwrap_or(scale::u(0.5)),
+                radius.map(|r| r.0).unwrap_or(scale::HERO_COLLISION),
                 statuses.map(|s| s.is_phased()).unwrap_or(false),
                 statuses.map(|s| s.can_push_units()).unwrap_or(false),
             )
@@ -212,31 +226,25 @@ fn resolve_unit_collisions(
                 continue;
             }
             let overlap = min_dist - dist;
-            // Forceful units claim more of the separation so they clear space assertively.
-            let (a_share, b_share) = match (a_force, b_force) {
-                (true, false) => (0.75, 0.25),
-                (false, true) => (0.25, 0.75),
-                _ => (0.5, 0.5),
-            };
             let nx = dx / dist;
             let nz = dz / dist;
-            pushes.push((a_e, Vec3::new(nx * overlap * a_share, 0.0, nz * overlap * a_share)));
-            pushes.push((b_e, Vec3::new(-nx * overlap * b_share, 0.0, -nz * overlap * b_share)));
+            let (a_w, b_w) = if a_force == b_force {
+                (0.5, 0.5)
+            } else if a_force {
+                (0.15, 0.85)
+            } else {
+                (0.85, 0.15)
+            };
+            pushes.push((a_e, Vec3::new(nx * overlap * a_w, 0.0, nz * overlap * a_w)));
+            pushes.push((b_e, Vec3::new(-nx * overlap * b_w, 0.0, -nz * overlap * b_w)));
         }
     }
 
     for (entity, push) in pushes {
         if let Ok((_, mut tf, _, _, _, _, _)) = units.get_mut(entity) {
-            tf.translation.x += push.x;
-            tf.translation.z += push.z;
+            tf.translation += push;
         }
     }
-}
-
-fn is_blocked(pos: Vec3, unit_r: f32, circles: &[(Vec3, f32)]) -> bool {
-    circles
-        .iter()
-        .any(|(c_pos, c_r)| flat_distance(pos, *c_pos) < unit_r + *c_r - 0.05)
 }
 
 fn separate_from_circles(mut pos: Vec3, unit_r: f32, circles: &[(Vec3, f32)]) -> Vec3 {
@@ -256,6 +264,53 @@ fn separate_from_circles(mut pos: Vec3, unit_r: f32, circles: &[(Vec3, f32)]) ->
         }
     }
     pos
+}
+
+/// Push a circle of radius `unit_r` out of axis-aligned boxes (expanded by unit_r).
+fn separate_from_aabbs(mut pos: Vec3, unit_r: f32, boxes: &[(Vec3, f32, f32)]) -> Vec3 {
+    for _ in 0..3 {
+        for (c_pos, half_x, half_z) in boxes {
+            let hx = *half_x + unit_r;
+            let hz = *half_z + unit_r;
+            let dx = pos.x - c_pos.x;
+            let dz = pos.z - c_pos.z;
+            if dx.abs() > hx || dz.abs() > hz {
+                continue;
+            }
+            let push_x = hx - dx.abs();
+            let push_z = hz - dz.abs();
+            if push_x < push_z {
+                pos.x += push_x.copysign(if dx >= 0.0 { 1.0 } else { -1.0 });
+            } else {
+                pos.z += push_z.copysign(if dz >= 0.0 { 1.0 } else { -1.0 });
+            }
+        }
+    }
+    pos
+}
+
+fn is_blocked(
+    pos: Vec3,
+    unit_r: f32,
+    circles: &[(Vec3, f32)],
+    aabbs: &[(Vec3, f32, f32)],
+) -> bool {
+    for (c_pos, c_r) in circles {
+        let min_dist = unit_r + *c_r;
+        let dx = pos.x - c_pos.x;
+        let dz = pos.z - c_pos.z;
+        if dx * dx + dz * dz < min_dist * min_dist {
+            return true;
+        }
+    }
+    for (c_pos, half_x, half_z) in aabbs {
+        let hx = *half_x + unit_r;
+        let hz = *half_z + unit_r;
+        if (pos.x - c_pos.x).abs() <= hx && (pos.z - c_pos.z).abs() <= hz {
+            return true;
+        }
+    }
+    false
 }
 
 /// Issue a ground move for the local hero (used by input).

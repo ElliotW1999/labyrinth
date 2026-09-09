@@ -4,7 +4,7 @@ use bevy::prelude::*;
 
 use crate::combat::{apply_damage, flat_distance};
 use crate::components::{
-    CombatStats, Creep, DamageType, Health, Lifetime, PlayerHero, UnitRadius,
+    BoundRadius, CollisionRadius, CombatStats, Creep, DamageType, Health, Lifetime, PlayerHero,
 };
 use crate::fog::{FogFreeZones, FogRect};
 use crate::net::NetworkedHero;
@@ -140,7 +140,8 @@ fn spawn_obstacle_course(
             range: scale::u(30.0),
             speed: scale::u(22.0),
         },
-        UnitRadius(scale::body(0.7)),
+        CollisionRadius(scale::body(0.7)),
+        BoundRadius(scale::body(0.5)),
     ));
 
     let piercer = commands
@@ -155,7 +156,8 @@ fn spawn_obstacle_course(
                 remaining: 0.0,
                 speed: scale::u(28.0),
             },
-            UnitRadius(scale::body(0.7)),
+            CollisionRadius(scale::body(0.7)),
+        BoundRadius(scale::body(0.5)),
         ))
         .id();
 
@@ -185,9 +187,10 @@ fn spawn_obstacle_course(
             Mesh3d(assets.tree_mesh.clone()),
             MeshMaterial3d(assets.tree_mat.clone()),
             Transform::from_translation(pos),
-            crate::components::Obstacle {
-                radius: scale::TREE_RADIUS,
-            },
+            crate::components::Obstacle::aabb(
+                scale::TREE_COLLISION_HALF,
+                scale::TREE_COLLISION_HALF,
+            ),
         ));
     }
 }
@@ -232,7 +235,7 @@ fn tick_heartpiercer_plates(
     plates: Query<(&Transform, &PressurePlate)>,
     mut piercers: Query<(&Transform, &mut Heartpiercer)>,
     walkers: Query<
-        (&Transform, Option<&UnitRadius>),
+        (&Transform, Option<&CollisionRadius>),
         Or<(With<PlayerHero>, With<NetworkedHero>, With<Creep>)>,
     >,
 ) {
@@ -313,7 +316,7 @@ fn apply_hazard_hits(
     mut commands: Commands,
     orbs: Query<(Entity, &Transform, &HazardOrb, &Lifetime)>,
     mut victims: Query<
-        (Entity, &Transform, &mut Health, &CombatStats, Option<&UnitRadius>),
+        (Entity, &Transform, &mut Health, &CombatStats, Option<&CollisionRadius>),
         Or<(With<PlayerHero>, With<NetworkedHero>, With<Creep>)>,
     >,
 ) {

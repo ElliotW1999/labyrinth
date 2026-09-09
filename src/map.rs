@@ -23,7 +23,6 @@ fn spawn_map(
 ) {
     let extent = config.map_half_extent * 2.0;
 
-    // Playable ground plane (click target for movement orders).
     commands.spawn((
         Name::new("Ground"),
         Mesh3d(meshes.add(Plane3d::default().mesh().size(extent, extent))),
@@ -38,7 +37,7 @@ fn spawn_map(
         &assets,
         scale::v(-40.0, 0.02, 40.0),
         scale::v(40.0, 0.02, -40.0),
-        scale::u(6.0),
+        scale::map(6.0),
         "Mid Lane",
     );
     spawn_lane_strip(
@@ -47,7 +46,7 @@ fn spawn_map(
         &assets,
         scale::v(-50.0, 0.02, -20.0),
         scale::v(20.0, 0.02, 50.0),
-        scale::u(5.5),
+        scale::map(5.5),
         "Top Lane",
     );
     spawn_lane_strip(
@@ -56,54 +55,59 @@ fn spawn_map(
         &assets,
         scale::v(-20.0, 0.02, -50.0),
         scale::v(50.0, 0.02, 20.0),
-        scale::u(5.5),
+        scale::map(5.5),
         "Bot Lane",
     );
 
-    // River along the anti-diagonal.
     spawn_lane_strip(
         &mut commands,
         &mut meshes,
         &assets,
         scale::v(-55.0, 0.03, -55.0),
         scale::v(55.0, 0.03, 55.0),
-        scale::u(8.0),
+        scale::map(8.0),
         "River",
     );
-    // Override river material by spawning a dedicated strip.
     commands.spawn((
         Name::new("River Surface"),
-        Mesh3d(meshes.add(Cuboid::new(scale::u(90.0), scale::u(0.05), scale::u(8.0)))),
+        Mesh3d(meshes.add(Cuboid::new(
+            scale::map(90.0),
+            scale::body(0.05),
+            scale::map(8.0),
+        ))),
         MeshMaterial3d(assets.river_mat.clone()),
         Transform::from_xyz(0.0, 0.04, 0.0)
             .with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_4)),
     ));
 
-    // Jungle pockets.
     for (pos, name) in [
-        (scale::v(-25.0, 0.05, 10.0), "Radiant Jungle NW"),
-        (scale::v(-10.0, 0.05, 25.0), "Radiant Jungle NE"),
-        (scale::v(25.0, 0.05, -10.0), "Dire Jungle SE"),
-        (scale::v(10.0, 0.05, -25.0), "Dire Jungle SW"),
+        (scale::ground(-25.0, 10.0), "Radiant Jungle NW"),
+        (scale::ground(-10.0, 25.0), "Radiant Jungle NE"),
+        (scale::ground(25.0, -10.0), "Dire Jungle SE"),
+        (scale::ground(10.0, -25.0), "Dire Jungle SW"),
     ] {
         commands.spawn((
             Name::new(name),
-            Mesh3d(meshes.add(Cuboid::new(scale::u(10.0), scale::u(0.1), scale::u(10.0)))),
+            Mesh3d(meshes.add(Cuboid::new(
+                scale::map(10.0),
+                scale::body(0.1),
+                scale::map(10.0),
+            ))),
             MeshMaterial3d(assets.jungle_mat.clone()),
-            Transform::from_translation(pos),
+            Transform::from_translation(pos + Vec3::Y * scale::body(0.05)),
         ));
     }
 
     spawn_tree_obstacles(&mut commands, &assets);
 
-    // Lighting
     commands.spawn((
         DirectionalLight {
             illuminance: 12_000.0,
             shadow_maps_enabled: true,
             ..default()
         },
-        Transform::from_xyz(scale::u(30.0), scale::u(80.0), scale::u(20.0)).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::from_xyz(scale::map(30.0), scale::body(80.0), scale::map(20.0))
+            .looking_at(Vec3::ZERO, Vec3::Y),
     ));
     commands.insert_resource(GlobalAmbientLight {
         color: Color::srgb(0.7, 0.75, 0.85),
@@ -111,11 +115,14 @@ fn spawn_map(
         ..default()
     });
 
-    // Bases + defenses
-    spawn_ancient(&mut commands, &assets, Team::Radiant, scale::v(-48.0, 1.25, -48.0));
+    spawn_ancient(
+        &mut commands,
+        &assets,
+        Team::Radiant,
+        scale::v(-48.0, 1.25, -48.0),
+    );
     spawn_ancient(&mut commands, &assets, Team::Dire, scale::v(48.0, 1.25, 48.0));
 
-    // Mid towers
     spawn_tower(
         &mut commands,
         &assets,
@@ -145,7 +152,6 @@ fn spawn_map(
         scale::v(32.0, 1.6, 32.0),
     );
 
-    // Top towers
     spawn_tower(
         &mut commands,
         &assets,
@@ -161,7 +167,6 @@ fn spawn_map(
         scale::v(10.0, 1.6, 45.0),
     );
 
-    // Bot towers
     spawn_tower(
         &mut commands,
         &assets,
@@ -187,59 +192,51 @@ fn spawn_lane_strip(
     width: f32,
     name: &str,
 ) {
+    let delta = to - from;
+    let length = delta.length();
     let mid = (from + to) * 0.5;
-    let dir = to - from;
-    let length = dir.length().max(scale::u(1.0));
-    let yaw = dir.x.atan2(dir.z);
-
+    let angle = delta.x.atan2(delta.z);
     commands.spawn((
         Name::new(name.to_string()),
-        Mesh3d(meshes.add(Cuboid::new(width, scale::u(0.08), length))),
+        Mesh3d(meshes.add(Cuboid::new(width, scale::body(0.08), length))),
         MeshMaterial3d(assets.lane_mat.clone()),
-        Transform::from_translation(mid).with_rotation(Quat::from_rotation_y(yaw)),
+        Transform::from_translation(mid).with_rotation(Quat::from_rotation_y(angle)),
     ));
 }
 
-/// Placeholder trees blocking travel between lanes (jungle corridors).
+/// Jungle trees — AABB collision 128×128, model smaller. Kept off the lane corridors.
 fn spawn_tree_obstacles(commands: &mut Commands, assets: &SharedAssets) {
-    // Clusters sit off the lane strips so creep paths stay clear.
-    // Y = half trunk height so the cylinder sits on the ground.
-    let trunk_y = scale::body(3.2) * 0.5;
-    let canopy_y = scale::body(3.2) * 0.5 + scale::body(0.4);
+    let trunk_y = scale::TREE_MODEL_HEIGHT * 0.5;
+    let canopy_y = scale::TREE_MODEL_HEIGHT * 0.55;
+    // Positions in jungle pockets, well clear of mid/top/bot lane strips.
     let trees = [
-        // Between mid and top (NW jungle)
-        scale::v(-28.0, 0.0, 8.0),
-        scale::v(-22.0, 0.0, 14.0),
-        scale::v(-18.0, 0.0, 6.0),
-        scale::v(-32.0, 0.0, 16.0),
-        scale::v(-14.0, 0.0, 18.0),
-        scale::v(-24.0, 0.0, 22.0),
-        // Between mid and bot (SW jungle)
-        scale::v(-8.0, 0.0, -28.0),
-        scale::v(-14.0, 0.0, -22.0),
-        scale::v(-6.0, 0.0, -18.0),
-        scale::v(-16.0, 0.0, -32.0),
-        scale::v(-18.0, 0.0, -14.0),
-        scale::v(-22.0, 0.0, -24.0),
-        // Between mid and top (SE / dire jungle)
-        scale::v(28.0, 0.0, -8.0),
-        scale::v(22.0, 0.0, -14.0),
-        scale::v(18.0, 0.0, -6.0),
-        scale::v(32.0, 0.0, -16.0),
-        scale::v(14.0, 0.0, -18.0),
-        scale::v(24.0, 0.0, -22.0),
-        // Between mid and bot (NE / dire jungle)
-        scale::v(8.0, 0.0, 28.0),
-        scale::v(14.0, 0.0, 22.0),
-        scale::v(6.0, 0.0, 18.0),
-        scale::v(16.0, 0.0, 32.0),
-        scale::v(18.0, 0.0, 14.0),
-        scale::v(22.0, 0.0, 24.0),
-        // Extra river-bank blockers
-        scale::v(-8.0, 0.0, 8.0),
-        scale::v(8.0, 0.0, -8.0),
-        scale::v(-12.0, 0.0, -4.0),
-        scale::v(12.0, 0.0, 4.0),
+        // Radiant NW jungle
+        scale::ground(-30.0, 14.0),
+        scale::ground(-26.0, 20.0),
+        scale::ground(-34.0, 22.0),
+        scale::ground(-22.0, 16.0),
+        scale::ground(-28.0, 26.0),
+        // Radiant NE jungle (toward top)
+        scale::ground(-12.0, 30.0),
+        scale::ground(-6.0, 34.0),
+        scale::ground(-16.0, 36.0),
+        scale::ground(-8.0, 28.0),
+        // Dire SE jungle
+        scale::ground(30.0, -14.0),
+        scale::ground(26.0, -20.0),
+        scale::ground(34.0, -22.0),
+        scale::ground(22.0, -16.0),
+        scale::ground(28.0, -26.0),
+        // Dire SW jungle (toward bot)
+        scale::ground(12.0, -30.0),
+        scale::ground(6.0, -34.0),
+        scale::ground(16.0, -36.0),
+        scale::ground(8.0, -28.0),
+        // Extra pocket fillers away from river/lanes
+        scale::ground(-36.0, 8.0),
+        scale::ground(36.0, -8.0),
+        scale::ground(-8.0, 38.0),
+        scale::ground(8.0, -38.0),
     ];
 
     for (i, pos) in trees.into_iter().enumerate() {
@@ -251,10 +248,7 @@ fn spawn_tree_obstacles(commands: &mut Commands, assets: &SharedAssets) {
                 Mesh3d(assets.tree_mesh.clone()),
                 MeshMaterial3d(assets.tree_mat.clone()),
                 Transform::from_translation(at),
-                // Smooth cylinder hitbox matching the trunk mesh radius.
-                Obstacle {
-                    radius: scale::TREE_RADIUS,
-                },
+                Obstacle::aabb(scale::TREE_COLLISION_HALF, scale::TREE_COLLISION_HALF),
             ))
             .with_children(|parent| {
                 parent.spawn((
@@ -270,29 +264,29 @@ fn spawn_tree_obstacles(commands: &mut Commands, assets: &SharedAssets) {
 pub fn lane_path(team: Team, lane: Lane) -> Vec<Vec3> {
     let radiant_paths = match lane {
         Lane::Mid => vec![
-            scale::v(-45.0, 0.0, -45.0),
-            scale::v(-30.0, 0.0, -30.0),
-            scale::v(-15.0, 0.0, -15.0),
-            scale::v(0.0, 0.0, 0.0),
-            scale::v(15.0, 0.0, 15.0),
-            scale::v(30.0, 0.0, 30.0),
-            scale::v(45.0, 0.0, 45.0),
+            scale::ground(-45.0, -45.0),
+            scale::ground(-30.0, -30.0),
+            scale::ground(-15.0, -15.0),
+            scale::ground(0.0, 0.0),
+            scale::ground(15.0, 15.0),
+            scale::ground(30.0, 30.0),
+            scale::ground(45.0, 45.0),
         ],
         Lane::Top => vec![
-            scale::v(-48.0, 0.0, -40.0),
-            scale::v(-48.0, 0.0, -10.0),
-            scale::v(-30.0, 0.0, 20.0),
-            scale::v(0.0, 0.0, 40.0),
-            scale::v(30.0, 0.0, 48.0),
-            scale::v(45.0, 0.0, 48.0),
+            scale::ground(-48.0, -40.0),
+            scale::ground(-48.0, -10.0),
+            scale::ground(-30.0, 20.0),
+            scale::ground(0.0, 40.0),
+            scale::ground(30.0, 48.0),
+            scale::ground(45.0, 48.0),
         ],
         Lane::Bot => vec![
-            scale::v(-40.0, 0.0, -48.0),
-            scale::v(-10.0, 0.0, -48.0),
-            scale::v(20.0, 0.0, -30.0),
-            scale::v(40.0, 0.0, 0.0),
-            scale::v(48.0, 0.0, 30.0),
-            scale::v(48.0, 0.0, 45.0),
+            scale::ground(-40.0, -48.0),
+            scale::ground(-10.0, -48.0),
+            scale::ground(20.0, -30.0),
+            scale::ground(40.0, 0.0),
+            scale::ground(48.0, 30.0),
+            scale::ground(48.0, 45.0),
         ],
     };
 

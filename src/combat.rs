@@ -3,9 +3,9 @@
 use bevy::prelude::*;
 
 use crate::components::{
-    AttackCooldown, AttackSwing, AttackTarget, CombatStats, DamageType, GoldBounty, Ground, Health,
-    HeroProgress, Lifetime, PlayerHero, PlayerWallet, Projectile, ProjectileHome, ProjectileStyle,
-    Team, UnitRadius, XpBounty,
+    AttackCooldown, AttackSwing, AttackTarget, BoundRadius, CombatStats, DamageType, GoldBounty,
+    Ground, Health, HeroProgress, Lifetime, PlayerHero, PlayerWallet, Projectile, ProjectileHome,
+    ProjectileStyle, Team, XpBounty,
 };
 use crate::facing::turn_toward;
 use crate::items::StatusEffects;
@@ -56,6 +56,7 @@ fn begin_attack_windups(
         &mut Transform,
         &Team,
         &CombatStats,
+        Option<&BoundRadius>,
         &AttackCooldown,
         Option<&AttackTarget>,
         Option<&AttackSwing>,
@@ -63,7 +64,7 @@ fn begin_attack_windups(
         Has<PlayerHero>,
     )>,
     // GlobalTransform (not Transform) so this stays disjoint from attackers' &mut Transform.
-    targets: Query<(Entity, &GlobalTransform, &Team, &Health, Option<&UnitRadius>)>,
+    targets: Query<(Entity, &GlobalTransform, &Team, &Health, Option<&BoundRadius>)>,
 ) {
     let dt = time.delta_secs();
     let target_snapshots: Vec<_> = targets
@@ -74,7 +75,7 @@ fn begin_attack_windups(
                 e,
                 t.translation(),
                 *team,
-                radius.map(|r| r.0).unwrap_or(scale::HERO_RADIUS),
+                radius.map(|r| r.0).unwrap_or(scale::HERO_BOUND),
             )
         })
         .collect();
@@ -84,6 +85,7 @@ fn begin_attack_windups(
         mut transform,
         team,
         stats,
+        attacker_bound,
         cooldown,
         current_target,
         swing,
@@ -105,6 +107,7 @@ fn begin_attack_windups(
         }
 
         let origin = transform.translation;
+        let self_bound = attacker_bound.map(|r| r.0).unwrap_or(scale::HERO_BOUND);
         let chosen = current_target
             .and_then(|AttackTarget(id)| {
                 target_snapshots
@@ -112,7 +115,8 @@ fn begin_attack_windups(
                     .find(|(e, pos, target_team, radius)| {
                         *e == *id
                             && *target_team == team.enemy()
-                            && flat_distance(origin, *pos) <= stats.attack_range + *radius
+                            && flat_distance(origin, *pos)
+                                <= scale::attack_reach(self_bound, stats.attack_range, *radius)
                     })
                     .copied()
             })
@@ -124,7 +128,8 @@ fn begin_attack_windups(
                     .iter()
                     .filter(|(_, _, target_team, _)| *target_team == team.enemy())
                     .filter(|(_, pos, _, radius)| {
-                        flat_distance(origin, *pos) <= stats.attack_range + *radius
+                        flat_distance(origin, *pos)
+                            <= scale::attack_reach(self_bound, stats.attack_range, *radius)
                     })
                     .min_by(|a, b| {
                         flat_distance(origin, a.1)
@@ -162,6 +167,7 @@ fn tick_attack_swings(
         &Transform,
         &Team,
         &CombatStats,
+        Option<&BoundRadius>,
         &mut AttackCooldown,
         &mut AttackSwing,
         Option<&StatusEffects>,
@@ -172,11 +178,13 @@ fn tick_attack_swings(
         &Team,
         &mut Health,
         &CombatStats,
-        Option<&UnitRadius>,
+        Option<&BoundRadius>,
     )>,
 ) {
     let dt = time.delta_secs();
-    for (entity, transform, team, stats, mut cooldown, mut swing, statuses) in &mut attackers {
+    for (entity, transform, team, stats, attacker_bound, mut cooldown, mut swing, statuses) in
+        &mut attackers
+    {
         if statuses.is_some_and(|s| !s.can_attack()) {
             commands.entity(entity).remove::<AttackSwing>();
             continue;
@@ -202,6 +210,7 @@ fn tick_attack_swings(
                     .unwrap_or(transform.translation + *transform.forward() * 4.0);
 
                 if scale::is_melee_attack_range(stats.attack_range) {
+                    let self_bound = attacker_bound.map(|r| r.0).unwrap_or(scale::HERO_BOUND);
                     apply_melee_hit(
                         &mut targets,
                         *team,
@@ -209,6 +218,7 @@ fn tick_attack_swings(
                         target,
                         damage,
                         stats.attack_range,
+                        self_bound,
                     );
                     spawn_melee_slash(
                         &mut commands,
@@ -323,7 +333,7 @@ fn apply_projectile_hits(
         Option<&GroundBoltImpact>,
         Option<&ProjectileReachedTarget>,
     )>,
-    mut units: Query<(Entity, &Transform, &Team, &mut Health, &CombatStats, Option<&UnitRadius>)>,
+    mut units: Query<(Entity, &Transform, &Team, &mut Health, &CombatStats, Option<&BoundRadius>)>,
 ) {
     for (proj_entity, proj_tf, projectile, home, ground_impact, reached) in &projectiles {
         let impact = proj_tf.translation;
@@ -335,7 +345,7 @@ fn apply_projectile_hits(
                 if unit_entity != home.target || *team == projectile.team || !health.is_alive() {
                     continue;
                 }
-                let reach = projectile.radius + radius.map(|r| r.0).unwrap_or(scale::HERO_RADIUS);
+                let reach = projectile.radius + radius.map(|r| r.0).unwrap_or(scale::HERO_BOUND);
                 // Aim point is unit.y + body(1); keep the vertical pad in world units.
                 let vertical =
                     (impact.y - (unit_tf.translation.y + scale::body(1.0))).abs();
@@ -356,14 +366,15 @@ fn apply_projectile_hits(
         }
 
         if despawn && projectile.splash_radius > 0.0 {
-            for (unit_entity, unit_tf, team, mut health, stats, _) in &mut units {
+            for (unit_entity, unit_tf, team, mut health, stats, radius) in &mut units {
                 if *team == projectile.team || !health.is_alive() {
                     continue;
                 }
                 if primary_hit == Some(unit_entity) {
                     continue;
                 }
-                if flat_distance(impact, unit_tf.translation) <= projectile.splash_radius {
+                let bound = radius.map(|r| r.0).unwrap_or(scale::HERO_BOUND);
+                if flat_distance(impact, unit_tf.translation) <= projectile.splash_radius + bound {
                     let ratio = if primary_hit.is_some() { 0.45 } else { 1.0 };
                     let dmg =
                         apply_damage(projectile.damage * ratio, projectile.damage_type, stats);
@@ -537,13 +548,14 @@ fn apply_melee_hit(
         &Team,
         &mut Health,
         &CombatStats,
-        Option<&UnitRadius>,
+        Option<&BoundRadius>,
     )>,
     attacker_team: Team,
     origin: Vec3,
     target: Entity,
     damage: f32,
     attack_range: f32,
+    attacker_bound: f32,
 ) {
     let Ok((_, tf, team, mut health, stats, radius)) = targets.get_mut(target) else {
         return;
@@ -551,7 +563,8 @@ fn apply_melee_hit(
     if *team == attacker_team || !health.is_alive() {
         return;
     }
-    let reach = attack_range + radius.map(|r| r.0).unwrap_or(scale::HERO_RADIUS);
+    let target_bound = radius.map(|r| r.0).unwrap_or(scale::HERO_BOUND);
+    let reach = scale::attack_reach(attacker_bound, attack_range, target_bound);
     if flat_distance(origin, tf.translation()) > reach * 1.15 {
         return;
     }
