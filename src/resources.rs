@@ -42,6 +42,7 @@ pub struct SharedAssets {
     pub ancient_mesh: Handle<Mesh>,
     pub ancient_spire_mesh: Handle<Mesh>,
     pub projectile_mesh: Handle<Mesh>,
+    pub melee_slash_mesh: Handle<Mesh>,
     pub health_bar_bg_mesh: Handle<Mesh>,
     pub health_bar_fill_mesh: Handle<Mesh>,
     pub radiant_mat: Handle<StandardMaterial>,
@@ -54,6 +55,8 @@ pub struct SharedAssets {
     pub tower_dire_accent_mat: Handle<StandardMaterial>,
     pub projectile_radiant_mat: Handle<StandardMaterial>,
     pub projectile_dire_mat: Handle<StandardMaterial>,
+    pub melee_slash_radiant_mat: Handle<StandardMaterial>,
+    pub melee_slash_dire_mat: Handle<StandardMaterial>,
     pub health_bar_bg_mat: Handle<StandardMaterial>,
     pub health_bar_fill_mat: Handle<StandardMaterial>,
     pub ground_mat: Handle<StandardMaterial>,
@@ -68,6 +71,7 @@ pub struct SharedAssets {
     pub spell_bolt_mat: Handle<StandardMaterial>,
     pub indicator_range_mat: Handle<StandardMaterial>,
     pub indicator_aoe_mat: Handle<StandardMaterial>,
+    pub attack_range_ring_mat: Handle<StandardMaterial>,
     pub indicator_ring_mesh: Handle<Mesh>,
     pub indicator_beam_mesh: Handle<Mesh>,
     pub shockwave_mat: Handle<StandardMaterial>,
@@ -80,18 +84,32 @@ pub(crate) fn load_shared_assets(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    assets.unit_mesh = meshes.add(Capsule3d::new(scale::u(0.35), scale::u(0.9)));
+    // Body meshes use `body()` so they track the tree-radius anchor (not attack ranges).
+    assets.unit_mesh = meshes.add(Capsule3d::new(scale::body(0.35), scale::body(0.9)));
     // Shoulders / arms — sit beside the capsule to break the silhouette.
-    assets.unit_shoulder_mesh = meshes.add(Cuboid::new(scale::u(0.85), scale::u(0.28), scale::u(0.28)));
+    assets.unit_shoulder_mesh =
+        meshes.add(Cuboid::new(scale::body(0.85), scale::body(0.28), scale::body(0.28)));
     // Facing marker — elongated along local -Z (Bevy forward after yaw).
-    assets.facing_nose_mesh = meshes.add(Cuboid::new(scale::u(0.22), scale::u(0.18), scale::u(0.7)));
-    assets.tower_mesh = meshes.add(Cylinder::new(scale::u(0.7), scale::u(3.2)));
-    assets.tower_cap_mesh = meshes.add(Cone::new(scale::u(0.95), scale::u(1.1)));
-    assets.tower_base_mesh = meshes.add(Cylinder::new(scale::u(1.15), scale::u(0.35)));
-    assets.ancient_mesh = meshes.add(Cuboid::new(scale::u(3.5), scale::u(2.5), scale::u(3.5)));
-    assets.ancient_spire_mesh = meshes.add(Cuboid::new(scale::u(0.7), scale::u(3.2), scale::u(0.7)));
+    assets.facing_nose_mesh =
+        meshes.add(Cuboid::new(scale::body(0.22), scale::body(0.18), scale::body(0.7)));
+    assets.tower_mesh = meshes.add(Cylinder::new(scale::body(0.7), scale::body(3.2)));
+    assets.tower_cap_mesh = meshes.add(Cone::new(scale::body(0.95), scale::body(1.1)));
+    assets.tower_base_mesh = meshes.add(Cylinder::new(scale::body(1.15), scale::body(0.35)));
+    assets.ancient_mesh = meshes.add(Cuboid::new(
+        scale::body(3.5),
+        scale::body(2.5),
+        scale::body(3.5),
+    ));
+    assets.ancient_spire_mesh = meshes.add(Cuboid::new(
+        scale::body(0.7),
+        scale::body(3.2),
+        scale::body(0.7),
+    ));
     // Elongated dart — local forward is -Z after look_to.
-    assets.projectile_mesh = meshes.add(Cuboid::new(scale::u(0.18), scale::u(0.18), scale::u(0.85)));
+    assets.projectile_mesh =
+        meshes.add(Cuboid::new(scale::body(0.18), scale::body(0.18), scale::body(0.85)));
+    // Unit cuboid (X=thickness, Y=height, Z=length). Scaled per-slash to attack range.
+    assets.melee_slash_mesh = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
     // Health bars / indicators are scaled in world units via Transform — keep mesh size = 1.
     // Y thickness is ~3× the prior readable size for the high MOBA camera.
     assets.health_bar_bg_mesh = meshes.add(Cuboid::new(1.0, 9.6, 0.55));
@@ -157,6 +175,22 @@ pub(crate) fn load_shared_assets(
         unlit: true,
         ..default()
     });
+    assets.melee_slash_radiant_mat = materials.add(StandardMaterial {
+        base_color: Color::srgba(0.75, 0.9, 1.0, 0.7),
+        emissive: LinearRgba::rgb(1.2, 2.5, 4.0),
+        unlit: true,
+        alpha_mode: AlphaMode::Blend,
+        cull_mode: None,
+        ..default()
+    });
+    assets.melee_slash_dire_mat = materials.add(StandardMaterial {
+        base_color: Color::srgba(1.0, 0.7, 0.4, 0.7),
+        emissive: LinearRgba::rgb(5.0, 1.8, 0.4),
+        unlit: true,
+        alpha_mode: AlphaMode::Blend,
+        cull_mode: None,
+        ..default()
+    });
     assets.health_bar_bg_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.08, 0.08, 0.1),
         unlit: true,
@@ -189,8 +223,10 @@ pub(crate) fn load_shared_assets(
         perceptual_roughness: 1.0,
         ..default()
     });
-    assets.tree_mesh = meshes.add(Cylinder::new(scale::u(0.55), scale::u(3.2)));
-    assets.tree_canopy_mesh = meshes.add(Sphere::new(scale::u(1.6)));
+    // Trunk matches collision cylinder radius ([`scale::TREE_RADIUS`]).
+    assets.tree_mesh = meshes.add(Cylinder::new(scale::TREE_RADIUS, scale::body(3.2)));
+    // Foliar crown — wider short cylinder stacked on the trunk.
+    assets.tree_canopy_mesh = meshes.add(Cylinder::new(scale::body(1.8), scale::body(1.2)));
     assets.tree_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.28, 0.18, 0.1),
         perceptual_roughness: 0.95,
@@ -201,7 +237,7 @@ pub(crate) fn load_shared_assets(
         perceptual_roughness: 0.9,
         ..default()
     });
-    assets.spell_bolt_mesh = meshes.add(Sphere::new(scale::u(0.35)));
+    assets.spell_bolt_mesh = meshes.add(Sphere::new(scale::body(0.35)));
     assets.spell_bolt_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.75, 0.35, 1.0),
         emissive: LinearRgba::rgb(6.0, 1.5, 10.0),
@@ -222,6 +258,14 @@ pub(crate) fn load_shared_assets(
     assets.indicator_aoe_mat = materials.add(StandardMaterial {
         base_color: Color::srgba(1.0, 0.55, 0.2, 0.28),
         emissive: LinearRgba::rgb(1.2, 0.4, 0.1),
+        unlit: true,
+        alpha_mode: AlphaMode::Blend,
+        cull_mode: None,
+        ..default()
+    });
+    assets.attack_range_ring_mat = materials.add(StandardMaterial {
+        base_color: Color::srgba(1.0, 1.0, 1.0, 0.38),
+        emissive: LinearRgba::rgb(1.5, 1.5, 1.5),
         unlit: true,
         alpha_mode: AlphaMode::Blend,
         cull_mode: None,

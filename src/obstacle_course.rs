@@ -140,7 +140,7 @@ fn spawn_obstacle_course(
             range: scale::u(30.0),
             speed: scale::u(22.0),
         },
-        UnitRadius(scale::u(0.7)),
+        UnitRadius(scale::body(0.7)),
     ));
 
     let piercer = commands
@@ -155,7 +155,7 @@ fn spawn_obstacle_course(
                 remaining: 0.0,
                 speed: scale::u(28.0),
             },
-            UnitRadius(scale::u(0.7)),
+            UnitRadius(scale::body(0.7)),
         ))
         .id();
 
@@ -172,10 +172,10 @@ fn spawn_obstacle_course(
     ));
 
     for (i, pos) in [
-        Vec3::new(scale::u(-26.0), scale::u(1.75), COURSE_MIN_Z + scale::u(2.0)),
-        Vec3::new(scale::u(26.0), scale::u(1.75), COURSE_MIN_Z + scale::u(2.0)),
-        Vec3::new(scale::u(-26.0), scale::u(1.75), COURSE_MAX_Z - scale::u(2.0)),
-        Vec3::new(scale::u(26.0), scale::u(1.75), COURSE_MAX_Z - scale::u(2.0)),
+        Vec3::new(scale::u(-26.0), scale::body(3.2) * 0.5, COURSE_MIN_Z + scale::u(2.0)),
+        Vec3::new(scale::u(26.0), scale::body(3.2) * 0.5, COURSE_MIN_Z + scale::u(2.0)),
+        Vec3::new(scale::u(-26.0), scale::body(3.2) * 0.5, COURSE_MAX_Z - scale::u(2.0)),
+        Vec3::new(scale::u(26.0), scale::body(3.2) * 0.5, COURSE_MAX_Z - scale::u(2.0)),
     ]
     .into_iter()
     .enumerate()
@@ -185,7 +185,9 @@ fn spawn_obstacle_course(
             Mesh3d(assets.tree_mesh.clone()),
             MeshMaterial3d(assets.tree_mat.clone()),
             Transform::from_translation(pos),
-            crate::components::Obstacle { radius: scale::u(1.0) },
+            crate::components::Obstacle {
+                radius: scale::TREE_RADIUS,
+            },
         ));
     }
 }
