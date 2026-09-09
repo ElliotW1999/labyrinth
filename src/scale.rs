@@ -4,9 +4,17 @@
 //! - Tower attack range ≈ **700**
 //! - Melee hero attack range ≈ **150**
 //! - Hero base move speed ≈ **300** units/second
+//! - Map size **15200×15200**
 //!
-//! Body / collision sizes are anchored so trees have radius [`TREE_RADIUS`].
-//! Attack, cast, and AoE ranges stay as absolute MOBA numbers (not body-scaled).
+//! Body meshes use [`body`]. Map layout XZ uses [`map`]. Attack/cast/AoE
+//! ranges stay absolute MOBA numbers.
+
+/// Full map width/depth in world units.
+pub const MAP_SIZE: f32 = 15_200.0;
+/// Half-extent from map center to edge.
+pub const MAP_HALF: f32 = MAP_SIZE * 0.5;
+/// How many world units of X the camera should show at the focus plane.
+pub const VISIBLE_WORLD_X: f32 = 3_600.0;
 
 /// Melee hero auto-attack range.
 pub const MELEE_ATTACK_RANGE: f32 = 150.0;
@@ -38,53 +46,72 @@ pub const HERO_VISION_RANGE: f32 = 1800.0;
 pub const TOWER_VISION_RANGE: f32 = 1900.0;
 pub const CREEP_VISION_RANGE: f32 = 800.0;
 
-// --- Ability geometry (tuned vs melee 150 / ranged 500 / tower 700) ---
-/// Dash / Blink travel distance (rank 1).
+// --- Ability geometry ---
 pub const ABILITY_DASH_RANGE: f32 = 350.0;
 pub const ABILITY_BLINK_RANGE: f32 = 400.0;
-/// Unit-target cast range (Bolt / Execute).
 pub const ABILITY_UNIT_CAST_RANGE: f32 = 500.0;
-/// Ground-target cast range (Nova / Meteor / missiles).
 pub const ABILITY_GROUND_CAST_RANGE: f32 = 550.0;
-/// Instant AoE radius around caster (Shockwave / Flurry / Frost).
 pub const ABILITY_INSTANT_AOE: f32 = 220.0;
-/// Targeted ground AoE radius (Nova / Meteor / Caltrops).
 pub const ABILITY_GROUND_AOE: f32 = 250.0;
 pub const ABILITY_ULT_AOE: f32 = 320.0;
-/// Skillshot / TargetPoint projectile corridor width.
 pub const ABILITY_PROJECTILE_WIDTH: f32 = 90.0;
 
-/// Tree trunk / collision cylinder radius (world units).
-pub const TREE_RADIUS: f32 = 64.0;
-/// Legacy tree radius that maps onto [`TREE_RADIUS`].
+// --- Bound radii (attack reach + spell AoE inclusion) ---
+pub const HERO_BOUND: f32 = 24.0;
+pub const MELEE_CREEP_BOUND: f32 = 16.0;
+pub const RANGED_CREEP_BOUND: f32 = 8.0;
+pub const TOWER_BOUND: f32 = 144.0;
+pub const ANCIENT_BOUND: f32 = 180.0;
+
+// --- Collision radii (obstruction; circles must not intersect) ---
+pub const HERO_COLLISION: f32 = 27.0;
+pub const MELEE_CREEP_COLLISION: f32 = 27.0;
+pub const RANGED_CREEP_COLLISION: f32 = 18.0;
+pub const TOWER_COLLISION: f32 = 144.0;
+pub const ANCIENT_COLLISION: f32 = 180.0;
+
+/// Tree axis-aligned collision box side length (128×128).
+pub const TREE_COLLISION_SIZE: f32 = 128.0;
+pub const TREE_COLLISION_HALF: f32 = TREE_COLLISION_SIZE * 0.5;
+/// Visual trunk radius — smaller than the 128×128 collision box.
+pub const TREE_MODEL_RADIUS: f32 = 40.0;
+pub const TREE_MODEL_HEIGHT: f32 = 160.0;
+
+/// Legacy alias for [`TREE_MODEL_RADIUS`].
+#[allow(dead_code)]
+pub const TREE_RADIUS: f32 = TREE_MODEL_RADIUS;
 const TREE_LEGACY_RADIUS: f32 = 1.1;
 
-/// Multiplier from the pre-rescale prototype world into map-layout units.
-/// Chosen so legacy hero MS `11.5` maps to [`HERO_MOVE_SPEED`] (`11.5 * 26 ≈ 299`).
+/// Multiplier from the pre-rescale prototype world into small-map layout units.
 pub const LEGACY: f32 = 26.0;
 
-/// Convert a legacy-world length into current map-layout units.
+/// Convert a legacy-world length into the old 26× layout units (Y offsets, etc.).
 #[inline]
 pub const fn u(legacy: f32) -> f32 {
     legacy * LEGACY
 }
 
-/// Convert a legacy body/collision length so trees land at [`TREE_RADIUS`].
-/// Use for meshes and hitboxes of units, buildings, and trees — not for
-/// attack / cast / AoE ranges.
+/// Map-layout XZ: legacy coords where ±70 was the old half-extent → ±[`MAP_HALF`].
 #[inline]
-pub const fn body(legacy: f32) -> f32 {
-    legacy * (TREE_RADIUS / TREE_LEGACY_RADIUS)
+pub const fn map(legacy: f32) -> f32 {
+    legacy * (MAP_HALF / 70.0)
 }
 
-/// Hero collision radius (matches scaled capsule).
-pub const HERO_RADIUS: f32 = body(0.5);
-/// Melee / default creep collision radius.
-pub const CREEP_RADIUS: f32 = body(0.4);
-/// Tower collision radius.
-pub const TOWER_RADIUS: f32 = body(0.9);
-/// Ancient collision radius.
-pub const ANCIENT_RADIUS: f32 = body(1.8);
+/// Convert a legacy body mesh length (visuals still use the body scale).
+#[inline]
+pub const fn body(legacy: f32) -> f32 {
+    legacy * (TREE_MODEL_RADIUS / TREE_LEGACY_RADIUS)
+}
+
+/// Deprecated aliases kept for transitional call sites.
+#[allow(dead_code)]
+pub const HERO_RADIUS: f32 = HERO_COLLISION;
+#[allow(dead_code)]
+pub const CREEP_RADIUS: f32 = MELEE_CREEP_COLLISION;
+#[allow(dead_code)]
+pub const TOWER_RADIUS: f32 = TOWER_COLLISION;
+#[allow(dead_code)]
+pub const ANCIENT_RADIUS: f32 = ANCIENT_COLLISION;
 
 /// True when an auto-attack should use a melee slash instead of a projectile.
 #[inline]
@@ -92,10 +119,29 @@ pub fn is_melee_attack_range(range: f32) -> bool {
     range > 0.0 && range <= MELEE_ATTACK_RANGE + 0.5
 }
 
-/// Scale an XZ (or XYZ) position from legacy coordinates.
+/// Selection-box half-extent for a model with given XZ width and length
+/// (square of side `max(width, length)`).
+#[inline]
+pub fn selection_half(model_width: f32, model_length: f32) -> f32 {
+    model_width.max(model_length) * 0.5
+}
+
+/// Attack reach: gap between bound edges ≤ attack_range.
+#[inline]
+pub fn attack_reach(attacker_bound: f32, attack_range: f32, target_bound: f32) -> f32 {
+    attack_range + attacker_bound + target_bound
+}
+
+/// Scale an XZ map position (Y uses [`body`] for prop height).
 #[inline]
 pub fn v(x: f32, y: f32, z: f32) -> bevy::math::Vec3 {
-    bevy::math::Vec3::new(u(x), u(y), u(z))
+    bevy::math::Vec3::new(map(x), body(y), map(z))
+}
+
+/// Flat map position at ground level.
+#[inline]
+pub fn ground(x: f32, z: f32) -> bevy::math::Vec3 {
+    bevy::math::Vec3::new(map(x), 0.0, map(z))
 }
 
 #[cfg(test)]
@@ -109,15 +155,17 @@ mod tests {
         assert!((CREEP_RANGED_ATTACK_RANGE - 500.0).abs() < f32::EPSILON);
         assert!((TOWER_ATTACK_RANGE - 700.0).abs() < f32::EPSILON);
         assert!((HERO_MOVE_SPEED - 300.0).abs() < f32::EPSILON);
-        assert!((TREE_RADIUS - 64.0).abs() < f32::EPSILON);
-        assert!((body(1.1) - TREE_RADIUS).abs() < 0.01);
-        // Legacy MS 11.5 maps near 300.
+        assert!((MAP_SIZE - 15_200.0).abs() < f32::EPSILON);
+        assert!((map(70.0) - MAP_HALF).abs() < 0.01);
+        assert!((HERO_BOUND - 24.0).abs() < f32::EPSILON);
+        assert!((HERO_COLLISION - 27.0).abs() < f32::EPSILON);
+        assert!((TREE_COLLISION_SIZE - 128.0).abs() < f32::EPSILON);
+        assert!(TREE_MODEL_RADIUS < TREE_COLLISION_HALF);
         assert!((u(11.5) - 299.0).abs() < 1.0);
     }
 
     #[test]
     fn ability_geometry_near_combat_anchors() {
-        // Cast/AoE should sit near auto-attack scale — not raw legacy×26 blobs.
         assert!(ABILITY_INSTANT_AOE > MELEE_ATTACK_RANGE);
         assert!(ABILITY_INSTANT_AOE < TOWER_ATTACK_RANGE);
         assert!(ABILITY_UNIT_CAST_RANGE >= RANGED_ATTACK_RANGE);
@@ -131,5 +179,10 @@ mod tests {
         assert!(is_melee_attack_range(MELEE_ATTACK_RANGE));
         assert!(!is_melee_attack_range(RANGED_ATTACK_RANGE));
         assert!(!is_melee_attack_range(TOWER_ATTACK_RANGE));
+    }
+
+    #[test]
+    fn attack_reach_includes_both_bounds() {
+        assert!((attack_reach(24.0, 150.0, 16.0) - 190.0).abs() < f32::EPSILON);
     }
 }

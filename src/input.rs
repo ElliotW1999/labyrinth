@@ -5,8 +5,8 @@ use bevy::prelude::*;
 use crate::abilities::{cancel_targeting_if_any, AbilityTargeting};
 use crate::combat::flat_distance;
 use crate::components::{
-    AbilityLoadout, AttackTarget, CombatStats, Ground, Health, HeroProgress, MoveTarget,
-    PlayerHero, Team, UnitRadius,
+    AbilityLoadout, AttackTarget, BoundRadius, CombatStats, Ground, Health, HeroProgress,
+    MoveTarget, PlayerHero, SelectionBox, Team,
 };
 use crate::items::ShopUiState;
 use crate::menu::MainMenuState;
@@ -105,11 +105,12 @@ fn order_attack_target(
     hero_entity: Entity,
     hero_tf: &Transform,
     stats: &CombatStats,
+    hero_bound: f32,
     enemy: Entity,
     enemy_tf: &GlobalTransform,
-    radius: Option<&UnitRadius>,
+    enemy_bound: f32,
 ) {
-    let reach = stats.attack_range + radius.map(|r| r.0).unwrap_or(scale::u(0.5));
+    let reach = scale::attack_reach(hero_bound, stats.attack_range, enemy_bound);
     let dist = flat_distance(hero_tf.translation, enemy_tf.translation());
     commands
         .entity(hero_entity)
@@ -132,13 +133,14 @@ fn handle_point_and_click(
     windows: Query<&Window>,
     camera: Query<(&Camera, &GlobalTransform)>,
     ground: Query<&GlobalTransform, With<Ground>>,
-    hero: Query<(Entity, &Team, &CombatStats, &Transform), With<PlayerHero>>,
+    hero: Query<(Entity, &Team, &CombatStats, &Transform, Option<&BoundRadius>), With<PlayerHero>>,
     enemies: Query<(
         Entity,
         &GlobalTransform,
         &Team,
         &Health,
-        Option<&UnitRadius>,
+        Option<&BoundRadius>,
+        Option<&SelectionBox>,
         Option<&NetworkId>,
         &Visibility,
     )>,
@@ -172,18 +174,21 @@ fn handle_point_and_click(
     let Some(hit) = cursor_ground_hit(&windows, &camera, &ground) else {
         return;
     };
-    let Ok((hero_entity, hero_team, stats, hero_tf)) = hero.single() else {
+    let Ok((hero_entity, hero_team, stats, hero_tf, hero_bound)) = hero.single() else {
         return;
     };
+    let self_bound = hero_bound.map(|r| r.0).unwrap_or(scale::HERO_BOUND);
 
     let clicked_enemy = enemies
         .iter()
-        .filter(|(_, _, team, hp, _, _, vis)| {
+        .filter(|(_, _, team, hp, _, _, _, vis)| {
             **team == hero_team.enemy() && hp.is_alive() && !matches!(*vis, Visibility::Hidden)
         })
-        .filter(|(_, tf, _, _, radius, _, _)| {
-            let r = radius.map(|r| r.0).unwrap_or(scale::u(0.5));
-            flat_distance(tf.translation(), hit) < r + scale::u(1.2)
+        .filter(|(_, tf, _, _, _, selection, _, _)| {
+            let half = selection
+                .map(|s| s.half_extent)
+                .unwrap_or(scale::HERO_BOUND);
+            point_in_selection(hit, tf.translation(), half)
         })
         .min_by(|a, b| {
             flat_distance(a.1.translation(), hit)
@@ -195,7 +200,7 @@ fn handle_point_and_click(
         let Some(mut transport) = transport else {
             return;
         };
-        if let Some((_, _, _, _, _, net_id, _)) = clicked_enemy {
+        if let Some((_, _, _, _, _, _, net_id, _)) = clicked_enemy {
             if let Some(id) = net_id {
                 client_send_command(
                     &mut transport,
@@ -224,7 +229,7 @@ fn handle_point_and_click(
         return;
     }
 
-    if let Some((enemy, enemy_tf, _, _, radius, _, _)) = clicked_enemy {
+    if let Some((enemy, enemy_tf, _, _, enemy_bound, _, _, _)) = clicked_enemy {
         commands
             .entity(hero_entity)
             .remove::<crate::components::AttackMoveOrder>()
@@ -234,13 +239,18 @@ fn handle_point_and_click(
             hero_entity,
             hero_tf,
             stats,
+            self_bound,
             enemy,
             enemy_tf,
-            radius,
+            enemy_bound.map(|r| r.0).unwrap_or(scale::HERO_BOUND),
         );
     } else {
         order_hero_move(&mut commands, hero_entity, hit);
     }
+}
+
+fn point_in_selection(point: Vec3, unit_pos: Vec3, half_extent: f32) -> bool {
+    (point.x - unit_pos.x).abs() <= half_extent && (point.z - unit_pos.z).abs() <= half_extent
 }
 
 fn handle_attack_move(

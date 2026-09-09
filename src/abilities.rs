@@ -5,8 +5,8 @@ use bevy::prelude::*;
 use crate::combat::{apply_damage, flat_distance, cursor_ground_hit, spawn_spell_bolt};
 use crate::components::{
     AbilityCastKind, AbilityCasting, AbilityId, AbilityLoadout, AbilitySlot, AttackMoveOrder,
-    AttackSwing, AttackTarget, CombatStats, DamageType, Ground, Health, Lifetime, Mana, MoveTarget,
-    PlayerHero, QueuedAbilityCast, SpellFx, Team, UnitRadius,
+    AttackSwing, AttackTarget, BoundRadius, CombatStats, DamageType, Ground, Health, Lifetime,
+    Mana, MoveTarget, PlayerHero, QueuedAbilityCast, SelectionBox, SpellFx, Team,
 };
 use crate::items::{
     apply_debuff_immunity, apply_disarm, apply_forceful, apply_phased, apply_root, apply_silence,
@@ -255,7 +255,10 @@ fn cast_instant(
     transform: &Transform,
     team: Team,
     slot: &crate::components::AbilitySlot,
-    enemies: &Query<(Entity, &Transform, &Team, &Health, &CombatStats), Without<PlayerHero>>,
+    enemies: &Query<
+        (Entity, &Transform, &Team, &Health, &CombatStats, Option<&BoundRadius>),
+        Without<PlayerHero>,
+    >,
     stats: &mut CombatStats,
     statuses: &mut StatusEffects,
 ) -> Vec<(Entity, AbilityId)> {
@@ -273,11 +276,13 @@ fn cast_instant(
                 assets.shockwave_mat.clone(),
                 0.45,
             );
-            for (enemy_entity, enemy_tf, enemy_team, enemy_hp, enemy_stats) in enemies.iter() {
+            for (enemy_entity, enemy_tf, enemy_team, enemy_hp, enemy_stats, bound) in enemies.iter()
+            {
                 if *enemy_team == team || !enemy_hp.is_alive() {
                     continue;
                 }
-                if flat_distance(origin, enemy_tf.translation) <= radius {
+                let b = bound.map(|r| r.0).unwrap_or(scale::HERO_BOUND);
+                if flat_distance(origin, enemy_tf.translation) <= radius + b {
                     let amount = apply_damage(damage, DamageType::Magical, enemy_stats);
                     commands.entity(enemy_entity).insert(PendingDamage { amount });
                     if slot.id == AbilityId::FrostNova || slot.id == AbilityId::Flurry {
@@ -406,7 +411,7 @@ fn confirm_or_cancel_targeted_cast(
             &Team,
             &Health,
             &CombatStats,
-            Option<&UnitRadius>,
+            Option<&SelectionBox>,
             &Visibility,
         ),
         Without<PlayerHero>,
@@ -454,9 +459,11 @@ fn confirm_or_cancel_targeted_cast(
                 && hp.is_alive()
                 && !matches!(*vis, Visibility::Hidden)
         })
-        .filter(|(_, tf, _, _, _, radius, _)| {
-            let r = radius.map(|r| r.0).unwrap_or(scale::u(0.5));
-            flat_distance(tf.translation, hit) < r + scale::u(1.4)
+        .filter(|(_, tf, _, _, _, selection, _)| {
+            let half = selection
+                .map(|s| s.half_extent)
+                .unwrap_or(scale::HERO_BOUND);
+            (hit.x - tf.translation.x).abs() <= half && (hit.z - tf.translation.z).abs() <= half
         })
         .min_by(|a, b| {
             flat_distance(a.1.translation, hit)
@@ -528,7 +535,7 @@ fn resolve_queued_ability_casts(
         With<PlayerHero>,
     >,
     enemies: Query<
-        (Entity, &Transform, &Team, &Health, &CombatStats, Option<&UnitRadius>),
+        (Entity, &Transform, &Team, &Health, &CombatStats, Option<&BoundRadius>),
         Without<PlayerHero>,
     >,
 ) {
@@ -632,10 +639,9 @@ fn tick_ability_casting(
     >,
     mut enemy_set: ParamSet<(
         Query<
-            (Entity, &Transform, &Team, &Health, &CombatStats, Option<&UnitRadius>),
+            (Entity, &Transform, &Team, &Health, &CombatStats, Option<&BoundRadius>),
             Without<PlayerHero>,
         >,
-        Query<(Entity, &Transform, &Team, &Health, &CombatStats), Without<PlayerHero>>,
         Query<(&mut StatusEffects, &mut CombatStats), Without<PlayerHero>>,
     )>,
 ) {
@@ -754,13 +760,14 @@ fn tick_ability_casting(
                     0.55,
                 );
                 let mut meteor_hits = Vec::new();
-                for (enemy_entity, enemy_tf, enemy_team, enemy_hp, enemy_stats, _) in
+                for (enemy_entity, enemy_tf, enemy_team, enemy_hp, enemy_stats, bound) in
                     enemy_set.p0().iter()
                 {
                     if *enemy_team == *team || !enemy_hp.is_alive() {
                         continue;
                     }
-                    if flat_distance(aim, enemy_tf.translation) <= aoe {
+                    let b = bound.map(|r| r.0).unwrap_or(scale::HERO_BOUND);
+                    if flat_distance(aim, enemy_tf.translation) <= aoe + b {
                         let amount = apply_damage(ground_damage, DamageType::Magical, enemy_stats);
                         commands.entity(enemy_entity).insert(PendingDamage { amount });
                         if ability == AbilityId::Meteor {
@@ -769,7 +776,7 @@ fn tick_ability_casting(
                     }
                 }
                 for enemy in meteor_hits {
-                    if let Ok((mut st, mut st_stats)) = enemy_set.p2().get_mut(enemy) {
+                    if let Ok((mut st, mut st_stats)) = enemy_set.p1().get_mut(enemy) {
                         apply_stun(&mut st, &mut st_stats, 1.1);
                     }
                 }
@@ -784,12 +791,12 @@ fn tick_ability_casting(
                     &transform,
                     *team,
                     &slot,
-                    &enemy_set.p1(),
+                    &enemy_set.p0(),
                     &mut stats,
                     &mut statuses,
                 );
                 for (enemy, id) in hits {
-                    if let Ok((mut st, mut st_stats)) = enemy_set.p2().get_mut(enemy) {
+                    if let Ok((mut st, mut st_stats)) = enemy_set.p1().get_mut(enemy) {
                         if id == AbilityId::FrostNova {
                             apply_root(&mut st, &mut st_stats, 1.4);
                         }

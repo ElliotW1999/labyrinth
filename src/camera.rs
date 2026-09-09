@@ -13,7 +13,10 @@ impl Plugin for CameraPlugin {
         app.init_resource::<CameraRig>()
             .init_resource::<CameraFocus>()
             .add_systems(Startup, spawn_camera)
-            .add_systems(Update, (pan_camera_focus, position_camera).chain());
+            .add_systems(
+                Update,
+                (pan_camera_focus, position_camera, sync_camera_visible_x).chain(),
+            );
     }
 }
 
@@ -23,16 +26,20 @@ pub struct CameraRig {
     pub back: f32,
     pub pan_speed: f32,
     pub edge_size: f32,
+    /// World units of X visible through the focus plane.
+    pub visible_x: f32,
 }
 
 impl Default for CameraRig {
     fn default() -> Self {
+        // Height/back chosen so a ~16:9 view at 45° vfov is near VISIBLE_WORLD_X;
+        // `sync_camera_visible_x` then tunes vertical FOV to the live aspect.
         Self {
-            // Slightly closer to the ground than the original u(42) rig.
-            height: scale::u(42.0) * 0.9,
-            back: scale::u(18.0),
-            pan_speed: scale::u(36.0),
-            edge_size: 28.0, // screen pixels
+            height: 2_200.0,
+            back: 1_050.0,
+            pan_speed: 1_400.0,
+            edge_size: 28.0,
+            visible_x: scale::VISIBLE_WORLD_X,
         }
     }
 }
@@ -47,7 +54,7 @@ pub struct CameraFocus {
 impl Default for CameraFocus {
     fn default() -> Self {
         Self {
-            position: scale::v(-44.0, 0.0, -44.0),
+            position: scale::ground(-44.0, -44.0),
         }
     }
 }
@@ -57,11 +64,9 @@ pub struct GameCamera;
 
 fn spawn_camera(mut commands: Commands, rig: Res<CameraRig>, focus: Res<CameraFocus>) {
     let eye = focus.position + Vec3::new(0.0, rig.height, rig.back);
-    // Default Bevy far plane is 1000 — too short for the scaled MOBA world
-    // (eye↔focus ≈ 1200+). Towers/trees near that boundary flicker as you pan.
     let projection = PerspectiveProjection {
         near: 2.0,
-        far: 16_000.0,
+        far: 80_000.0,
         ..default()
     };
     commands.spawn((
@@ -81,7 +86,6 @@ fn pan_camera_focus(
     hero: Query<&Transform, With<PlayerHero>>,
     mut focus: ResMut<CameraFocus>,
 ) {
-    // F snaps once to the hero without enabling continuous follow.
     if keys.just_pressed(KeyCode::KeyF) {
         if let Ok(hero_tf) = hero.single() {
             focus.position = Vec3::new(hero_tf.translation.x, 0.0, hero_tf.translation.z);
@@ -137,4 +141,29 @@ fn position_camera(
     let eye = focus.position + Vec3::new(0.0, rig.height, rig.back);
     cam_tf.translation = eye;
     cam_tf.look_at(focus.position, Vec3::Y);
+}
+
+/// Keep horizontal coverage at the focus plane ≈ [`CameraRig::visible_x`].
+fn sync_camera_visible_x(
+    rig: Res<CameraRig>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut camera: Query<&mut Projection, With<GameCamera>>,
+) {
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let aspect = (window.width() / window.height().max(1.0)).max(0.1);
+    let slant = (rig.height * rig.height + rig.back * rig.back).sqrt().max(1.0);
+    // W_x = 2 * R * tan(vfov/2) * aspect  →  vfov = 2 atan(W_x / (2 R aspect))
+    let half = (rig.visible_x / (2.0 * slant * aspect)).atan();
+    let vfov = (2.0 * half).clamp(0.15, 2.8);
+
+    let Ok(mut projection) = camera.single_mut() else {
+        return;
+    };
+    if let Projection::Perspective(persp) = projection.as_mut() {
+        persp.fov = vfov;
+        persp.far = 80_000.0;
+        persp.near = 2.0;
+    }
 }
