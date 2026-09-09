@@ -20,17 +20,13 @@ impl Plugin for UnitsPlugin {
     }
 }
 
-/// Capsule mesh diameter used for selection boxes (before per-creep scale).
-fn unit_model_diameter() -> f32 {
-    scale::body(0.35) * 2.0
-}
-
-fn tower_model_diameter() -> f32 {
-    scale::body(0.7) * 2.0
-}
-
 fn ancient_model_side() -> f32 {
     scale::body(3.5)
+}
+
+/// Place a model so its cuboid rests on the ground (center at half height).
+fn grounded(position: Vec3, model_height: f32) -> Vec3 {
+    Vec3::new(position.x, model_height * 0.5, position.z)
 }
 
 /// Spawn a playable hero. `local` adds `PlayerHero` (this machine's controlled unit).
@@ -56,12 +52,11 @@ pub fn spawn_hero_entity(
         format!("Remote {} ({team:?})", hero.name())
     };
 
-    let model_d = unit_model_diameter();
     let mut entity = commands.spawn((
         Name::new(name),
-        Mesh3d(assets.unit_mesh.clone()),
+        Mesh3d(assets.hero_mesh.clone()),
         MeshMaterial3d(mat),
-        Transform::from_translation(position),
+        Transform::from_translation(grounded(position, scale::HERO_MODEL_HEIGHT)),
         team,
         NetworkedHero,
         NetworkId(network_id),
@@ -78,7 +73,7 @@ pub fn spawn_hero_entity(
         BoundRadius(scale::HERO_BOUND),
         CollisionRadius(scale::HERO_COLLISION),
         SelectionBox {
-            half_extent: scale::selection_half(model_d, model_d),
+            half_extent: scale::selection_half(scale::HERO_MODEL_WIDTH, scale::HERO_MODEL_DEPTH),
         },
         GoldBounty(0),
         attrs,
@@ -116,8 +111,6 @@ pub fn spawn_creep(
     } else {
         format!("{team:?} Creep ({lane:?})")
     };
-    let mesh_scale = if ranged { 0.7 } else { 0.75 };
-    let model_d = unit_model_diameter() * mesh_scale;
     let (bound, collision) = if ranged {
         (scale::RANGED_CREEP_BOUND, scale::RANGED_CREEP_COLLISION)
     } else {
@@ -127,10 +120,9 @@ pub fn spawn_creep(
     let id = commands
         .spawn((
             Name::new(name),
-            Mesh3d(assets.unit_mesh.clone()),
+            Mesh3d(assets.creep_mesh.clone()),
             MeshMaterial3d(mat),
-            Transform::from_translation(position + Vec3::Y * scale::body(0.7))
-                .with_scale(Vec3::splat(mesh_scale)),
+            Transform::from_translation(grounded(position, scale::CREEP_MODEL_HEIGHT)),
             team,
             Creep { lane },
             Health::new(if ranged { 240.0 } else { 280.0 }),
@@ -149,7 +141,7 @@ pub fn spawn_creep(
         BoundRadius(bound),
         CollisionRadius(collision),
         SelectionBox {
-            half_extent: scale::selection_half(model_d, model_d),
+            half_extent: scale::selection_half(scale::CREEP_MODEL_WIDTH, scale::CREEP_MODEL_DEPTH),
         },
         GoldBounty(35),
         XpBounty(45),
@@ -178,13 +170,13 @@ pub fn spawn_tower(
         Team::Dire => assets.tower_dire_accent_mat.clone(),
     };
 
-    let model_d = tower_model_diameter();
+    let half_h = scale::TOWER_MODEL_HEIGHT * 0.5;
     commands
         .spawn((
             Name::new(format!("{team:?} Tower ({lane:?})")),
             Mesh3d(assets.tower_mesh.clone()),
             MeshMaterial3d(mat),
-            Transform::from_translation(position),
+            Transform::from_translation(grounded(position, scale::TOWER_MODEL_HEIGHT)),
             team,
             Tower,
             lane,
@@ -194,7 +186,10 @@ pub fn spawn_tower(
             BoundRadius(scale::TOWER_BOUND),
             CollisionRadius(scale::TOWER_COLLISION),
             SelectionBox {
-                half_extent: scale::selection_half(model_d, model_d),
+                half_extent: scale::selection_half(
+                    scale::TOWER_MODEL_WIDTH,
+                    scale::TOWER_MODEL_DEPTH,
+                ),
             },
             GoldBounty(120),
             XpBounty(150),
@@ -203,12 +198,12 @@ pub fn spawn_tower(
             parent.spawn((
                 Mesh3d(assets.tower_base_mesh.clone()),
                 MeshMaterial3d(accent.clone()),
-                Transform::from_xyz(0.0, scale::body(-1.4), 0.0),
+                Transform::from_xyz(0.0, -half_h + scale::TOWER_MODEL_HEIGHT * 0.06, 0.0),
             ));
             parent.spawn((
                 Mesh3d(assets.tower_cap_mesh.clone()),
                 MeshMaterial3d(accent),
-                Transform::from_xyz(0.0, scale::body(2.0), 0.0),
+                Transform::from_xyz(0.0, half_h + scale::TOWER_MODEL_HEIGHT * 0.08, 0.0),
             ));
         });
 }
@@ -287,19 +282,41 @@ fn attach_mobile_unit_details(
         Team::Dire => assets.dire_mat.clone(),
     };
 
+    let (nose_y, nose_z, shoulder_y) = if hero {
+        (
+            scale::HERO_MODEL_HEIGHT * 0.12,
+            -scale::HERO_MODEL_DEPTH * 0.42,
+            scale::HERO_MODEL_HEIGHT * 0.18,
+        )
+    } else {
+        (
+            scale::CREEP_MODEL_HEIGHT * 0.12,
+            -scale::CREEP_MODEL_DEPTH * 0.42,
+            0.0,
+        )
+    };
+
     commands.entity(entity).with_children(|parent| {
         parent.spawn((
             Name::new("FacingNose"),
             Mesh3d(assets.facing_nose_mesh.clone()),
             MeshMaterial3d(accent),
-            Transform::from_xyz(0.0, scale::body(0.35), scale::body(-0.55)),
+            Transform::from_xyz(0.0, nose_y, nose_z).with_scale(if hero {
+                Vec3::ONE
+            } else {
+                Vec3::new(
+                    scale::CREEP_MODEL_WIDTH / scale::HERO_MODEL_WIDTH,
+                    scale::CREEP_MODEL_HEIGHT / scale::HERO_MODEL_HEIGHT,
+                    scale::CREEP_MODEL_DEPTH / scale::HERO_MODEL_DEPTH,
+                )
+            }),
         ));
         if hero {
             parent.spawn((
                 Name::new("Shoulders"),
                 Mesh3d(assets.unit_shoulder_mesh.clone()),
                 MeshMaterial3d(body),
-                Transform::from_xyz(0.0, scale::body(0.55), 0.0),
+                Transform::from_xyz(0.0, shoulder_y, 0.0),
             ));
         }
     });
