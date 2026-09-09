@@ -4,7 +4,7 @@ use bevy::prelude::*;
 
 use crate::camera::GameCamera;
 use crate::components::{
-    CollisionRadius, HasHealthBar, Health, HealthBar, HealthBarFill, WorldHeroNameLabel,
+    HasHealthBar, Health, HealthBar, HealthBarFill, SelectionBox, WorldHeroNameLabel,
     WorldNameLayer,
 };
 use crate::heroes::HeroKind;
@@ -33,15 +33,15 @@ fn attach_health_bars(
     mut commands: Commands,
     assets: Res<SharedAssets>,
     units: Query<
-        (Entity, Option<&CollisionRadius>, Option<&HeroKind>),
+        (Entity, Option<&SelectionBox>, Option<&HeroKind>),
         (With<Health>, Without<HasHealthBar>),
     >,
     layer: Query<Entity, With<WorldNameLayer>>,
 ) {
     let layer_entity = layer.single().ok();
 
-    for (entity, radius, hero_kind) in &units {
-        let width = bar_width(radius);
+    for (entity, selection, hero_kind) in &units {
+        let width = bar_width(selection);
 
         commands
             .spawn((
@@ -94,7 +94,7 @@ fn attach_health_bars(
 }
 
 fn sync_health_bars(
-    owners: Query<(&Health, &GlobalTransform, Option<&CollisionRadius>), Without<HealthBar>>,
+    owners: Query<(&Health, &GlobalTransform, Option<&SelectionBox>), Without<HealthBar>>,
     mut bars: Query<(&HealthBar, &mut Transform, &Children), With<HealthBar>>,
     mut fills: Query<&mut Transform, (With<HealthBarFill>, Without<HealthBar>)>,
     mut backgrounds: Query<
@@ -106,12 +106,12 @@ fn sync_health_bars(
     let mut bg_updates: Vec<(Entity, f32)> = Vec::new();
 
     for (bar, mut bar_tf, children) in &mut bars {
-        let Ok((health, owner_gt, radius)) = owners.get(bar.owner) else {
+        let Ok((health, owner_gt, selection)) = owners.get(bar.owner) else {
             continue;
         };
 
-        let height = bar_height(radius);
-        let width = bar_width(radius);
+        let height = bar_height(selection);
+        let width = bar_width(selection);
         let owner_pos = owner_gt.translation();
         bar_tf.translation = owner_pos + Vec3::Y * height;
         // Keep axis-aligned — do not rotate with the camera.
@@ -150,7 +150,7 @@ fn sync_health_bars(
 fn sync_world_hero_names(
     camera: Query<(&Camera, &GlobalTransform), With<GameCamera>>,
     owners: Query<
-        (&GlobalTransform, &HeroKind, Option<&CollisionRadius>, &Visibility),
+        (&GlobalTransform, &HeroKind, Option<&SelectionBox>, &Visibility),
         Without<WorldHeroNameLabel>,
     >,
     mut labels: Query<(&WorldHeroNameLabel, &mut Node, &mut Visibility, &mut Text)>,
@@ -160,7 +160,7 @@ fn sync_world_hero_names(
     };
 
     for (label, mut node, mut vis, mut text) in &mut labels {
-        let Ok((owner_gt, kind, radius, owner_vis)) = owners.get(label.owner) else {
+        let Ok((owner_gt, kind, selection, owner_vis)) = owners.get(label.owner) else {
             *vis = Visibility::Hidden;
             continue;
         };
@@ -170,7 +170,7 @@ fn sync_world_hero_names(
         }
 
         let world_pos =
-            owner_gt.translation() + Vec3::Y * (bar_height(radius) + scale::u(0.85));
+            owner_gt.translation() + Vec3::Y * (bar_height(selection) + scale::HEALTH_BAR_BG_THICKNESS);
         let Ok(screen) = camera.world_to_viewport(cam_gt, world_pos) else {
             *vis = Visibility::Hidden;
             continue;
@@ -208,15 +208,21 @@ fn cull_orphan_world_names(
     }
 }
 
-/// Bar width ≈ unit diameter so it sits over the body without dwarfing it.
-fn bar_width(radius: Option<&CollisionRadius>) -> f32 {
-    let r = radius.map(|u| u.0).unwrap_or(scale::HERO_COLLISION);
-    (r * 2.4).clamp(scale::body(1.0), scale::body(8.0))
+/// Bar width tracks the unit's selection footprint (≈ model width).
+fn bar_width(selection: Option<&SelectionBox>) -> f32 {
+    let half = selection
+        .map(|s| s.half_extent)
+        .unwrap_or(scale::HERO_MODEL_WIDTH * 0.5);
+    (half * 2.2).clamp(scale::CREEP_MODEL_WIDTH * 0.8, scale::TOWER_MODEL_WIDTH * 1.4)
 }
 
-fn bar_height(radius: Option<&CollisionRadius>) -> f32 {
-    let r = radius.map(|u| u.0).unwrap_or(scale::HERO_COLLISION);
-    r * 2.6 + scale::body(1.0)
+/// Offset from unit center to just above the model top.
+/// Models are 2× as tall as they are wide, so half-height ≈ selection half_extent.
+fn bar_height(selection: Option<&SelectionBox>) -> f32 {
+    let half = selection
+        .map(|s| s.half_extent)
+        .unwrap_or(scale::HERO_MODEL_WIDTH * 0.5);
+    half * 2.0 + scale::HEALTH_BAR_BG_THICKNESS * 0.75
 }
 
 

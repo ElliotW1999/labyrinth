@@ -992,9 +992,9 @@ fn spawn_dash_ghosts(
         let pos = from.lerp(to, t) + Vec3::Y * scale::u(0.9);
         commands.spawn((
             Name::new("Dash Ghost"),
-            Mesh3d(assets.unit_mesh.clone()),
+            Mesh3d(assets.hero_mesh.clone()),
             MeshMaterial3d(assets.dash_ghost_mat.clone()),
-            // unit_mesh is already in world units — do not multiply by scale::u again.
+            // hero_mesh is already in world units — do not multiply by scale::u again.
             Transform::from_translation(pos).with_scale(Vec3::splat(0.9)),
             SpellFx {
                 age: 0.0,

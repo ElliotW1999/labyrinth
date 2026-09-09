@@ -33,7 +33,10 @@ impl Default for MatchConfig {
 
 #[derive(Resource, Default)]
 pub struct SharedAssets {
+    /// Alias for [`Self::hero_mesh`] (dash ghosts, legacy call sites).
     pub unit_mesh: Handle<Mesh>,
+    pub hero_mesh: Handle<Mesh>,
+    pub creep_mesh: Handle<Mesh>,
     pub unit_shoulder_mesh: Handle<Mesh>,
     pub facing_nose_mesh: Handle<Mesh>,
     pub tower_mesh: Handle<Mesh>,
@@ -88,17 +91,43 @@ pub(crate) fn load_shared_assets(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    // Body meshes use `body()` so they track the tree-radius anchor (not attack ranges).
-    assets.unit_mesh = meshes.add(Capsule3d::new(scale::body(0.35), scale::body(0.9)));
-    // Shoulders / arms — sit beside the capsule to break the silhouette.
-    assets.unit_shoulder_mesh =
-        meshes.add(Cuboid::new(scale::body(0.85), scale::body(0.28), scale::body(0.28)));
+    // Unit bodies are explicit world-size cuboids (see scale::*_MODEL_*).
+    assets.hero_mesh = meshes.add(Cuboid::new(
+        scale::HERO_MODEL_WIDTH,
+        scale::HERO_MODEL_HEIGHT,
+        scale::HERO_MODEL_DEPTH,
+    ));
+    assets.creep_mesh = meshes.add(Cuboid::new(
+        scale::CREEP_MODEL_WIDTH,
+        scale::CREEP_MODEL_HEIGHT,
+        scale::CREEP_MODEL_DEPTH,
+    ));
+    assets.unit_mesh = assets.hero_mesh.clone();
+    // Shoulders / arms — sit beside the hero cuboid to break the silhouette.
+    assets.unit_shoulder_mesh = meshes.add(Cuboid::new(
+        scale::HERO_MODEL_WIDTH * 0.95,
+        scale::HERO_MODEL_HEIGHT * 0.12,
+        scale::HERO_MODEL_DEPTH * 0.28,
+    ));
     // Facing marker — elongated along local -Z (Bevy forward after yaw).
-    assets.facing_nose_mesh =
-        meshes.add(Cuboid::new(scale::body(0.22), scale::body(0.18), scale::body(0.7)));
-    assets.tower_mesh = meshes.add(Cylinder::new(scale::body(0.7), scale::body(3.2)));
-    assets.tower_cap_mesh = meshes.add(Cone::new(scale::body(0.95), scale::body(1.1)));
-    assets.tower_base_mesh = meshes.add(Cylinder::new(scale::body(1.15), scale::body(0.35)));
+    assets.facing_nose_mesh = meshes.add(Cuboid::new(
+        scale::HERO_MODEL_WIDTH * 0.22,
+        scale::HERO_MODEL_HEIGHT * 0.12,
+        scale::HERO_MODEL_DEPTH * 0.55,
+    ));
+    assets.tower_mesh = meshes.add(Cuboid::new(
+        scale::TOWER_MODEL_WIDTH,
+        scale::TOWER_MODEL_HEIGHT,
+        scale::TOWER_MODEL_DEPTH,
+    ));
+    assets.tower_cap_mesh = meshes.add(Cone::new(
+        scale::TOWER_MODEL_WIDTH * 0.55,
+        scale::TOWER_MODEL_HEIGHT * 0.28,
+    ));
+    assets.tower_base_mesh = meshes.add(Cylinder::new(
+        scale::TOWER_MODEL_WIDTH * 0.62,
+        scale::TOWER_MODEL_HEIGHT * 0.12,
+    ));
     assets.ancient_mesh = meshes.add(Cuboid::new(
         scale::body(3.5),
         scale::body(2.5),
@@ -114,10 +143,11 @@ pub(crate) fn load_shared_assets(
         meshes.add(Cuboid::new(scale::body(0.18), scale::body(0.18), scale::body(0.85)));
     // Unit cuboid (X=thickness, Y=height, Z=length). Scaled per-slash to attack range.
     assets.melee_slash_mesh = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
-    // Health bars / indicators are scaled in world units via Transform — keep mesh size = 1.
-    // Y thickness is ~3× the prior readable size for the high MOBA camera.
-    assets.health_bar_bg_mesh = meshes.add(Cuboid::new(1.0, 9.6, 0.55));
-    assets.health_bar_fill_mesh = meshes.add(Cuboid::new(1.0, 8.1, 0.65));
+    // Health bars / indicators are scaled in world units via Transform — keep mesh size = 1 on X.
+    // Y thickness tracks the larger unit models.
+    assets.health_bar_bg_mesh = meshes.add(Cuboid::new(1.0, scale::HEALTH_BAR_BG_THICKNESS, 0.55));
+    assets.health_bar_fill_mesh =
+        meshes.add(Cuboid::new(1.0, scale::HEALTH_BAR_FILL_THICKNESS, 0.65));
 
     assets.radiant_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.25, 0.55, 0.95),
