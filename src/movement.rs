@@ -1,4 +1,9 @@
-//! Locomotion with tree, building, and unit collision.
+//! Locomotion: follow the planned [`NavPath`], sidestep units with local
+//! avoidance, then resolve tree, building, and unit collision.
+//!
+//! Static obstacles are avoided by planning (see [`crate::navigation`]); the
+//! collision passes below are a safety net that keeps the hard non-overlap rules,
+//! not the mechanism units use to find their way around things.
 
 use bevy::prelude::*;
 
@@ -6,41 +11,97 @@ use crate::components::{
     AbilityCasting, Ancient, AttackMoveOrder, AttackSwing, AttackTarget, CollisionRadius,
     CombatStats, MoveTarget, Obstacle, ObstacleShape, QueuedAbilityCast, Tower,
 };
-use crate::dimensions::{center_distance as flat_distance, collision_of, needs_to_close};
+use crate::dimensions::{center_distance as flat_distance, collision_of};
 use crate::facing::turn_toward;
 use crate::items::StatusEffects;
+use crate::navigation::avoidance::{avoid, Neighbor};
+use crate::navigation::{
+    flat, ground, plan_paths, sync_nav_grid, DynamicBlocker, MobileFilter, NavGrid, NavPath,
+    NavSteering,
+};
+
+/// Ordering of the simulation's order → AI → navigation/locomotion stages.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub enum SimSet {
+    /// Unit command queues turn player / network commands into orders.
+    Commands,
+    /// AI and attack positioning write `MoveTarget`s.
+    Ai,
+    /// Path planning, path following, avoidance, collision.
+    Movement,
+}
+
+/// Distance at which the final waypoint counts as reached.
+const ARRIVE_DIST: f32 = 6.0;
+/// Consecutive stuck windows before a unit near its goal accepts where it is.
+const GIVE_UP_STUCK: u32 = 4;
+/// How far ahead stationary units are considered by avoidance (plus radii).
+const AVOID_LOOKAHEAD: f32 = 140.0;
 
 pub struct MovementPlugin;
 
 impl Plugin for MovementPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            Update,
-            (
-                apply_move_targets,
-                resolve_obstacle_collisions,
-                resolve_building_collisions,
-                resolve_unit_collisions,
-            )
-                .chain()
-                .run_if(crate::net::is_sim_authority),
-        );
+        app.init_resource::<NavGrid>()
+            .configure_sets(Update, (SimSet::Commands, SimSet::Ai, SimSet::Movement).chain())
+            .add_systems(
+                Update,
+                (
+                    sync_nav_grid,
+                    plan_paths,
+                    apply_move_targets,
+                    resolve_obstacle_collisions,
+                    resolve_building_collisions,
+                    resolve_unit_collisions,
+                )
+                    .chain()
+                    .in_set(SimSet::Movement)
+                    .run_if(crate::net::is_sim_authority),
+            );
     }
 }
 
-fn apply_move_targets(
+/// Snapshot of a unit for avoidance.
+struct UnitSnap {
+    entity: Entity,
+    pos: Vec2,
+    radius: f32,
+    stationary: bool,
+}
+
+type MoverQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static mut Transform,
+        &'static CombatStats,
+        &'static MoveTarget,
+        Option<&'static CollisionRadius>,
+        Option<&'static StatusEffects>,
+        Option<&'static mut NavPath>,
+        Option<&'static mut NavSteering>,
+    ),
+    MobileFilter,
+>;
+
+type SnapQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static Transform,
+        &'static CollisionRadius,
+        Option<&'static StatusEffects>,
+        Has<MoveTarget>,
+    ),
+    (MobileFilter, With<CombatStats>),
+>;
+
+pub fn apply_move_targets(
     time: Res<Time>,
-    mut movers: Query<
-        (
-            Entity,
-            &mut Transform,
-            &CombatStats,
-            &MoveTarget,
-            Option<&CollisionRadius>,
-            Option<&StatusEffects>,
-        ),
-        (Without<Tower>, Without<Ancient>, Without<Obstacle>),
-    >,
+    grid: Res<NavGrid>,
+    mut units: ParamSet<(MoverQuery, SnapQuery)>,
     obstacles: Query<(&Transform, &Obstacle), Without<MoveTarget>>,
     buildings: Query<
         (&Transform, &CollisionRadius),
@@ -64,8 +125,19 @@ fn apply_move_targets(
             ObstacleShape::Circle { .. } => None,
         })
         .collect();
+    let snaps: Vec<UnitSnap> = units
+        .p1()
+        .iter()
+        .filter(|(_, _, c, statuses, _)| c.0 > 0.0 && !statuses.is_some_and(|s| s.is_phased()))
+        .map(|(entity, tf, c, _, moving)| UnitSnap {
+            entity,
+            pos: flat(tf.translation),
+            radius: c.0,
+            stationary: !moving,
+        })
+        .collect();
 
-    for (entity, mut transform, stats, target, radius, statuses) in &mut movers {
+    for (entity, mut transform, stats, target, radius, statuses, mut path, mut steering) in &mut units.p0() {
         if stats.move_speed <= 0.0 {
             continue;
         }
@@ -75,42 +147,113 @@ fn apply_move_targets(
         }
 
         let unit_r = collision_of(radius);
-        let mut destination = target.position;
-        destination.y = transform.translation.y;
+        let pos = flat(transform.translation);
+        let step = stats.move_speed * dt;
 
-        let to_target = destination - transform.translation;
-        let distance = to_target.length();
-        if distance < 4.0 {
+        // Steer at the current waypoint; without a plan yet, head straight for the order.
+        let (waypoint, is_final) = match path.as_deref_mut() {
+            Some(path) => {
+                // Skip ahead on line of sight, but never cut through standing units:
+                // a stuck replan may have routed around them on purpose.
+                if !path.is_final() {
+                    let skip_to = flat(path.waypoints[path.index + 1]);
+                    let standing: Vec<DynamicBlocker> = snaps
+                        .iter()
+                        .filter(|s| {
+                            s.stationary
+                                && s.entity != entity
+                                && s.pos.distance(pos) < pos.distance(skip_to) + s.radius
+                        })
+                        .map(|s| DynamicBlocker {
+                            center: s.pos,
+                            radius: s.radius,
+                        })
+                        .collect();
+                    if grid.segment_clear(pos, skip_to, unit_r, &standing) {
+                        path.index += 1;
+                    }
+                }
+                while !path.is_final()
+                    && flat(path.waypoints[path.index]).distance(pos) <= step.max(16.0)
+                {
+                    path.index += 1;
+                }
+                (path.current().unwrap_or(target.position), path.is_final())
+            }
+            None => (target.position, true),
+        };
+        let waypoint = flat(waypoint);
+        let to_waypoint = waypoint - pos;
+        let distance = to_waypoint.length();
+        if is_final && distance < 4.0 {
             commands.entity(entity).remove::<MoveTarget>();
             continue;
         }
+        if distance < 1e-3 {
+            continue;
+        }
+        let desired = to_waypoint / distance;
 
-        let dir = to_target / distance;
-        let facing = turn_toward(&mut transform, dir, stats.turn_rate, dt);
+        let phased = statuses.is_some_and(|s| s.is_phased());
+        let prev_side = steering.as_deref().map_or(0.0, |s| s.side);
+        let avoidance = if phased {
+            Default::default()
+        } else {
+            let neighbors: Vec<Neighbor> = snaps
+                .iter()
+                .filter(|s| s.entity != entity && s.pos.distance(pos) < AVOID_LOOKAHEAD + s.radius + unit_r + 40.0)
+                .map(|s| Neighbor {
+                    pos: s.pos,
+                    radius: s.radius,
+                    stationary: s.stationary,
+                })
+                .collect();
+            avoid(pos, unit_r, desired, AVOID_LOOKAHEAD.min(distance + 40.0), prev_side, &neighbors)
+        };
+        if let Some(steering) = steering.as_deref_mut() {
+            steering.avoidance = ground(avoidance.offset);
+            steering.side = avoidance.side;
+        }
+        let mut dir = (desired + avoidance.offset).normalize_or(desired);
+
+        let facing = turn_toward(&mut transform, ground(dir), stats.turn_rate, dt);
         if !facing {
             continue;
         }
 
-        let step = stats.move_speed * dt;
-        let mut next = if step >= distance {
-            destination
-        } else {
-            transform.translation + dir * step
-        };
+        let travel = if is_final { step.min(distance) } else { step };
+        let mut next = pos + dir * travel;
+        // Avoidance must never steer into static geometry; fall back to the planned line.
+        if avoidance.side != 0.0 && !grid.point_clear(next, unit_r) {
+            dir = desired;
+            next = pos + dir * travel;
+        }
+        let mut next3 = Vec3::new(next.x, transform.translation.y, next.y);
+        next3 = separate_from_circles(next3, unit_r, &circles);
+        next3 = separate_from_aabbs(next3, unit_r, &aabbs);
 
-        next = separate_from_circles(next, unit_r, &circles);
-        next = separate_from_aabbs(next, unit_r, &aabbs);
-        if flat_distance(destination, next) > 0.01
-            && is_blocked(destination, unit_r, &circles, &aabbs)
-            && flat_distance(transform.translation, next) < 1.5
+        let goal = path.as_deref().map_or(target.position, |p| p.goal);
+        if flat_distance(goal, next3) > 0.01
+            && is_blocked(Vec3::new(goal.x, next3.y, goal.z), unit_r, &circles, &aabbs)
+            && flat_distance(transform.translation, next3) < 1.5
         {
             commands.entity(entity).remove::<MoveTarget>();
             continue;
         }
+        transform.translation = next3;
 
-        transform.translation = next;
+        if let Some(path) = path.as_deref_mut() {
+            if path.stuck.update(transform.translation, dt, travel) {
+                path.request_replan();
+                let near_goal = flat_distance(transform.translation, goal) < unit_r * 3.0 + 120.0;
+                if near_goal && path.stuck.count >= GIVE_UP_STUCK {
+                    commands.entity(entity).remove::<MoveTarget>();
+                    continue;
+                }
+            }
+        }
 
-        if flat_distance(transform.translation, destination) < 6.0 {
+        if is_final && flat_distance(transform.translation, ground(waypoint)) < ARRIVE_DIST {
             commands.entity(entity).remove::<MoveTarget>();
         }
     }
@@ -359,31 +502,19 @@ pub fn order_hero_stop(commands: &mut Commands, hero: Entity) {
         .remove::<AbilityCasting>();
 }
 
-/// Order a unit to attack another, walking until it is within attack range.
-pub fn order_attack_unit(
-    commands: &mut Commands,
-    attacker: Entity,
-    attacker_pos: Vec3,
-    attacker_bounds: f32,
-    attack_range: f32,
-    target: Entity,
-    target_pos: Vec3,
-    target_bounds: f32,
-) {
+/// Order a unit to attack another. Approach (if out of range) is handled by
+/// [`crate::navigation::attack_position::assign_attack_positions`], which picks a
+/// free spot within range rather than the target's center.
+pub fn order_attack_unit(commands: &mut Commands, attacker: Entity, target: Entity) {
     commands
         .entity(attacker)
         .insert(AttackTarget(target))
         .remove::<AttackSwing>()
         .remove::<AbilityCasting>()
         .remove::<AttackMoveOrder>()
-        .remove::<QueuedAbilityCast>();
-    if needs_to_close(attacker_pos, attacker_bounds, target_pos, target_bounds, attack_range) {
-        commands.entity(attacker).insert(MoveTarget {
-            position: Vec3::new(target_pos.x, 0.0, target_pos.z),
-        });
-    } else {
-        commands.entity(attacker).remove::<MoveTarget>();
-    }
+        .remove::<QueuedAbilityCast>()
+        .remove::<MoveTarget>()
+        .remove::<crate::navigation::attack_position::AttackPositionGoal>();
 }
 
 pub fn order_attack_move(commands: &mut Commands, hero: Entity, destination: Vec3) {
