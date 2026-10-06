@@ -3,7 +3,7 @@
 use bevy::prelude::*;
 
 use crate::components::{
-    AbilityId, AbilityLoadout, AbilitySlot, CombatStats, Health, HeroAttributes, Mana, Team,
+    AbilityId, AbilityLoadout, CombatStats, Health, HeroAttributes, Mana, Team,
 };
 use crate::dimensions::UnitDimensions;
 use crate::net::{NetConfig, NetMode, NetSession};
@@ -305,14 +305,7 @@ impl HeroId {
 
     pub fn loadout(self) -> AbilityLoadout {
         let abilities = self.def().abilities;
-        AbilityLoadout {
-            slots: [
-                AbilitySlot::fresh(abilities[0]),
-                AbilitySlot::fresh(abilities[1]),
-                AbilitySlot::fresh(abilities[2]),
-                AbilitySlot::fresh(abilities[3]),
-            ],
-        }
+        AbilityLoadout::from_abilities(abilities)
     }
 }
 

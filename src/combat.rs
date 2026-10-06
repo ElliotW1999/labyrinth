@@ -10,7 +10,7 @@ use crate::basic_attack::{
     tick_attack_swings,
 };
 use crate::components::{
-    AttackCooldown, BoundRadius, CombatStats, DamageType, GoldBounty, Health, HeroProgress,
+    AbilityId, AttackCooldown, BoundRadius, CombatStats, DamageType, GoldBounty, Health, HeroProgress,
     Lifetime, PlayerHero, PlayerWallet, Projectile, ProjectileHome, ProjectileStyle, Team,
     XpBounty,
 };
@@ -27,6 +27,8 @@ impl Plugin for CombatPlugin {
             .add_message::<BasicAttackReleaseEvent>()
             .add_message::<BasicAttackImpactEvent>()
             .add_message::<DamageEvent>()
+            .add_message::<SpawnProjectileEvent>()
+            .add_message::<ProjectileHitEvent>()
             .add_systems(
                 Update,
                 (ensure_attack_range_ring, sync_attack_range_ring).chain(),
@@ -45,6 +47,7 @@ impl Plugin for CombatPlugin {
                     sync_attack_projectile_visuals,
                     fly_projectiles,
                     apply_projectile_hits,
+                    resolve_projectile_hits,
                     apply_damage_events,
                     tick_lifetimes,
                     despawn_dead,
@@ -150,8 +153,56 @@ struct GroundBoltImpact;
 #[derive(Component, Debug, Clone, Copy)]
 struct ProjectileReachedTarget;
 
+/// Ability that fired a spell projectile; lets on-hit effects resolve against its definition.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct ProjectilePayload {
+    pub caster: Entity,
+    pub ability: AbilityId,
+    pub rank: u32,
+    /// Index of the `SpawnProjectile` effect within the ability's effect list
+    /// (`None` for projectiles spawned by custom behaviors or nested effects).
+    pub effect_index: Option<usize>,
+}
+
+/// A spell projectile struck `target` (primary homing hit or splash).
+#[derive(Message, Debug, Clone, Copy, PartialEq)]
+pub struct ProjectileHitEvent {
+    pub target: Entity,
+    pub team: Team,
+    pub impact: Vec3,
+    /// Raw damage after the splash ratio.
+    pub damage: f32,
+    pub damage_type: DamageType,
+    pub primary: bool,
+    pub payload: Option<ProjectilePayload>,
+}
+
+/// Request to spawn a spell projectile (homing when `target` is set).
+#[derive(Message, Debug, Clone, Copy, PartialEq)]
+pub struct SpawnProjectileEvent {
+    pub team: Team,
+    pub origin: Vec3,
+    pub target: Option<Entity>,
+    pub target_pos: Vec3,
+    pub damage: f32,
+    pub damage_type: DamageType,
+    pub splash_radius: f32,
+    pub payload: Option<ProjectilePayload>,
+}
+
+pub fn spawn_requested_projectiles(
+    mut commands: Commands,
+    assets: Res<SharedAssets>,
+    mut requests: MessageReader<SpawnProjectileEvent>,
+) {
+    for request in requests.read() {
+        spawn_spell_bolt(&mut commands, &assets, request);
+    }
+}
+
 fn apply_projectile_hits(
     mut commands: Commands,
+    mut hits: MessageWriter<ProjectileHitEvent>,
     projectiles: Query<(
         Entity,
         &Transform,
@@ -159,27 +210,34 @@ fn apply_projectile_hits(
         Option<&ProjectileHome>,
         Option<&GroundBoltImpact>,
         Option<&ProjectileReachedTarget>,
+        Option<&ProjectilePayload>,
     )>,
-    mut units: Query<(Entity, &Transform, &Team, &mut Health, &CombatStats, Option<&BoundRadius>)>,
+    units: Query<(Entity, &Transform, &Team, &Health, Option<&BoundRadius>)>,
 ) {
-    for (proj_entity, proj_tf, projectile, home, ground_impact, reached) in &projectiles {
+    for (proj_entity, proj_tf, projectile, home, ground_impact, reached, payload) in &projectiles {
         let impact = proj_tf.translation;
         let mut despawn = false;
         let mut primary_hit: Option<Entity> = None;
+        let hit = |target: Entity, damage: f32, primary: bool| ProjectileHitEvent {
+            target,
+            team: projectile.team,
+            impact,
+            damage,
+            damage_type: projectile.damage_type,
+            primary,
+            payload: payload.copied(),
+        };
 
         if let Some(home) = home {
-            for (unit_entity, unit_tf, team, mut health, stats, radius) in &mut units {
-                if unit_entity != home.target || *team == projectile.team || !health.is_alive() {
-                    continue;
-                }
+            if let Ok((unit_entity, unit_tf, team, health, radius)) = units.get(home.target) {
                 // Aim point is unit.y + body(1); keep the vertical pad in world units.
-                let vertical =
-                    (impact.y - (unit_tf.translation.y + scale::body(1.0))).abs();
-                if area_contains(impact, projectile.radius, unit_tf.translation, bounds_of(radius))
+                let vertical = (impact.y - (unit_tf.translation.y + scale::body(1.0))).abs();
+                if *team != projectile.team
+                    && health.is_alive()
+                    && area_contains(impact, projectile.radius, unit_tf.translation, bounds_of(radius))
                     && vertical < scale::body(2.5)
                 {
-                    let dmg = apply_damage(projectile.damage, projectile.damage_type, stats);
-                    health.current -= dmg;
+                    hits.write(hit(unit_entity, projectile.damage, true));
                     primary_hit = Some(unit_entity);
                     despawn = true;
                 }
@@ -193,23 +251,14 @@ fn apply_projectile_hits(
         }
 
         if despawn && projectile.splash_radius > 0.0 {
-            for (unit_entity, unit_tf, team, mut health, stats, radius) in &mut units {
-                if *team == projectile.team || !health.is_alive() {
+            let ratio = if primary_hit.is_some() { 0.45 } else { 1.0 };
+            for (unit_entity, unit_tf, team, health, radius) in &units {
+                if *team == projectile.team || !health.is_alive() || primary_hit == Some(unit_entity)
+                {
                     continue;
                 }
-                if primary_hit == Some(unit_entity) {
-                    continue;
-                }
-                if area_contains(
-                    impact,
-                    projectile.splash_radius,
-                    unit_tf.translation,
-                    bounds_of(radius),
-                ) {
-                    let ratio = if primary_hit.is_some() { 0.45 } else { 1.0 };
-                    let dmg =
-                        apply_damage(projectile.damage * ratio, projectile.damage_type, stats);
-                    health.current -= dmg;
+                if area_contains(impact, projectile.splash_radius, unit_tf.translation, bounds_of(radius)) {
+                    hits.write(hit(unit_entity, projectile.damage * ratio, false));
                 }
             }
         }
@@ -217,6 +266,20 @@ fn apply_projectile_hits(
         if despawn {
             commands.entity(proj_entity).despawn();
         }
+    }
+}
+
+fn resolve_projectile_hits(
+    mut hits: MessageReader<ProjectileHitEvent>,
+    mut damage: MessageWriter<DamageEvent>,
+) {
+    for hit in hits.read() {
+        damage.write(DamageEvent {
+            source: hit.payload.map(|p| p.caster),
+            target: hit.target,
+            amount: hit.damage,
+            damage_type: hit.damage_type,
+        });
     }
 }
 
@@ -344,16 +407,17 @@ fn sync_attack_range_ring(
     }
 }
 
-pub fn spawn_spell_bolt(
-    commands: &mut Commands,
-    assets: &SharedAssets,
-    team: Team,
-    origin: Vec3,
-    target: Option<Entity>,
-    target_pos: Vec3,
-    damage: f32,
-    splash_radius: f32,
-) {
+fn spawn_spell_bolt(commands: &mut Commands, assets: &SharedAssets, request: &SpawnProjectileEvent) {
+    let SpawnProjectileEvent {
+        team,
+        origin,
+        target,
+        target_pos,
+        damage,
+        damage_type,
+        splash_radius,
+        payload,
+    } = *request;
     let start = origin + Vec3::Y * scale::body(1.2);
     let aim = (target_pos + Vec3::Y * scale::body(1.0)) - start;
     let mut transform = Transform::from_translation(start);
@@ -372,12 +436,15 @@ pub fn spawn_spell_bolt(
             team,
             radius: scale::body(0.85),
             lifetime: 2.5,
-            damage_type: DamageType::Magical,
+            damage_type,
             splash_radius,
         },
         ProjectileStyle::SpellBolt,
         Lifetime(2.5),
     ));
+    if let Some(payload) = payload {
+        entity.insert(payload);
+    }
 
     if let Some(target) = target {
         entity.insert(ProjectileHome {

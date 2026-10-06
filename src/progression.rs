@@ -113,7 +113,8 @@ mod tests {
         assert!(loadout.try_rank_up(0, 1, &mut points));
         assert_eq!(points, 0);
         assert_eq!(loadout.slots[0].rank, 1);
-        assert!(loadout.slots[0].mana_cost > 0.0);
+        let dash = crate::abilities::catalog::builtin(loadout.slots[0].id);
+        assert!(dash.mana_cost.at(loadout.slots[0].rank) > 0.0);
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 use bevy::prelude::*;
 
-use crate::combat::{apply_damage, flat_distance};
+use crate::combat::{flat_distance, DamageEvent};
 use crate::components::{
     BoundRadius, CombatStats, DamageType, Health, Lifetime, Mana, PlayerHero, PlayerWallet,
     SpellFx, Team,
@@ -689,12 +689,14 @@ fn tick_status_effects(
 }
 
 /// Apply a phased buff (no combat-stat mutation).
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn apply_phased(statuses: &mut StatusEffects, duration: f32) {
     statuses.effects.retain(|e| e.id != "phased");
     statuses.effects.push(StatusEffect::phased(duration));
 }
 
 /// Apply a forceful buff so this unit claims more separation against overlaps.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn apply_forceful(statuses: &mut StatusEffects, duration: f32) {
     statuses.effects.retain(|e| e.id != "forceful");
     statuses.effects.push(StatusEffect::forceful(duration));
@@ -726,22 +728,12 @@ pub fn apply_status(
     true
 }
 
-pub fn apply_silence(statuses: &mut StatusEffects, stats: &mut CombatStats, duration: f32) -> bool {
-    apply_status(statuses, stats, StatusEffect::silenced(duration))
-}
-
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn apply_stun(statuses: &mut StatusEffects, stats: &mut CombatStats, duration: f32) -> bool {
     apply_status(statuses, stats, StatusEffect::stunned(duration))
 }
 
-pub fn apply_root(statuses: &mut StatusEffects, stats: &mut CombatStats, duration: f32) -> bool {
-    apply_status(statuses, stats, StatusEffect::rooted(duration))
-}
-
-pub fn apply_disarm(statuses: &mut StatusEffects, stats: &mut CombatStats, duration: f32) -> bool {
-    apply_status(statuses, stats, StatusEffect::disarmed(duration))
-}
-
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn apply_debuff_immunity(
     statuses: &mut StatusEffects,
     stats: &mut CombatStats,
@@ -772,6 +764,7 @@ fn handle_item_hotkeys(
         (Entity, &Transform, &Team, &Health, &CombatStats, Option<&BoundRadius>),
         Without<PlayerHero>,
     >,
+    mut damage: MessageWriter<DamageEvent>,
 ) {
     let picks = [
         (KeyCode::KeyA, 0usize),
@@ -808,6 +801,7 @@ fn handle_item_hotkeys(
             &mut stats,
             &mut statuses,
             index,
+            &mut damage,
             &enemies,
         );
     }
@@ -824,6 +818,7 @@ fn try_use_item(
     stats: &mut CombatStats,
     statuses: &mut StatusEffects,
     index: usize,
+    damage: &mut MessageWriter<DamageEvent>,
     enemies: &Query<
         (Entity, &Transform, &Team, &Health, &CombatStats, Option<&BoundRadius>),
         Without<PlayerHero>,
@@ -847,13 +842,17 @@ fn try_use_item(
         ItemId::StormRod => {
             let origin = transform.translation;
             let radius = scale::u(5.5);
-            for (_e, enemy_tf, enemy_team, enemy_hp, enemy_stats, bound) in enemies.iter() {
+            for (_e, enemy_tf, enemy_team, enemy_hp, _, bound) in enemies.iter() {
                 if *enemy_team != team.enemy() || !enemy_hp.is_alive() {
                     continue;
                 }
                 if area_contains(origin, radius, enemy_tf.translation, bounds_of(bound)) {
-                    let dmg = apply_damage(140.0, DamageType::Magical, enemy_stats);
-                    commands.entity(_e).insert(crate::abilities::PendingDamage { amount: dmg });
+                    damage.write(DamageEvent {
+                        source: Some(hero_entity),
+                        target: _e,
+                        amount: 140.0,
+                        damage_type: DamageType::Magical,
+                    });
                 }
             }
             commands.spawn((

@@ -149,14 +149,30 @@ pub enum AttackSwing {
     },
 }
 
+/// What an ability cast is aimed at.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CastTarget {
+    None,
+    Unit(Entity),
+    Point(Vec3),
+}
+
+impl CastTarget {
+    pub fn unit(self) -> Option<Entity> {
+        match self {
+            CastTarget::Unit(entity) => Some(entity),
+            _ => None,
+        }
+    }
+}
+
 /// In-progress ability cast point / backswing.
 #[derive(Component, Debug, Clone, Copy)]
 pub struct AbilityCasting {
     pub slot: usize,
     pub ability: AbilityId,
-    pub aoe_radius: f32,
+    pub target: CastTarget,
     pub aim: Vec3,
-    pub unit_target: Option<Entity>,
     /// Time left in the cast point (ability fires when this hits 0).
     pub point_remaining: f32,
     /// After fire, remaining backswing (cancellable).
@@ -276,21 +292,6 @@ impl AbilityType {
     }
 }
 
-/// How an ability is activated from the hotkey.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum AbilityCastKind {
-    Instant,
-    /// Ground / area target (AoE ring at aim).
-    Targeted { cast_range: f32, aoe_radius: f32 },
-    /// Ground point / skillshot: trajectory from caster to aim with projectile width.
-    PointTargeted {
-        cast_range: f32,
-        projectile_width: f32,
-    },
-    /// Must be cast on a creep or hero.
-    UnitTargeted { cast_range: f32 },
-}
-
 /// Data-driven kit filled by `scripts/AbilityGenerator.py`.
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
@@ -317,6 +318,7 @@ pub struct GeneratedAbilityDef {
     pub pseudocode: &'static str,
 }
 
+#[allow(dead_code)]
 impl GeneratedAbilityDef {
     pub fn cooldown_at(self, rank: u32) -> f32 {
         let r = rank.max(1) as f32;
@@ -342,24 +344,6 @@ impl GeneratedAbilityDef {
         let r = rank.max(1) as f32;
         (self.aoe_radius_base + self.aoe_radius_per_level * (r - 1.0)).max(0.0)
     }
-
-    pub fn cast_kind(self, rank: u32) -> AbilityCastKind {
-        let cast_range = self.cast_range_at(rank);
-        let aoe_radius = self.aoe_radius_at(rank);
-        match self.ability_type {
-            AbilityType::Passive => AbilityCastKind::Instant,
-            AbilityType::Untargeted | AbilityType::Toggle => AbilityCastKind::Instant,
-            AbilityType::UnitTarget => AbilityCastKind::UnitTargeted { cast_range },
-            AbilityType::TargetArea => AbilityCastKind::Targeted {
-                cast_range,
-                aoe_radius,
-            },
-            AbilityType::TargetPoint => AbilityCastKind::PointTargeted {
-                cast_range,
-                projectile_width: aoe_radius.max(40.0),
-            },
-        }
-    }
 }
 
 #[derive(Component, Debug, Clone, Copy)]
@@ -374,15 +358,14 @@ pub struct AttackMoveOrder {
     pub destination: Vec3,
 }
 
-/// Queued targeted ability: walk into cast range, then fire at `aim`.
+/// Validated cast waiting for the caster to walk into range; re-requested once in range.
 #[derive(Component, Debug, Clone, Copy)]
 pub struct QueuedAbilityCast {
     pub slot: usize,
     pub ability: AbilityId,
-    pub cast_range: f32,
-    pub aoe_radius: f32,
+    pub target: CastTarget,
+    /// Last known aim (tracks a unit target while it lives).
     pub aim: Vec3,
-    pub unit_target: Option<Entity>,
 }
 
 #[derive(Component, Debug, Clone, Copy)]
@@ -515,7 +498,7 @@ pub enum ObstacleShape {
     Aabb { half_x: f32, half_z: f32 },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AbilityId {
     // <hero_generator:ability_enum>
     // Vanguard
@@ -673,24 +656,6 @@ impl AbilityId {
     }
 
     #[allow(dead_code)]
-    pub fn ability_type(self) -> AbilityType {
-        if let Some(def) = self.generated() {
-            return def.ability_type;
-        }
-        match self {
-            AbilityId::Dash | AbilityId::Blink => AbilityType::TargetPoint,
-            AbilityId::Shockwave
-            | AbilityId::Flurry
-            | AbilityId::FrostNova
-            | AbilityId::Barrier => AbilityType::Untargeted,
-            AbilityId::Bolt | AbilityId::Execute => AbilityType::UnitTarget,
-            AbilityId::ArcMissile => AbilityType::TargetPoint,
-            AbilityId::Caltrops | AbilityId::Nova | AbilityId::Meteor => AbilityType::TargetArea,
-            _ => AbilityType::Untargeted,
-        }
-    }
-
-    #[allow(dead_code)]
     pub fn pseudocode(self) -> Option<&'static str> {
         self.generated().map(|d| d.pseudocode)
     }
@@ -778,211 +743,34 @@ impl AbilityId {
     }
 }
 
+/// Mutable per-hero state of one ability. Static data (costs, targeting, effects)
+/// lives in `abilities::AbilityDefinition`, looked up by `id`.
 #[derive(Debug, Clone)]
-pub struct AbilitySlot {
+pub struct AbilityState {
     pub id: AbilityId,
-    /// 0 = unlearned (cannot cast).
+    /// Ability level; 0 = unlearned (cannot cast).
     pub rank: u32,
     pub cooldown_remaining: f32,
-    pub cooldown: f32,
-    pub mana_cost: f32,
-    /// Delay before the ability fires (0..=0.5 typical).
-    pub cast_point: f32,
-    /// Cancellable recovery after the ability fires.
-    pub cast_backswing: f32,
+    /// Remaining charges for charge-based abilities (`None` = not charge-based).
+    pub charges: Option<u32>,
+    pub toggled: bool,
 }
 
-impl AbilitySlot {
+impl AbilityState {
     pub fn fresh(id: AbilityId) -> Self {
-        let mut slot = Self {
+        Self {
             id,
             rank: 0,
             cooldown_remaining: 0.0,
-            cooldown: 0.0,
-            mana_cost: 0.0,
-            cast_point: 0.2,
-            cast_backswing: 0.25,
-        };
-        slot.refresh_stats();
-        slot
-    }
-
-    pub fn refresh_stats(&mut self) {
-        let r = self.rank.max(1);
-        if let Some(def) = self.id.generated() {
-            self.cooldown = def.cooldown_at(r);
-            self.mana_cost = def.mana_cost_at(r);
-            self.cast_point = def.cast_point.clamp(0.0, 0.5);
-            self.cast_backswing = def.cast_backswing.clamp(0.0, 0.5);
-            return;
+            charges: None,
+            toggled: false,
         }
-        match self.id {
-            AbilityId::Dash | AbilityId::Blink => {
-                self.cooldown = (7.5 - r as f32 * 0.35).max(4.0);
-                self.mana_cost = 35.0 + r as f32 * 5.0;
-                self.cast_point = 0.05;
-                self.cast_backswing = 0.15;
-            }
-            AbilityId::Shockwave | AbilityId::Flurry | AbilityId::FrostNova => {
-                self.cooldown = (9.0 - r as f32 * 0.4).max(5.0);
-                self.mana_cost = 50.0 + r as f32 * 8.0;
-                self.cast_point = 0.25;
-                self.cast_backswing = 0.35;
-            }
-            AbilityId::Bolt | AbilityId::ArcMissile => {
-                self.cooldown = (6.0 - r as f32 * 0.3).max(3.0);
-                self.mana_cost = 45.0 + r as f32 * 7.0;
-                self.cast_point = 0.2;
-                self.cast_backswing = 0.3;
-            }
-            AbilityId::Caltrops => {
-                self.cooldown = (8.0 - r as f32 * 0.35).max(4.5);
-                self.mana_cost = 40.0 + r as f32 * 6.0;
-                self.cast_point = 0.15;
-                self.cast_backswing = 0.25;
-            }
-            AbilityId::Barrier => {
-                self.cooldown = (14.0 - r as f32 * 0.5).max(8.0);
-                self.mana_cost = 55.0 + r as f32 * 8.0;
-                self.cast_point = 0.1;
-                self.cast_backswing = 0.2;
-            }
-            AbilityId::Execute => {
-                self.cooldown = (50.0 - r as f32 * 4.0).max(30.0);
-                self.mana_cost = 100.0 + r as f32 * 20.0;
-                self.cast_point = 0.3;
-                self.cast_backswing = 0.4;
-            }
-            AbilityId::Nova | AbilityId::Meteor => {
-                self.cooldown = (50.0 - r as f32 * 4.0).max(30.0);
-                self.mana_cost = 100.0 + r as f32 * 20.0;
-                self.cast_point = 0.35;
-                self.cast_backswing = 0.45;
-            }
-            // Stub kits from HeroGenerator — castable Instant, no gameplay yet.
-            _ => {
-                if self.id.is_ultimate() {
-                    self.cooldown = (50.0 - r as f32 * 4.0).max(30.0);
-                    self.mana_cost = 100.0 + r as f32 * 20.0;
-                    self.cast_point = 0.3;
-                    self.cast_backswing = 0.35;
-                } else {
-                    self.cooldown = (8.0 - r as f32 * 0.35).max(4.0);
-                    self.mana_cost = 40.0 + r as f32 * 6.0;
-                    self.cast_point = 0.2;
-                    self.cast_backswing = 0.25;
-                }
-            }
-        }
-        self.cast_point = self.cast_point.clamp(0.0, 0.5);
-        self.cast_backswing = self.cast_backswing.clamp(0.0, 0.5);
-    }
-
-    pub fn cast_kind(&self) -> AbilityCastKind {
-        let r = self.rank.max(1);
-        if let Some(def) = self.id.generated() {
-            return def.cast_kind(r);
-        }
-        match self.id {
-            AbilityId::Shockwave
-            | AbilityId::Flurry
-            | AbilityId::FrostNova
-            | AbilityId::Barrier => AbilityCastKind::Instant,
-            AbilityId::Dash | AbilityId::Blink => AbilityCastKind::PointTargeted {
-                cast_range: self.dash_distance(),
-                projectile_width: 48.0,
-            },
-            AbilityId::Bolt | AbilityId::Execute => AbilityCastKind::UnitTargeted {
-                cast_range: crate::scale::ABILITY_UNIT_CAST_RANGE + r as f32 * 25.0,
-            },
-            AbilityId::ArcMissile => AbilityCastKind::PointTargeted {
-                cast_range: crate::scale::ABILITY_GROUND_CAST_RANGE + r as f32 * 20.0,
-                projectile_width: crate::scale::ABILITY_PROJECTILE_WIDTH + r as f32 * 8.0,
-            },
-            AbilityId::Caltrops => AbilityCastKind::Targeted {
-                cast_range: crate::scale::ABILITY_GROUND_CAST_RANGE + r as f32 * 15.0,
-                aoe_radius: crate::scale::ABILITY_GROUND_AOE + r as f32 * 15.0,
-            },
-            AbilityId::Nova => AbilityCastKind::Targeted {
-                cast_range: crate::scale::ABILITY_GROUND_CAST_RANGE + r as f32 * 20.0,
-                aoe_radius: crate::scale::ABILITY_GROUND_AOE + r as f32 * 20.0,
-            },
-            AbilityId::Meteor => AbilityCastKind::Targeted {
-                cast_range: crate::scale::ABILITY_GROUND_CAST_RANGE + r as f32 * 15.0,
-                aoe_radius: crate::scale::ABILITY_ULT_AOE + r as f32 * 25.0,
-            },
-            // Stub kits: Instant no-op until abilities are implemented.
-            _ => AbilityCastKind::Instant,
-        }
-    }
-
-    pub fn dash_distance(&self) -> f32 {
-        match self.id {
-            AbilityId::Blink => crate::scale::ABILITY_BLINK_RANGE + self.rank as f32 * 25.0,
-            _ => crate::scale::ABILITY_DASH_RANGE + self.rank as f32 * 30.0,
-        }
-    }
-
-    pub fn shockwave_damage(&self) -> f32 {
-        if let Some(def) = self.id.generated() {
-            return def.damage_at(self.rank.max(1));
-        }
-        match self.id {
-            AbilityId::Flurry => 55.0 + self.rank as f32 * 22.0,
-            AbilityId::FrostNova => 65.0 + self.rank as f32 * 26.0,
-            _ => 70.0 + self.rank as f32 * 28.0,
-        }
-    }
-
-    pub fn shockwave_radius(&self) -> f32 {
-        match self.id {
-            AbilityId::Flurry => crate::scale::ABILITY_INSTANT_AOE + self.rank as f32 * 15.0,
-            AbilityId::FrostNova => crate::scale::ABILITY_INSTANT_AOE + self.rank as f32 * 20.0,
-            _ => crate::scale::ABILITY_INSTANT_AOE + self.rank as f32 * 25.0,
-        }
-    }
-
-    pub fn bolt_damage(&self) -> f32 {
-        if let Some(def) = self.id.generated() {
-            return def.damage_at(self.rank.max(1));
-        }
-        match self.id {
-            AbilityId::ArcMissile => 85.0 + self.rank as f32 * 28.0,
-            AbilityId::Execute => 110.0 + self.rank as f32 * 40.0,
-            AbilityId::Caltrops => 50.0 + self.rank as f32 * 18.0,
-            _ => 90.0 + self.rank as f32 * 30.0,
-        }
-    }
-
-    pub fn nova_damage(&self) -> f32 {
-        if let Some(def) = self.id.generated() {
-            return def.damage_at(self.rank.max(1));
-        }
-        match self.id {
-            AbilityId::Meteor => 180.0 + self.rank as f32 * 60.0,
-            _ => 160.0 + self.rank as f32 * 55.0,
-        }
-    }
-
-    pub fn nova_heal(&self) -> f32 {
-        match self.id {
-            AbilityId::Nova => 100.0 + self.rank as f32 * 40.0,
-            _ => 0.0,
-        }
-    }
-
-    pub fn barrier_armor(&self) -> f32 {
-        6.0 + self.rank as f32 * 2.5
-    }
-
-    pub fn barrier_duration(&self) -> f32 {
-        3.5 + self.rank as f32 * 0.4
     }
 }
 
 #[derive(Component, Debug, Clone)]
 pub struct AbilityLoadout {
-    pub slots: [AbilitySlot; 4],
+    pub slots: [AbilityState; 4],
 }
 
 impl AbilityLoadout {
@@ -1000,15 +788,15 @@ impl AbilityLoadout {
     pub fn from_abilities(abilities: [AbilityId; 4]) -> Self {
         Self {
             slots: [
-                AbilitySlot::fresh(abilities[0]),
-                AbilitySlot::fresh(abilities[1]),
-                AbilitySlot::fresh(abilities[2]),
-                AbilitySlot::fresh(abilities[3]),
+                AbilityState::fresh(abilities[0]),
+                AbilityState::fresh(abilities[1]),
+                AbilityState::fresh(abilities[2]),
+                AbilityState::fresh(abilities[3]),
             ],
         }
     }
 
-    pub fn slot_mut(&mut self, index: usize) -> Option<&mut AbilitySlot> {
+    pub fn slot_mut(&mut self, index: usize) -> Option<&mut AbilityState> {
         self.slots.get_mut(index)
     }
 
@@ -1023,7 +811,6 @@ impl AbilityLoadout {
             return false;
         }
         slot.rank += 1;
-        slot.refresh_stats();
         *skill_points -= 1;
         true
     }
@@ -1102,32 +889,5 @@ mod ability_generator_tests {
         assert!(ult.is_ultimate);
         assert_eq!(AbilityId::Cataclysm.max_rank(), 4);
         assert!(ult.cooldown_at(1) > ult.cooldown_at(4));
-
-        let lance = AbilitySlot::fresh(AbilityId::ArcaneLance);
-        assert!(matches!(
-            lance.cast_kind(),
-            AbilityCastKind::UnitTargeted { .. }
-        ));
-        assert!(AbilityId::StoneSkin.ability_type() == AbilityType::Passive);
-        assert!(AbilityId::Overcharge.ability_type() == AbilityType::Toggle);
-    }
-
-    #[test]
-    fn target_point_uses_point_targeted_cast_kind() {
-        let mut missile = AbilitySlot::fresh(AbilityId::ArcMissile);
-        missile.rank = 1;
-        assert!(matches!(
-            missile.cast_kind(),
-            AbilityCastKind::PointTargeted { .. }
-        ));
-        let mut dash = AbilitySlot::fresh(AbilityId::Dash);
-        dash.rank = 1;
-        assert!(matches!(
-            dash.cast_kind(),
-            AbilityCastKind::PointTargeted { .. }
-        ));
-        let mut nova = AbilitySlot::fresh(AbilityId::Nova);
-        nova.rank = 1;
-        assert!(matches!(nova.cast_kind(), AbilityCastKind::Targeted { .. }));
     }
 }
