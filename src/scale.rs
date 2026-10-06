@@ -56,10 +56,12 @@ pub const ABILITY_GROUND_AOE: f32 = 250.0;
 pub const ABILITY_ULT_AOE: f32 = 320.0;
 pub const ABILITY_PROJECTILE_WIDTH: f32 = 90.0;
 
-// --- Unit model sizes (width × depth × height) ---
+// --- Rendered model sizes (visual only; gameplay sizes live in `dimensions`) ---
+/// Creep cylinder diameter / height.
 pub const CREEP_MODEL_WIDTH: f32 = 100.0;
 pub const CREEP_MODEL_DEPTH: f32 = 100.0;
 pub const CREEP_MODEL_HEIGHT: f32 = 200.0;
+/// Hero cylinder diameter / height.
 pub const HERO_MODEL_WIDTH: f32 = 120.0;
 pub const HERO_MODEL_DEPTH: f32 = 120.0;
 pub const HERO_MODEL_HEIGHT: f32 = 240.0;
@@ -70,20 +72,6 @@ pub const TOWER_MODEL_HEIGHT: f32 = 280.0;
 /// World-space health-bar mesh thickness (Y), scaled up with the larger models.
 pub const HEALTH_BAR_BG_THICKNESS: f32 = 36.0;
 pub const HEALTH_BAR_FILL_THICKNESS: f32 = 30.0;
-
-// --- Bound radii (attack reach + spell AoE inclusion) ---
-pub const HERO_BOUND: f32 = HERO_MODEL_WIDTH * 0.5;
-pub const MELEE_CREEP_BOUND: f32 = CREEP_MODEL_WIDTH * 0.5;
-pub const RANGED_CREEP_BOUND: f32 = CREEP_MODEL_WIDTH * 0.5;
-pub const TOWER_BOUND: f32 = TOWER_MODEL_WIDTH * 0.5;
-pub const ANCIENT_BOUND: f32 = 180.0;
-
-// --- Collision radii (obstruction; circles must not intersect) ---
-pub const HERO_COLLISION: f32 = HERO_BOUND * 1.1;
-pub const MELEE_CREEP_COLLISION: f32 = MELEE_CREEP_BOUND * 1.1;
-pub const RANGED_CREEP_COLLISION: f32 = RANGED_CREEP_BOUND * 1.1;
-pub const TOWER_COLLISION: f32 = TOWER_BOUND;
-pub const ANCIENT_COLLISION: f32 = 180.0;
 
 /// Tree axis-aligned collision box side length (128×128).
 pub const TREE_COLLISION_SIZE: f32 = 128.0;
@@ -118,33 +106,10 @@ pub const fn body(legacy: f32) -> f32 {
     legacy * (TREE_MODEL_RADIUS / TREE_LEGACY_RADIUS)
 }
 
-/// Deprecated aliases kept for transitional call sites.
-#[allow(dead_code)]
-pub const HERO_RADIUS: f32 = HERO_COLLISION;
-#[allow(dead_code)]
-pub const CREEP_RADIUS: f32 = MELEE_CREEP_COLLISION;
-#[allow(dead_code)]
-pub const TOWER_RADIUS: f32 = TOWER_COLLISION;
-#[allow(dead_code)]
-pub const ANCIENT_RADIUS: f32 = ANCIENT_COLLISION;
-
 /// True when an auto-attack should use a melee slash instead of a projectile.
 #[inline]
 pub fn is_melee_attack_range(range: f32) -> bool {
     range > 0.0 && range <= MELEE_ATTACK_RANGE + 0.5
-}
-
-/// Selection-box half-extent for a model with given XZ width and length
-/// (square of side `max(width, length)`).
-#[inline]
-pub fn selection_half(model_width: f32, model_length: f32) -> f32 {
-    model_width.max(model_length) * 0.5
-}
-
-/// Attack reach: gap between bound edges ≤ attack_range.
-#[inline]
-pub fn attack_reach(attacker_bound: f32, attack_range: f32, target_bound: f32) -> f32 {
-    attack_range + attacker_bound + target_bound
 }
 
 /// Scale an XZ map position (Y uses [`body`] for prop height).
@@ -172,8 +137,6 @@ mod tests {
         assert!((HERO_MOVE_SPEED - 300.0).abs() < f32::EPSILON);
         assert!((MAP_SIZE - 15_200.0).abs() < f32::EPSILON);
         assert!((map(70.0) - MAP_HALF).abs() < 0.01);
-        assert!((HERO_BOUND - 60.0).abs() < f32::EPSILON);
-        assert!((HERO_COLLISION - 66.0).abs() < f32::EPSILON);
         assert!((CREEP_MODEL_WIDTH - 100.0).abs() < f32::EPSILON);
         assert!((HERO_MODEL_HEIGHT - 240.0).abs() < f32::EPSILON);
         assert!((TOWER_MODEL_HEIGHT - 280.0).abs() < f32::EPSILON);
@@ -197,13 +160,5 @@ mod tests {
         assert!(is_melee_attack_range(MELEE_ATTACK_RANGE));
         assert!(!is_melee_attack_range(RANGED_ATTACK_RANGE));
         assert!(!is_melee_attack_range(TOWER_ATTACK_RANGE));
-    }
-
-    #[test]
-    fn attack_reach_includes_both_bounds() {
-        assert!(
-            (attack_reach(HERO_BOUND, MELEE_ATTACK_RANGE, MELEE_CREEP_BOUND) - 260.0).abs()
-                < f32::EPSILON
-        );
     }
 }

@@ -4,7 +4,7 @@ use bevy::prelude::*;
 
 use crate::camera::GameCamera;
 use crate::components::{
-    HasHealthBar, Health, HealthBar, HealthBarFill, SelectionBox, WorldHeroNameLabel,
+    HasHealthBar, Health, HealthBar, HealthBarFill, SelectionBounds, WorldHeroNameLabel,
     WorldNameLayer,
 };
 use crate::heroes::HeroKind;
@@ -33,7 +33,7 @@ fn attach_health_bars(
     mut commands: Commands,
     assets: Res<SharedAssets>,
     units: Query<
-        (Entity, Option<&SelectionBox>, Option<&HeroKind>),
+        (Entity, Option<&SelectionBounds>, Option<&HeroKind>),
         (With<Health>, Without<HasHealthBar>),
     >,
     layer: Query<Entity, With<WorldNameLayer>>,
@@ -94,7 +94,7 @@ fn attach_health_bars(
 }
 
 fn sync_health_bars(
-    owners: Query<(&Health, &GlobalTransform, Option<&SelectionBox>), Without<HealthBar>>,
+    owners: Query<(&Health, &GlobalTransform, Option<&SelectionBounds>), Without<HealthBar>>,
     mut bars: Query<(&HealthBar, &mut Transform, &Children), With<HealthBar>>,
     mut fills: Query<&mut Transform, (With<HealthBarFill>, Without<HealthBar>)>,
     mut backgrounds: Query<
@@ -150,7 +150,7 @@ fn sync_health_bars(
 fn sync_world_hero_names(
     camera: Query<(&Camera, &GlobalTransform), With<GameCamera>>,
     owners: Query<
-        (&GlobalTransform, &HeroKind, Option<&SelectionBox>, &Visibility),
+        (&GlobalTransform, &HeroKind, Option<&SelectionBounds>, &Visibility),
         Without<WorldHeroNameLabel>,
     >,
     mut labels: Query<(&WorldHeroNameLabel, &mut Node, &mut Visibility, &mut Text)>,
@@ -208,21 +208,16 @@ fn cull_orphan_world_names(
     }
 }
 
-/// Bar width tracks the unit's selection footprint (≈ model width).
-fn bar_width(selection: Option<&SelectionBox>) -> f32 {
-    let half = selection
-        .map(|s| s.half_extent)
-        .unwrap_or(scale::HERO_MODEL_WIDTH * 0.5);
-    (half * 2.2).clamp(scale::CREEP_MODEL_WIDTH * 0.8, scale::TOWER_MODEL_WIDTH * 1.4)
+/// Bar width tracks the unit's selection footprint.
+fn bar_width(selection: Option<&SelectionBounds>) -> f32 {
+    let half = selection.map_or(scale::HERO_MODEL_WIDTH * 0.5, |s| s.half_extents.x);
+    (half * 2.2).clamp(scale::CREEP_MODEL_WIDTH * 0.8, scale::TOWER_MODEL_WIDTH * 1.6)
 }
 
-/// Offset from unit center to just above the model top.
-/// Models are 2× as tall as they are wide, so half-height ≈ selection half_extent.
-fn bar_height(selection: Option<&SelectionBox>) -> f32 {
-    let half = selection
-        .map(|s| s.half_extent)
-        .unwrap_or(scale::HERO_MODEL_WIDTH * 0.5);
-    half * 2.0 + scale::HEALTH_BAR_BG_THICKNESS * 0.75
+/// Offset from unit origin to just above the selection volume's top.
+fn bar_height(selection: Option<&SelectionBounds>) -> f32 {
+    let top = selection.map_or(scale::HERO_MODEL_HEIGHT * 0.5, SelectionBounds::top);
+    top + scale::HEALTH_BAR_BG_THICKNESS * 0.75
 }
 
 

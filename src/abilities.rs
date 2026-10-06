@@ -2,12 +2,14 @@
 
 use bevy::prelude::*;
 
-use crate::combat::{apply_damage, flat_distance, cursor_ground_hit, spawn_spell_bolt};
+use crate::combat::{apply_damage, flat_distance, spawn_spell_bolt};
 use crate::components::{
     AbilityCastKind, AbilityCasting, AbilityId, AbilityLoadout, AbilitySlot, AttackMoveOrder,
     AttackSwing, AttackTarget, BoundRadius, CombatStats, DamageType, Ground, Health, Lifetime,
-    Mana, MoveTarget, PlayerHero, QueuedAbilityCast, SelectionBox, SpellFx, Team,
+    Mana, MoveTarget, PlayerHero, QueuedAbilityCast, SpellFx, Team,
 };
+use crate::dimensions::{area_contains, bounds_of, cast_distance};
+use crate::picking::{cursor_ground_hit, cursor_ray, ground_hit, pick_under_ray, PickableUnits};
 use crate::items::{
     apply_debuff_immunity, apply_disarm, apply_forceful, apply_phased, apply_root, apply_silence,
     apply_stun,
@@ -281,8 +283,7 @@ fn cast_instant(
                 if *enemy_team == team || !enemy_hp.is_alive() {
                     continue;
                 }
-                let b = bound.map(|r| r.0).unwrap_or(scale::HERO_BOUND);
-                if flat_distance(origin, enemy_tf.translation) <= radius + b {
+                if area_contains(origin, radius, enemy_tf.translation, bounds_of(bound)) {
                     let amount = apply_damage(damage, DamageType::Magical, enemy_stats);
                     commands.entity(enemy_entity).insert(PendingDamage { amount });
                     if slot.id == AbilityId::FrostNova || slot.id == AbilityId::Flurry {
@@ -384,7 +385,7 @@ fn fire_bolt(
     }
 }
 
-fn confirm_or_cancel_targeted_cast(
+pub(crate) fn confirm_or_cancel_targeted_cast(
     mouse: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
     mut targeting: ResMut<AbilityTargeting>,
@@ -401,21 +402,12 @@ fn confirm_or_cancel_targeted_cast(
             &AbilityLoadout,
             &Mana,
             &StatusEffects,
+            Option<&BoundRadius>,
         ),
         With<PlayerHero>,
     >,
-    enemies: Query<
-        (
-            Entity,
-            &Transform,
-            &Team,
-            &Health,
-            &CombatStats,
-            Option<&SelectionBox>,
-            &Visibility,
-        ),
-        Without<PlayerHero>,
-    >,
+    pickable: PickableUnits,
+    targets: Query<(&Transform, Option<&BoundRadius>)>,
 ) {
     let Some(pending) = targeting.active else {
         return;
@@ -438,7 +430,7 @@ fn confirm_or_cancel_targeted_cast(
         return;
     }
 
-    let Ok((hero_entity, transform, team, loadout, mana, statuses)) = hero.single()
+    let Ok((hero_entity, transform, team, loadout, mana, statuses, caster_bound)) = hero.single()
     else {
         return;
     };
@@ -448,37 +440,33 @@ fn confirm_or_cancel_targeted_cast(
         return;
     }
 
-    let Some(hit) = cursor_ground_hit(&windows, &camera, &ground) else {
+    let Some(ray) = cursor_ray(&windows, &camera) else {
+        return;
+    };
+    let Some(hit) = ground_hit(ray, &ground) else {
         return;
     };
 
-    let unit_target = enemies
-        .iter()
-        .filter(|(_, _, enemy_team, hp, _, _, vis)| {
-            **enemy_team == team.enemy()
-                && hp.is_alive()
-                && !matches!(*vis, Visibility::Hidden)
-        })
-        .filter(|(_, tf, _, _, _, selection, _)| {
-            let half = selection
-                .map(|s| s.half_extent)
-                .unwrap_or(scale::HERO_BOUND);
-            (hit.x - tf.translation.x).abs() <= half && (hit.z - tf.translation.z).abs() <= half
-        })
-        .min_by(|a, b| {
-            flat_distance(a.1.translation, hit)
-                .partial_cmp(&flat_distance(b.1.translation, hit))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .map(|(e, tf, _, _, _, _, _)| (e, tf.translation));
+    let enemy_team = team.enemy();
+    let unit_target = pick_under_ray(ray, &pickable, |t| t == enemy_team).and_then(|enemy| {
+        targets
+            .get(enemy)
+            .ok()
+            .map(|(tf, bound)| (enemy, tf.translation, bounds_of(bound)))
+    });
 
     if pending.unit_only && unit_target.is_none() {
         // Unit-targeted spells require a creep/hero under the cursor.
         return;
     }
 
-    let aim = unit_target.map(|(_, pos)| pos).unwrap_or(hit);
-    let dist = flat_distance(transform.translation, aim);
+    let aim = unit_target.map(|(_, pos, _)| pos).unwrap_or(hit);
+    let dist = cast_distance(
+        transform.translation,
+        bounds_of(caster_bound),
+        aim,
+        unit_target.map(|(_, _, bounds)| bounds),
+    );
 
     if dist > pending.cast_range {
         clear_targeting(&mut commands, &mut targeting);
@@ -488,7 +476,7 @@ fn confirm_or_cancel_targeted_cast(
             cast_range: pending.cast_range,
             aoe_radius: pending.aoe_radius,
             aim,
-            unit_target: unit_target.map(|(e, _)| e),
+            unit_target: unit_target.map(|(e, _, _)| e),
         });
         commands
             .entity(hero_entity)
@@ -517,7 +505,7 @@ fn confirm_or_cancel_targeted_cast(
         &slot,
         aim,
         aoe,
-        unit_target.map(|(e, _)| e),
+        unit_target.map(|(e, _, _)| e),
     );
 }
 
@@ -531,6 +519,7 @@ fn resolve_queued_ability_casts(
             &AbilityLoadout,
             &Mana,
             &StatusEffects,
+            Option<&BoundRadius>,
         ),
         With<PlayerHero>,
     >,
@@ -546,6 +535,7 @@ fn resolve_queued_ability_casts(
         loadout,
         mana,
         statuses,
+        caster_bound,
     )) = hero.single()
     else {
         return;
@@ -554,15 +544,20 @@ fn resolve_queued_ability_casts(
     let mut aim = queued.aim;
     let mut unit_target = None;
     if let Some(target) = queued.unit_target {
-        if let Ok((_, tf, _, hp, _, _)) = enemies.get(target) {
+        if let Ok((_, tf, _, hp, _, bound)) = enemies.get(target) {
             if hp.is_alive() {
                 aim = tf.translation;
-                unit_target = Some((target, tf.translation));
+                unit_target = Some((target, tf.translation, bounds_of(bound)));
             }
         }
     }
 
-    let dist = flat_distance(transform.translation, aim);
+    let dist = cast_distance(
+        transform.translation,
+        bounds_of(caster_bound),
+        aim,
+        unit_target.map(|(_, _, bounds)| bounds),
+    );
     if dist > queued.cast_range {
         // Keep walking toward the aim.
         commands.entity(hero_entity).insert(MoveTarget { position: aim });
@@ -615,7 +610,7 @@ fn resolve_queued_ability_casts(
         &slot,
         aim,
         aoe,
-        unit_target.map(|(e, _)| e),
+        unit_target.map(|(e, _, _)| e),
     );
 }
 
@@ -766,8 +761,7 @@ fn tick_ability_casting(
                     if *enemy_team == *team || !enemy_hp.is_alive() {
                         continue;
                     }
-                    let b = bound.map(|r| r.0).unwrap_or(scale::HERO_BOUND);
-                    if flat_distance(aim, enemy_tf.translation) <= aoe + b {
+                    if area_contains(aim, aoe, enemy_tf.translation, bounds_of(bound)) {
                         let amount = apply_damage(ground_damage, DamageType::Magical, enemy_stats);
                         commands.entity(enemy_entity).insert(PendingDamage { amount });
                         if ability == AbilityId::Meteor {

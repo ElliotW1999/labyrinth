@@ -5,6 +5,7 @@ use bevy::prelude::*;
 use crate::components::{
     AbilityId, AbilityLoadout, AbilitySlot, CombatStats, Health, HeroAttributes, Mana, Team,
 };
+use crate::dimensions::UnitDimensions;
 use crate::net::{NetConfig, NetMode, NetSession};
 use crate::resources::SharedAssets;
 use crate::scale;
@@ -163,6 +164,7 @@ impl HeroId {
                     AbilityId::Bolt,
                     AbilityId::Nova,
                 ],
+                dimensions: UnitDimensions::HERO,
             },
             HeroId::Skirmisher => HeroDef {
                 id: self,
@@ -195,6 +197,7 @@ impl HeroId {
                     AbilityId::Caltrops,
                     AbilityId::Execute,
                 ],
+                dimensions: UnitDimensions::HERO,
             },
             HeroId::Arcanist => HeroDef {
                 id: self,
@@ -227,6 +230,7 @@ impl HeroId {
                     AbilityId::Barrier,
                     AbilityId::Meteor,
                 ],
+                dimensions: UnitDimensions::HERO,
             },
             
             HeroId::Warden => HeroDef {
@@ -260,6 +264,7 @@ impl HeroId {
                     AbilityId::Taunt,
                     AbilityId::Aegis,
                 ],
+                dimensions: UnitDimensions::HERO,
             },
             HeroId::Hexer => HeroDef {
                 id: self,
@@ -292,6 +297,7 @@ impl HeroId {
                     AbilityId::Ward,
                     AbilityId::Ritual,
                 ],
+                dimensions: UnitDimensions::HERO,
             },
 // </hero_generator:hero_def>
         }
@@ -321,6 +327,8 @@ pub struct HeroDef {
     pub base_mana_regen: f32,
     pub combat: CombatStats,
     pub abilities: [AbilityId; 4],
+    /// Collision size, bounds radius, and selection volume for this hero.
+    pub dimensions: UnitDimensions,
 }
 
 fn hero_combat(

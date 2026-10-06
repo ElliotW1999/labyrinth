@@ -415,25 +415,37 @@ pub struct Ancient;
 #[derive(Component, Debug, Clone, Copy)]
 pub struct Ground;
 
-/// Hull used for attack reach and AoE inclusion (edge-to-edge).
+/// Gameplay extent for range, targeting, and AoE queries (edge-to-edge).
+/// Independent of [`CollisionRadius`]; see [`crate::dimensions`].
 #[derive(Component, Debug, Clone, Copy)]
 pub struct BoundRadius(pub f32);
 
-/// Soft-circle obstruction radius — collision circles must not intersect.
+/// Physical footprint for unit-to-unit and pathing collision.
+/// Independent of [`BoundRadius`]; see [`crate::dimensions`].
 #[derive(Component, Debug, Clone, Copy)]
 pub struct CollisionRadius(pub f32);
 
-/// Axis-aligned square on XZ used for RMB / click targeting.
-/// Side length is `2 * half_extent` (= max(model width, length)).
-#[derive(Component, Debug, Clone, Copy)]
-pub struct SelectionBox {
-    pub half_extent: f32,
+/// World-aligned picking box for hover / left-click / right-click targeting,
+/// centered at the unit origin plus `offset`.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct SelectionBounds {
+    pub offset: Vec3,
+    pub half_extents: Vec3,
 }
 
-/// @deprecated Prefer [`BoundRadius`] / [`CollisionRadius`].
-#[allow(dead_code)]
-#[derive(Component, Debug, Clone, Copy)]
-pub struct UnitRadius(pub f32);
+impl SelectionBounds {
+    pub const fn new(offset: Vec3, half_extents: Vec3) -> Self {
+        Self {
+            offset,
+            half_extents,
+        }
+    }
+
+    /// Height of the box top above the unit origin.
+    pub fn top(&self) -> f32 {
+        self.offset.y + self.half_extents.y
+    }
+}
 
 #[derive(Component, Debug, Clone, Copy)]
 pub struct GoldBounty(pub u32);
