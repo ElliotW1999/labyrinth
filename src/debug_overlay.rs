@@ -1,170 +1,119 @@
-//! Hollow debug overlays: bound/collision rings and selection boxes.
+//! Optional debug gizmos for tuning unit dimensions.
+//!
+//! Each overlay toggles independently:
+//! - F5 — collision radius (orange ring at the unit's base)
+//! - F6 — bounds radius (green ring at the unit's base)
+//! - F7 — selection volume (yellow wireframe box)
+//! - F8 — all three on / off
+//!
+//! `--debug-dims` on the command line starts with all three enabled.
+
+use std::f32::consts::FRAC_PI_2;
 
 use bevy::prelude::*;
 
-use crate::components::{BoundRadius, CollisionRadius, SelectionBox};
-use crate::resources::SharedAssets;
+use crate::components::{BoundRadius, CollisionRadius, SelectionBounds};
+
+/// Ground height for base rings, just above the lane / ground meshes.
+const RING_Y: f32 = 4.0;
+
+const COLLISION_COLOR: Color = Color::srgb(1.0, 0.45, 0.15);
+const BOUNDS_COLOR: Color = Color::srgb(0.25, 1.0, 0.45);
+const SELECTION_COLOR: Color = Color::srgb(1.0, 0.9, 0.2);
 
 pub struct DebugOverlayPlugin;
 
 impl Plugin for DebugOverlayPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
+        app.init_resource::<DebugOverlaySettings>().add_systems(
             Update,
             (
-                ensure_radius_overlays,
-                sync_radius_overlays,
-                ensure_selection_overlays,
-                sync_selection_overlays,
+                toggle_debug_overlays,
+                draw_collision_radii.run_if(|s: Res<DebugOverlaySettings>| s.collision),
+                draw_bounds_radii.run_if(|s: Res<DebugOverlaySettings>| s.bounds),
+                draw_selection_bounds.run_if(|s: Res<DebugOverlaySettings>| s.selection),
             )
                 .chain(),
         );
     }
 }
 
-#[derive(Component, Debug, Clone, Copy)]
-struct BoundRadiusRing;
+/// Which unit-dimension overlays are drawn.
+#[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct DebugOverlaySettings {
+    pub collision: bool,
+    pub bounds: bool,
+    pub selection: bool,
+}
 
-#[derive(Component, Debug, Clone, Copy)]
-struct CollisionRadiusRing;
-
-#[derive(Component, Debug, Clone, Copy)]
-struct SelectionBoxOutline;
-
-#[derive(Component, Debug, Clone, Copy)]
-struct HasRadiusOverlays;
-
-#[derive(Component, Debug, Clone, Copy)]
-struct HasSelectionOverlay;
-
-fn ensure_radius_overlays(
-    mut commands: Commands,
-    assets: Res<SharedAssets>,
-    units: Query<
-        (Entity, &BoundRadius, &CollisionRadius),
-        (Without<HasRadiusOverlays>, Or<(With<BoundRadius>, With<CollisionRadius>)>),
-    >,
-) {
-    for (entity, bound, collision) in &units {
-        commands.entity(entity).insert(HasRadiusOverlays);
-        commands.entity(entity).with_children(|parent| {
-            parent.spawn((
-                Name::new("Bound Radius Ring"),
-                BoundRadiusRing,
-                Mesh3d(assets.debug_ring_mesh.clone()),
-                MeshMaterial3d(assets.debug_bound_mat.clone()),
-                Transform::from_xyz(0.0, 0.2, 0.0)
-                    .with_scale(Vec3::new(bound.0, 1.0, bound.0)),
-            ));
-            parent.spawn((
-                Name::new("Collision Radius Ring"),
-                CollisionRadiusRing,
-                Mesh3d(assets.debug_ring_mesh.clone()),
-                MeshMaterial3d(assets.debug_collision_mat.clone()),
-                Transform::from_xyz(0.0, 0.35, 0.0)
-                    .with_scale(Vec3::new(collision.0, 1.0, collision.0)),
-            ));
-        });
+impl DebugOverlaySettings {
+    pub fn all(enabled: bool) -> Self {
+        Self {
+            collision: enabled,
+            bounds: enabled,
+            selection: enabled,
+        }
     }
 }
 
-fn sync_radius_overlays(
-    bounds: Query<&BoundRadius>,
-    collisions: Query<&CollisionRadius>,
-    mut bound_rings: Query<(&mut Transform, &ChildOf), With<BoundRadiusRing>>,
-    mut collision_rings: Query<
-        (&mut Transform, &ChildOf),
-        (With<CollisionRadiusRing>, Without<BoundRadiusRing>),
-    >,
-) {
-    for (mut tf, child_of) in &mut bound_rings {
-        let Ok(bound) = bounds.get(child_of.parent()) else {
-            continue;
-        };
-        tf.scale = Vec3::new(bound.0, 1.0, bound.0);
-        tf.translation.y = 0.2;
+fn toggle_debug_overlays(keys: Res<ButtonInput<KeyCode>>, mut settings: ResMut<DebugOverlaySettings>) {
+    if keys.just_pressed(KeyCode::F5) {
+        settings.collision = !settings.collision;
     }
-    for (mut tf, child_of) in &mut collision_rings {
-        let Ok(collision) = collisions.get(child_of.parent()) else {
-            continue;
-        };
-        tf.scale = Vec3::new(collision.0, 1.0, collision.0);
-        tf.translation.y = 0.35;
+    if keys.just_pressed(KeyCode::F6) {
+        settings.bounds = !settings.bounds;
+    }
+    if keys.just_pressed(KeyCode::F7) {
+        settings.selection = !settings.selection;
+    }
+    if keys.just_pressed(KeyCode::F8) {
+        let any = settings.collision || settings.bounds || settings.selection;
+        *settings = DebugOverlaySettings::all(!any);
     }
 }
 
-fn ensure_selection_overlays(
-    mut commands: Commands,
-    assets: Res<SharedAssets>,
-    units: Query<(Entity, &SelectionBox), Without<HasSelectionOverlay>>,
+fn base_ring(pos: Vec3) -> Isometry3d {
+    Isometry3d::new(Vec3::new(pos.x, RING_Y, pos.z), Quat::from_rotation_x(FRAC_PI_2))
+}
+
+fn shown(visibility: Option<&Visibility>) -> bool {
+    !matches!(visibility, Some(Visibility::Hidden))
+}
+
+fn draw_collision_radii(
+    units: Query<(&GlobalTransform, &CollisionRadius, Option<&Visibility>)>,
+    mut gizmos: Gizmos,
 ) {
-    for (entity, selection) in &units {
-        let side = selection.half_extent * 2.0;
-        let thickness = 2.5_f32.max(side * 0.02);
-        let y = 0.5;
-        commands.entity(entity).insert(HasSelectionOverlay);
-        commands.entity(entity).with_children(|parent| {
-            // Four thin walls forming a hollow square on the ground.
-            for (name, local) in [
-                (
-                    "Selection N",
-                    Transform::from_xyz(0.0, y, selection.half_extent)
-                        .with_scale(Vec3::new(side, thickness, thickness)),
-                ),
-                (
-                    "Selection S",
-                    Transform::from_xyz(0.0, y, -selection.half_extent)
-                        .with_scale(Vec3::new(side, thickness, thickness)),
-                ),
-                (
-                    "Selection E",
-                    Transform::from_xyz(selection.half_extent, y, 0.0)
-                        .with_scale(Vec3::new(thickness, thickness, side)),
-                ),
-                (
-                    "Selection W",
-                    Transform::from_xyz(-selection.half_extent, y, 0.0)
-                        .with_scale(Vec3::new(thickness, thickness, side)),
-                ),
-            ] {
-                parent.spawn((
-                    Name::new(name),
-                    SelectionBoxOutline,
-                    Mesh3d(assets.melee_slash_mesh.clone()),
-                    MeshMaterial3d(assets.debug_selection_mat.clone()),
-                    local,
-                ));
-            }
-        });
+    for (gt, collision, vis) in &units {
+        if shown(vis) && collision.0 > 0.0 {
+            gizmos.circle(base_ring(gt.translation()), collision.0, COLLISION_COLOR);
+        }
     }
 }
 
-fn sync_selection_overlays(
-    selections: Query<&SelectionBox>,
-    children: Query<&Children>,
-    mut outlines: Query<(&mut Transform, &ChildOf, &Name), With<SelectionBoxOutline>>,
+fn draw_bounds_radii(
+    units: Query<(&GlobalTransform, &BoundRadius, Option<&Visibility>)>,
+    mut gizmos: Gizmos,
 ) {
-    for (mut tf, child_of, name) in &mut outlines {
-        let Ok(selection) = selections.get(child_of.parent()) else {
+    for (gt, bounds, vis) in &units {
+        if shown(vis) && bounds.0 > 0.0 {
+            gizmos.circle(base_ring(gt.translation()), bounds.0, BOUNDS_COLOR);
+        }
+    }
+}
+
+fn draw_selection_bounds(
+    units: Query<(&GlobalTransform, &SelectionBounds, Option<&Visibility>)>,
+    mut gizmos: Gizmos,
+) {
+    for (gt, selection, vis) in &units {
+        if !shown(vis) {
             continue;
-        };
-        let side = selection.half_extent * 2.0;
-        let thickness = 2.5_f32.max(side * 0.02);
-        let y = 0.5;
-        let label = name.as_str();
-        *tf = if label.contains("N") {
-            Transform::from_xyz(0.0, y, selection.half_extent)
-                .with_scale(Vec3::new(side, thickness, thickness))
-        } else if label.contains("S") {
-            Transform::from_xyz(0.0, y, -selection.half_extent)
-                .with_scale(Vec3::new(side, thickness, thickness))
-        } else if label.contains("E") {
-            Transform::from_xyz(selection.half_extent, y, 0.0)
-                .with_scale(Vec3::new(thickness, thickness, side))
-        } else {
-            Transform::from_xyz(-selection.half_extent, y, 0.0)
-                .with_scale(Vec3::new(thickness, thickness, side))
-        };
-        let _ = children;
+        }
+        let center = gt.translation() + selection.offset;
+        gizmos.cube(
+            Transform::from_translation(center).with_scale(selection.half_extents * 2.0),
+            SELECTION_COLOR,
+        );
     }
 }
