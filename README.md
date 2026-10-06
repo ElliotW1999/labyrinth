@@ -105,19 +105,22 @@ Distances use MOBA-style units (not meters):
 | Melee hero attack range | **150** |
 | Melee creep attack range | **100** |
 | Ranged creep / hero attack range | **500** |
-| Hero bound / collision | **24 / 27** |
-| Melee creep bound / collision | **16 / 27** |
-| Ranged creep bound / collision | **8 / 18** |
-| Tower bound / collision | **144 / 144** |
+| Hero collision / bounds | **40 / 36** |
+| Melee creep collision / bounds | **36 / 24** |
+| Ranged creep collision / bounds | **28 / 16** |
+| Tower collision / bounds | **100 / 96** |
+| Ancient collision / bounds | **80 / 72** |
 | Tree collision box | **128×128** (model smaller) |
 | Hero move speed | **~300** units/second |
 
 Map layout XZ uses `scale::map` (legacy ±70 → ±7600). Body meshes use `scale::body`. Attack/cast/AoE ranges stay absolute.
 
-- **Bound radius** — attack reach is edge-to-edge (`range + attacker_bound + target_bound`); AoE hits if the unit’s bound intersects the radius
-- **Collision radius** — soft circles that must not intersect (trees use a 128×128 AABB)
-- **Selection box** — square `max(model width, length)²` for RMB / unit-target clicks
-- Debug overlays draw hollow bound/collision rings and selection boxes
+Each unit carries three explicit gameplay dimensions from `dimensions::UnitDimensions` (heroes via `HeroDef::dimensions`); none are derived from mesh size:
+
+- **Collision size** (`CollisionRadius`) — unit separation and pathing gaps. Moving units yield to stationary ones, so units never push each other (only **forceful** units shove; **phased** units ignore collision). Trees use a 128×128 AABB
+- **Bounds radius** (`BoundRadius`) — range, targeting, attack reach and spells, measured edge-to-edge (`center distance − source bounds − target bounds`) by `dimensions::within_range` / `edge_distance` / `area_contains` / `cast_distance`
+- **Selection bounds** (`SelectionBounds { offset, half_extents }`) — a forgiving 3D box ray-tested for hover, left-click selection and right-click / unit-target clicks. Overlaps resolve by most-centered hit, then nearest, then entity index
+- Debug overlay: **F5** collision rings, **F6** bounds rings, **F7** selection boxes, **F8** all (or start with `--debug-dims`)
 - Units only **start** moving, attacking, or casting once the aim/target is within **11.5°** of facing
 - **Turn rate** is radians per **0.03s** (heroes default **0.6**, creeps **0.5**)
 - Attacks use **foreswing** (0–0.5s) then fire, then **backswing** (0–0.5s; cancelled by move/stop/new orders)
@@ -185,7 +188,7 @@ Required: `Ability_name`, `ability_type` (`passive` / `untargeted` / `unit_targe
 - Gold shop near each base; click an item for its build tree (components + recipe scraps); buy from the detail popup. Recipes are hidden from the default shop grid.
 - Six inventory slots; RMB → **Sell (50%)** near shop; actives use ASDZXC
 - Heroes carry a `StatusEffects` list for buffs / debuffs
-- Heroes and creeps soft-separate by collision radius; the **forceful** buff pushes harder (e.g. Vanguard Shockwave). **Phased** (Dash/Blink) ignores unit push.
+- Heroes and creeps separate by collision size without pushing each other (moving units yield to stationary ones); the **forceful** buff can shove (e.g. Vanguard Shockwave). **Phased** (Dash/Blink) ignores unit collision.
 - **Heartwood Band** (550g) — 3 passive(s), passive-only; components: Iron Bracer
 - **Spark Pendant** (750g) — 2 passive(s), active stub; components: Mana Crystal, Blade of Ash
 
@@ -209,7 +212,7 @@ Required: `Item_name`, `cost`. Optional: `short_label`, `description`, `passive_
 - Item shop (gold on the shop button), 6-slot inventory between spells and minimap, timed buffs / debuffs
 - Creep waves that path down each lane
 - Explicit right-click attack orders and G attack-move (path to cursor, attack in range)
-- Building/tree collision; heroes/creeps soft-separate by radius (**forceful** shoves harder)
+- Building/tree collision; heroes/creeps separate by collision size without pushing (**forceful** shoves)
 - Targeted spells: confirm aim; if out of cast range the hero walks in then casts
 - Auto-attack combat with armor / magic resist mitigation; projectiles stop at the target
 - Tower and creep aggro AI
@@ -242,6 +245,8 @@ src/
   ai.rs               Lane following + aggro
   waves.rs            Periodic creep spawns
   camera.rs           Free camera (edge / arrows / F snap)
+  dimensions.rs       Collision / bounds / selection dimensions + range math
+  picking.rs          Hover, left-click selection, cursor ray picking
   input.rs            RMB move / attack-move / stop / spell ranking
   ui.rs               HUD (spell bar, inventory, shop gold, minimap)
 scripts/
