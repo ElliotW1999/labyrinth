@@ -50,11 +50,12 @@ The HUD shows connection status. Host sim runs combat / creeps / AI; clients app
 | Input | Action |
 | --- | --- |
 | 1 / 2 / 3 or click card | Pick Vanguard / Skirmisher / Arcanist at start |
-| Right click ground | Move (hold to keep issuing commands) |
-| Right click enemy | Attack — path in if out of range (hold reissues) |
+| Right click ground | Move (hold to keep steering toward the cursor) |
+| Right click enemy | Attack — walk to a free spot in range if out of range |
 | G | Attack-move: path toward cursor; attack enemies in attack range |
+| Shift + any order | Queue it after the current command (RMB move / attack, G, QWER, spell confirm, RMB minimap) |
 | Left click | Confirm targeted spell (not used for move) |
-| Space | Stop (clear move + attack + cancel spell) |
+| Space | Stop (clear move + attack + cancel spell + clear the command queue) |
 | Q / W / E / R | Cast ability (must be ranked first; targeted spells walk into range) |
 | Ctrl+Q / W / E / R | Spend a skill point to rank that ability |
 | Spell bar `+` | Rank up when highlighted |
@@ -120,7 +121,7 @@ Each unit carries three explicit gameplay dimensions from `dimensions::UnitDimen
 - **Collision size** (`CollisionRadius`) — unit separation and pathing gaps. Moving units yield to stationary ones, so units never push each other (only **forceful** units shove; **phased** units ignore collision). Trees use a 128×128 AABB
 - **Bounds radius** (`BoundRadius`) — range, targeting, attack reach and spells, measured edge-to-edge (`center distance − source bounds − target bounds`) by `dimensions::within_range` / `edge_distance` / `area_contains` / `cast_distance`
 - **Selection bounds** (`SelectionBounds { offset, half_extents }`) — a forgiving 3D box ray-tested for hover, left-click selection and right-click / unit-target clicks. Overlaps resolve by most-centered hit, then nearest, then entity index
-- Debug overlay: **F5** collision rings, **F6** bounds rings, **F7** selection boxes, **F8** all (or start with `--debug-dims`)
+- Debug overlay: **F5** collision rings, **F6** bounds rings, **F7** selection boxes, **F8** all (or start with `--debug-dims`); **F9** navigation (or `--debug-nav`, see below)
 - Units only **start** moving, attacking, or casting once the aim/target is within **11.5°** of facing
 - **Turn rate** is radians per **0.03s** (heroes default **0.6**, creeps **0.5**)
 - Attacks use **foreswing** (0–0.5s) then fire, then **backswing** (0–0.5s; cancelled by move/stop/new orders)
@@ -128,6 +129,36 @@ Each unit carries three explicit gameplay dimensions from `dimensions::UnitDimen
 - A **white ring** on the ground shows the local hero's attack range
 - Attack speed rating: `(base AS + agility + flat bonuses) × (1 + mult)`, clamped **20–700**; APS = `(IAS/100) / BAT`
 - Abilities use **cast point** then fire, then cancellable **cast backswing**
+
+### Navigation and command queue
+
+```
+IssueCommand (input / minimap / network host)
+  → CommandQueue (normal: replace queue · Shift: append)
+  → order components (MoveTarget / AttackTarget / AttackMoveOrder / AbilityCastRequest)
+  → AI + attack positioning (free spot within range, not the target's center)
+  → plan_paths: radius-aware A* on the static NavGrid (replans only when needed)
+  → movement: follow waypoints, skip ahead on line of sight, local avoidance
+  → collision resolution (safety net only)
+```
+
+- **Static geometry** (map edge, trees, towers, ancients) is baked into `navigation::NavGrid`: a 32-unit clearance field rebuilt automatically when a static blocker appears or disappears (e.g. a tower dies). A cell is walkable for radius `r` when its clearance ≥ `r` + a small margin, so one grid serves every unit size. Paths are 8-connected A* (no corner cutting) string-pulled with exact sweep tests against the real shapes, so they keep a full collision radius off obstacle edges
+- **Non-navigable destinations** (a click inside a tree / tower) resolve to the closest walkable point
+- **Replanning** happens only when the unit has no path, the requested goal drifted > 48 units (searched replans are throttled to 4/s per unit), the nav geometry changed, or the unit is **stuck** (< 25% of expected progress over 0.5s). Stuck replans treat nearby *standing* units as temporary blockers; after repeated stuck windows next to its goal a unit accepts where it is. Units are never baked into the grid
+- **Local avoidance** sidesteps units directly ahead (standing units weigh more, the chosen side is sticky to avoid jitter) and never steers into static geometry. The unit non-overlap rules still hold — moving units yield to standing ones, **phased** units ignore units
+- **Attack positioning**: every mobile attacker (creeps, heroes) walks to a reachable spot inside attack range sampled on rings around the target, scored by travel distance plus penalties for spots occupied by units or reserved by other attackers this frame. Melee attackers fan out around the target instead of queueing single-file; ranged attackers stop as soon as they are in range. The goal is kept until the target moves > 64 units, the spot is taken / blocked, or it falls out of range
+- **Command queue** (`unit_commands`): `UnitCommand::{Move, AttackMove, Attack, CastAbility, Stop}`. A queued command starts when the current one completes:
+
+| Command | Completes when |
+| --- | --- |
+| Move | arrived (or settled next to a crowded / blocked goal) |
+| Attack-move | destination reached |
+| Attack | target died or was removed, or the attack was replaced by another order |
+| Cast (unit / point / no target) | the ability fired (the next command cancels its backswing), or the cast was rejected / interrupted |
+| Stop | immediately (and clears the queue, being a normal command) |
+
+  Commands with a dead or missing target are skipped when they come up, and a command that never takes effect (e.g. a spell on cooldown) fails after a few frames, so nothing stalls the queue
+- **F9 / `--debug-nav`**: red cells = non-navigable for the hero's radius (near the hero), cyan = path, yellow = current waypoint, magenta cross = requested destination, white ring = nav radius, orange arrow = avoidance, red ring + line = attack-position goal, red cross = unreachable goal (route ends at the closest point), green chain = queued command destinations
 
 ### Fog of war
 
@@ -241,8 +272,9 @@ Required: `Item_name`, `cost`. Optional: `short_label`, `description`, `passive_
 - Player hero with Str/Agi/Int, HP / mana / gold / XP / levels and rankable QWER abilities
 - Item shop (gold on the shop button), 6-slot inventory between spells and minimap, timed buffs / debuffs
 - Creep waves that path down each lane
-- Explicit right-click attack orders and G attack-move (path to cursor, attack in range)
-- Building/tree collision; heroes/creeps separate by collision size without pushing (**forceful** shoves)
+- Explicit right-click attack orders and G attack-move (path to cursor, attack in range), all Shift-queueable
+- Radius-aware A* pathfinding around trees / towers / ancients, local avoidance between units, and attack positioning that spreads melee attackers around their target
+- Building/tree collision as a safety net; heroes/creeps separate by collision size without pushing (**forceful** shoves)
 - Targeted spells: confirm aim; if out of cast range the hero walks in then casts
 - Auto-attack combat with armor / magic resist mitigation; projectiles stop at the target
 - Tower and creep aggro AI
@@ -266,7 +298,9 @@ src/
   menu.rs             Esc main menu (New Game / Settings / Quit)
   fog.rs              Fog of war + grey overlay + tree LoS
   obstacle_course.rs  Firebreather / Heartpiercer training strip
-  movement.rs         Move orders + tree / building / unit collision
+  movement.rs         Path following + avoidance + tree / building / unit collision, order helpers
+  navigation/         NavGrid + A* (grid.rs), local avoidance, attack positioning, path planning
+  unit_commands.rs    UnitCommand / CommandQueue (Shift queuing, completion rules)
   basic_attack.rs     Basic attack pipeline (BasicAttackEvent → windup → impact → DamageEvent)
   combat.rs           DamageEvent + mitigation, spell projectiles, death / gold / XP
   progression.rs      Hero XP, attributes, and level-up growth
@@ -278,7 +312,7 @@ src/
   camera.rs           Free camera (edge / arrows / F snap)
   dimensions.rs       Collision / bounds / selection dimensions + range math
   picking.rs          Hover, left-click selection, cursor ray picking
-  input.rs            RMB move / attack-move / stop / spell ranking
+  input.rs            RMB move / attack, attack-move, stop (→ IssueCommand), spell ranking
   ui.rs               HUD (spell bar, inventory, shop gold, minimap)
 scripts/
   HeroGenerator.py     CSV → add HeroId + stub AbilityIds
