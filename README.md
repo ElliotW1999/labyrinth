@@ -237,7 +237,8 @@ src/
   fog.rs              Fog of war + grey overlay + tree LoS
   obstacle_course.rs  Firebreather / Heartpiercer training strip
   movement.rs         Move orders + tree / building / unit collision
-  combat.rs           Attack windup/backswing, projectiles, death / gold / XP
+  basic_attack.rs     Basic attack pipeline (BasicAttackEvent → windup → impact → DamageEvent)
+  combat.rs           DamageEvent + mitigation, spell projectiles, death / gold / XP
   progression.rs      Hero XP, attributes, and level-up growth
   abilities.rs        QWER casting with cast point/backswing
   items.rs            Shop, inventory, sell, actives, status effects

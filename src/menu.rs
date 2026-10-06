@@ -3,6 +3,7 @@
 use bevy::prelude::*;
 
 use crate::abilities::{cancel_targeting_if_any, AbilityTargeting};
+use crate::basic_attack::{BasicAttackInFlight, BasicAttackProjectileVisual};
 use crate::components::{Creep, PlayerHero, Projectile};
 use crate::heroes::{spawn_hero_select_ui_force, HeroSelectRoot, LocalHeroChoice};
 use crate::items::{InventoryContextMenu, ShopUiState};
@@ -239,7 +240,15 @@ fn handle_main_menu_buttons(
     mut wave: ResMut<WaveTimer>,
     heroes: Query<Entity, Or<(With<PlayerHero>, With<NetworkedHero>)>>,
     creeps: Query<Entity, With<Creep>>,
-    projectiles: Query<Entity, Or<(With<Projectile>, With<HazardOrb>)>>,
+    projectiles: Query<
+        Entity,
+        Or<(
+            With<Projectile>,
+            With<BasicAttackInFlight>,
+            With<BasicAttackProjectileVisual>,
+            With<HazardOrb>,
+        )>,
+    >,
     select_roots: Query<Entity, With<HeroSelectRoot>>,
 ) {
     for (interaction, button) in &interactions {
