@@ -75,10 +75,6 @@ pub struct SharedAssets {
     pub indicator_range_mat: Handle<StandardMaterial>,
     pub indicator_aoe_mat: Handle<StandardMaterial>,
     pub attack_range_ring_mat: Handle<StandardMaterial>,
-    pub debug_bound_mat: Handle<StandardMaterial>,
-    pub debug_collision_mat: Handle<StandardMaterial>,
-    pub debug_selection_mat: Handle<StandardMaterial>,
-    pub debug_ring_mesh: Handle<Mesh>,
     pub indicator_ring_mesh: Handle<Mesh>,
     pub indicator_beam_mesh: Handle<Mesh>,
     pub shockwave_mat: Handle<StandardMaterial>,
@@ -91,19 +87,17 @@ pub(crate) fn load_shared_assets(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    // Unit bodies are explicit world-size cuboids (see scale::*_MODEL_*).
-    assets.hero_mesh = meshes.add(Cuboid::new(
-        scale::HERO_MODEL_WIDTH,
+    // Hero / creep bodies are cylinders (diameter = model width); gameplay sizes are separate.
+    assets.hero_mesh = meshes.add(Cylinder::new(
+        scale::HERO_MODEL_WIDTH * 0.5,
         scale::HERO_MODEL_HEIGHT,
-        scale::HERO_MODEL_DEPTH,
     ));
-    assets.creep_mesh = meshes.add(Cuboid::new(
-        scale::CREEP_MODEL_WIDTH,
+    assets.creep_mesh = meshes.add(Cylinder::new(
+        scale::CREEP_MODEL_WIDTH * 0.5,
         scale::CREEP_MODEL_HEIGHT,
-        scale::CREEP_MODEL_DEPTH,
     ));
     assets.unit_mesh = assets.hero_mesh.clone();
-    // Shoulders / arms — sit beside the hero cuboid to break the silhouette.
+    // Shoulders / arms — sit beside the hero cylinder to break the silhouette.
     assets.unit_shoulder_mesh = meshes.add(Cuboid::new(
         scale::HERO_MODEL_WIDTH * 0.95,
         scale::HERO_MODEL_HEIGHT * 0.12,
@@ -149,14 +143,17 @@ pub(crate) fn load_shared_assets(
     assets.health_bar_fill_mesh =
         meshes.add(Cuboid::new(1.0, scale::HEALTH_BAR_FILL_THICKNESS, 0.65));
 
+    // Slightly transparent so overlapping units and the ground beneath stay readable.
     assets.radiant_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.25, 0.55, 0.95),
+        base_color: Color::srgba(0.25, 0.55, 0.95, 0.75),
         perceptual_roughness: 0.7,
+        alpha_mode: AlphaMode::Blend,
         ..default()
     });
     assets.dire_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.9, 0.3, 0.25),
+        base_color: Color::srgba(0.9, 0.3, 0.25, 0.75),
         perceptual_roughness: 0.7,
+        alpha_mode: AlphaMode::Blend,
         ..default()
     });
     assets.radiant_accent_mat = materials.add(StandardMaterial {
@@ -311,32 +308,6 @@ pub(crate) fn load_shared_assets(
         cull_mode: None,
         ..default()
     });
-    assets.debug_bound_mat = materials.add(StandardMaterial {
-        base_color: Color::srgba(0.25, 0.95, 0.45, 0.85),
-        emissive: LinearRgba::rgb(0.2, 1.5, 0.4),
-        unlit: true,
-        alpha_mode: AlphaMode::Blend,
-        cull_mode: None,
-        ..default()
-    });
-    assets.debug_collision_mat = materials.add(StandardMaterial {
-        base_color: Color::srgba(0.95, 0.35, 0.2, 0.85),
-        emissive: LinearRgba::rgb(2.0, 0.5, 0.2),
-        unlit: true,
-        alpha_mode: AlphaMode::Blend,
-        cull_mode: None,
-        ..default()
-    });
-    assets.debug_selection_mat = materials.add(StandardMaterial {
-        base_color: Color::srgba(0.95, 0.9, 0.2, 0.9),
-        emissive: LinearRgba::rgb(2.0, 1.8, 0.3),
-        unlit: true,
-        alpha_mode: AlphaMode::Blend,
-        cull_mode: None,
-        ..default()
-    });
-    // Unit torus — scaled by radius for hollow bound/collision rings.
-    assets.debug_ring_mesh = meshes.add(Torus::new(0.94, 1.0));
     assets.shockwave_mat = materials.add(StandardMaterial {
         base_color: Color::srgba(0.4, 0.85, 1.0, 0.45),
         emissive: LinearRgba::rgb(1.0, 3.0, 5.0),
