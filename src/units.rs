@@ -72,6 +72,7 @@ pub fn spawn_hero_entity(
         attrs,
         Inventory::empty(),
         StatusEffects::default(),
+        crate::unit_commands::CommandQueue::default(),
     ));
     if local {
         entity.insert(PlayerHero);

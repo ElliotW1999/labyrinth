@@ -23,6 +23,7 @@ mod items;
 mod map;
 mod menu;
 mod movement;
+mod navigation;
 mod net;
 mod obstacle_course;
 mod picking;
@@ -30,6 +31,7 @@ mod progression;
 mod resources;
 mod scale;
 mod ui;
+mod unit_commands;
 mod units;
 mod waves;
 
@@ -58,6 +60,7 @@ use picking::PickingPlugin;
 use progression::ProgressionPlugin;
 use resources::ResourcesPlugin;
 use ui::UiPlugin;
+use unit_commands::UnitCommandsPlugin;
 use units::UnitsPlugin;
 use waves::WavesPlugin;
 
@@ -83,6 +86,10 @@ struct Cli {
     /// Start with collision / bounds / selection debug overlays shown (toggle F5–F8).
     #[arg(long)]
     debug_dims: bool,
+
+    /// Start with the navigation debug overlay shown (toggle F9).
+    #[arg(long)]
+    debug_nav: bool,
 }
 
 fn parse_net_config() -> (NetConfig, LocalHeroChoice, DebugOverlaySettings) {
@@ -113,7 +120,10 @@ fn parse_net_config() -> (NetConfig, LocalHeroChoice, DebugOverlaySettings) {
             addr,
         },
         choice,
-        DebugOverlaySettings::all(cli.debug_dims),
+        DebugOverlaySettings {
+            nav: cli.debug_nav,
+            ..DebugOverlaySettings::all(cli.debug_dims)
+        },
     )
 }
 
@@ -146,6 +156,7 @@ fn main() {
             UnitsPlugin,
             HeroesPlugin,
             MovementPlugin,
+            UnitCommandsPlugin,
             CombatPlugin,
             ProgressionPlugin,
         ))

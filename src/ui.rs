@@ -13,7 +13,7 @@ use crate::items::{
     ShopUiState, StatusEffects, StatusKind,
 };
 use crate::menu::MainMenuState;
-use crate::movement::order_hero_move;
+use crate::unit_commands::{IssueCommand, UnitCommand};
 use crate::net::NetStatus;
 use crate::resources::MatchConfig;
 
@@ -1553,7 +1553,8 @@ fn handle_minimap_clicks(
     main_menu: Res<MainMenuState>,
     mut focus: ResMut<CameraFocus>,
     hero: Query<Entity, With<PlayerHero>>,
-    mut commands: Commands,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut issue: MessageWriter<IssueCommand>,
 ) {
     if main_menu.open {
         return;
@@ -1577,7 +1578,11 @@ fn handle_minimap_clicks(
     }
     if mouse.just_pressed(MouseButton::Right) {
         if let Ok(hero_entity) = hero.single() {
-            order_hero_move(&mut commands, hero_entity, world);
+            issue.write(IssueCommand {
+                unit: hero_entity,
+                command: UnitCommand::Move { destination: world },
+                queue: crate::input::shift_held(&keys),
+            });
         }
     }
 }
