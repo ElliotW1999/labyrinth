@@ -324,6 +324,7 @@ def hero_def_arm(hero: HeroRow) -> str:
                     AbilityId::{hero.ability_e_id},
                     AbilityId::{hero.ability_r_id},
                 ],
+                dimensions: UnitDimensions::HERO,
             }},
 """
 

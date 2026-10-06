@@ -5,12 +5,14 @@
 
 use bevy::prelude::*;
 
-use crate::combat::flat_distance;
-use crate::scale;
 use crate::components::{
-    AttackMoveOrder, AttackTarget, CombatStats, Creep, Health, MoveTarget, PlayerHero, Team, Tower,
-    BoundRadius,
+    AttackMoveOrder, AttackTarget, BoundRadius, CombatStats, Creep, Health, MoveTarget, PlayerHero,
+    Team, Tower,
 };
+use crate::dimensions::{
+    bounds_of, center_distance as flat_distance, edge_distance, needs_to_close, within_range,
+};
+use crate::scale;
 
 pub struct AiPlugin;
 
@@ -85,28 +87,21 @@ fn acquire_targets(
     let snaps: Vec<_> = candidates
         .iter()
         .filter(|(_, _, _, hp, _)| hp.is_alive())
-        .map(|(e, t, team, _, radius)| {
-            (
-                e,
-                t.translation,
-                *team,
-                radius.map(|r| r.0).unwrap_or(scale::HERO_BOUND),
-            )
-        })
+        .map(|(e, t, team, _, radius)| (e, t.translation, *team, bounds_of(radius)))
         .collect();
 
     for (entity, transform, team, stats, self_bound, current, is_tower) in &mut seekers {
         if stats.attack_range <= 0.0 {
             continue;
         }
-        let attacker_bound = self_bound.map(|r| r.0).unwrap_or(scale::HERO_BOUND);
+        let attacker_bound = bounds_of(self_bound);
+        let origin = transform.translation;
 
         if let Some(AttackTarget(target)) = current {
             let still_valid = snaps.iter().any(|(e, pos, target_team, radius)| {
                 *e == *target
                     && *target_team == team.enemy()
-                    && flat_distance(transform.translation, *pos)
-                        <= scale::attack_reach(attacker_bound, stats.attack_range, *radius) + 40.0
+                    && within_range(origin, attacker_bound, *pos, *radius, stats.attack_range + 40.0)
             });
             if still_valid {
                 continue;
@@ -119,13 +114,11 @@ fn acquire_targets(
             .iter()
             .filter(|(_, _, target_team, _)| *target_team == team.enemy())
             .filter(|(_, pos, _, radius)| {
-                flat_distance(transform.translation, *pos)
-                    <= scale::attack_reach(attacker_bound, stats.attack_range, *radius) + aggro_pad
+                within_range(origin, attacker_bound, *pos, *radius, stats.attack_range + aggro_pad)
             })
             .min_by(|a, b| {
-                flat_distance(transform.translation, a.1)
-                    .partial_cmp(&flat_distance(transform.translation, b.1))
-                    .unwrap_or(std::cmp::Ordering::Equal)
+                edge_distance(origin, attacker_bound, a.1, a.3)
+                    .total_cmp(&edge_distance(origin, attacker_bound, b.1, b.3))
             });
 
         if let Some((target, _, _, _)) = best {
@@ -139,19 +132,24 @@ fn acquire_targets(
 
 fn chase_attack_targets(
     attackers: Query<
-        (Entity, &Transform, &CombatStats, &AttackTarget),
+        (Entity, &Transform, &CombatStats, Option<&BoundRadius>, &AttackTarget),
         (Without<Tower>, Without<PlayerHero>),
     >,
-    targets: Query<&Transform>,
+    targets: Query<(&Transform, Option<&BoundRadius>)>,
     mut commands: Commands,
 ) {
-    for (entity, transform, stats, AttackTarget(target)) in &attackers {
-        let Ok(target_tf) = targets.get(*target) else {
+    for (entity, transform, stats, self_bound, AttackTarget(target)) in &attackers {
+        let Ok((target_tf, target_bound)) = targets.get(*target) else {
             commands.entity(entity).remove::<AttackTarget>();
             continue;
         };
-        let dist = flat_distance(transform.translation, target_tf.translation);
-        if dist > stats.attack_range * 0.85 {
+        if needs_to_close(
+            transform.translation,
+            bounds_of(self_bound),
+            target_tf.translation,
+            bounds_of(target_bound),
+            stats.attack_range,
+        ) {
             commands.entity(entity).insert(MoveTarget {
                 position: Vec3::new(target_tf.translation.x, 0.0, target_tf.translation.z),
             });
@@ -180,7 +178,7 @@ fn player_attack_move(
     let Ok((entity, transform, stats, hero_team, self_bound, order)) = hero.single() else {
         return;
     };
-    let attacker_bound = self_bound.map(|r| r.0).unwrap_or(scale::HERO_BOUND);
+    let attacker_bound = bounds_of(self_bound);
 
     let in_range = enemies
         .iter()
@@ -188,14 +186,22 @@ fn player_attack_move(
             **team == hero_team.enemy() && hp.is_alive() && !matches!(*vis, Visibility::Hidden)
         })
         .filter(|(_, tf, _, _, radius, _)| {
-            let r = radius.map(|r| r.0).unwrap_or(scale::HERO_BOUND);
-            flat_distance(transform.translation, tf.translation)
-                <= scale::attack_reach(attacker_bound, stats.attack_range, r)
+            within_range(
+                transform.translation,
+                attacker_bound,
+                tf.translation,
+                bounds_of(*radius),
+                stats.attack_range,
+            )
         })
         .min_by(|a, b| {
-            flat_distance(transform.translation, a.1.translation)
-                .partial_cmp(&flat_distance(transform.translation, b.1.translation))
-                .unwrap_or(std::cmp::Ordering::Equal)
+            edge_distance(transform.translation, attacker_bound, a.1.translation, bounds_of(a.4))
+                .total_cmp(&edge_distance(
+                    transform.translation,
+                    attacker_bound,
+                    b.1.translation,
+                    bounds_of(b.4),
+                ))
         });
 
     if let Some((enemy, _, _, _, _, _)) = in_range {
@@ -233,13 +239,13 @@ pub fn player_chase_attack_target(
         commands.entity(entity).remove::<AttackTarget>();
         return;
     };
-    let reach = scale::attack_reach(
-        self_bound.map(|r| r.0).unwrap_or(scale::HERO_BOUND),
+    if needs_to_close(
+        transform.translation,
+        bounds_of(self_bound),
+        target_tf.translation,
+        bounds_of(radius),
         stats.attack_range,
-        radius.map(|r| r.0).unwrap_or(scale::HERO_BOUND),
-    );
-    let dist = flat_distance(transform.translation, target_tf.translation);
-    if dist > reach * 0.9 {
+    ) {
         commands.entity(entity).insert(MoveTarget {
             position: Vec3::new(target_tf.translation.x, 0.0, target_tf.translation.z),
         });

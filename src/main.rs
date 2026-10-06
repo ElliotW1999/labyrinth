@@ -12,6 +12,7 @@ mod camera;
 mod combat;
 mod components;
 mod debug_overlay;
+mod dimensions;
 mod facing;
 mod fog;
 mod healthbars;
@@ -23,6 +24,7 @@ mod menu;
 mod movement;
 mod net;
 mod obstacle_course;
+mod picking;
 mod progression;
 mod resources;
 mod scale;
@@ -40,7 +42,7 @@ use abilities::AbilitiesPlugin;
 use ai::AiPlugin;
 use camera::CameraPlugin;
 use combat::CombatPlugin;
-use debug_overlay::DebugOverlayPlugin;
+use debug_overlay::{DebugOverlayPlugin, DebugOverlaySettings};
 use fog::FogPlugin;
 use healthbars::HealthBarPlugin;
 use heroes::{HeroId, HeroesPlugin, LocalHeroChoice};
@@ -51,6 +53,7 @@ use menu::MenuPlugin;
 use movement::MovementPlugin;
 use net::{NetConfig, NetMode, NetPlugin};
 use obstacle_course::ObstacleCoursePlugin;
+use picking::PickingPlugin;
 use progression::ProgressionPlugin;
 use resources::ResourcesPlugin;
 use ui::UiPlugin;
@@ -75,9 +78,13 @@ struct Cli {
     /// Skip select screen: hero name from the roster (e.g. `vanguard`).
     #[arg(long)]
     hero: Option<String>,
+
+    /// Start with collision / bounds / selection debug overlays shown (toggle F5–F8).
+    #[arg(long)]
+    debug_dims: bool,
 }
 
-fn parse_net_config() -> (NetConfig, LocalHeroChoice) {
+fn parse_net_config() -> (NetConfig, LocalHeroChoice, DebugOverlaySettings) {
     let cli = Cli::parse();
     let addr: SocketAddr = if let Some(port) = cli.port {
         format!("0.0.0.0:{port}")
@@ -105,11 +112,12 @@ fn parse_net_config() -> (NetConfig, LocalHeroChoice) {
             addr,
         },
         choice,
+        DebugOverlaySettings::all(cli.debug_dims),
     )
 }
 
 fn main() {
-    let (net_config, hero_choice) = parse_net_config();
+    let (net_config, hero_choice, debug_overlays) = parse_net_config();
     let title = match net_config.mode {
         NetMode::Offline => "Labyrinth".to_string(),
         NetMode::Host => format!("Labyrinth (Host {})", net_config.addr),
@@ -119,6 +127,7 @@ fn main() {
     App::new()
         .insert_resource(net_config)
         .insert_resource(hero_choice)
+        .insert_resource(debug_overlays)
         .add_plugins(
             DefaultPlugins.set(WindowPlugin {
                 primary_window: Some(Window {
@@ -142,6 +151,7 @@ fn main() {
         .add_plugins((
             ItemsPlugin,
             InputPlugin,
+            PickingPlugin,
             AbilitiesPlugin,
             AiPlugin,
             WavesPlugin,

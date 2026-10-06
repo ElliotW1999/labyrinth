@@ -3,19 +3,18 @@
 use bevy::prelude::*;
 
 use crate::abilities::{cancel_targeting_if_any, AbilityTargeting};
-use crate::combat::flat_distance;
 use crate::components::{
-    AbilityLoadout, AttackTarget, BoundRadius, CombatStats, Ground, Health, HeroProgress,
-    MoveTarget, PlayerHero, SelectionBox, Team,
+    AbilityLoadout, BoundRadius, CombatStats, Ground, HeroProgress, PlayerHero, Team,
 };
+use crate::dimensions::bounds_of;
 use crate::items::ShopUiState;
 use crate::menu::MainMenuState;
-use crate::movement::{order_attack_move, order_hero_move, order_hero_stop};
+use crate::movement::{order_attack_move, order_attack_unit, order_hero_move, order_hero_stop};
 use crate::net::{
     client_send_command, should_send_orders_over_network, ClientToServer, NetConfig, NetworkId,
     NetTransport,
 };
-use crate::scale;
+use crate::picking::{cursor_ground_hit, cursor_ray, ground_hit, pick_under_ray, PickableUnits};
 use crate::ui::UiPointerState;
 
 pub struct InputPlugin;
@@ -85,65 +84,14 @@ fn handle_spell_rank_hotkeys(
     }
 }
 
-fn cursor_ground_hit(
-    windows: &Query<&Window>,
-    camera: &Query<(&Camera, &GlobalTransform)>,
-    ground: &Query<&GlobalTransform, With<Ground>>,
-) -> Option<Vec3> {
-    let window = windows.single().ok()?;
-    let cursor = window.cursor_position()?;
-    let (camera, cam_transform) = camera.single().ok()?;
-    let ray = camera.viewport_to_world(cam_transform, cursor).ok()?;
-    let ground_tf = ground.single().ok()?;
-    let plane = InfinitePlane3d::new(Dir3::Y);
-    let distance = ray.intersect_plane(ground_tf.translation(), plane)?;
-    Some(ray.get_point(distance))
-}
-
-fn order_attack_target(
-    commands: &mut Commands,
-    hero_entity: Entity,
-    hero_tf: &Transform,
-    stats: &CombatStats,
-    hero_bound: f32,
-    enemy: Entity,
-    enemy_tf: &GlobalTransform,
-    enemy_bound: f32,
-) {
-    let reach = scale::attack_reach(hero_bound, stats.attack_range, enemy_bound);
-    let dist = flat_distance(hero_tf.translation, enemy_tf.translation());
-    commands
-        .entity(hero_entity)
-        .insert(AttackTarget(enemy))
-        .remove::<crate::components::AttackSwing>()
-        .remove::<crate::components::AbilityCasting>()
-        .remove::<crate::components::AttackMoveOrder>()
-        .remove::<crate::components::QueuedAbilityCast>();
-    if dist > reach * 0.9 {
-        commands.entity(hero_entity).insert(MoveTarget {
-            position: Vec3::new(enemy_tf.translation().x, 0.0, enemy_tf.translation().z),
-        });
-    } else {
-        commands.entity(hero_entity).remove::<MoveTarget>();
-    }
-}
-
 fn handle_point_and_click(
     mouse: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
     camera: Query<(&Camera, &GlobalTransform)>,
     ground: Query<&GlobalTransform, With<Ground>>,
     hero: Query<(Entity, &Team, &CombatStats, &Transform, Option<&BoundRadius>), With<PlayerHero>>,
-    enemies: Query<(
-        Entity,
-        &GlobalTransform,
-        &Team,
-        &Health,
-        Option<&BoundRadius>,
-        Option<&SelectionBox>,
-        Option<&NetworkId>,
-        &Visibility,
-    )>,
+    pickable: PickableUnits,
+    targets: Query<(&GlobalTransform, Option<&BoundRadius>, Option<&NetworkId>)>,
     shop_ui: Res<ShopUiState>,
     pointer: Res<UiPointerState>,
     config: Res<NetConfig>,
@@ -171,36 +119,24 @@ fn handle_point_and_click(
         return;
     }
 
-    let Some(hit) = cursor_ground_hit(&windows, &camera, &ground) else {
+    let Some(ray) = cursor_ray(&windows, &camera) else {
+        return;
+    };
+    let Some(hit) = ground_hit(ray, &ground) else {
         return;
     };
     let Ok((hero_entity, hero_team, stats, hero_tf, hero_bound)) = hero.single() else {
         return;
     };
-    let self_bound = hero_bound.map(|r| r.0).unwrap_or(scale::HERO_BOUND);
-
-    let clicked_enemy = enemies
-        .iter()
-        .filter(|(_, _, team, hp, _, _, _, vis)| {
-            **team == hero_team.enemy() && hp.is_alive() && !matches!(*vis, Visibility::Hidden)
-        })
-        .filter(|(_, tf, _, _, _, selection, _, _)| {
-            let half = selection
-                .map(|s| s.half_extent)
-                .unwrap_or(scale::HERO_BOUND);
-            point_in_selection(hit, tf.translation(), half)
-        })
-        .min_by(|a, b| {
-            flat_distance(a.1.translation(), hit)
-                .partial_cmp(&flat_distance(b.1.translation(), hit))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+    let enemy_team = hero_team.enemy();
+    let clicked_enemy = pick_under_ray(ray, &pickable, |team| team == enemy_team)
+        .and_then(|enemy| targets.get(enemy).ok().map(|t| (enemy, t)));
 
     if should_send_orders_over_network(&config) {
         let Some(mut transport) = transport else {
             return;
         };
-        if let Some((_, _, _, _, _, _, net_id, _)) = clicked_enemy {
+        if let Some((_, (_, _, net_id))) = clicked_enemy {
             if let Some(id) = net_id {
                 client_send_command(
                     &mut transport,
@@ -229,28 +165,20 @@ fn handle_point_and_click(
         return;
     }
 
-    if let Some((enemy, enemy_tf, _, _, enemy_bound, _, _, _)) = clicked_enemy {
-        commands
-            .entity(hero_entity)
-            .remove::<crate::components::AttackMoveOrder>()
-            .remove::<crate::components::QueuedAbilityCast>();
-        order_attack_target(
+    if let Some((enemy, (enemy_tf, enemy_bound, _))) = clicked_enemy {
+        order_attack_unit(
             &mut commands,
             hero_entity,
-            hero_tf,
-            stats,
-            self_bound,
+            hero_tf.translation,
+            bounds_of(hero_bound),
+            stats.attack_range,
             enemy,
-            enemy_tf,
-            enemy_bound.map(|r| r.0).unwrap_or(scale::HERO_BOUND),
+            enemy_tf.translation(),
+            bounds_of(enemy_bound),
         );
     } else {
         order_hero_move(&mut commands, hero_entity, hit);
     }
-}
-
-fn point_in_selection(point: Vec3, unit_pos: Vec3, half_extent: f32) -> bool {
-    (point.x - unit_pos.x).abs() <= half_extent && (point.z - unit_pos.z).abs() <= half_extent
 }
 
 fn handle_attack_move(

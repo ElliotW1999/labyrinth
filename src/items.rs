@@ -4,8 +4,10 @@ use bevy::prelude::*;
 
 use crate::combat::{apply_damage, flat_distance};
 use crate::components::{
-    CombatStats, DamageType, Health, Lifetime, Mana, PlayerHero, PlayerWallet, SpellFx, Team,
+    BoundRadius, CombatStats, DamageType, Health, Lifetime, Mana, PlayerHero, PlayerWallet,
+    SpellFx, Team,
 };
+use crate::dimensions::{area_contains, bounds_of};
 use crate::resources::SharedAssets;
 use crate::scale;
 
@@ -766,7 +768,10 @@ fn handle_item_hotkeys(
         ),
         With<PlayerHero>,
     >,
-    enemies: Query<(Entity, &Transform, &Team, &Health, &CombatStats), Without<PlayerHero>>,
+    enemies: Query<
+        (Entity, &Transform, &Team, &Health, &CombatStats, Option<&BoundRadius>),
+        Without<PlayerHero>,
+    >,
 ) {
     let picks = [
         (KeyCode::KeyA, 0usize),
@@ -819,7 +824,10 @@ fn try_use_item(
     stats: &mut CombatStats,
     statuses: &mut StatusEffects,
     index: usize,
-    enemies: &Query<(Entity, &Transform, &Team, &Health, &CombatStats), Without<PlayerHero>>,
+    enemies: &Query<
+        (Entity, &Transform, &Team, &Health, &CombatStats, Option<&BoundRadius>),
+        Without<PlayerHero>,
+    >,
 ) {
     let Some(item) = inv.slots.get_mut(index).and_then(|s| s.as_mut()) else {
         return;
@@ -839,11 +847,11 @@ fn try_use_item(
         ItemId::StormRod => {
             let origin = transform.translation;
             let radius = scale::u(5.5);
-            for (_e, enemy_tf, enemy_team, enemy_hp, enemy_stats) in enemies.iter() {
+            for (_e, enemy_tf, enemy_team, enemy_hp, enemy_stats, bound) in enemies.iter() {
                 if *enemy_team != team.enemy() || !enemy_hp.is_alive() {
                     continue;
                 }
-                if flat_distance(origin, enemy_tf.translation) <= radius {
+                if area_contains(origin, radius, enemy_tf.translation, bounds_of(bound)) {
                     let dmg = apply_damage(140.0, DamageType::Magical, enemy_stats);
                     commands.entity(_e).insert(crate::abilities::PendingDamage { amount: dmg });
                 }

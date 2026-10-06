@@ -2,15 +2,13 @@
 
 use bevy::prelude::*;
 
-use crate::combat::flat_distance;
 use crate::components::{
     AbilityCasting, Ancient, AttackMoveOrder, AttackSwing, AttackTarget, CollisionRadius,
-    CombatStats, Creep, MoveTarget, Obstacle, ObstacleShape, PlayerHero, QueuedAbilityCast, Tower,
+    CombatStats, MoveTarget, Obstacle, ObstacleShape, QueuedAbilityCast, Tower,
 };
+use crate::dimensions::{center_distance as flat_distance, collision_of, needs_to_close};
 use crate::facing::turn_toward;
 use crate::items::StatusEffects;
-use crate::net::NetworkedHero;
-use crate::scale;
 
 pub struct MovementPlugin;
 
@@ -76,7 +74,7 @@ fn apply_move_targets(
             continue;
         }
 
-        let unit_r = radius.map(|r| r.0).unwrap_or(scale::HERO_COLLISION);
+        let unit_r = collision_of(radius);
         let mut destination = target.position;
         destination.y = transform.translation.y;
 
@@ -176,74 +174,98 @@ fn resolve_building_collisions(
     }
 }
 
-/// Soft circular separation between heroes and creeps by [`CollisionRadius`].
+/// Keep mobile units' [`CollisionRadius`] circles from overlapping.
+///
+/// Units never shove each other: a moving unit that walks into a stationary one is
+/// held back and takes the whole correction. Only units in the same state (both
+/// moving or both standing) split it. Forceful units keep priority; phased units
+/// ignore collision entirely.
 fn resolve_unit_collisions(
-    mut units: Query<(
-        Entity,
-        &mut Transform,
-        Option<&CollisionRadius>,
-        Option<&StatusEffects>,
-        Has<PlayerHero>,
-        Has<NetworkedHero>,
-        Has<Creep>,
-    )>,
+    mut units: Query<
+        (
+            Entity,
+            &mut Transform,
+            &CollisionRadius,
+            Option<&StatusEffects>,
+            Has<MoveTarget>,
+        ),
+        (
+            With<CombatStats>,
+            Without<Tower>,
+            Without<Ancient>,
+            Without<Obstacle>,
+        ),
+    >,
 ) {
-    let snaps: Vec<(Entity, Vec3, f32, bool, bool)> = units
+    let snaps: Vec<CollisionSnap> = units
         .iter()
-        .filter(|(_, _, _, _, is_hero, is_net, is_creep)| *is_hero || *is_net || *is_creep)
-        .map(|(e, tf, radius, statuses, _, _, _)| {
-            (
-                e,
-                tf.translation,
-                radius.map(|r| r.0).unwrap_or(scale::HERO_COLLISION),
-                statuses.map(|s| s.is_phased()).unwrap_or(false),
-                statuses.map(|s| s.can_push_units()).unwrap_or(false),
-            )
+        .filter(|(_, _, radius, _, _)| radius.0 > 0.0)
+        .map(|(entity, tf, radius, statuses, moving)| CollisionSnap {
+            entity,
+            pos: tf.translation,
+            radius: radius.0,
+            phased: statuses.is_some_and(|s| s.is_phased()),
+            forceful: statuses.is_some_and(|s| s.can_push_units()),
+            moving,
         })
         .collect();
-
-    if snaps.len() < 2 {
-        return;
-    }
 
     let mut pushes: Vec<(Entity, Vec3)> = Vec::new();
     for i in 0..snaps.len() {
         for j in (i + 1)..snaps.len() {
-            let (a_e, a_pos, a_r, a_phase, a_force) = snaps[i];
-            let (b_e, b_pos, b_r, b_phase, b_force) = snaps[j];
-            if a_phase || b_phase {
+            let (a, b) = (&snaps[i], &snaps[j]);
+            if a.phased || b.phased {
                 continue;
             }
-            let min_dist = a_r + b_r;
-            let dx = a_pos.x - b_pos.x;
-            let dz = a_pos.z - b_pos.z;
+            let min_dist = a.radius + b.radius;
+            let dx = a.pos.x - b.pos.x;
+            let dz = a.pos.z - b.pos.z;
             let dist = (dx * dx + dz * dz).sqrt();
-            if dist >= min_dist || dist <= 1e-4 {
-                if dist <= 1e-4 {
-                    pushes.push((a_e, Vec3::new(min_dist * 0.5, 0.0, 0.0)));
-                    pushes.push((b_e, Vec3::new(-min_dist * 0.5, 0.0, 0.0)));
-                }
+            if dist >= min_dist {
                 continue;
             }
-            let overlap = min_dist - dist;
-            let nx = dx / dist;
-            let nz = dz / dist;
-            let (a_w, b_w) = if a_force == b_force {
-                (0.5, 0.5)
-            } else if a_force {
-                (0.15, 0.85)
+            let (nx, nz) = if dist > 1e-4 {
+                (dx / dist, dz / dist)
             } else {
-                (0.85, 0.15)
+                // Exactly stacked: separate along X, ordered by entity for determinism.
+                if a.entity.to_bits() < b.entity.to_bits() { (-1.0, 0.0) } else { (1.0, 0.0) }
             };
-            pushes.push((a_e, Vec3::new(nx * overlap * a_w, 0.0, nz * overlap * a_w)));
-            pushes.push((b_e, Vec3::new(-nx * overlap * b_w, 0.0, -nz * overlap * b_w)));
+            let overlap = min_dist - dist;
+            let (a_w, b_w) = collision_shares(a, b);
+            if a_w > 0.0 {
+                pushes.push((a.entity, Vec3::new(nx * overlap * a_w, 0.0, nz * overlap * a_w)));
+            }
+            if b_w > 0.0 {
+                pushes.push((b.entity, Vec3::new(-nx * overlap * b_w, 0.0, -nz * overlap * b_w)));
+            }
         }
     }
 
     for (entity, push) in pushes {
-        if let Ok((_, mut tf, _, _, _, _, _)) = units.get_mut(entity) {
+        if let Ok((_, mut tf, _, _, _)) = units.get_mut(entity) {
             tf.translation += push;
         }
+    }
+}
+
+struct CollisionSnap {
+    entity: Entity,
+    pos: Vec3,
+    radius: f32,
+    phased: bool,
+    forceful: bool,
+    moving: bool,
+}
+
+/// Fraction of an overlap correction each unit absorbs.
+fn collision_shares(a: &CollisionSnap, b: &CollisionSnap) -> (f32, f32) {
+    if a.forceful != b.forceful {
+        return if a.forceful { (0.15, 0.85) } else { (0.85, 0.15) };
+    }
+    match (a.moving, b.moving) {
+        (true, false) => (1.0, 0.0),
+        (false, true) => (0.0, 1.0),
+        _ => (0.5, 0.5),
     }
 }
 
@@ -337,6 +359,33 @@ pub fn order_hero_stop(commands: &mut Commands, hero: Entity) {
         .remove::<AbilityCasting>();
 }
 
+/// Order a unit to attack another, walking until it is within attack range.
+pub fn order_attack_unit(
+    commands: &mut Commands,
+    attacker: Entity,
+    attacker_pos: Vec3,
+    attacker_bounds: f32,
+    attack_range: f32,
+    target: Entity,
+    target_pos: Vec3,
+    target_bounds: f32,
+) {
+    commands
+        .entity(attacker)
+        .insert(AttackTarget(target))
+        .remove::<AttackSwing>()
+        .remove::<AbilityCasting>()
+        .remove::<AttackMoveOrder>()
+        .remove::<QueuedAbilityCast>();
+    if needs_to_close(attacker_pos, attacker_bounds, target_pos, target_bounds, attack_range) {
+        commands.entity(attacker).insert(MoveTarget {
+            position: Vec3::new(target_pos.x, 0.0, target_pos.z),
+        });
+    } else {
+        commands.entity(attacker).remove::<MoveTarget>();
+    }
+}
+
 pub fn order_attack_move(commands: &mut Commands, hero: Entity, destination: Vec3) {
     commands
         .entity(hero)
@@ -348,4 +397,32 @@ pub fn order_attack_move(commands: &mut Commands, hero: Entity, destination: Vec
         .remove::<QueuedAbilityCast>()
         .remove::<AttackSwing>()
         .remove::<AbilityCasting>();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn snap(moving: bool, forceful: bool) -> CollisionSnap {
+        CollisionSnap {
+            entity: Entity::PLACEHOLDER,
+            pos: Vec3::ZERO,
+            radius: 30.0,
+            phased: false,
+            forceful,
+            moving,
+        }
+    }
+
+    #[test]
+    fn moving_unit_cannot_push_stationary_unit() {
+        assert_eq!(collision_shares(&snap(true, false), &snap(false, false)), (1.0, 0.0));
+        assert_eq!(collision_shares(&snap(false, false), &snap(true, false)), (0.0, 1.0));
+    }
+
+    #[test]
+    fn same_state_units_split_and_forceful_wins() {
+        assert_eq!(collision_shares(&snap(true, false), &snap(true, false)), (0.5, 0.5));
+        assert_eq!(collision_shares(&snap(false, true), &snap(true, false)), (0.15, 0.85));
+    }
 }

@@ -3,9 +3,10 @@
 use bevy::prelude::*;
 
 use crate::components::{
-    Ancient, AttackCooldown, BoundRadius, CollisionRadius, CombatStats, Creep, GoldBounty, Health,
-    Lane, PlayerHero, PlayerWallet, SelectionBox, Team, Tower, XpBounty,
+    Ancient, AttackCooldown, CombatStats, Creep, GoldBounty, Health, Lane, PlayerHero,
+    PlayerWallet, Team, Tower, XpBounty,
 };
+use crate::dimensions::UnitDimensions;
 use crate::heroes::{HeroId, HeroKind};
 use crate::items::{Inventory, StatusEffects};
 use crate::net::{NetworkId, NetworkedHero};
@@ -20,11 +21,7 @@ impl Plugin for UnitsPlugin {
     }
 }
 
-fn ancient_model_side() -> f32 {
-    scale::body(3.5)
-}
-
-/// Place a model so its cuboid rests on the ground (center at half height).
+/// Place a model so it rests on the ground (center at half height).
 fn grounded(position: Vec3, model_height: f32) -> Vec3 {
     Vec3::new(position.x, model_height * 0.5, position.z)
 }
@@ -70,11 +67,7 @@ pub fn spawn_hero_entity(
         crate::components::HeroProgress::new(),
     ));
     entity.insert((
-        BoundRadius(scale::HERO_BOUND),
-        CollisionRadius(scale::HERO_COLLISION),
-        SelectionBox {
-            half_extent: scale::selection_half(scale::HERO_MODEL_WIDTH, scale::HERO_MODEL_DEPTH),
-        },
+        def.dimensions.components(),
         GoldBounty(0),
         attrs,
         Inventory::empty(),
@@ -111,10 +104,10 @@ pub fn spawn_creep(
     } else {
         format!("{team:?} Creep ({lane:?})")
     };
-    let (bound, collision) = if ranged {
-        (scale::RANGED_CREEP_BOUND, scale::RANGED_CREEP_COLLISION)
+    let dimensions = if ranged {
+        UnitDimensions::RANGED_CREEP
     } else {
-        (scale::MELEE_CREEP_BOUND, scale::MELEE_CREEP_COLLISION)
+        UnitDimensions::MELEE_CREEP
     };
 
     let id = commands
@@ -138,11 +131,7 @@ pub fn spawn_creep(
         ))
         .id();
     commands.entity(id).insert((
-        BoundRadius(bound),
-        CollisionRadius(collision),
-        SelectionBox {
-            half_extent: scale::selection_half(scale::CREEP_MODEL_WIDTH, scale::CREEP_MODEL_DEPTH),
-        },
+        dimensions.components(),
         GoldBounty(35),
         XpBounty(45),
         crate::items::StatusEffects::default(),
@@ -183,14 +172,7 @@ pub fn spawn_tower(
             Health::new(1800.0),
             CombatStats::simple(90.0, scale::TOWER_ATTACK_RANGE, 0.85, 12.0, 8.0, 0.0),
             AttackCooldown(0.0),
-            BoundRadius(scale::TOWER_BOUND),
-            CollisionRadius(scale::TOWER_COLLISION),
-            SelectionBox {
-                half_extent: scale::selection_half(
-                    scale::TOWER_MODEL_WIDTH,
-                    scale::TOWER_MODEL_DEPTH,
-                ),
-            },
+            UnitDimensions::TOWER.components(),
             GoldBounty(120),
             XpBounty(150),
         ))
@@ -230,7 +212,6 @@ pub fn spawn_ancient(
     stats.recompute_attack_speed(0.0);
 
     let offset = scale::body(1.4);
-    let side = ancient_model_side();
     commands
         .spawn((
             Name::new(format!("{team:?} Ancient")),
@@ -241,11 +222,7 @@ pub fn spawn_ancient(
             Ancient,
             Health::new(4000.0),
             stats,
-            BoundRadius(scale::ANCIENT_BOUND),
-            CollisionRadius(scale::ANCIENT_COLLISION),
-            SelectionBox {
-                half_extent: scale::selection_half(side, side),
-            },
+            UnitDimensions::ANCIENT.components(),
             GoldBounty(0),
             XpBounty(400),
         ))

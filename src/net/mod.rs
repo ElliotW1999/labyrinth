@@ -11,13 +11,11 @@ pub use session::{
 
 use bevy::prelude::*;
 
-use crate::combat::flat_distance;
-use crate::components::{
-    AttackTarget, CombatStats, Health, MoveTarget, Team, BoundRadius,
-};
+use crate::components::{BoundRadius, CombatStats, Health, Team};
+use crate::dimensions::bounds_of;
 use crate::heroes::{HeroId, HeroKind, LocalHeroChoice};
 use crate::scale;
-use crate::movement::{order_attack_move, order_hero_move, order_hero_stop};
+use crate::movement::{order_attack_move, order_attack_unit, order_hero_move, order_hero_stop};
 use crate::units::spawn_hero_entity;
 
 use proto::{decode, encode};
@@ -196,42 +194,20 @@ fn host_recv_and_apply(
                 if let Some((enemy, _, enemy_tf, _, _, enemy_bound)) =
                     net_targets.iter().find(|(_, id, ..)| id.0 == target)
                 {
-                    apply_attack_order(
+                    order_attack_unit(
                         &mut commands,
                         hero_entity,
-                        hero_tf,
-                        stats,
-                        hero_bound.map(|r| r.0).unwrap_or(scale::HERO_BOUND),
+                        hero_tf.translation,
+                        bounds_of(hero_bound),
+                        stats.attack_range,
                         enemy,
-                        enemy_tf,
-                        enemy_bound.map(|r| r.0).unwrap_or(scale::HERO_BOUND),
+                        enemy_tf.translation(),
+                        bounds_of(enemy_bound),
                     );
                 }
             }
             ClientToServer::Heartbeat => {}
         }
-    }
-}
-
-fn apply_attack_order(
-    commands: &mut Commands,
-    hero_entity: Entity,
-    hero_tf: &Transform,
-    stats: &CombatStats,
-    hero_bound: f32,
-    enemy: Entity,
-    enemy_tf: &GlobalTransform,
-    enemy_bound: f32,
-) {
-    let reach = scale::attack_reach(hero_bound, stats.attack_range, enemy_bound);
-    let dist = flat_distance(hero_tf.translation, enemy_tf.translation());
-    commands.entity(hero_entity).insert(AttackTarget(enemy));
-    if dist > reach * 0.9 {
-        commands.entity(hero_entity).insert(MoveTarget {
-            position: Vec3::new(enemy_tf.translation().x, 0.0, enemy_tf.translation().z),
-        });
-    } else {
-        commands.entity(hero_entity).remove::<MoveTarget>();
     }
 }
 

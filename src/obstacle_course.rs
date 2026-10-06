@@ -2,10 +2,11 @@
 
 use bevy::prelude::*;
 
-use crate::combat::{apply_damage, flat_distance};
+use crate::combat::apply_damage;
 use crate::components::{
     BoundRadius, CollisionRadius, CombatStats, Creep, DamageType, Health, Lifetime, PlayerHero,
 };
+use crate::dimensions::{area_contains, bounds_of, collision_of};
 use crate::fog::{FogFreeZones, FogRect};
 use crate::net::NetworkedHero;
 use crate::resources::SharedAssets;
@@ -250,7 +251,7 @@ fn tick_heartpiercer_plates(
         }
 
         let stepped = walkers.iter().any(|(walker, radius)| {
-            let r = radius.map(|u| u.0).unwrap_or(scale::u(0.4));
+            let r = collision_of(radius);
             let dx = (walker.translation.x - plate_tf.translation.x).abs();
             let dz = (walker.translation.z - plate_tf.translation.z).abs();
             dx <= plate.half_x + r && dz <= plate.half_z + r
@@ -316,7 +317,7 @@ fn apply_hazard_hits(
     mut commands: Commands,
     orbs: Query<(Entity, &Transform, &HazardOrb, &Lifetime)>,
     mut victims: Query<
-        (Entity, &Transform, &mut Health, &CombatStats, Option<&CollisionRadius>),
+        (Entity, &Transform, &mut Health, &CombatStats, Option<&BoundRadius>),
         Or<(With<PlayerHero>, With<NetworkedHero>, With<Creep>)>,
     >,
 ) {
@@ -330,8 +331,7 @@ fn apply_hazard_hits(
             if !health.is_alive() {
                 continue;
             }
-            let r = radius.map(|u| u.0).unwrap_or(scale::u(0.5));
-            if flat_distance(orb_tf.translation, victim_tf.translation) <= orb.radius + r {
+            if area_contains(orb_tf.translation, orb.radius, victim_tf.translation, bounds_of(radius)) {
                 let amount = apply_damage(orb.damage, DamageType::Magical, stats);
                 health.current -= amount;
                 hit = true;

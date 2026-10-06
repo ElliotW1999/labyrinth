@@ -2,6 +2,7 @@
 
 use bevy::prelude::*;
 
+use crate::dimensions::{bounds_of, center_distance as flat_distance};
 use crate::components::{
     BoundRadius, Creep, Health, Obstacle, ObstacleShape, PlayerHero, Team, Tower,
 };
@@ -153,7 +154,7 @@ fn collect_vision(
         } else {
             HERO_VISION_RANGE
         };
-        let pad = radius.map(|r| r.0).unwrap_or(0.0);
+        let pad = bounds_of(radius);
         vision.push(VisionSource {
             pos: tf.translation,
             range: range + pad,
@@ -298,12 +299,6 @@ fn sync_healthbar_fog_visibility(
             Visibility::Visible | Visibility::Inherited => Visibility::Visible,
         };
     }
-}
-
-fn flat_distance(a: Vec3, b: Vec3) -> f32 {
-    let dx = a.x - b.x;
-    let dz = a.z - b.z;
-    (dx * dx + dz * dz).sqrt()
 }
 
 fn obstacle_block_radius(obs: &Obstacle) -> f32 {

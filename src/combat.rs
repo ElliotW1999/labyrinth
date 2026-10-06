@@ -4,9 +4,10 @@ use bevy::prelude::*;
 
 use crate::components::{
     AttackCooldown, AttackSwing, AttackTarget, BoundRadius, CombatStats, DamageType, GoldBounty,
-    Ground, Health, HeroProgress, Lifetime, PlayerHero, PlayerWallet, Projectile, ProjectileHome,
+    Health, HeroProgress, Lifetime, PlayerHero, PlayerWallet, Projectile, ProjectileHome,
     ProjectileStyle, Team, XpBounty,
 };
+use crate::dimensions::{area_contains, bounds_of, edge_distance, within_range};
 use crate::facing::turn_toward;
 use crate::items::StatusEffects;
 use crate::progression::add_xp;
@@ -70,14 +71,7 @@ fn begin_attack_windups(
     let target_snapshots: Vec<_> = targets
         .iter()
         .filter(|(_, _, _, hp, _)| hp.is_alive())
-        .map(|(e, t, team, _, radius)| {
-            (
-                e,
-                t.translation(),
-                *team,
-                radius.map(|r| r.0).unwrap_or(scale::HERO_BOUND),
-            )
-        })
+        .map(|(e, t, team, _, radius)| (e, t.translation(), *team, bounds_of(radius)))
         .collect();
 
     for (
@@ -107,7 +101,7 @@ fn begin_attack_windups(
         }
 
         let origin = transform.translation;
-        let self_bound = attacker_bound.map(|r| r.0).unwrap_or(scale::HERO_BOUND);
+        let self_bound = bounds_of(attacker_bound);
         let chosen = current_target
             .and_then(|AttackTarget(id)| {
                 target_snapshots
@@ -115,8 +109,7 @@ fn begin_attack_windups(
                     .find(|(e, pos, target_team, radius)| {
                         *e == *id
                             && *target_team == team.enemy()
-                            && flat_distance(origin, *pos)
-                                <= scale::attack_reach(self_bound, stats.attack_range, *radius)
+                            && within_range(origin, self_bound, *pos, *radius, stats.attack_range)
                     })
                     .copied()
             })
@@ -128,13 +121,11 @@ fn begin_attack_windups(
                     .iter()
                     .filter(|(_, _, target_team, _)| *target_team == team.enemy())
                     .filter(|(_, pos, _, radius)| {
-                        flat_distance(origin, *pos)
-                            <= scale::attack_reach(self_bound, stats.attack_range, *radius)
+                        within_range(origin, self_bound, *pos, *radius, stats.attack_range)
                     })
                     .min_by(|a, b| {
-                        flat_distance(origin, a.1)
-                            .partial_cmp(&flat_distance(origin, b.1))
-                            .unwrap_or(std::cmp::Ordering::Equal)
+                        edge_distance(origin, self_bound, a.1, a.3)
+                            .total_cmp(&edge_distance(origin, self_bound, b.1, b.3))
                     })
                     .copied()
             });
@@ -210,7 +201,7 @@ fn tick_attack_swings(
                     .unwrap_or(transform.translation + *transform.forward() * 4.0);
 
                 if scale::is_melee_attack_range(stats.attack_range) {
-                    let self_bound = attacker_bound.map(|r| r.0).unwrap_or(scale::HERO_BOUND);
+                    let self_bound = bounds_of(attacker_bound);
                     apply_melee_hit(
                         &mut targets,
                         *team,
@@ -345,11 +336,11 @@ fn apply_projectile_hits(
                 if unit_entity != home.target || *team == projectile.team || !health.is_alive() {
                     continue;
                 }
-                let reach = projectile.radius + radius.map(|r| r.0).unwrap_or(scale::HERO_BOUND);
                 // Aim point is unit.y + body(1); keep the vertical pad in world units.
                 let vertical =
                     (impact.y - (unit_tf.translation.y + scale::body(1.0))).abs();
-                if flat_distance(impact, unit_tf.translation) <= reach && vertical < scale::body(2.5)
+                if area_contains(impact, projectile.radius, unit_tf.translation, bounds_of(radius))
+                    && vertical < scale::body(2.5)
                 {
                     let dmg = apply_damage(projectile.damage, projectile.damage_type, stats);
                     health.current -= dmg;
@@ -373,8 +364,12 @@ fn apply_projectile_hits(
                 if primary_hit == Some(unit_entity) {
                     continue;
                 }
-                let bound = radius.map(|r| r.0).unwrap_or(scale::HERO_BOUND);
-                if flat_distance(impact, unit_tf.translation) <= projectile.splash_radius + bound {
+                if area_contains(
+                    impact,
+                    projectile.splash_radius,
+                    unit_tf.translation,
+                    bounds_of(radius),
+                ) {
                     let ratio = if primary_hit.is_some() { 0.45 } else { 1.0 };
                     let dmg =
                         apply_damage(projectile.damage * ratio, projectile.damage_type, stats);
@@ -470,30 +465,11 @@ pub fn mitigate(raw_damage: f32, resistance: f32) -> f32 {
     (raw_damage * factor).max(0.0)
 }
 
-pub fn flat_distance(a: Vec3, b: Vec3) -> f32 {
-    let dx = a.x - b.x;
-    let dz = a.z - b.z;
-    (dx * dx + dz * dz).sqrt()
-}
+pub use crate::dimensions::center_distance as flat_distance;
 
 fn projectile_speed_for(attack_range: f32) -> f32 {
     // ~900–1500 u/s — scales with attack range in the new world units.
     (500.0 + attack_range * 1.2).clamp(700.0, 1500.0)
-}
-
-pub fn cursor_ground_hit(
-    windows: &Query<&Window>,
-    camera: &Query<(&Camera, &GlobalTransform)>,
-    ground: &Query<&GlobalTransform, With<Ground>>,
-) -> Option<Vec3> {
-    let window = windows.single().ok()?;
-    let cursor = window.cursor_position()?;
-    let (camera, cam_transform) = camera.single().ok()?;
-    let ray = camera.viewport_to_world(cam_transform, cursor).ok()?;
-    let ground_tf = ground.single().ok()?;
-    let plane = InfinitePlane3d::new(Dir3::Y);
-    let distance = ray.intersect_plane(ground_tf.translation(), plane)?;
-    Some(ray.get_point(distance))
 }
 
 fn spawn_auto_attack(
@@ -563,9 +539,8 @@ fn apply_melee_hit(
     if *team == attacker_team || !health.is_alive() {
         return;
     }
-    let target_bound = radius.map(|r| r.0).unwrap_or(scale::HERO_BOUND);
-    let reach = scale::attack_reach(attacker_bound, attack_range, target_bound);
-    if flat_distance(origin, tf.translation()) > reach * 1.15 {
+    // Lenient so a target stepping away during the swing still gets hit.
+    if !within_range(origin, attacker_bound, tf.translation(), bounds_of(radius), attack_range * 1.15) {
         return;
     }
     health.current -= apply_damage(damage, DamageType::Physical, stats);
