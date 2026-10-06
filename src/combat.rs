@@ -1,15 +1,20 @@
-//! Auto-attack via melee slashes / ranged projectiles, damage types, death, bounty, and XP.
+//! Combat core: damage messages and mitigation, spell projectiles, death, bounty, and XP.
+//! Basic attacks live in [`crate::basic_attack`] and feed [`DamageEvent`]s in here.
 
 use bevy::prelude::*;
 
-use crate::components::{
-    AttackCooldown, AttackSwing, AttackTarget, BoundRadius, CombatStats, DamageType, GoldBounty,
-    Health, HeroProgress, Lifetime, PlayerHero, PlayerWallet, Projectile, ProjectileHome,
-    ProjectileStyle, Team, XpBounty,
+use crate::basic_attack::{
+    BasicAttackEvent, BasicAttackImpactEvent, BasicAttackReleaseEvent, advance_attacks_in_flight,
+    animate_melee_slashes, request_basic_attacks, resolve_attack_releases,
+    resolve_basic_attack_impacts, start_basic_attack_windups, sync_attack_projectile_visuals,
+    tick_attack_swings,
 };
-use crate::dimensions::{area_contains, bounds_of, edge_distance, within_range};
-use crate::facing::turn_toward;
-use crate::items::StatusEffects;
+use crate::components::{
+    AttackCooldown, BoundRadius, CombatStats, DamageType, GoldBounty, Health, HeroProgress,
+    Lifetime, PlayerHero, PlayerWallet, Projectile, ProjectileHome, ProjectileStyle, Team,
+    XpBounty,
+};
+use crate::dimensions::{area_contains, bounds_of};
 use crate::progression::add_xp;
 use crate::resources::SharedAssets;
 use crate::scale;
@@ -18,25 +23,59 @@ pub struct CombatPlugin;
 
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            Update,
-            (ensure_attack_range_ring, sync_attack_range_ring).chain(),
-        )
-        .add_systems(
-            Update,
-            (
-                tick_attack_cooldowns,
-                begin_attack_windups,
-                tick_attack_swings,
-                animate_melee_slashes,
-                fly_projectiles,
-                apply_projectile_hits,
-                tick_lifetimes,
-                despawn_dead,
+        app.add_message::<BasicAttackEvent>()
+            .add_message::<BasicAttackReleaseEvent>()
+            .add_message::<BasicAttackImpactEvent>()
+            .add_message::<DamageEvent>()
+            .add_systems(
+                Update,
+                (ensure_attack_range_ring, sync_attack_range_ring).chain(),
             )
-                .chain()
-                .run_if(crate::net::is_sim_authority),
-        );
+            .add_systems(
+                Update,
+                (
+                    tick_attack_cooldowns,
+                    request_basic_attacks,
+                    start_basic_attack_windups,
+                    tick_attack_swings,
+                    resolve_attack_releases,
+                    advance_attacks_in_flight,
+                    resolve_basic_attack_impacts,
+                    animate_melee_slashes,
+                    sync_attack_projectile_visuals,
+                    fly_projectiles,
+                    apply_projectile_hits,
+                    apply_damage_events,
+                    tick_lifetimes,
+                    despawn_dead,
+                )
+                    .chain()
+                    .run_if(crate::net::is_sim_authority),
+            );
+    }
+}
+
+/// Raw (pre-mitigation) damage dealt to `target`; armor / magic resist apply on receipt.
+#[derive(Message, Debug, Clone, Copy, PartialEq)]
+pub struct DamageEvent {
+    pub source: Option<Entity>,
+    pub target: Entity,
+    pub amount: f32,
+    pub damage_type: DamageType,
+}
+
+pub fn apply_damage_events(
+    mut events: MessageReader<DamageEvent>,
+    mut targets: Query<(&mut Health, &CombatStats)>,
+) {
+    for event in events.read() {
+        let Ok((mut health, stats)) = targets.get_mut(event.target) else {
+            continue;
+        };
+        if !health.is_alive() {
+            continue;
+        }
+        health.current -= apply_damage(event.amount, event.damage_type, stats);
     }
 }
 
@@ -44,209 +83,6 @@ fn tick_attack_cooldowns(time: Res<Time>, mut query: Query<&mut AttackCooldown>)
     let dt = time.delta_secs();
     for mut cd in &mut query {
         cd.0 = (cd.0 - dt).max(0.0);
-    }
-}
-
-/// Start foreswing when off cooldown, able to attack, and facing the target
-/// within the 11.5° cone.
-fn begin_attack_windups(
-    time: Res<Time>,
-    mut commands: Commands,
-    mut attackers: Query<(
-        Entity,
-        &mut Transform,
-        &Team,
-        &CombatStats,
-        Option<&BoundRadius>,
-        &AttackCooldown,
-        Option<&AttackTarget>,
-        Option<&AttackSwing>,
-        Option<&StatusEffects>,
-        Has<PlayerHero>,
-    )>,
-    // GlobalTransform (not Transform) so this stays disjoint from attackers' &mut Transform.
-    targets: Query<(Entity, &GlobalTransform, &Team, &Health, Option<&BoundRadius>)>,
-) {
-    let dt = time.delta_secs();
-    let target_snapshots: Vec<_> = targets
-        .iter()
-        .filter(|(_, _, _, hp, _)| hp.is_alive())
-        .map(|(e, t, team, _, radius)| (e, t.translation(), *team, bounds_of(radius)))
-        .collect();
-
-    for (
-        entity,
-        mut transform,
-        team,
-        stats,
-        attacker_bound,
-        cooldown,
-        current_target,
-        swing,
-        statuses,
-        is_player,
-    ) in &mut attackers
-    {
-        if swing.is_some() {
-            continue;
-        }
-        if cooldown.0 > 0.0 || stats.attack_damage <= 0.0 || stats.attack_range <= 0.0 {
-            continue;
-        }
-        if statuses.is_some_and(|s| !s.can_attack()) {
-            continue;
-        }
-        if is_player && current_target.is_none() {
-            continue;
-        }
-
-        let origin = transform.translation;
-        let self_bound = bounds_of(attacker_bound);
-        let chosen = current_target
-            .and_then(|AttackTarget(id)| {
-                target_snapshots
-                    .iter()
-                    .find(|(e, pos, target_team, radius)| {
-                        *e == *id
-                            && *target_team == team.enemy()
-                            && within_range(origin, self_bound, *pos, *radius, stats.attack_range)
-                    })
-                    .copied()
-            })
-            .or_else(|| {
-                if is_player {
-                    return None;
-                }
-                target_snapshots
-                    .iter()
-                    .filter(|(_, _, target_team, _)| *target_team == team.enemy())
-                    .filter(|(_, pos, _, radius)| {
-                        within_range(origin, self_bound, *pos, *radius, stats.attack_range)
-                    })
-                    .min_by(|a, b| {
-                        edge_distance(origin, self_bound, a.1, a.3)
-                            .total_cmp(&edge_distance(origin, self_bound, b.1, b.3))
-                    })
-                    .copied()
-            });
-
-        let Some((target_entity, target_pos, _, _)) = chosen else {
-            continue;
-        };
-
-        let dir = target_pos - origin;
-        let facing = turn_toward(&mut transform, dir, stats.turn_rate, dt);
-        if !facing {
-            continue;
-        }
-
-        let point = stats.attack_point.clamp(0.0, 0.5);
-        commands.entity(entity).insert(AttackSwing::Windup {
-            remaining: point,
-            target: target_entity,
-            damage: stats.attack_damage,
-        });
-    }
-}
-
-fn tick_attack_swings(
-    time: Res<Time>,
-    mut commands: Commands,
-    assets: Res<SharedAssets>,
-    mut attackers: Query<(
-        Entity,
-        &Transform,
-        &Team,
-        &CombatStats,
-        Option<&BoundRadius>,
-        &mut AttackCooldown,
-        &mut AttackSwing,
-        Option<&StatusEffects>,
-    )>,
-    mut targets: Query<(
-        Entity,
-        &GlobalTransform,
-        &Team,
-        &mut Health,
-        &CombatStats,
-        Option<&BoundRadius>,
-    )>,
-) {
-    let dt = time.delta_secs();
-    for (entity, transform, team, stats, attacker_bound, mut cooldown, mut swing, statuses) in
-        &mut attackers
-    {
-        if statuses.is_some_and(|s| !s.can_attack()) {
-            commands.entity(entity).remove::<AttackSwing>();
-            continue;
-        }
-        match *swing {
-            AttackSwing::Windup {
-                remaining,
-                target,
-                damage,
-            } => {
-                let next = remaining - dt;
-                if next > 0.0 {
-                    *swing = AttackSwing::Windup {
-                        remaining: next,
-                        target,
-                        damage,
-                    };
-                    continue;
-                }
-                let target_pos = targets
-                    .get(target)
-                    .map(|(_, tf, _, _, _, _)| tf.translation())
-                    .unwrap_or(transform.translation + *transform.forward() * 4.0);
-
-                if scale::is_melee_attack_range(stats.attack_range) {
-                    let self_bound = bounds_of(attacker_bound);
-                    apply_melee_hit(
-                        &mut targets,
-                        *team,
-                        transform.translation,
-                        target,
-                        damage,
-                        stats.attack_range,
-                        self_bound,
-                    );
-                    spawn_melee_slash(
-                        &mut commands,
-                        &assets,
-                        *team,
-                        transform,
-                        stats.attack_range,
-                    );
-                } else {
-                    spawn_auto_attack(
-                        &mut commands,
-                        &assets,
-                        *team,
-                        transform.translation,
-                        target,
-                        target_pos,
-                        damage,
-                        projectile_speed_for(stats.attack_range),
-                    );
-                }
-                cooldown.0 = 1.0 / stats.attack_speed.max(0.05);
-                let back = stats.attack_backswing.clamp(0.0, 0.5);
-                if back > 0.0 {
-                    *swing = AttackSwing::Backswing { remaining: back };
-                } else {
-                    commands.entity(entity).remove::<AttackSwing>();
-                }
-            }
-            AttackSwing::Backswing { remaining } => {
-                let next = remaining - dt;
-                if next > 0.0 {
-                    *swing = AttackSwing::Backswing { remaining: next };
-                } else {
-                    commands.entity(entity).remove::<AttackSwing>();
-                }
-            }
-        }
     }
 }
 
@@ -467,159 +303,6 @@ pub fn mitigate(raw_damage: f32, resistance: f32) -> f32 {
 
 pub use crate::dimensions::center_distance as flat_distance;
 
-fn projectile_speed_for(attack_range: f32) -> f32 {
-    // ~900–1500 u/s — scales with attack range in the new world units.
-    (500.0 + attack_range * 1.2).clamp(700.0, 1500.0)
-}
-
-fn spawn_auto_attack(
-    commands: &mut Commands,
-    assets: &SharedAssets,
-    team: Team,
-    origin: Vec3,
-    target: Entity,
-    target_pos: Vec3,
-    damage: f32,
-    speed: f32,
-) {
-    let start = origin + Vec3::Y * scale::body(1.1);
-    let aim = (target_pos + Vec3::Y * scale::body(1.0)) - start;
-    let mut transform = Transform::from_translation(start);
-    if let Ok(dir) = Dir3::new(aim) {
-        transform.look_to(dir, Vec3::Y);
-    }
-
-    let material = match team {
-        Team::Radiant => assets.projectile_radiant_mat.clone(),
-        Team::Dire => assets.projectile_dire_mat.clone(),
-    };
-
-    commands.spawn((
-        Name::new("Auto Attack"),
-        Mesh3d(assets.projectile_mesh.clone()),
-        MeshMaterial3d(material),
-        transform,
-        Projectile {
-            damage,
-            speed,
-            team,
-            radius: scale::body(0.7),
-            lifetime: 2.5,
-            damage_type: DamageType::Physical,
-            splash_radius: 0.0,
-        },
-        ProjectileHome {
-            target,
-            last_pos: target_pos + Vec3::Y * scale::body(1.0),
-        },
-        ProjectileStyle::AutoAttack,
-        Lifetime(2.5),
-    ));
-}
-
-fn apply_melee_hit(
-    targets: &mut Query<(
-        Entity,
-        &GlobalTransform,
-        &Team,
-        &mut Health,
-        &CombatStats,
-        Option<&BoundRadius>,
-    )>,
-    attacker_team: Team,
-    origin: Vec3,
-    target: Entity,
-    damage: f32,
-    attack_range: f32,
-    attacker_bound: f32,
-) {
-    let Ok((_, tf, team, mut health, stats, radius)) = targets.get_mut(target) else {
-        return;
-    };
-    if *team == attacker_team || !health.is_alive() {
-        return;
-    }
-    // Lenient so a target stepping away during the swing still gets hit.
-    if !within_range(origin, attacker_bound, tf.translation(), bounds_of(radius), attack_range * 1.15) {
-        return;
-    }
-    health.current -= apply_damage(damage, DamageType::Physical, stats);
-}
-
-/// Crude sword slash: a rectangular block the length of attack range, pivoted at
-/// the unit midsection, swinging 90° over a short lifetime.
-fn spawn_melee_slash(
-    commands: &mut Commands,
-    assets: &SharedAssets,
-    team: Team,
-    attacker: &Transform,
-    attack_range: f32,
-) {
-    let mid_y = scale::body(0.9);
-    let thickness = scale::body(0.22);
-    let height = scale::body(0.35);
-    let length = attack_range.max(scale::body(0.5));
-
-    let facing_yaw = attacker.rotation.to_euler(EulerRot::YXZ).0;
-    let start_yaw = facing_yaw - std::f32::consts::FRAC_PI_4;
-
-    let material = match team {
-        Team::Radiant => assets.melee_slash_radiant_mat.clone(),
-        Team::Dire => assets.melee_slash_dire_mat.clone(),
-    };
-
-    // Pivot at midsection; cuboid extends along local -Z (forward).
-    let mut transform = Transform::from_translation(attacker.translation + Vec3::Y * mid_y)
-        .with_rotation(Quat::from_rotation_y(start_yaw))
-        .with_scale(Vec3::new(thickness, height, length));
-    // Shift so the near end sits at the pivot (mesh is centered on Z).
-    transform.translation += transform.forward() * (length * 0.5);
-
-    commands.spawn((
-        Name::new("Melee Slash"),
-        Mesh3d(assets.melee_slash_mesh.clone()),
-        MeshMaterial3d(material),
-        transform,
-        MeleeSlashFx {
-            elapsed: 0.0,
-            duration: 0.18,
-            yaw_start: start_yaw,
-            pivot: attacker.translation + Vec3::Y * mid_y,
-            length,
-        },
-        Lifetime(0.2),
-    ));
-}
-
-fn animate_melee_slashes(
-    time: Res<Time>,
-    mut slashes: Query<(&mut Transform, &mut MeleeSlashFx)>,
-) {
-    let dt = time.delta_secs();
-    for (mut transform, mut fx) in &mut slashes {
-        fx.elapsed = (fx.elapsed + dt).min(fx.duration);
-        let t = if fx.duration <= 1e-4 {
-            1.0
-        } else {
-            (fx.elapsed / fx.duration).clamp(0.0, 1.0)
-        };
-        // Ease-out swing through 90°.
-        let eased = 1.0 - (1.0 - t) * (1.0 - t);
-        let yaw = fx.yaw_start + eased * std::f32::consts::FRAC_PI_2;
-        transform.rotation = Quat::from_rotation_y(yaw);
-        transform.translation = fx.pivot + *transform.forward() * (fx.length * 0.5);
-    }
-}
-
-#[derive(Component, Debug, Clone, Copy)]
-struct MeleeSlashFx {
-    elapsed: f32,
-    duration: f32,
-    yaw_start: f32,
-    pivot: Vec3,
-    length: f32,
-}
-
 #[derive(Component, Debug, Clone, Copy)]
 struct AttackRangeRing;
 
@@ -719,6 +402,7 @@ pub struct GroundBoltAim {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::ecs::system::RunSystemOnce;
 
     #[test]
     fn armor_reduces_physical() {
@@ -746,13 +430,26 @@ mod tests {
         assert!((flat_distance(a, b) - 5.0).abs() < 1e-4);
     }
 
-    /// Regression: turn-rate windups need &mut Transform on attackers without
-    /// conflicting with target position reads (Bevy B0001).
     #[test]
-    fn begin_attack_windups_system_initializes() {
+    fn damage_events_apply_mitigation_and_skip_dead_targets() {
         let mut world = World::new();
-        world.init_resource::<Time>();
-        let mut system = IntoSystem::into_system(begin_attack_windups);
-        system.initialize(&mut world);
+        world.init_resource::<Messages<DamageEvent>>();
+        let stats = CombatStats::simple(0.0, 0.0, 1.0, 10.0, 0.0, 0.0);
+        let alive = world.spawn((Health::new(500.0), stats)).id();
+        let mut dead_hp = Health::new(500.0);
+        dead_hp.current = 0.0;
+        let dead = world.spawn((dead_hp, stats)).id();
+        for target in [alive, dead] {
+            world.write_message(DamageEvent {
+                source: None,
+                target,
+                amount: 100.0,
+                damage_type: DamageType::Physical,
+            });
+        }
+        world.run_system_once(apply_damage_events).unwrap();
+        let expected = 500.0 - apply_damage(100.0, DamageType::Physical, &stats);
+        assert!((world.get::<Health>(alive).unwrap().current - expected).abs() < 1e-3);
+        assert_eq!(world.get::<Health>(dead).unwrap().current, 0.0);
     }
 }

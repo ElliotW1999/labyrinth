@@ -8,6 +8,7 @@
 
 mod abilities;
 mod ai;
+mod basic_attack;
 mod camera;
 mod combat;
 mod components;
