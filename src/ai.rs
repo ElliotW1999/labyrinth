@@ -9,10 +9,13 @@ use crate::components::{
     AttackMoveOrder, AttackTarget, BoundRadius, CombatStats, Creep, Health, MoveTarget, PlayerHero,
     Team, Tower,
 };
-use crate::dimensions::{
-    bounds_of, center_distance as flat_distance, edge_distance, needs_to_close, within_range,
-};
-use crate::scale;
+use crate::dimensions::{bounds_of, center_distance as flat_distance, edge_distance, within_range};
+use crate::movement::SimSet;
+use crate::navigation::attack_position::assign_attack_positions;
+
+/// A lane waypoint counts as passed within this distance, so a wave crowding the
+/// same point doesn't stall on it.
+const LANE_WAYPOINT_REACH: f32 = 160.0;
 
 pub struct AiPlugin;
 
@@ -23,11 +26,11 @@ impl Plugin for AiPlugin {
             (
                 follow_lane_waypoints,
                 acquire_targets,
-                chase_attack_targets,
                 player_attack_move,
-                player_chase_attack_target,
+                assign_attack_positions,
             )
                 .chain()
+                .in_set(SimSet::Ai)
                 .run_if(crate::net::is_sim_authority),
         );
     }
@@ -54,7 +57,7 @@ fn follow_lane_waypoints(
             continue;
         }
         let waypoint = follower.waypoints[follower.index];
-        if flat_distance(transform.translation, waypoint) < scale::u(1.2) {
+        if flat_distance(transform.translation, waypoint) < LANE_WAYPOINT_REACH {
             follower.index += 1;
             if follower.index >= follower.waypoints.len() {
                 commands.entity(entity).remove::<MoveTarget>();
@@ -130,35 +133,6 @@ fn acquire_targets(
     }
 }
 
-fn chase_attack_targets(
-    attackers: Query<
-        (Entity, &Transform, &CombatStats, Option<&BoundRadius>, &AttackTarget),
-        (Without<Tower>, Without<PlayerHero>),
-    >,
-    targets: Query<(&Transform, Option<&BoundRadius>)>,
-    mut commands: Commands,
-) {
-    for (entity, transform, stats, self_bound, AttackTarget(target)) in &attackers {
-        let Ok((target_tf, target_bound)) = targets.get(*target) else {
-            commands.entity(entity).remove::<AttackTarget>();
-            continue;
-        };
-        if needs_to_close(
-            transform.translation,
-            bounds_of(self_bound),
-            target_tf.translation,
-            bounds_of(target_bound),
-            stats.attack_range,
-        ) {
-            commands.entity(entity).insert(MoveTarget {
-                position: Vec3::new(target_tf.translation.x, 0.0, target_tf.translation.z),
-            });
-        } else {
-            commands.entity(entity).remove::<MoveTarget>();
-        }
-    }
-}
-
 /// Attack-move: walk toward the ordered destination; attack any enemy that enters range.
 fn player_attack_move(
     hero: Query<
@@ -169,13 +143,14 @@ fn player_attack_move(
             &Team,
             Option<&BoundRadius>,
             &AttackMoveOrder,
+            Has<MoveTarget>,
         ),
         With<PlayerHero>,
     >,
     enemies: Query<(Entity, &Transform, &Team, &Health, Option<&BoundRadius>, &Visibility)>,
     mut commands: Commands,
 ) {
-    let Ok((entity, transform, stats, hero_team, self_bound, order)) = hero.single() else {
+    let Ok((entity, transform, stats, hero_team, self_bound, order, moving)) = hero.single() else {
         return;
     };
     let attacker_bound = bounds_of(self_bound);
@@ -212,7 +187,10 @@ fn player_attack_move(
 
     commands.entity(entity).remove::<AttackTarget>();
     let dest = order.destination;
-    if flat_distance(transform.translation, dest) < 10.0 {
+    let distance = flat_distance(transform.translation, dest);
+    // Movement drops the MoveTarget when it arrives or gives up next to a crowded
+    // destination; either way the attack-move is done once the hero is close.
+    if distance < 10.0 || (!moving && distance < ATTACK_MOVE_SETTLE) {
         commands
             .entity(entity)
             .remove::<AttackMoveOrder>()
@@ -222,34 +200,5 @@ fn player_attack_move(
     }
 }
 
-/// Player-only chase: keep pathing toward an attack target until in range.
-/// Skipped while an attack-move order is active (handled above).
-pub fn player_chase_attack_target(
-    hero: Query<
-        (Entity, &Transform, &CombatStats, Option<&BoundRadius>, &AttackTarget),
-        (With<PlayerHero>, Without<AttackMoveOrder>),
-    >,
-    targets: Query<(&Transform, Option<&BoundRadius>)>,
-    mut commands: Commands,
-) {
-    let Ok((entity, transform, stats, self_bound, AttackTarget(target))) = hero.single() else {
-        return;
-    };
-    let Ok((target_tf, radius)) = targets.get(*target) else {
-        commands.entity(entity).remove::<AttackTarget>();
-        return;
-    };
-    if needs_to_close(
-        transform.translation,
-        bounds_of(self_bound),
-        target_tf.translation,
-        bounds_of(radius),
-        stats.attack_range,
-    ) {
-        commands.entity(entity).insert(MoveTarget {
-            position: Vec3::new(target_tf.translation.x, 0.0, target_tf.translation.z),
-        });
-    } else {
-        commands.entity(entity).remove::<MoveTarget>();
-    }
-}
+/// An idle attack-moving hero this close to its destination has finished the order.
+const ATTACK_MOVE_SETTLE: f32 = 250.0;

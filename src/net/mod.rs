@@ -11,12 +11,11 @@ pub use session::{
 
 use bevy::prelude::*;
 
-use crate::components::{BoundRadius, CombatStats, Health, Team};
-use crate::dimensions::bounds_of;
+use crate::components::{Health, Team};
 use crate::heroes::{HeroId, HeroKind, LocalHeroChoice};
 use crate::scale;
-use crate::movement::{order_attack_move, order_attack_unit, order_hero_move, order_hero_stop};
 use crate::units::spawn_hero_entity;
+use crate::unit_commands::{IssueCommand, UnitCommand};
 
 use proto::{decode, encode};
 use session::next_network_id;
@@ -99,16 +98,9 @@ fn host_recv_and_apply(
     mut commands: Commands,
     assets: Res<crate::resources::SharedAssets>,
     choice: Res<LocalHeroChoice>,
-    heroes: Query<(Entity, &NetworkId, &Transform, &CombatStats, Option<&BoundRadius>)>,
-    net_targets: Query<(
-        Entity,
-        &NetworkId,
-        &GlobalTransform,
-        &Team,
-        &Health,
-        Option<&BoundRadius>,
-    )>,
+    net_targets: Query<(Entity, &NetworkId)>,
     host_kind: Query<&HeroKind, With<crate::components::PlayerHero>>,
+    mut issue: MessageWriter<IssueCommand>,
 ) {
     let packets = transport.poll();
     for (from, bytes) in packets {
@@ -167,43 +159,49 @@ fn host_recv_and_apply(
                 );
             }
             ClientToServer::MoveTo { x, y, z } => {
-                if let Some(entity) = session.remote_hero_entity {
-                    order_hero_move(&mut commands, entity, Vec3::new(x, y, z));
+                if let Some(unit) = session.remote_hero_entity {
+                    issue.write(IssueCommand {
+                        unit,
+                        command: UnitCommand::Move {
+                            destination: Vec3::new(x, y, z),
+                        },
+                        queue: false,
+                    });
                 }
             }
             ClientToServer::Stop => {
-                if let Some(entity) = session.remote_hero_entity {
-                    order_hero_stop(&mut commands, entity);
+                if let Some(unit) = session.remote_hero_entity {
+                    issue.write(IssueCommand {
+                        unit,
+                        command: UnitCommand::Stop,
+                        queue: false,
+                    });
                 }
             }
             ClientToServer::AttackMove { x, y, z } => {
-                let Some(hero_entity) = session.remote_hero_entity else {
-                    continue;
-                };
-                order_attack_move(&mut commands, hero_entity, Vec3::new(x, y, z));
+                if let Some(unit) = session.remote_hero_entity {
+                    issue.write(IssueCommand {
+                        unit,
+                        command: UnitCommand::AttackMove {
+                            destination: Vec3::new(x, y, z),
+                        },
+                        queue: false,
+                    });
+                }
             }
             ClientToServer::AttackNet { target } => {
-                let Some(hero_entity) = session.remote_hero_entity else {
+                let Some(unit) = session.remote_hero_entity else {
                     continue;
                 };
-                let Some((_, _, hero_tf, stats, hero_bound)) =
-                    heroes.iter().find(|(e, ..)| *e == hero_entity)
-                else {
-                    continue;
-                };
-                if let Some((enemy, _, enemy_tf, _, _, enemy_bound)) =
-                    net_targets.iter().find(|(_, id, ..)| id.0 == target)
+                if let Some(enemy) = net_targets
+                    .iter()
+                    .find_map(|(entity, id)| (id.0 == target).then_some(entity))
                 {
-                    order_attack_unit(
-                        &mut commands,
-                        hero_entity,
-                        hero_tf.translation,
-                        bounds_of(hero_bound),
-                        stats.attack_range,
-                        enemy,
-                        enemy_tf.translation(),
-                        bounds_of(enemy_bound),
-                    );
+                    issue.write(IssueCommand {
+                        unit,
+                        command: UnitCommand::Attack { target: enemy },
+                        queue: false,
+                    });
                 }
             }
             ClientToServer::Heartbeat => {}

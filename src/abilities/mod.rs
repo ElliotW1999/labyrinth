@@ -19,13 +19,13 @@ use bevy::prelude::*;
 
 use crate::combat::{flat_distance, spawn_requested_projectiles};
 use crate::components::{
-    AbilityCasting, AbilityLoadout, CastTarget, Ground, Lifetime, Mana, PlayerHero,
-    QueuedAbilityCast, SpellFx, Team,
+    AbilityLoadout, CastTarget, Ground, Lifetime, Mana, PlayerHero, SpellFx, Team,
 };
 use crate::items::StatusEffects;
 use crate::picking::{cursor_ground_hit, cursor_ray, ground_hit, pick_under_ray, PickableUnits};
 use crate::resources::SharedAssets;
 use crate::scale;
+use crate::unit_commands::{IssueCommand, UnitCommand};
 use casting::{
     check_usable, resolve_queued_ability_casts, team_allows, tick_ability_casting,
     validate_cast_requests, AbilityCastEvent, AbilityCastRequest,
@@ -70,6 +70,7 @@ impl Plugin for AbilitiesPlugin {
                 )
                     .chain()
                     .run_if(crate::net::is_sim_authority)
+                    .after(crate::movement::SimSet::Commands)
                     .before(crate::combat::apply_damage_events),
             );
         custom::register(app);
@@ -120,14 +121,15 @@ fn regen_mana(time: Res<Time>, mut query: Query<&mut Mana>) {
     }
 }
 
-/// QWER: no-target abilities request a cast immediately; targeted ones enter targeting mode.
+/// QWER: no-target abilities issue a cast command immediately; targeted ones enter
+/// targeting mode. Shift queues the cast behind the current command.
 fn begin_or_cast_from_hotkeys(
     keys: Res<ButtonInput<KeyCode>>,
     mut targeting: ResMut<AbilityTargeting>,
     mut commands: Commands,
     assets: Res<SharedAssets>,
     defs: Res<AbilityDefinitions>,
-    mut requests: MessageWriter<AbilityCastRequest>,
+    mut issue: MessageWriter<IssueCommand>,
     hero: Query<(Entity, &Transform, &AbilityLoadout, &Mana, &StatusEffects), With<PlayerHero>>,
 ) {
     let Ok((hero_entity, transform, loadout, mana, statuses)) = hero.single() else {
@@ -155,13 +157,11 @@ fn begin_or_cast_from_hotkeys(
             continue;
         }
 
-        // Switching hotkeys cancels an in-progress targeted cast / queued cast first.
+        // Switching hotkeys cancels the pending targeting mode. The current cast is
+        // only replaced once the new command actually starts (see `unit_commands`).
         if targeting.active.is_some() {
             clear_targeting(&mut commands, &mut targeting);
         }
-        commands
-            .entity(hero_entity)
-            .remove::<(QueuedAbilityCast, AbilityCasting)>();
 
         let Some(slot) = loadout.slots.get(index) else {
             continue;
@@ -174,10 +174,13 @@ fn begin_or_cast_from_hotkeys(
         }
 
         if def.target_type == TargetType::NoTarget {
-            requests.write(AbilityCastRequest {
-                caster: hero_entity,
-                slot: index,
-                target: CastTarget::None,
+            issue.write(IssueCommand {
+                unit: hero_entity,
+                command: UnitCommand::CastAbility {
+                    slot: index,
+                    target: CastTarget::None,
+                },
+                queue: crate::input::shift_held(&keys),
             });
             continue;
         }
@@ -201,8 +204,8 @@ fn begin_or_cast_from_hotkeys(
     }
 }
 
-/// LMB confirms the pending targeted cast as an [`AbilityCastRequest`]; range, costs,
-/// and target rules are checked by `casting::validate_cast_requests`.
+/// LMB confirms the pending targeted cast as a cast command (Shift queues it); range,
+/// costs, and target rules are checked by `casting::validate_cast_requests`.
 pub(crate) fn confirm_or_cancel_targeted_cast(
     mouse: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -212,7 +215,7 @@ pub(crate) fn confirm_or_cancel_targeted_cast(
     camera: Query<(&Camera, &GlobalTransform)>,
     ground: Query<&GlobalTransform, With<Ground>>,
     mut commands: Commands,
-    mut requests: MessageWriter<AbilityCastRequest>,
+    mut issue: MessageWriter<IssueCommand>,
     hero: Query<(Entity, &Team, &StatusEffects), With<PlayerHero>>,
     pickable: PickableUnits,
 ) {
@@ -262,10 +265,13 @@ pub(crate) fn confirm_or_cancel_targeted_cast(
     }
 
     clear_targeting(&mut commands, &mut targeting);
-    requests.write(AbilityCastRequest {
-        caster: hero_entity,
-        slot: pending.slot,
-        target: unit_target.map_or(CastTarget::Point(hit), CastTarget::Unit),
+    issue.write(IssueCommand {
+        unit: hero_entity,
+        command: UnitCommand::CastAbility {
+            slot: pending.slot,
+            target: unit_target.map_or(CastTarget::Point(hit), CastTarget::Unit),
+        },
+        queue: crate::input::shift_held(&keys),
     });
 }
 
@@ -507,7 +513,10 @@ mod tests {
         apply_damage_events, DamageEvent, ProjectileHitEvent, ProjectilePayload,
         SpawnProjectileEvent,
     };
-    use crate::components::{AbilityId, AttackTarget, CombatStats, DamageType, Health, MoveTarget};
+    use crate::components::{
+        AbilityCasting, AbilityId, AttackTarget, CombatStats, DamageType, Health, MoveTarget,
+        QueuedAbilityCast,
+    };
 
     fn test_app() -> App {
         let mut app = App::new();
