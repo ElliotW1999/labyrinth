@@ -537,7 +537,7 @@ def main() -> int:
     print(f"Updated {heroes_path.relative_to(repo)}")
     print(f"Updated {components_path.relative_to(repo)}")
     print(f"Updated {readme_path.relative_to(repo)}")
-    print("Ability gameplay stubs only — implement casts in abilities.rs later.")
+    print("Ability gameplay stubs only — add effects in src/abilities/catalog.rs later.")
     return 0
 
 

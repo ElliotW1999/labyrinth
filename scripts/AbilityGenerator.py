@@ -7,7 +7,8 @@ Patches:
   - README notes
   - `data/ability_pseudos/<Id>.pseudo.txt` for later implementation
 
-Ability gameplay remains stubbed (`abilities.rs` `_ => {}`) until pseudocode is
+Generated data becomes an AbilityDefinition (`src/abilities/catalog.rs`) with a
+primary damage effect; pseudocode extras stay unimplemented until pseudocode is
 converted into real effect code.
 
 Ability types: passive, untargeted, unit_target, target_area, target_point, toggle.
@@ -561,7 +562,7 @@ def main() -> int:
     print(f"Updated {components_path.relative_to(repo)}")
     print(f"Updated {readme_path.relative_to(repo)}")
     print("Wrote pseudocode under data/ability_pseudos/")
-    print("Cast effects are stubs — implement from pseudocode in abilities.rs later.")
+    print("Only the primary damage effect is derived — add pseudocode extras in src/abilities/catalog.rs or custom.rs.")
     return 0
 
 

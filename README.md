@@ -159,15 +159,45 @@ Each unit carries three explicit gameplay dimensions from `dimensions::UnitDimen
 - Ultimates: up to 4 ranks; unlocked at overall levels 6 / 12 / 18 / 24
 - Each rank scales damage, cooldown, range, and mana cost
 - **Unit-targeted** spells (Bolt, Execute) require clicking a creep or hero
-- **Seismic Slam** (Untargeted) — stub; see `data/ability_pseudos/SeismicSlam.pseudo.txt`
-- **Arcane Lance** (UnitTarget) — stub; see `data/ability_pseudos/ArcaneLance.pseudo.txt`
-- **Cataclysm** (TargetArea, ultimate) — stub; see `data/ability_pseudos/Cataclysm.pseudo.txt`
+- **Seismic Slam** (Untargeted) — primary damage only (derived from its generated data); see `data/ability_pseudos/SeismicSlam.pseudo.txt`
+- **Arcane Lance** (UnitTarget) — primary damage only (derived from its generated data); see `data/ability_pseudos/ArcaneLance.pseudo.txt`
+- **Cataclysm** (TargetArea, ultimate) — primary damage only (derived from its generated data); see `data/ability_pseudos/Cataclysm.pseudo.txt`
 - **Stone Skin** (Passive) — stub; see `data/ability_pseudos/StoneSkin.pseudo.txt`
 - **Overcharge** (Toggle) — stub; see `data/ability_pseudos/Overcharge.pseudo.txt`
 
+### Ability architecture
+
+```text
+AbilityDefinition (abilities/catalog.rs, AbilityDefinitions resource)
+AbilityState      (AbilityLoadout on the hero: level, cooldown, charges, toggled)
+input / AI → AbilityCastRequest → validate (usable, cooldown, mana, caster state, target, range)
+           → cast point → AbilityCastEvent → definition effects + optional custom behavior
+           → DamageEvent / HealEvent / StatusEffectEvent / SpawnProjectileEvent
+spell projectile impact → ProjectileHitEvent → DamageEvent (+ the projectile's on_hit effects)
+```
+
+- **Definitions** (`abilities/definition.rs`) are data: behavior (active / passive / toggle), target type (no-target / unit / point / area), target team, rank-scaled cast range, AoE, cooldown, mana, cast time, and a list of reusable `AbilityEffect`s (Damage, Heal, ApplyStatus, Dispel, Dash, SpawnProjectile with `on_hit`, AttackUnitTarget, RingFx)
+- **Casting** (`abilities/casting.rs`) is shared by every caster; out-of-range casts walk into range and re-request. Mana and cooldown are paid when the cast point completes
+- **Custom behavior** (`abilities/custom.rs`): `app.register_ability_behavior(id, system)` runs a one-shot system with the `CastContext` after the common effects (Execute's low-HP bonus is the example)
+
+Adding a simple ability: add an `AbilityId` variant (or use the generators), then add an arm to `catalog::builtin`:
+
+```rust
+AbilityId::Fireball => def
+    .targeting(TargetType::Unit, RankValue::linear(600.0, 25.0), RankValue::ZERO)
+    .costs(RankValue::fixed(8.0), RankValue::fixed(100.0))
+    .timing(0.3, 0.4)
+    .effect(AbilityEffect::SpawnProjectile {
+        damage: RankValue::linear(150.0, 50.0),
+        damage_type: DamageType::Magical,
+        splash_radius: AreaRadius::Ability,
+        on_hit: vec![status(StatusSpec::Stun, RankValue::fixed(1.0), EffectTargets::UnitTarget)],
+    }),
+```
+
 ### Adding abilities (AbilityGenerator)
 
-Append ability kits via CSV — patches `AbilityId` + `GeneratedAbilityDef` in `src/components.rs` and writes pseudocode under `data/ability_pseudos/`. Cast effects stay stubbed until you implement the pseudocode in `abilities.rs`.
+Append ability kits via CSV — patches `AbilityId` + `GeneratedAbilityDef` in `src/components.rs` and writes pseudocode under `data/ability_pseudos/`. Generated data becomes an `AbilityDefinition` automatically (targeting, costs, and a primary damage effect); pseudocode extras still need effects or a custom behavior.
 
 ```bash
 python3 scripts/AbilityGenerator.py data/abilities.example.csv
@@ -240,7 +270,7 @@ src/
   basic_attack.rs     Basic attack pipeline (BasicAttackEvent → windup → impact → DamageEvent)
   combat.rs           DamageEvent + mitigation, spell projectiles, death / gold / XP
   progression.rs      Hero XP, attributes, and level-up growth
-  abilities.rs        QWER casting with cast point/backswing
+  abilities/          Ability definitions, cast pipeline, effects, custom behaviors, targeting UI
   items.rs            Shop, inventory, sell, actives, status effects
   net/                Offline / host / client UDP session + hero snapshots
   ai.rs               Lane following + aggro
