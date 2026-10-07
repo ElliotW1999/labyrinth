@@ -1,20 +1,20 @@
 //! Built-in ability definitions and the [`AbilityDefinitions`] registry.
 //!
 //! Abilities are plain data: targeting, costs, mechanics, and trigger-tagged effects.
-//! Rows from `data/ability_effects.csv` are appended to every definition. Abilities
-//! with unique mechanics register a custom behavior in `custom.rs`.
+//! CSV-authored abilities (`scripts/AbilityGenerator.py` → `generated.rs`) take
+//! precedence over the hand-written ones below. Abilities with unique mechanics
+//! register a custom behavior in `custom.rs`.
 
 use std::collections::HashMap;
 
 use bevy::prelude::*;
 
 use super::definition::{
-    classify, AbilityBehavior, AbilityDefinition, AbilityEffect, AbilityMechanic,
-    AbilityTrigger, AreaCenter, AreaRadius, EffectScaling, EffectTarget, RankValue, RingStyle,
-    StatusSpec, TargetType,
+    AbilityDefinition, AbilityEffect, AbilityMechanic, AbilityTrigger, AreaCenter, AreaRadius,
+    EffectScaling, EffectTarget, RankValue, RingStyle, StatusSpec, TargetType,
 };
-use super::effect_rows::csv_effects_for;
-use crate::components::{AbilityId, AbilityLoadout, DamageType, GeneratedAbilityDef};
+use super::generated;
+use crate::components::{AbilityId, AbilityLoadout, DamageType};
 use crate::scale::{
     self, ABILITY_BLINK_RANGE, ABILITY_DASH_RANGE, ABILITY_GROUND_AOE, ABILITY_GROUND_CAST_RANGE,
     ABILITY_INSTANT_AOE, ABILITY_PROJECTILE_WIDTH, ABILITY_ULT_AOE, ABILITY_UNIT_CAST_RANGE,
@@ -44,16 +44,46 @@ impl AbilityDefinitions {
 
 pub fn register_loadout_definitions(
     mut defs: ResMut<AbilityDefinitions>,
-    loadouts: Query<&AbilityLoadout, Added<AbilityLoadout>>,
+    mut loadouts: Query<&mut AbilityLoadout, Added<AbilityLoadout>>,
 ) {
-    for loadout in &loadouts {
-        for slot in &loadout.slots {
+    for mut loadout in &mut loadouts {
+        for slot in &mut loadout.slots {
             defs.ensure_builtin(slot.id);
+            if let Some((max_charges, _)) = defs.get(slot.id).and_then(|def| def.charges) {
+                slot.charges.get_or_insert(max_charges);
+            }
         }
     }
 }
 
-const fn nova_ring() -> AbilityMechanic {
+/// Charge-based abilities regain one charge every `restore_time` while below the maximum.
+pub fn restore_ability_charges(
+    time: Res<Time>,
+    defs: Res<AbilityDefinitions>,
+    mut loadouts: Query<&mut AbilityLoadout>,
+) {
+    let dt = time.delta_secs();
+    for mut loadout in &mut loadouts {
+        for slot in &mut loadout.slots {
+            let Some((max_charges, restore_time)) = defs.get(slot.id).and_then(|def| def.charges)
+            else {
+                continue;
+            };
+            let charges = slot.charges.get_or_insert(max_charges);
+            if *charges >= max_charges {
+                slot.charge_restore_remaining = restore_time;
+                continue;
+            }
+            slot.charge_restore_remaining -= dt;
+            if slot.charge_restore_remaining <= 0.0 {
+                *charges += 1;
+                slot.charge_restore_remaining += restore_time;
+            }
+        }
+    }
+}
+
+pub const fn nova_ring() -> AbilityMechanic {
     AbilityMechanic::RingFx {
         center: AreaCenter::Aim,
         radius: AreaRadius::Ability,
@@ -62,7 +92,7 @@ const fn nova_ring() -> AbilityMechanic {
     }
 }
 
-const fn shockwave_ring() -> AbilityMechanic {
+pub const fn shockwave_ring() -> AbilityMechanic {
     AbilityMechanic::RingFx {
         center: AreaCenter::Caster,
         radius: AreaRadius::Ability,
@@ -73,6 +103,8 @@ const fn shockwave_ring() -> AbilityMechanic {
 
 const PROJECTILE: AbilityMechanic = AbilityMechanic::Projectile {
     splash_radius: AreaRadius::Ability,
+    speed: None,
+    skillshot: false,
 };
 
 const fn damage(amount: RankValue, damage_type: DamageType, scaling: EffectScaling) -> AbilityEffect {
@@ -128,12 +160,7 @@ pub const EXECUTE_THRESHOLD: f32 = 0.35;
 pub const EXECUTE_MULTIPLIER: f32 = 1.55;
 
 pub fn builtin(id: AbilityId) -> AbilityDefinition {
-    let mut def = match id.generated() {
-        Some(generated) => from_generated(id, generated),
-        None => handwritten(id),
-    };
-    def.effects.extend(csv_effects_for(id));
-    def
+    generated::definition(id).unwrap_or_else(|| handwritten(id))
 }
 
 fn handwritten(id: AbilityId) -> AbilityDefinition {
@@ -277,6 +304,7 @@ fn handwritten(id: AbilityId) -> AbilityDefinition {
                     EffectTarget::Caster,
                     AbilityEffect::Heal {
                         amount: RankValue::linear(100.0, 40.0),
+                        scaling: EffectScaling::None,
                     },
                 )
                 .on(OnCast, around_aim, magic_damage(RankValue::linear(160.0, 55.0)))
@@ -301,56 +329,10 @@ fn handwritten(id: AbilityId) -> AbilityDefinition {
     }
 }
 
-/// AbilityGenerator output → definition. The primary damage effect is derived from
-/// the activation type; pseudocode extras come from `data/ability_effects.csv`.
-fn from_generated(id: AbilityId, g: GeneratedAbilityDef) -> AbilityDefinition {
-    let (behavior, target_type) = classify(g.ability_type);
-    let mut aoe = RankValue::from_level_1(g.aoe_radius_base, g.aoe_radius_per_level).at_least(0.0);
-    if target_type == TargetType::Point {
-        aoe = aoe.at_least(40.0);
-    }
-    let mut def = AbilityDefinition::new(id)
-        .behavior(behavior)
-        .targeting(
-            target_type,
-            RankValue::from_level_1(g.cast_range_base, g.cast_range_per_level).at_least(0.0),
-            aoe,
-        )
-        .costs(
-            RankValue::from_level_1(g.cooldown_base, g.cooldown_per_level).at_least(g.cooldown_min),
-            RankValue::from_level_1(g.mana_cost_base, g.mana_cost_per_level).at_least(0.0),
-        )
-        .timing(g.cast_point, g.cast_backswing);
-    def.name = g.display_name;
-    def.max_rank = g.max_rank;
-    def.is_ultimate = g.is_ultimate;
-
-    let amount = RankValue::from_level_1(g.damage_base, g.damage_per_level).at_least(0.0);
-    if behavior != AbilityBehavior::Active || g.damage_base <= 0.0 {
-        return def;
-    }
-    let primary = damage(amount, g.damage_type, EffectScaling::None);
-    match target_type {
-        TargetType::NoTarget => def.mechanic(shockwave_ring()).on(
-            AbilityTrigger::OnCast,
-            EffectTarget::enemies_around(AreaCenter::Caster),
-            primary,
-        ),
-        TargetType::Area => def.mechanic(nova_ring()).on(
-            AbilityTrigger::OnCast,
-            EffectTarget::enemies_around(AreaCenter::Aim),
-            primary,
-        ),
-        TargetType::Unit | TargetType::Point => {
-            projectile_damage(def.mechanic(PROJECTILE), amount, g.damage_type, EffectScaling::None)
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::AbilityType;
+    use crate::abilities::definition::AbilityBehavior;
 
     #[test]
     fn rank_values_match_legacy_formulas() {
@@ -369,27 +351,12 @@ mod tests {
     }
 
     #[test]
-    fn generated_abilities_convert_to_definitions() {
-        let slam = AbilityId::SeismicSlam.generated().unwrap();
-        assert_eq!(slam.ability_type, AbilityType::Untargeted);
-        let def = builtin(AbilityId::SeismicSlam);
-        assert_eq!(def.target_type, TargetType::NoTarget);
-        assert!((def.cooldown.at(1) - slam.cooldown_at(1)).abs() < 1e-4);
-        assert!((def.cooldown.at(7) - slam.cooldown_at(7)).abs() < 1e-4);
-        assert!((def.mana_cost.at(3) - slam.mana_cost_at(3)).abs() < 1e-4);
-        assert!(def.effects.iter().any(|e| matches!(e.effect, AbilityEffect::Damage { .. })));
-
-        assert_eq!(builtin(AbilityId::ArcaneLance).target_type, TargetType::Unit);
-        let stone = builtin(AbilityId::StoneSkin);
-        assert_eq!(stone.behavior, AbilityBehavior::Passive);
-        assert!(!stone.is_castable());
-        assert_eq!(builtin(AbilityId::Overcharge).behavior, AbilityBehavior::Toggle);
-        assert_eq!(builtin(AbilityId::Cataclysm).max_rank, 4);
-    }
-
-    #[test]
-    fn csv_effect_rows_extend_definitions() {
+    fn generated_abilities_build_normal_definitions() {
         let slam = builtin(AbilityId::SeismicSlam);
+        assert_eq!(slam.target_type, TargetType::NoTarget);
+        assert!((slam.cooldown.at(1) - 10.0).abs() < 1e-4);
+        assert!((slam.cooldown.at(7) - 7.6).abs() < 1e-4);
+        assert!((slam.mana_cost.at(3) - 71.0).abs() < 1e-4);
         assert!(slam.effects_for(AbilityTrigger::OnCast).any(|e| matches!(
             e.effect,
             AbilityEffect::ApplyStatus {
@@ -397,7 +364,9 @@ mod tests {
                 ..
             }
         )));
+
         let lance = builtin(AbilityId::ArcaneLance);
+        assert_eq!(lance.target_type, TargetType::Unit);
         assert!(lance.effects_for(AbilityTrigger::OnProjectileHit).any(|e| matches!(
             e.effect,
             AbilityEffect::Damage {
@@ -405,6 +374,25 @@ mod tests {
                 ..
             }
         )));
+
+        let stone = builtin(AbilityId::StoneSkin);
+        assert_eq!(stone.behavior, AbilityBehavior::Passive);
+        assert!(!stone.is_castable());
+        assert_eq!(builtin(AbilityId::Overcharge).behavior, AbilityBehavior::Toggle);
+        let cataclysm = builtin(AbilityId::Cataclysm);
+        assert_eq!(cataclysm.max_rank, 4);
+        assert!(cataclysm.is_ultimate);
+        assert_eq!(cataclysm.target_type, TargetType::Area);
+    }
+
+    #[test]
+    fn level_tables_and_linear_values_share_rank_value() {
+        let table = RankValue::levels(&[75.0, 150.0, 260.0]);
+        assert_eq!(table.at(0), 75.0);
+        assert_eq!(table.at(3), 260.0);
+        assert_eq!(table.at(9), 260.0);
+        assert_eq!(table.scaled(0.5).at(2), 75.0);
+        assert_eq!(RankValue::from_level_1(10.0, 2.0).scaled(0.5).at(2), 6.0);
     }
 
     #[test]

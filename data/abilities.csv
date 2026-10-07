@@ -1,0 +1,6 @@
+id,name,slot,ability_type,target_type,target_team,cast_range,aoe_radius,cast_time,channel_time,cooldown,mana_cost,max_charges,charge_restore_time,projectile_type,projectile_speed,description,cast_backswing,max_rank
+seismic_slam,Seismic Slam,Q,active,no_target,enemy,,220|235|250|265|280|295|310,0.25,,10|9.6|9.2|8.8|8.4|8|7.6,55|63|71|79|87|95|103,,,none,,"Slams the ground, dealing physical damage to nearby enemies and slowing them by 30% for 1.5s",0.35,
+arcane_lance,Arcane Lance,W,active,unit,enemy,500|520|540|560|580|600|620,,0.2,,7|6.7|6.4|6.1|5.8|5.5|5.2,50|57|64|71|78|85|92,,,targeted,,Fires a magical bolt at the target; deals 25% bonus damage to targets below 35% health,0.3,
+cataclysm,Cataclysm,R,active,point,enemy,550|565|580|595,320|340|360|380,0.4,,55|50|45|40,120|145|170|195,,,none,,"Calls down a cataclysm, dealing magical damage in an area and stunning enemies for 1.2s",0.45,
+stone_skin,Stone Skin,E,passive,no_target,self,,,,,,,,,none,,Permanently gain +4 armor per rank while learned,,4
+overcharge,Overcharge,E,toggle,no_target,self,,,0,,1,15|18|21|24|27|30|33,,,none,,"While on, drain 8 mana/sec and gain +20% attack speed and +10 move speed; turns off when out of mana",0,

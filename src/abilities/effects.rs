@@ -1,10 +1,11 @@
-//! Ability consequences: turns [`AbilityTriggerEvent`]s into shared gameplay events.
+//! Ability and item consequences: turns [`AbilityTriggerEvent`]s into shared gameplay events.
 //!
 //! ```text
 //! AbilityTriggerEvent(TriggerContext)
-//!   → definition entries whose trigger matches
+//!   → the source's (ability or item) entries whose trigger matches
 //!   → resolve EffectTarget against the context (caster, trigger unit, affected units, …)
-//!   → AbilityEffect → DamageEvent / HealEvent / StatusEffectEvent (or a custom effect system)
+//!   → AbilityEffect → DamageEvent / HealEvent / ManaRestoreEvent / StatusEffectEvent /
+//!                     DisplacementEvent (or a custom effect system)
 //! ```
 
 use std::collections::HashMap;
@@ -15,21 +16,32 @@ use bevy::prelude::*;
 use super::casting::team_allows;
 use super::catalog::AbilityDefinitions;
 use super::definition::{
-    AbilityEffect, AbilityTrigger, AreaCenter, AreaRadius, EffectScaling, EffectTarget,
+    AbilityEffect, AbilityEffectEntry, AbilityTrigger, AreaCenter, AreaRadius, Attribute,
+    EffectScaling, EffectTarget,
 };
 use crate::combat::DamageEvent;
-use crate::components::{AbilityId, BoundRadius, CombatStats, Health, Team};
+use crate::components::{AbilityId, BoundRadius, CombatStats, Health, HeroAttributes, Mana, Team};
 use crate::dimensions::{area_contains, bounds_of};
-use crate::items::{StatusEffect, StatusEffects, StatusKind, apply_status};
+use crate::displacement::DisplacementEvent;
+use crate::items::{ItemId, StatusEffect, StatusEffects, StatusKind, apply_status};
+
+/// What owns the effect entries a trigger resolves against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffectSource {
+    Ability(AbilityId),
+    Item(ItemId),
+}
 
 /// Who and where a trigger involved. Mechanics fill this in once so effects never
 /// have to rediscover the entities.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TriggerContext {
     pub trigger: AbilityTrigger,
+    /// The casting hero or the item's owner.
     pub caster: Entity,
     pub team: Team,
-    pub ability: AbilityId,
+    pub source: EffectSource,
+    /// Ability rank (items use 1).
     pub rank: u32,
     /// Caster position when the trigger fired.
     pub origin: Vec3,
@@ -39,7 +51,8 @@ pub struct TriggerContext {
     pub point: Vec3,
     /// The unit the ability was cast on.
     pub cast_target: Option<Entity>,
-    /// The unit that caused the trigger (the cast target for `OnCast`).
+    /// The unit that caused the trigger (the cast target for `OnCast`, the attack
+    /// target for `OnAttack` / `OnAttackHit`).
     pub trigger_unit: Option<Entity>,
     pub affected_units: Vec<Entity>,
 }
@@ -54,10 +67,17 @@ pub struct HealEvent {
     pub amount: f32,
 }
 
+#[derive(Message, Debug, Clone, Copy, PartialEq)]
+pub struct ManaRestoreEvent {
+    pub target: Entity,
+    pub amount: f32,
+}
+
 #[derive(Debug, Clone)]
 pub enum StatusChange {
     Apply(StatusEffect),
     Dispel(StatusKind),
+    Remove(&'static str),
 }
 
 /// Single entry point for adding/removing statuses so debuff immunity and stat
@@ -77,6 +97,8 @@ pub struct CustomEffectInput {
     pub ctx: TriggerContext,
     pub targets: Vec<Entity>,
     pub value: f32,
+    pub amount: f32,
+    pub duration: f32,
 }
 
 #[derive(Resource, Default)]
@@ -128,9 +150,12 @@ pub struct EffectRunner<'w, 's> {
     custom: Res<'w, CustomAbilityEffects>,
     units: UnitQuery<'w, 's>,
     stats: Query<'w, 's, &'static CombatStats>,
+    attributes: Query<'w, 's, &'static HeroAttributes>,
     damage: MessageWriter<'w, DamageEvent>,
     heals: MessageWriter<'w, HealEvent>,
+    mana: MessageWriter<'w, ManaRestoreEvent>,
     statuses: MessageWriter<'w, StatusEffectEvent>,
+    displacements: MessageWriter<'w, DisplacementEvent>,
 }
 
 impl EffectRunner<'_, '_> {
@@ -205,6 +230,14 @@ impl EffectRunner<'_, '_> {
                 let attack = self.stats.get(ctx.caster).map_or(0.0, |s| s.attack_damage);
                 Some(base + ratio * attack)
             }
+            EffectScaling::CasterAttribute(attribute, ratio) => {
+                let value = self.attributes.get(ctx.caster).map_or(0.0, |a| match attribute {
+                    Attribute::Strength => a.strength,
+                    Attribute::Agility => a.agility,
+                    Attribute::Intelligence => a.intelligence,
+                });
+                Some(base + ratio * value)
+            }
             EffectScaling::TargetHealthBelow(threshold) => self
                 .units
                 .get(target)
@@ -216,6 +249,7 @@ impl EffectRunner<'_, '_> {
 
     pub fn execute(&mut self, ctx: &TriggerContext, effect: &AbilityEffect, targets: Vec<Entity>) {
         let source = Some(ctx.caster);
+        let rank = ctx.rank;
         match *effect {
             AbilityEffect::Damage {
                 amount,
@@ -223,8 +257,7 @@ impl EffectRunner<'_, '_> {
                 scaling,
             } => {
                 for target in targets {
-                    if let Some(amount) =
-                        self.scaled_amount(ctx, amount.at(ctx.rank), scaling, target)
+                    if let Some(amount) = self.scaled_amount(ctx, amount.at(rank), scaling, target)
                     {
                         self.damage.write(DamageEvent {
                             source,
@@ -235,12 +268,23 @@ impl EffectRunner<'_, '_> {
                     }
                 }
             }
-            AbilityEffect::Heal { amount } => {
+            AbilityEffect::Heal { amount, scaling } => {
                 for target in targets {
-                    self.heals.write(HealEvent {
-                        source,
+                    if let Some(amount) = self.scaled_amount(ctx, amount.at(rank), scaling, target)
+                    {
+                        self.heals.write(HealEvent {
+                            source,
+                            target,
+                            amount,
+                        });
+                    }
+                }
+            }
+            AbilityEffect::RestoreMana { amount } => {
+                for target in targets {
+                    self.mana.write(ManaRestoreEvent {
                         target,
-                        amount: amount.at(ctx.rank),
+                        amount: amount.at(rank),
                     });
                 }
             }
@@ -251,8 +295,8 @@ impl EffectRunner<'_, '_> {
                         source,
                         target,
                         change: StatusChange::Apply(status.build(
-                            ctx.rank,
-                            duration.at(ctx.rank),
+                            rank,
+                            duration.at(rank),
                             move_speed,
                         )),
                     });
@@ -267,12 +311,42 @@ impl EffectRunner<'_, '_> {
                     });
                 }
             }
-            AbilityEffect::Custom { id, value } => {
+            AbilityEffect::RemoveStatus { id } => {
+                for target in targets {
+                    self.statuses.write(StatusEffectEvent {
+                        source,
+                        target,
+                        change: StatusChange::Remove(id),
+                    });
+                }
+            }
+            AbilityEffect::Displace {
+                kind,
+                distance,
+                duration,
+            } => {
+                for target in targets {
+                    self.displacements.write(DisplacementEvent {
+                        target,
+                        kind,
+                        caster: ctx.caster,
+                        origin: ctx.origin,
+                        point: ctx.point,
+                        distance: distance.map(|d| d.at(rank)),
+                        duration: duration.at(rank),
+                    });
+                }
+            }
+            // Applied when the item is acquired, not when a trigger fires.
+            AbilityEffect::PassiveStat { .. } => {}
+            AbilityEffect::Custom {
+                id,
+                value,
+                amount,
+                duration,
+            } => {
                 let Some(&system) = self.custom.0.get(id) else {
-                    warn!(
-                        "ability {:?} uses unregistered custom effect {id:?}",
-                        ctx.ability
-                    );
+                    warn!("{:?} uses unregistered custom effect {id:?}", ctx.source);
                     return;
                 };
                 self.commands.run_system_with(
@@ -280,7 +354,9 @@ impl EffectRunner<'_, '_> {
                     CustomEffectInput {
                         ctx: ctx.clone(),
                         targets,
-                        value: value.at(ctx.rank),
+                        value: value.at(rank),
+                        amount: amount.at(rank),
+                        duration: duration.at(rank),
                     },
                 );
             }
@@ -289,18 +365,21 @@ impl EffectRunner<'_, '_> {
 }
 
 /// Runs every effect entry whose trigger matches, against the trigger's context.
-/// Nothing here depends on which ability fired.
+/// Nothing here depends on which ability or item fired.
 pub fn resolve_ability_triggers(
     mut triggers: MessageReader<AbilityTriggerEvent>,
     defs: Res<AbilityDefinitions>,
     mut runner: EffectRunner,
 ) {
     for AbilityTriggerEvent(ctx) in triggers.read() {
-        let Some(def) = defs.get(ctx.ability) else {
-            continue;
+        let (entries, aoe_radius): (&[AbilityEffectEntry], f32) = match ctx.source {
+            EffectSource::Ability(id) => match defs.get(id) {
+                Some(def) => (&def.effects, def.aoe_radius.at(ctx.rank)),
+                None => continue,
+            },
+            EffectSource::Item(id) => (id.definition().effects, 0.0),
         };
-        let aoe_radius = def.aoe_radius.at(ctx.rank);
-        for entry in def.effects_for(ctx.trigger) {
+        for entry in entries.iter().filter(|entry| entry.trigger == ctx.trigger) {
             let targets = runner.targets(ctx, entry.target, aoe_radius);
             runner.execute(ctx, &entry.effect, targets);
         }
@@ -315,9 +394,24 @@ pub fn apply_heal_events(mut heals: MessageReader<HealEvent>, mut targets: Query
     }
 }
 
-fn remove_statuses(statuses: &mut StatusEffects, stats: &mut CombatStats, kind: StatusKind) {
+pub fn apply_mana_restore_events(
+    mut events: MessageReader<ManaRestoreEvent>,
+    mut targets: Query<&mut Mana>,
+) {
+    for event in events.read() {
+        if let Ok(mut mana) = targets.get_mut(event.target) {
+            mana.current = (mana.current + event.amount).min(mana.max);
+        }
+    }
+}
+
+fn remove_statuses(
+    statuses: &mut StatusEffects,
+    stats: &mut CombatStats,
+    matches: impl Fn(&StatusEffect) -> bool,
+) {
     statuses.effects.retain(|effect| {
-        if effect.kind != kind {
+        if !matches(effect) {
             return true;
         }
         stats.attack_damage -= effect.attack_damage;
@@ -339,11 +433,14 @@ pub fn apply_status_effect_events(
         match &event.change {
             StatusChange::Apply(effect) => {
                 if effect.debuff_immune {
-                    remove_statuses(&mut statuses, &mut stats, StatusKind::Debuff);
+                    remove_statuses(&mut statuses, &mut stats, |e| e.kind == StatusKind::Debuff);
                 }
                 apply_status(&mut statuses, &mut stats, effect.clone());
             }
-            StatusChange::Dispel(kind) => remove_statuses(&mut statuses, &mut stats, *kind),
+            StatusChange::Dispel(kind) => {
+                remove_statuses(&mut statuses, &mut stats, |e| e.kind == *kind)
+            }
+            StatusChange::Remove(id) => remove_statuses(&mut statuses, &mut stats, |e| e.id == *id),
         }
     }
 }

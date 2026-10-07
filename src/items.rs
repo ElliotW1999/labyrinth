@@ -2,12 +2,16 @@
 
 use bevy::prelude::*;
 
-use crate::combat::{flat_distance, DamageEvent};
-use crate::components::{
-    BoundRadius, CombatStats, DamageType, Health, Lifetime, Mana, PlayerHero, PlayerWallet,
-    SpellFx, Team,
+use crate::abilities::definition::{
+    AbilityEffect, AbilityEffectEntry, AbilityTrigger, AreaRadius, Attribute, EffectTarget,
+    PassiveStat,
 };
-use crate::dimensions::{area_contains, bounds_of};
+use crate::abilities::effects::{AbilityTriggerEvent, EffectSource, TriggerContext};
+use crate::basic_attack::{BasicAttackImpactEvent, BasicAttackReleaseEvent};
+use crate::combat::flat_distance;
+use crate::components::{
+    CombatStats, Health, HeroAttributes, Lifetime, Mana, PlayerHero, PlayerWallet, SpellFx, Team,
+};
 use crate::resources::SharedAssets;
 use crate::scale;
 
@@ -29,6 +33,7 @@ impl Plugin for ItemsPlugin {
                     tick_item_cooldowns,
                     tick_status_effects,
                     handle_item_hotkeys,
+                    item_attack_triggers,
                     try_purchase_from_ui,
                     try_sell_from_ui,
                 ),
@@ -68,11 +73,23 @@ impl Inventory {
         self.slots.iter().position(|s| s.is_none())
     }
 
+    /// Slot that would receive one more `id`: a partial stack first, then an empty slot.
+    pub fn slot_for(&self, id: ItemId) -> Option<usize> {
+        let max_stack = id.definition().max_stack;
+        self.slots
+            .iter()
+            .position(|s| s.is_some_and(|item| item.id == id && item.stack < max_stack))
+            .or_else(|| self.first_empty())
+    }
+
     pub fn try_add(&mut self, id: ItemId) -> bool {
-        let Some(i) = self.first_empty() else {
+        let Some(i) = self.slot_for(id) else {
             return false;
         };
-        self.slots[i] = Some(ItemInstance::new(id));
+        match self.slots[i].as_mut() {
+            Some(item) => item.stack += 1,
+            None => self.slots[i] = Some(ItemInstance::new(id)),
+        }
         true
     }
 }
@@ -81,6 +98,10 @@ impl Inventory {
 pub struct ItemInstance {
     pub id: ItemId,
     pub cooldown_remaining: f32,
+    /// Units in this slot (stackable items).
+    pub stack: u32,
+    /// Charges left on the current unit (items with `max_charges`).
+    pub charges: Option<u32>,
 }
 
 impl ItemInstance {
@@ -88,7 +109,23 @@ impl ItemInstance {
         Self {
             id,
             cooldown_remaining: 0.0,
+            stack: 1,
+            charges: id.definition().max_charges,
         }
+    }
+
+    /// Spend one use of a consumable. Returns how many units were used up (0 or 1).
+    pub fn consume(&mut self) -> u32 {
+        let def = self.id.definition();
+        if let Some(charges) = self.charges.as_mut() {
+            *charges = charges.saturating_sub(1);
+            if *charges > 0 {
+                return 0;
+            }
+            self.charges = def.max_charges;
+        }
+        self.stack = self.stack.saturating_sub(1);
+        1
     }
 }
 
@@ -280,6 +317,73 @@ pub enum ItemId {
     // </item_generator:item_enum>
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum ItemType {
+    Component,
+    Weapon,
+    Armor,
+    Accessory,
+    Consumable,
+    Utility,
+    /// Recipe scrap combined with components; hidden from the default shop list.
+    Recipe,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[allow(dead_code)]
+pub enum ItemRarity {
+    Common,
+    Uncommon,
+    Rare,
+    Epic,
+    Legendary,
+}
+
+impl ItemRarity {
+    pub fn label(self) -> &'static str {
+        match self {
+            ItemRarity::Common => "Common",
+            ItemRarity::Uncommon => "Uncommon",
+            ItemRarity::Rare => "Rare",
+            ItemRarity::Epic => "Epic",
+            ItemRarity::Legendary => "Legendary",
+        }
+    }
+}
+
+/// Static item data: identity / economy / inventory rules plus trigger-tagged effects
+/// (the same [`AbilityEffectEntry`] rows abilities use). Generated from
+/// `data/items.csv` + `data/item_effects.csv` into `item_catalog.rs`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ItemDefinition {
+    pub id: ItemId,
+    pub name: &'static str,
+    pub short_label: &'static str,
+    pub item_type: ItemType,
+    pub cost: u32,
+    pub sell_value: u32,
+    pub tier: u32,
+    pub rarity: ItemRarity,
+    /// Units per inventory slot (1 = not stackable).
+    pub max_stack: u32,
+    /// Used up on activation (one charge, or one unit when the item has no charges).
+    pub consumable: bool,
+    pub max_charges: Option<u32>,
+    /// Active cooldown in seconds (items with `OnUse` effects).
+    pub cooldown: f32,
+    pub components: &'static [ItemId],
+    pub color: [f32; 3],
+    pub description: &'static str,
+    pub effects: &'static [AbilityEffectEntry],
+}
+
+impl ItemDefinition {
+    pub fn effects_for(&self, trigger: AbilityTrigger) -> impl Iterator<Item = &AbilityEffectEntry> {
+        self.effects.iter().filter(move |entry| entry.trigger == trigger)
+    }
+}
+
 impl ItemId {
     pub fn all() -> &'static [ItemId] {
         &[
@@ -300,6 +404,10 @@ impl ItemId {
         ]
     }
 
+    pub fn definition(self) -> &'static ItemDefinition {
+        crate::item_catalog::definition(self)
+    }
+
     /// Items shown in the default shop grid (recipes are inspect-only via builds).
     pub fn shop_listed() -> impl Iterator<Item = ItemId> {
         Self::all().iter().copied().filter(|id| !id.is_recipe())
@@ -307,89 +415,27 @@ impl ItemId {
 
     /// Recipe scraps used in builds — hidden from the default shop list.
     pub fn is_recipe(self) -> bool {
-        matches!(
-            self,
-            ItemId::RecipeHeartwoodBand | ItemId::RecipeSparkPendant
-        )
+        self.definition().item_type == ItemType::Recipe
     }
 
     pub fn name(self) -> &'static str {
-        match self {
-            // <item_generator:item_name>
-            ItemId::IronBracer => "Iron Bracer",
-            ItemId::SwiftBoots => "Swift Boots",
-            ItemId::ManaCrystal => "Mana Crystal",
-            ItemId::BladeOfAsh => "Blade of Ash",
-            ItemId::AegisCharm => "Aegis Charm",
-            ItemId::VialOfLight => "Vial of Light",
-            ItemId::StormRod => "Storm Rod",
-            ItemId::WardstoneCloak => "Wardstone Cloak",
-            ItemId::HeartwoodBand => "Heartwood Band",
-            ItemId::SparkPendant => "Spark Pendant",
-            ItemId::RecipeHeartwoodBand => "Recipe: Heartwood Band",
-            ItemId::RecipeSparkPendant => "Recipe: Spark Pendant",
-            // </item_generator:item_name>
-        }
+        self.definition().name
     }
 
     pub fn short_label(self) -> &'static str {
-        match self {
-            // <item_generator:item_short_label>
-            ItemId::IronBracer => "IB",
-            ItemId::SwiftBoots => "SB",
-            ItemId::ManaCrystal => "MC",
-            ItemId::BladeOfAsh => "BA",
-            ItemId::AegisCharm => "AC",
-            ItemId::VialOfLight => "VL",
-            ItemId::StormRod => "SR",
-            ItemId::WardstoneCloak => "WC",
-            ItemId::HeartwoodBand => "HB",
-            ItemId::SparkPendant => "SP",
-            ItemId::RecipeHeartwoodBand => "R-HB",
-            ItemId::RecipeSparkPendant => "R-SP",
-            // </item_generator:item_short_label>
-        }
+        self.definition().short_label
     }
 
     pub fn cost(self) -> u32 {
-        match self {
-            // <item_generator:item_cost>
-            ItemId::IronBracer => 300,
-            ItemId::SwiftBoots => 450,
-            ItemId::ManaCrystal => 350,
-            ItemId::BladeOfAsh => 800,
-            ItemId::AegisCharm => 700,
-            ItemId::VialOfLight => 400,
-            ItemId::StormRod => 900,
-            ItemId::WardstoneCloak => 650,
-            ItemId::HeartwoodBand => 550,
-            ItemId::SparkPendant => 750,
-            ItemId::RecipeHeartwoodBand => 250,
-            ItemId::RecipeSparkPendant => 200,
-            // </item_generator:item_cost>
-        }
+        self.definition().cost
     }
 
     pub fn description(self) -> &'static str {
-        match self {
-            // <item_generator:item_description>
-            ItemId::IronBracer => "+100 HP, +4 Armor",
-            ItemId::SwiftBoots => "+2.5 Move Speed",
-            ItemId::ManaCrystal => "+80 Mana, +4 Mana Regen",
-            ItemId::BladeOfAsh => "+18 Attack Damage",
-            ItemId::AegisCharm => "+6 Armor, +5 Magic Resist",
-            ItemId::VialOfLight => "Active: Heal 180 HP",
-            ItemId::StormRod => "+12 AD. Active: 140 magic AoE",
-            ItemId::WardstoneCloak => "+80 HP, +4 MR. Active: +8 Armor 5s",
-            ItemId::HeartwoodBand => "+150 HP. +3 Armor. +2 Mana Regen",
-            ItemId::SparkPendant => "+10 Attack Damage. +60 Mana. Active: On use: deal 90 magical damage to enemies in a 4.5 radius and restore 40 mana to self",
-            ItemId::RecipeHeartwoodBand => "Combines with components into Heartwood Band",
-            ItemId::RecipeSparkPendant => "Combines with components into Spark Pendant",
-            // </item_generator:item_description>
-        }
+        self.definition().description
     }
 
     pub fn tooltip_body(self) -> String {
+        let def = self.definition();
         let kind = if self.is_recipe() {
             "Recipe"
         } else if self.has_active() {
@@ -398,10 +444,12 @@ impl ItemId {
             "Passive item"
         };
         let mut body = format!(
-            "{name}\nCost: {cost}g\n{kind}\n{desc}",
-            name = self.name(),
-            cost = self.cost(),
-            desc = self.description(),
+            "{name}\nCost: {cost}g\n{kind} · {rarity} · Tier {tier}\n{desc}",
+            name = def.name,
+            cost = def.cost,
+            rarity = def.rarity.label(),
+            tier = def.tier,
+            desc = def.description,
         );
         let comps = self.recipe_components();
         if !comps.is_empty() {
@@ -414,66 +462,21 @@ impl ItemId {
     }
 
     pub fn placeholder_color(self) -> Color {
-        match self {
-            // <item_generator:item_color>
-            ItemId::IronBracer => Color::srgb(0.55, 0.55, 0.6),
-            ItemId::SwiftBoots => Color::srgb(0.35, 0.7, 0.45),
-            ItemId::ManaCrystal => Color::srgb(0.3, 0.45, 0.95),
-            ItemId::BladeOfAsh => Color::srgb(0.85, 0.35, 0.25),
-            ItemId::AegisCharm => Color::srgb(0.7, 0.65, 0.35),
-            ItemId::VialOfLight => Color::srgb(0.95, 0.9, 0.55),
-            ItemId::StormRod => Color::srgb(0.45, 0.35, 0.95),
-            ItemId::WardstoneCloak => Color::srgb(0.4, 0.55, 0.5),
-            ItemId::HeartwoodBand => Color::srgb(0.405294, 0.452353, 0.558235),
-            ItemId::SparkPendant => Color::srgb(0.85, 0.55, 0.25),
-            ItemId::RecipeHeartwoodBand => Color::srgb(0.55, 0.5, 0.35),
-            ItemId::RecipeSparkPendant => Color::srgb(0.6, 0.45, 0.25),
-            // </item_generator:item_color>
-        }
+        let [r, g, b] = self.definition().color;
+        Color::srgb(r, g, b)
     }
 
     pub fn active_cooldown(self) -> Option<f32> {
-        match self {
-            ItemId::VialOfLight => Some(40.0),
-            ItemId::StormRod => Some(30.0),
-            ItemId::WardstoneCloak => Some(35.0),
-            // <item_generator:active_cooldown>
-            ItemId::SparkPendant => Some(25.0),
-            // </item_generator:active_cooldown>
-            _ => None,
-        }
-    }
-
-    /// Pseudocode for actives (ItemGenerator fills this for stub kits).
-    pub fn active_pseudocode(self) -> Option<&'static str> {
-        match self {
-            // <item_generator:active_pseudocode>
-            ItemId::VialOfLight => Some("Heal self for 180 HP"),
-            ItemId::StormRod => Some("Deal 140 magical damage in 5.5 radius around caster"),
-            ItemId::WardstoneCloak => Some("Gain +8 armor for 5 seconds"),
-            ItemId::SparkPendant => Some("On use: deal 90 magical damage to enemies in a 4.5 radius and restore 40 mana to self"),
-            // </item_generator:active_pseudocode>
-            _ => None,
-        }
+        self.has_active().then(|| self.definition().cooldown)
     }
 
     /// Build tree components (other items and/or a recipe scrap). Empty = basic item.
     pub fn recipe_components(self) -> &'static [ItemId] {
-        match self {
-            // <item_generator:recipe_components>
-            ItemId::HeartwoodBand => &[ItemId::IronBracer, ItemId::RecipeHeartwoodBand],
-            ItemId::SparkPendant => &[
-                ItemId::ManaCrystal,
-                ItemId::BladeOfAsh,
-                ItemId::RecipeSparkPendant,
-            ],
-            // </item_generator:recipe_components>
-            _ => &[],
-        }
+        self.definition().components
     }
 
     pub fn has_active(self) -> bool {
-        self.active_cooldown().is_some()
+        self.definition().effects_for(AbilityTrigger::OnUse).next().is_some()
     }
 
     pub fn inventory_hotkey(index: usize) -> Option<&'static str> {
@@ -489,10 +492,11 @@ impl ItemId {
     }
 }
 
-/// Flat passive bonuses applied once on purchase.
-#[derive(Debug, Clone, Copy, Default)]
+/// Flat passive bonuses applied once per owned unit on purchase.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ItemPassives {
     pub max_health: f32,
+    pub health_regen: f32,
     pub max_mana: f32,
     pub mana_regen: f32,
     pub attack_damage: f32,
@@ -500,62 +504,69 @@ pub struct ItemPassives {
     pub magic_resist: f32,
     pub move_speed: f32,
     pub attack_speed_flat: f32,
+    pub strength: f32,
+    pub agility: f32,
+    pub intelligence: f32,
 }
 
 impl ItemId {
+    /// Sum of the item's `Passive` stat entries.
     pub fn passives(self) -> ItemPassives {
-        match self {
-            // <item_generator:item_passives>
-            ItemId::IronBracer => ItemPassives {
-                max_health: 100.0,
-                armor: 4.0,
-                ..default()
-            },
-            ItemId::SwiftBoots => ItemPassives {
-                move_speed: scale::u(2.5),
-                ..default()
-            },
-            ItemId::ManaCrystal => ItemPassives {
-                max_mana: 80.0,
-                mana_regen: 4.0,
-                ..default()
-            },
-            ItemId::BladeOfAsh => ItemPassives {
-                attack_damage: 18.0,
-                attack_speed_flat: 15.0,
-                ..default()
-            },
-            ItemId::AegisCharm => ItemPassives {
-                armor: 6.0,
-                magic_resist: 5.0,
-                ..default()
-            },
-            ItemId::VialOfLight => ItemPassives::default(),
-            ItemId::StormRod => ItemPassives {
-                attack_damage: 12.0,
-                attack_speed_flat: 10.0,
-                ..default()
-            },
-            ItemId::WardstoneCloak => ItemPassives {
-                max_health: 80.0,
-                magic_resist: 4.0,
-                ..default()
-            },
-            ItemId::HeartwoodBand => ItemPassives {
-                max_health: 150.0,
-                armor: 3.0,
-                mana_regen: 2.0,
-                ..default()
-            },
-            ItemId::SparkPendant => ItemPassives {
-                attack_damage: 10.0,
-                max_mana: 60.0,
-                ..default()
-            },
-            ItemId::RecipeHeartwoodBand | ItemId::RecipeSparkPendant => ItemPassives::default(),
-            // </item_generator:item_passives>
+        let mut p = ItemPassives::default();
+        for entry in self.definition().effects_for(AbilityTrigger::Passive) {
+            let AbilityEffect::PassiveStat { stat, amount } = entry.effect else {
+                continue;
+            };
+            let value = amount.at(1);
+            let field = match stat {
+                PassiveStat::MaxHealth => &mut p.max_health,
+                PassiveStat::HealthRegen => &mut p.health_regen,
+                PassiveStat::MaxMana => &mut p.max_mana,
+                PassiveStat::ManaRegen => &mut p.mana_regen,
+                PassiveStat::AttackDamage => &mut p.attack_damage,
+                PassiveStat::AttackSpeed => &mut p.attack_speed_flat,
+                PassiveStat::Armor => &mut p.armor,
+                PassiveStat::MagicResist => &mut p.magic_resist,
+                PassiveStat::MoveSpeed => &mut p.move_speed,
+                PassiveStat::Attribute(Attribute::Strength) => &mut p.strength,
+                PassiveStat::Attribute(Attribute::Agility) => &mut p.agility,
+                PassiveStat::Attribute(Attribute::Intelligence) => &mut p.intelligence,
+            };
+            *field += value;
         }
+        p
     }
+}
+
+/// Apply `count` copies of an item's passive bonuses (negative `count` removes them).
+fn adjust_passives(
+    passives: ItemPassives,
+    count: f32,
+    health: &mut Health,
+    mana: &mut Mana,
+    stats: &mut CombatStats,
+    attrs: &mut HeroAttributes,
+) {
+    let before = attrs.clone();
+    attrs.strength += passives.strength * count;
+    attrs.agility += passives.agility * count;
+    attrs.intelligence += passives.intelligence * count;
+    HeroAttributes::apply_delta(&before, attrs, health, mana, stats);
+
+    let max_health = passives.max_health * count;
+    health.max = (health.max + max_health).max(1.0);
+    health.current = (health.current + max_health.max(0.0)).min(health.max);
+    health.regen_per_sec = (health.regen_per_sec + passives.health_regen * count).max(0.0);
+    let max_mana = passives.max_mana * count;
+    mana.max = (mana.max + max_mana).max(0.0);
+    mana.current = (mana.current + max_mana.max(0.0)).min(mana.max);
+    mana.regen_per_sec = (mana.regen_per_sec + passives.mana_regen * count).max(0.0);
+    stats.attack_damage += passives.attack_damage * count;
+    stats.armor += passives.armor * count;
+    stats.magic_resist += passives.magic_resist * count;
+    stats.move_speed += passives.move_speed * count;
+    stats.attack_speed_flat += passives.attack_speed_flat * count;
+    stats.recompute_attack_speed(attrs.agility);
 }
 
 pub fn apply_passives(
@@ -563,47 +574,20 @@ pub fn apply_passives(
     health: &mut Health,
     mana: &mut Mana,
     stats: &mut CombatStats,
-    agility: f32,
+    attrs: &mut HeroAttributes,
 ) {
-    if passives.max_health != 0.0 {
-        health.max += passives.max_health;
-        health.current = (health.current + passives.max_health).min(health.max);
-    }
-    if passives.max_mana != 0.0 {
-        mana.max += passives.max_mana;
-        mana.current = (mana.current + passives.max_mana).min(mana.max);
-    }
-    mana.regen_per_sec += passives.mana_regen;
-    stats.attack_damage += passives.attack_damage;
-    stats.armor += passives.armor;
-    stats.magic_resist += passives.magic_resist;
-    stats.move_speed += passives.move_speed;
-    stats.attack_speed_flat += passives.attack_speed_flat;
-    stats.recompute_attack_speed(agility);
+    adjust_passives(passives, 1.0, health, mana, stats, attrs);
 }
 
 pub fn remove_passives(
     passives: ItemPassives,
+    count: u32,
     health: &mut Health,
     mana: &mut Mana,
     stats: &mut CombatStats,
-    agility: f32,
+    attrs: &mut HeroAttributes,
 ) {
-    if passives.max_health != 0.0 {
-        health.max = (health.max - passives.max_health).max(1.0);
-        health.current = health.current.min(health.max);
-    }
-    if passives.max_mana != 0.0 {
-        mana.max = (mana.max - passives.max_mana).max(0.0);
-        mana.current = mana.current.min(mana.max);
-    }
-    mana.regen_per_sec = (mana.regen_per_sec - passives.mana_regen).max(0.0);
-    stats.attack_damage -= passives.attack_damage;
-    stats.armor -= passives.armor;
-    stats.magic_resist -= passives.magic_resist;
-    stats.move_speed -= passives.move_speed;
-    stats.attack_speed_flat -= passives.attack_speed_flat;
-    stats.recompute_attack_speed(agility);
+    adjust_passives(passives, -(count as f32), health, mana, stats, attrs);
 }
 
 fn spawn_shops(
@@ -755,16 +739,13 @@ fn handle_item_hotkeys(
             &Team,
             &mut Inventory,
             &mut Health,
+            &mut Mana,
             &mut CombatStats,
-            &mut StatusEffects,
+            &mut HeroAttributes,
         ),
         With<PlayerHero>,
     >,
-    enemies: Query<
-        (Entity, &Transform, &Team, &Health, &CombatStats, Option<&BoundRadius>),
-        Without<PlayerHero>,
-    >,
-    mut damage: MessageWriter<DamageEvent>,
+    mut triggers: MessageWriter<AbilityTriggerEvent>,
 ) {
     let picks = [
         (KeyCode::KeyA, 0usize),
@@ -783,116 +764,148 @@ fn handle_item_hotkeys(
         return;
     }
 
-    let Ok((hero_entity, transform, team, mut inv, mut health, mut stats, mut statuses)) =
+    let Ok((hero_entity, transform, team, mut inv, mut health, mut mana, mut stats, mut attrs)) =
         hero.single_mut()
     else {
         return;
     };
 
     for index in pressed {
-        try_use_item(
-            &mut commands,
-            &assets,
-            hero_entity,
-            transform,
-            *team,
-            &mut inv,
-            &mut health,
-            &mut stats,
-            &mut statuses,
-            index,
-            &mut damage,
-            &enemies,
-        );
+        let Some(used) = try_use_item(&mut inv, index, hero_entity, transform.translation, *team, &mut triggers) else {
+            continue;
+        };
+        spawn_item_use_fx(&mut commands, &assets, used, transform.translation);
+        if let Some(item) = inv.slots[index].as_mut().filter(|_| used.definition().consumable) {
+            if item.consume() > 0 {
+                remove_passives(used.passives(), 1, &mut health, &mut mana, &mut stats, &mut attrs);
+            }
+            if item.stack == 0 {
+                inv.slots[index] = None;
+            }
+        }
     }
 }
 
-fn try_use_item(
-    commands: &mut Commands,
-    assets: &SharedAssets,
-    hero_entity: Entity,
-    transform: &Transform,
-    team: Team,
+/// Starts the active's cooldown and fires its `OnUse` trigger; effects are resolved by
+/// the shared trigger pipeline. Returns the used item.
+pub fn try_use_item(
     inv: &mut Inventory,
-    health: &mut Health,
-    stats: &mut CombatStats,
-    statuses: &mut StatusEffects,
     index: usize,
-    damage: &mut MessageWriter<DamageEvent>,
-    enemies: &Query<
-        (Entity, &Transform, &Team, &Health, &CombatStats, Option<&BoundRadius>),
-        Without<PlayerHero>,
-    >,
-) {
-    let Some(item) = inv.slots.get_mut(index).and_then(|s| s.as_mut()) else {
-        return;
-    };
-    let Some(cd) = item.id.active_cooldown() else {
-        return;
-    };
+    owner: Entity,
+    position: Vec3,
+    team: Team,
+    triggers: &mut MessageWriter<AbilityTriggerEvent>,
+) -> Option<ItemId> {
+    let item = inv.slots.get_mut(index).and_then(|s| s.as_mut())?;
+    let cooldown = item.id.active_cooldown()?;
     if item.cooldown_remaining > 0.0 {
-        return;
+        return None;
     }
+    item.cooldown_remaining = cooldown;
+    triggers.write(AbilityTriggerEvent(item_trigger(
+        AbilityTrigger::OnUse,
+        item.id,
+        owner,
+        team,
+        position,
+        None,
+        position,
+    )));
+    Some(item.id)
+}
 
-    match item.id {
-        ItemId::VialOfLight => {
-            health.current = (health.current + 180.0).min(health.max);
-            spawn_heal_fx(commands, assets, transform.translation);
-        }
-        ItemId::StormRod => {
-            let origin = transform.translation;
-            let radius = scale::u(5.5);
-            for (_e, enemy_tf, enemy_team, enemy_hp, _, bound) in enemies.iter() {
-                if *enemy_team != team.enemy() || !enemy_hp.is_alive() {
-                    continue;
-                }
-                if area_contains(origin, radius, enemy_tf.translation, bounds_of(bound)) {
-                    damage.write(DamageEvent {
-                        source: Some(hero_entity),
-                        target: _e,
-                        amount: 140.0,
-                        damage_type: DamageType::Magical,
-                    });
-                }
+fn item_trigger(
+    trigger: AbilityTrigger,
+    item: ItemId,
+    owner: Entity,
+    team: Team,
+    origin: Vec3,
+    trigger_unit: Option<Entity>,
+    point: Vec3,
+) -> TriggerContext {
+    TriggerContext {
+        trigger,
+        caster: owner,
+        team,
+        source: EffectSource::Item(item),
+        rank: 1,
+        origin,
+        aim: point,
+        point,
+        cast_target: None,
+        trigger_unit,
+        affected_units: Vec::new(),
+    }
+}
+
+/// `OnAttack` (release) and `OnAttackHit` (impact) for every distinct item the
+/// attacker owns that has entries for the trigger.
+fn item_attack_triggers(
+    mut releases: MessageReader<BasicAttackReleaseEvent>,
+    mut impacts: MessageReader<BasicAttackImpactEvent>,
+    owners: Query<(&Transform, &Team, &Inventory)>,
+    targets: Query<&Transform>,
+    mut triggers: MessageWriter<AbilityTriggerEvent>,
+) {
+    let fired = releases
+        .read()
+        .map(|e| (AbilityTrigger::OnAttack, e.attacker, e.target))
+        .chain(impacts.read().map(|e| (AbilityTrigger::OnAttackHit, e.attacker, e.target)));
+    for (trigger, attacker, target) in fired {
+        let Ok((owner_tf, team, inventory)) = owners.get(attacker) else {
+            continue;
+        };
+        let point = targets.get(target).map_or(owner_tf.translation, |tf| tf.translation);
+        let mut seen: Vec<ItemId> = Vec::new();
+        for item in inventory.slots.iter().flatten() {
+            if seen.contains(&item.id)
+                || item.id.definition().effects_for(trigger).next().is_none()
+            {
+                continue;
             }
-            commands.spawn((
-                Name::new("Storm Rod Pulse"),
-                Mesh3d(assets.indicator_ring_mesh.clone()),
-                MeshMaterial3d(assets.shockwave_mat.clone()),
-                Transform::from_translation(origin + Vec3::Y * scale::u(0.15))
-                    .with_scale(Vec3::new(radius, 1.0, radius)),
-                SpellFx {
-                    age: 0.0,
-                    lifetime: 0.45,
-                    start_scale: radius * 0.4,
-                    end_scale: radius,
-                },
-                Lifetime(0.45),
-            ));
+            seen.push(item.id);
+            triggers.write(AbilityTriggerEvent(item_trigger(
+                trigger,
+                item.id,
+                attacker,
+                *team,
+                owner_tf.translation,
+                Some(target),
+                point,
+            )));
         }
-        ItemId::WardstoneCloak => {
-            apply_status(
-                statuses,
-                stats,
-                StatusEffect {
-                    armor: 8.0,
-                    ..StatusEffect::buff("wardstone_guard", 5.0)
-                },
-            );
-            spawn_heal_fx(commands, assets, transform.translation);
-        }
-        // <item_generator:active_arms>
-        // Generated actives: stub until pseudocode is implemented.
-        ItemId::SparkPendant => {
-            // ACTIVE_PSEUDOCODE: On use: deal 90 magical damage to enemies in a 4.5 radius and restore 40 mana to self
-            // TODO: implement active from ItemGenerator active_pseudocode
-        }
-        // </item_generator:active_arms>
-        _ => return,
     }
+}
 
-    item.cooldown_remaining = cd;
-    let _ = hero_entity;
+/// Presentation only: a heal flash when the active affects its owner and a pulse ring
+/// for each fixed-radius area it hits.
+fn spawn_item_use_fx(commands: &mut Commands, assets: &SharedAssets, item: ItemId, at: Vec3) {
+    for entry in item.definition().effects_for(AbilityTrigger::OnUse) {
+        match entry.target {
+            EffectTarget::Caster => spawn_heal_fx(commands, assets, at),
+            EffectTarget::UnitsInRadius {
+                radius: AreaRadius::Fixed(radius),
+                ..
+            } => {
+                let radius = radius.at(1);
+                commands.spawn((
+                    Name::new(format!("{} Pulse", item.name())),
+                    Mesh3d(assets.indicator_ring_mesh.clone()),
+                    MeshMaterial3d(assets.shockwave_mat.clone()),
+                    Transform::from_translation(at + Vec3::Y * scale::u(0.15))
+                        .with_scale(Vec3::new(radius, 1.0, radius)),
+                    SpellFx {
+                        age: 0.0,
+                        lifetime: 0.45,
+                        start_scale: radius * 0.4,
+                        end_scale: radius,
+                    },
+                    Lifetime(0.45),
+                ));
+            }
+            _ => {}
+        }
+    }
 }
 
 fn spawn_heal_fx(commands: &mut Commands, assets: &SharedAssets, at: Vec3) {
@@ -927,82 +940,65 @@ pub struct InventoryContextMenu {
     pub slot: Option<usize>,
 }
 
+type ShopHeroQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static Transform,
+        &'static Team,
+        &'static mut PlayerWallet,
+        &'static mut Inventory,
+        &'static mut Health,
+        &'static mut Mana,
+        &'static mut CombatStats,
+        &'static mut HeroAttributes,
+    ),
+    With<PlayerHero>,
+>;
+
+fn near_own_shop(hero_pos: Vec3, team: Team, shops: &Query<(&Transform, &ItemShop)>) -> bool {
+    shops.iter().any(|(shop_tf, shop)| {
+        shop.team == team && flat_distance(hero_pos, shop_tf.translation) <= shop.purchase_range
+    })
+}
+
 fn try_purchase_from_ui(
     mut events: MessageReader<PurchaseItemRequest>,
-    mut hero: Query<
-        (
-            &Transform,
-            &Team,
-            &mut PlayerWallet,
-            &mut Inventory,
-            &mut Health,
-            &mut Mana,
-            &mut CombatStats,
-            &crate::components::HeroAttributes,
-        ),
-        With<PlayerHero>,
-    >,
+    mut hero: ShopHeroQuery,
     shops: Query<(&Transform, &ItemShop)>,
 ) {
-    let Ok((hero_tf, hero_team, mut wallet, mut inv, mut health, mut mana, mut stats, attrs)) =
+    let Ok((hero_tf, team, mut wallet, mut inv, mut health, mut mana, mut stats, mut attrs)) =
         hero.single_mut()
     else {
         return;
     };
-
+    let in_range = near_own_shop(hero_tf.translation, *team, &shops);
     for PurchaseItemRequest { item } in events.read() {
-        let near_shop = shops.iter().any(|(shop_tf, shop)| {
-            shop.team == *hero_team
-                && flat_distance(hero_tf.translation, shop_tf.translation) <= shop.purchase_range
-        });
-        if !near_shop {
-            continue;
-        }
-        if wallet.gold < item.cost() {
-            continue;
-        }
-        if inv.first_empty().is_none() {
-            continue;
-        }
-        wallet.gold -= item.cost();
-        apply_passives(
-            item.passives(),
+        try_buy_item(
+            &mut wallet,
+            &mut inv,
             &mut health,
             &mut mana,
             &mut stats,
-            attrs.agility,
+            &mut attrs,
+            *item,
+            in_range,
         );
-        let _ = inv.try_add(*item);
     }
 }
 
 fn try_sell_from_ui(
     mut events: MessageReader<SellItemRequest>,
     mut menu: ResMut<InventoryContextMenu>,
-    mut hero: Query<
-        (
-            &Transform,
-            &Team,
-            &mut PlayerWallet,
-            &mut Inventory,
-            &mut Health,
-            &mut Mana,
-            &mut CombatStats,
-            &crate::components::HeroAttributes,
-        ),
-        With<PlayerHero>,
-    >,
+    mut hero: ShopHeroQuery,
     shops: Query<(&Transform, &ItemShop)>,
 ) {
-    let Ok((hero_tf, hero_team, mut wallet, mut inv, mut health, mut mana, mut stats, attrs)) =
+    let Ok((hero_tf, team, mut wallet, mut inv, mut health, mut mana, mut stats, mut attrs)) =
         hero.single_mut()
     else {
         return;
     };
-    let near_shop = shops.iter().any(|(shop_tf, shop)| {
-        shop.team == *hero_team
-            && flat_distance(hero_tf.translation, shop_tf.translation) <= shop.purchase_range
-    });
+    let in_range = near_own_shop(hero_tf.translation, *team, &shops);
     for SellItemRequest { slot } in events.read() {
         if try_sell_item(
             &mut wallet,
@@ -1010,45 +1006,44 @@ fn try_sell_from_ui(
             &mut health,
             &mut mana,
             &mut stats,
+            &mut attrs,
             *slot,
-            near_shop,
-            attrs.agility,
+            in_range,
         ) {
             menu.slot = None;
         }
     }
 }
 
-/// Shared helper for purchases (used by tests).
-#[cfg_attr(not(test), allow(dead_code))]
+/// Buy one unit of `item` (stacking onto a partial stack when possible).
 pub fn try_buy_item(
     wallet: &mut PlayerWallet,
     inv: &mut Inventory,
     health: &mut Health,
     mana: &mut Mana,
     stats: &mut CombatStats,
+    attrs: &mut HeroAttributes,
     item: ItemId,
     in_range: bool,
-    agility: f32,
 ) -> bool {
-    if !in_range || wallet.gold < item.cost() || inv.first_empty().is_none() {
+    if !in_range || wallet.gold < item.cost() || inv.slot_for(item).is_none() {
         return false;
     }
     wallet.gold -= item.cost();
-    apply_passives(item.passives(), health, mana, stats, agility);
+    apply_passives(item.passives(), health, mana, stats, attrs);
     inv.try_add(item)
 }
 
-/// Sell inventory slot for half the shop cost. Must be in shop range.
+/// Sell a whole inventory slot for the item's sell value per unit. Must be in shop range.
 pub fn try_sell_item(
     wallet: &mut PlayerWallet,
     inv: &mut Inventory,
     health: &mut Health,
     mana: &mut Mana,
     stats: &mut CombatStats,
+    attrs: &mut HeroAttributes,
     slot: usize,
     in_range: bool,
-    agility: f32,
 ) -> bool {
     if !in_range {
         return false;
@@ -1056,8 +1051,8 @@ pub fn try_sell_item(
     let Some(item) = inv.slots.get_mut(slot).and_then(|s| s.take()) else {
         return false;
     };
-    remove_passives(item.id.passives(), health, mana, stats, agility);
-    wallet.gold += item.id.cost() / 2;
+    remove_passives(item.id.passives(), item.stack, health, mana, stats, attrs);
+    wallet.gold += item.id.definition().sell_value * item.stack;
     true
 }
 
@@ -1072,15 +1067,16 @@ mod tests {
         let mut health = Health::new(720.0);
         let mut mana = Mana::new(320.0, 12.0);
         let mut stats = CombatStats::simple(55.0, 8.0, 1.1, 4.0, 3.0, 12.0);
+        let mut attrs = HeroAttributes::starter();
         assert!(try_buy_item(
             &mut wallet,
             &mut inv,
             &mut health,
             &mut mana,
             &mut stats,
+            &mut attrs,
             ItemId::IronBracer,
             true,
-            18.0,
         ));
         assert_eq!(wallet.gold, 300);
         assert!(inv.slots[0].is_some());
@@ -1095,15 +1091,16 @@ mod tests {
         let mut health = Health::new(720.0);
         let mut mana = Mana::new(320.0, 12.0);
         let mut stats = CombatStats::simple(55.0, 8.0, 1.1, 4.0, 3.0, 12.0);
+        let mut attrs = HeroAttributes::starter();
         assert!(!try_buy_item(
             &mut wallet,
             &mut inv,
             &mut health,
             &mut mana,
             &mut stats,
+            &mut attrs,
             ItemId::SwiftBoots,
             true,
-            18.0,
         ));
         wallet.gold = 500;
         assert!(!try_buy_item(
@@ -1112,9 +1109,9 @@ mod tests {
             &mut health,
             &mut mana,
             &mut stats,
+            &mut attrs,
             ItemId::SwiftBoots,
             false,
-            18.0,
         ));
     }
 
@@ -1177,15 +1174,16 @@ mod tests {
         let mut health = Health::new(720.0);
         let mut mana = Mana::new(320.0, 12.0);
         let mut stats = CombatStats::simple(55.0, 8.0, 1.1, 4.0, 3.0, 12.0);
+        let mut attrs = HeroAttributes::starter();
         assert!(try_buy_item(
             &mut wallet,
             &mut inv,
             &mut health,
             &mut mana,
             &mut stats,
+            &mut attrs,
             ItemId::IronBracer,
             true,
-            18.0,
         ));
         assert!(try_sell_item(
             &mut wallet,
@@ -1193,9 +1191,9 @@ mod tests {
             &mut health,
             &mut mana,
             &mut stats,
+            &mut attrs,
             0,
             true,
-            18.0,
         ));
         assert_eq!(wallet.gold, 450); // 600 - 300 + 150
         assert!(inv.slots[0].is_none());

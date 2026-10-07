@@ -1,0 +1,13 @@
+id,name,item_type,cost,sell_value,tier,rarity,stackable,max_stack,consumable,max_charges,description,short_label,cooldown,components,color_r,color_g,color_b
+iron_bracer,Iron Bracer,armor,300,150,1,common,false,,false,,"+100 HP, +4 Armor",IB,,,0.55,0.55,0.6
+swift_boots,Swift Boots,utility,450,225,1,common,false,,false,,+65 Move Speed,SB,,,0.35,0.7,0.45
+mana_crystal,Mana Crystal,accessory,350,175,1,common,false,,false,,"+80 Mana, +4 Mana Regen",MC,,,0.3,0.45,0.95
+blade_of_ash,Blade of Ash,weapon,800,400,1,uncommon,false,,false,,"+18 Attack Damage, +15 Attack Speed",BA,,,0.85,0.35,0.25
+aegis_charm,Aegis Charm,armor,700,350,1,uncommon,false,,false,,"+6 Armor, +5 Magic Resist",AC,,,0.7,0.65,0.35
+vial_of_light,Vial of Light,utility,400,200,1,common,false,,false,,Active: Heal 180 HP,VL,40,,0.95,0.9,0.55
+storm_rod,Storm Rod,weapon,900,450,2,rare,false,,false,,+12 AD. Active: 140 magic AoE,SR,30,,0.45,0.35,0.95
+wardstone_cloak,Wardstone Cloak,armor,650,325,1,uncommon,false,,false,,"+80 HP, +4 MR. Active: +8 Armor 5s",WC,35,,0.4,0.55,0.5
+heartwood_band,Heartwood Band,armor,550,275,2,uncommon,false,,false,,+150 HP. +3 Armor. +2 Mana Regen,HB,,iron_bracer;recipe_heartwood_band,0.405294,0.452353,0.558235
+spark_pendant,Spark Pendant,accessory,750,375,2,rare,false,,false,,+10 Attack Damage. +60 Mana. Active: deal 90 magical damage to nearby enemies and restore 40 mana,SP,25,mana_crystal;blade_of_ash;recipe_spark_pendant,0.85,0.55,0.25
+recipe_heartwood_band,Recipe: Heartwood Band,recipe,250,125,1,common,false,,false,,Combines with components into Heartwood Band,R-HB,,,0.55,0.5,0.35
+recipe_spark_pendant,Recipe: Spark Pendant,recipe,200,100,1,common,false,,false,,Combines with components into Spark Pendant,R-SP,,,0.6,0.45,0.25

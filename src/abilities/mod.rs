@@ -8,15 +8,18 @@
 //!          → mechanics (dash, projectile, custom behavior, …)   — WHEN and WHO
 //!          → AbilityTriggerEvent(TriggerContext)
 //!          → matching effect entries                              — WHAT
-//!          → DamageEvent / HealEvent / StatusEffectEvent
+//!          → DamageEvent / HealEvent / ManaRestoreEvent / StatusEffectEvent / DisplacementEvent
 //! ```
+//!
+//! Items resolve their effect entries through the same trigger pipeline
+//! (`EffectSource::Item`).
 
 pub mod casting;
 pub mod catalog;
 pub mod custom;
 pub mod definition;
-pub mod effect_rows;
 pub mod effects;
+pub mod generated;
 pub mod mechanics;
 
 use bevy::prelude::*;
@@ -34,11 +37,13 @@ use casting::{
     check_usable, resolve_queued_ability_casts, team_allows, tick_ability_casting,
     validate_cast_requests, AbilityCastEvent, AbilityCastRequest,
 };
-use catalog::{register_loadout_definitions, AbilityDefinitions};
+use catalog::{register_loadout_definitions, restore_ability_charges, AbilityDefinitions};
 use definition::{TargetTeam, TargetType};
+use crate::displacement::{apply_displacement_events, tick_forced_movement, DisplacementEvent};
 use effects::{
-    apply_heal_events, apply_status_effect_events, resolve_ability_triggers, AbilityTriggerEvent,
-    CustomAbilityEffects, HealEvent, StatusEffectEvent,
+    apply_heal_events, apply_mana_restore_events, apply_status_effect_events,
+    resolve_ability_triggers, AbilityTriggerEvent, CustomAbilityEffects, HealEvent,
+    ManaRestoreEvent, StatusEffectEvent,
 };
 use mechanics::{execute_ability_casts, projectile_hit_triggers, CustomAbilityBehaviors};
 
@@ -54,13 +59,16 @@ impl Plugin for AbilitiesPlugin {
             .add_message::<AbilityCastEvent>()
             .add_message::<AbilityTriggerEvent>()
             .add_message::<HealEvent>()
+            .add_message::<ManaRestoreEvent>()
             .add_message::<StatusEffectEvent>()
+            .add_message::<DisplacementEvent>()
             .add_systems(
                 Update,
                 (
                     tick_ability_cooldowns,
                     regen_mana,
                     register_loadout_definitions,
+                    restore_ability_charges,
                     begin_or_cast_from_hotkeys,
                     update_targeting_indicators,
                     confirm_or_cancel_targeted_cast,
@@ -71,8 +79,14 @@ impl Plugin for AbilitiesPlugin {
                     projectile_hit_triggers,
                     resolve_ability_triggers,
                     spawn_requested_projectiles,
-                    apply_heal_events,
-                    apply_status_effect_events,
+                    (
+                        apply_heal_events,
+                        apply_mana_restore_events,
+                        apply_displacement_events,
+                        apply_status_effect_events,
+                        tick_forced_movement,
+                    )
+                        .chain(),
                     despawn_indicators,
                     animate_spell_fx,
                 )
@@ -541,7 +555,9 @@ mod tests {
             .add_message::<AbilityCastEvent>()
             .add_message::<AbilityTriggerEvent>()
             .add_message::<HealEvent>()
+            .add_message::<ManaRestoreEvent>()
             .add_message::<StatusEffectEvent>()
+            .add_message::<DisplacementEvent>()
             .add_message::<DamageEvent>()
             .add_message::<SpawnProjectileEvent>()
             .add_message::<ProjectileHitEvent>()
@@ -727,6 +743,8 @@ mod tests {
             .costs(RankValue::fixed(8.0), RankValue::fixed(100.0))
             .mechanic(AbilityMechanic::Projectile {
                 splash_radius: AreaRadius::Ability,
+                speed: None,
+                skillshot: false,
             })
             .on(
                 AbilityTrigger::OnProjectileHit,
@@ -806,6 +824,8 @@ mod tests {
                 AbilityEffect::Custom {
                     id: "drain",
                     value: RankValue::fixed(50.0),
+                    amount: RankValue::ZERO,
+                    duration: RankValue::ZERO,
                 },
             );
         app.world_mut().resource_mut::<AbilityDefinitions>().insert(skewer);
