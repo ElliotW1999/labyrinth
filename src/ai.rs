@@ -7,7 +7,7 @@ use bevy::prelude::*;
 
 use crate::components::{
     AttackMoveOrder, AttackTarget, BoundRadius, CombatStats, Creep, Health, MoveTarget, PlayerHero,
-    Team, Tower,
+    Team, Tower, TrainingDummy,
 };
 use crate::dimensions::{bounds_of, center_distance as flat_distance, edge_distance, within_range};
 use crate::movement::SimSet;
@@ -82,7 +82,7 @@ fn acquire_targets(
             Option<&AttackTarget>,
             Has<Tower>,
         ),
-        Without<PlayerHero>,
+        (Without<PlayerHero>, Without<TrainingDummy>),
     >,
     candidates: Query<(Entity, &Transform, &Team, &Health, Option<&BoundRadius>)>,
     mut commands: Commands,

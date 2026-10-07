@@ -3,14 +3,15 @@
 use bevy::prelude::*;
 
 use crate::abilities::definition::{
-    AbilityEffect, AbilityEffectEntry, AbilityTrigger, AreaRadius, Attribute, EffectTarget,
-    PassiveStat,
+    AbilityEffect, AbilityEffectEntry, AbilityTrigger, AreaRadius, Attribute, DisplacementKind,
+    EffectScaling, EffectTarget, PassiveStat, RankValue, StatusSpec,
 };
 use crate::abilities::effects::{AbilityTriggerEvent, EffectSource, TriggerContext};
 use crate::basic_attack::{BasicAttackImpactEvent, BasicAttackReleaseEvent};
 use crate::combat::flat_distance;
 use crate::components::{
-    CombatStats, Health, HeroAttributes, Lifetime, Mana, PlayerHero, PlayerWallet, SpellFx, Team,
+    CombatStats, DamageType, Health, HeroAttributes, Lifetime, Mana, PlayerHero, PlayerWallet,
+    SpellFx, Team,
 };
 use crate::resources::SharedAssets;
 use crate::scale;
@@ -330,6 +331,20 @@ pub enum ItemType {
     Recipe,
 }
 
+impl ItemType {
+    pub fn label(self) -> &'static str {
+        match self {
+            ItemType::Component => "Component",
+            ItemType::Weapon => "Weapon",
+            ItemType::Armor => "Armor",
+            ItemType::Accessory => "Accessory",
+            ItemType::Consumable => "Consumable",
+            ItemType::Utility => "Utility",
+            ItemType::Recipe => "Recipe",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[allow(dead_code)]
 pub enum ItemRarity {
@@ -439,21 +454,57 @@ impl ItemId {
         let kind = if self.is_recipe() {
             "Recipe"
         } else if self.has_active() {
-            "Active item"
+            "Active"
         } else {
-            "Passive item"
+            "Passive"
         };
         let mut body = format!(
-            "{name}\nCost: {cost}g\n{kind} · {rarity} · Tier {tier}\n{desc}",
+            "{name}\nBuy: {cost}g    Sell: {sell}g\n{kind} · {item_type} · {rarity} · Tier {tier}\n{desc}",
             name = def.name,
             cost = def.cost,
+            sell = def.sell_value,
+            item_type = def.item_type.label(),
             rarity = def.rarity.label(),
             tier = def.tier,
             desc = def.description,
         );
+        if def.consumable {
+            body.push_str("\nConsumable");
+        }
+        if let Some(charges) = def.max_charges {
+            body.push_str(&format!("\nCharges: {charges}"));
+        }
+        if def.max_stack > 1 {
+            body.push_str(&format!("\nStacks to {}", def.max_stack));
+        }
+        if def.cooldown > 0.0 && self.has_active() {
+            body.push_str(&format!("\nCooldown: {:.0}s", def.cooldown));
+        }
+        let stats = passive_stat_lines(&self.passives());
+        if !stats.is_empty() {
+            body.push_str("\n\nStats:");
+            for line in stats {
+                body.push_str(&format!("\n{line}"));
+            }
+        }
+        let mut effects = Vec::new();
+        for entry in def.effects {
+            if entry.trigger == AbilityTrigger::Passive {
+                continue;
+            }
+            if let Some(line) = describe_item_effect(entry) {
+                effects.push(line);
+            }
+        }
+        if !effects.is_empty() {
+            body.push_str("\n\nEffects:");
+            for line in effects {
+                body.push_str(&format!("\n{line}"));
+            }
+        }
         let comps = self.recipe_components();
         if !comps.is_empty() {
-            body.push_str("\nComponents:");
+            body.push_str("\n\nComponents:");
             for c in comps {
                 body.push_str(&format!("\n• {} ({}g)", c.name(), c.cost()));
             }
@@ -538,6 +589,146 @@ impl ItemId {
     }
 }
 
+fn passive_stat_lines(passives: &ItemPassives) -> Vec<String> {
+    let rows = [
+        (passives.max_health, "Health"),
+        (passives.health_regen, "Health regen"),
+        (passives.max_mana, "Mana"),
+        (passives.mana_regen, "Mana regen"),
+        (passives.attack_damage, "Attack damage"),
+        (passives.attack_speed_flat, "Attack speed"),
+        (passives.armor, "Armor"),
+        (passives.magic_resist, "Magic resist"),
+        (passives.move_speed, "Move speed"),
+        (passives.strength, "Strength"),
+        (passives.agility, "Agility"),
+        (passives.intelligence, "Intelligence"),
+    ];
+    rows.into_iter()
+        .filter(|(value, _)| value.abs() >= 0.05)
+        .map(|(value, label)| format!("{:+.0} {label}", value))
+        .collect()
+}
+
+fn describe_item_effect(entry: &AbilityEffectEntry) -> Option<String> {
+    let tag = match entry.trigger {
+        AbilityTrigger::OnUse => "Use",
+        AbilityTrigger::OnAttack => "On attack",
+        AbilityTrigger::OnAttackHit => "On attack hit",
+        AbilityTrigger::OnDamageTaken => "When damaged",
+        AbilityTrigger::OnKill => "On kill",
+        AbilityTrigger::OnDeath => "On death",
+        AbilityTrigger::Passive => return None,
+        other => return Some(format!("{other:?}")),
+    };
+    let detail = match entry.effect {
+        AbilityEffect::Damage { amount, damage_type, scaling } => {
+            let mut line = format!(
+                "Deal {} {} damage",
+                fmt_rank(amount),
+                damage_label(damage_type)
+            );
+            if let Some(note) = scaling_label(scaling) {
+                line.push_str(&format!(" ({note})"));
+            }
+            line.push_str(&target_suffix(&entry.target));
+            line
+        }
+        AbilityEffect::Heal { amount, scaling } => {
+            let mut line = format!("Heal {}", fmt_rank(amount));
+            if let Some(note) = scaling_label(scaling) {
+                line.push_str(&format!(" ({note})"));
+            }
+            line
+        }
+        AbilityEffect::RestoreMana { amount } => format!("Restore {} mana", fmt_rank(amount)),
+        AbilityEffect::ApplyStatus { status, duration } => match status {
+            StatusSpec::Slow { percent } => {
+                format!("Slow {}% for {}s", fmt_rank(percent), fmt_rank(duration))
+            }
+            StatusSpec::Stun => format!("Stun for {}s", fmt_rank(duration)),
+            StatusSpec::Root => format!("Root for {}s", fmt_rank(duration)),
+            StatusSpec::Silence => format!("Silence for {}s", fmt_rank(duration)),
+            StatusSpec::Disarm => format!("Disarm for {}s", fmt_rank(duration)),
+            StatusSpec::Modifier { armor, magic_resist, move_speed, attack_damage, .. } => {
+                let mut parts = Vec::new();
+                if armor != RankValue::ZERO {
+                    parts.push(format!("{:+.0} armor", armor.at(1)));
+                }
+                if magic_resist != RankValue::ZERO {
+                    parts.push(format!("{:+.0} magic resist", magic_resist.at(1)));
+                }
+                if move_speed != RankValue::ZERO {
+                    parts.push(format!("{:+.0} move speed", move_speed.at(1)));
+                }
+                if attack_damage != RankValue::ZERO {
+                    parts.push(format!("{:+.0} attack damage", attack_damage.at(1)));
+                }
+                format!("{} for {}s", parts.join(", "), fmt_rank(duration))
+            }
+            other => format!("{other:?} for {}s", fmt_rank(duration)),
+        },
+        AbilityEffect::Displace { kind, distance, duration } => {
+            let name = match kind {
+                DisplacementKind::Knockback => "Knockback",
+                DisplacementKind::Pull => "Pull",
+            };
+            match distance {
+                Some(distance) => format!("{name} {} over {}s", fmt_rank(distance), fmt_rank(duration)),
+                None => format!("{name} to the caster over {}s", fmt_rank(duration)),
+            }
+        }
+        AbilityEffect::Dispel { kind } => format!("Dispel {kind:?}s"),
+        AbilityEffect::RemoveStatus { id } => format!("Remove {id}"),
+        AbilityEffect::Custom { id, .. } => format!("Custom: {id}"),
+        AbilityEffect::PassiveStat { .. } => return None,
+    };
+    Some(format!("{tag}: {detail}"))
+}
+
+fn target_suffix(target: &EffectTarget) -> String {
+    match target {
+        EffectTarget::UnitsInRadius { radius, team, .. } => {
+            let reach = match radius {
+                AreaRadius::Ability => "the area".into(),
+                AreaRadius::Fixed(value) => format!("{}", fmt_rank(*value)),
+            };
+            format!(" to {team:?} in {reach}")
+        }
+        _ => String::new(),
+    }
+}
+
+fn scaling_label(scaling: EffectScaling) -> Option<String> {
+    match scaling {
+        EffectScaling::None => None,
+        EffectScaling::CasterAttackDamage(ratio) => Some(format!("+ {ratio:.2}× attack damage")),
+        EffectScaling::CasterAttribute(attribute, ratio) => {
+            Some(format!("+ {ratio:.2}× {attribute:?}"))
+        }
+        EffectScaling::TargetHealthBelow(fraction) => {
+            Some(format!("below {:.0}% health", fraction * 100.0))
+        }
+    }
+}
+
+fn damage_label(damage_type: DamageType) -> &'static str {
+    match damage_type {
+        DamageType::Physical => "physical",
+        DamageType::Magical => "magical",
+        DamageType::Pure => "pure",
+    }
+}
+
+fn fmt_rank(value: RankValue) -> String {
+    let number = value.at(1);
+    if (number - number.round()).abs() < 0.05 {
+        format!("{}", number.round() as i32)
+    } else {
+        format!("{number:.1}")
+    }
+}
+
 /// Apply `count` copies of an item's passive bonuses (negative `count` removes them).
 fn adjust_passives(
     passives: ItemPassives,
@@ -590,12 +781,27 @@ pub fn remove_passives(
     adjust_passives(passives, -(count as f32), health, mana, stats, attrs);
 }
 
+/// Gold shop beside a team's ancient. Layout uses map scale, not the old `scale::u` grid.
+pub fn shop_world_position(team: Team) -> Vec3 {
+    let ground = match team {
+        Team::Radiant => scale::ground(-55.0, -48.0),
+        Team::Dire => scale::ground(55.0, 48.0),
+    };
+    let height = 140.0;
+    Vec3::new(ground.x, height * 0.5, ground.z)
+}
+
+pub fn shop_purchase_range() -> f32 {
+    scale::map(6.0)
+}
+
 fn spawn_shops(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let mesh = meshes.add(Cuboid::new(scale::u(2.4), scale::u(2.0), scale::u(2.4)));
+    let height = 140.0;
+    let mesh = meshes.add(Cuboid::new(height, height, height));
     let radiant_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.95, 0.75, 0.25),
         emissive: LinearRgba::rgb(2.0, 1.2, 0.2),
@@ -611,26 +817,24 @@ fn spawn_shops(
         ..default()
     });
 
-    // Near Radiant ancient / hero spawn.
     commands.spawn((
         Name::new("Radiant Item Shop"),
         Mesh3d(mesh.clone()),
         MeshMaterial3d(radiant_mat),
-        Transform::from_xyz(scale::u(-52.0), scale::u(1.0), scale::u(-40.0)),
+        Transform::from_translation(shop_world_position(Team::Radiant)),
         ItemShop {
             team: Team::Radiant,
-            purchase_range: scale::u(14.0),
+            purchase_range: shop_purchase_range(),
         },
     ));
-    // Near Dire base (for future Dire heroes / symmetry).
     commands.spawn((
         Name::new("Dire Item Shop"),
         Mesh3d(mesh),
         MeshMaterial3d(dire_mat),
-        Transform::from_xyz(scale::u(52.0), scale::u(1.0), scale::u(40.0)),
+        Transform::from_translation(shop_world_position(Team::Dire)),
         ItemShop {
             team: Team::Dire,
-            purchase_range: scale::u(14.0),
+            purchase_range: shop_purchase_range(),
         },
     ));
 }
@@ -1293,5 +1497,33 @@ mod tests {
         let mut plain = ItemInstance::new(ItemId::VialOfLight);
         assert_eq!(plain.consume(None), 1);
         assert_eq!(plain.stack, 0);
+    }
+
+    #[test]
+    fn tooltips_list_price_stats_and_effects() {
+        let bracer = ItemId::IronBracer.tooltip_body();
+        assert!(bracer.contains("Buy: 300g    Sell: 150g"), "{bracer}");
+        assert!(bracer.contains("Armor"));
+        assert!(bracer.contains("+100 Health"));
+        assert!(bracer.contains("+4 Armor"));
+        assert!(bracer.contains("+100 HP, +4 Armor"));
+
+        let vial = ItemId::VialOfLight.tooltip_body();
+        assert!(vial.contains("Use: Heal 180"), "{vial}");
+        assert!(vial.contains("Cooldown: 40s"));
+    }
+
+    #[test]
+    fn shops_sit_beside_their_ancients() {
+        let radiant = scale::ground(-48.0, -48.0);
+        let shop = shop_world_position(Team::Radiant);
+        let dist = Vec3::new(shop.x - radiant.x, 0.0, shop.z - radiant.z).length();
+        assert!(dist > 80.0 && dist < scale::map(10.0), "{dist}");
+
+        let dire = scale::ground(48.0, 48.0);
+        let shop = shop_world_position(Team::Dire);
+        let dist = Vec3::new(shop.x - dire.x, 0.0, shop.z - dire.z).length();
+        assert!(dist > 80.0 && dist < scale::map(10.0), "{dist}");
+        assert!(shop_purchase_range() > 200.0);
     }
 }

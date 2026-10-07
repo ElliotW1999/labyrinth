@@ -165,9 +165,9 @@ IssueCommand (input / minimap / network host)
 - Unrevealed ground shows a **transparent grey** overlay; enemy heroes/creeps are hidden outside team vision (buildings and trees stay visible)
 - Heroes and towers have generous vision; creeps have half that range
 - Trees block line of sight for heroes, creeps, and towers
-- Northern **obstacle course** is fog-free
+- The **obstacle course** beside the Radiant ancient is fog-free
 
-### Obstacle course (north / screen-top strip)
+### Obstacle course (south of the Radiant ancient)
 
 - **Firebreather** — fires orbs along its facing (does not target units)
 - **Heartpiercer** — fires an orb when its pressure plate is stepped on
