@@ -47,7 +47,6 @@ impl Plugin for CombatPlugin {
                     sync_attack_projectile_visuals,
                     fly_projectiles,
                     apply_projectile_hits,
-                    resolve_projectile_hits,
                     apply_damage_events,
                     tick_lifetimes,
                     despawn_dead,
@@ -147,34 +146,33 @@ fn fly_projectiles(
 }
 
 #[derive(Component, Debug, Clone, Copy)]
-struct GroundBoltImpact;
+pub struct GroundBoltImpact;
 
 /// Homing projectile arrived at the target's position this frame.
 #[derive(Component, Debug, Clone, Copy)]
-struct ProjectileReachedTarget;
+pub struct ProjectileReachedTarget;
 
-/// Ability that fired a spell projectile; lets on-hit effects resolve against its definition.
+/// The cast that fired a spell projectile, so its impact can be reported as an ability trigger.
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub struct ProjectilePayload {
     pub caster: Entity,
     pub ability: AbilityId,
     pub rank: u32,
-    /// Index of the `SpawnProjectile` effect within the ability's effect list
-    /// (`None` for projectiles spawned by custom behaviors or nested effects).
-    pub effect_index: Option<usize>,
+    pub cast_target: Option<Entity>,
+    pub aim: Vec3,
 }
 
-/// A spell projectile struck `target` (primary homing hit or splash).
-#[derive(Message, Debug, Clone, Copy, PartialEq)]
+/// A spell projectile ended. Carries who was involved, not what happens to them:
+/// the abilities layer turns this into an `OnProjectileHit` / `OnImpact` trigger.
+#[derive(Message, Debug, Clone, PartialEq)]
 pub struct ProjectileHitEvent {
-    pub target: Entity,
+    pub payload: ProjectilePayload,
     pub team: Team,
     pub impact: Vec3,
-    /// Raw damage after the splash ratio.
-    pub damage: f32,
-    pub damage_type: DamageType,
-    pub primary: bool,
-    pub payload: Option<ProjectilePayload>,
+    /// The homing target, when the projectile struck it.
+    pub primary: Option<Entity>,
+    /// Living enemies within the splash radius of the impact (excluding `primary`).
+    pub splashed: Vec<Entity>,
 }
 
 /// Request to spawn a spell projectile (homing when `target` is set).
@@ -184,10 +182,8 @@ pub struct SpawnProjectileEvent {
     pub origin: Vec3,
     pub target: Option<Entity>,
     pub target_pos: Vec3,
-    pub damage: f32,
-    pub damage_type: DamageType,
     pub splash_radius: f32,
-    pub payload: Option<ProjectilePayload>,
+    pub payload: ProjectilePayload,
 }
 
 pub fn spawn_requested_projectiles(
@@ -200,33 +196,24 @@ pub fn spawn_requested_projectiles(
     }
 }
 
-fn apply_projectile_hits(
+pub fn apply_projectile_hits(
     mut commands: Commands,
     mut hits: MessageWriter<ProjectileHitEvent>,
     projectiles: Query<(
         Entity,
         &Transform,
         &Projectile,
+        &ProjectilePayload,
         Option<&ProjectileHome>,
         Option<&GroundBoltImpact>,
         Option<&ProjectileReachedTarget>,
-        Option<&ProjectilePayload>,
     )>,
     units: Query<(Entity, &Transform, &Team, &Health, Option<&BoundRadius>)>,
 ) {
-    for (proj_entity, proj_tf, projectile, home, ground_impact, reached, payload) in &projectiles {
+    for (proj_entity, proj_tf, projectile, payload, home, ground_impact, reached) in &projectiles {
         let impact = proj_tf.translation;
         let mut despawn = false;
         let mut primary_hit: Option<Entity> = None;
-        let hit = |target: Entity, damage: f32, primary: bool| ProjectileHitEvent {
-            target,
-            team: projectile.team,
-            impact,
-            damage,
-            damage_type: projectile.damage_type,
-            primary,
-            payload: payload.copied(),
-        };
 
         if let Some(home) = home {
             if let Ok((unit_entity, unit_tf, team, health, radius)) = units.get(home.target) {
@@ -237,7 +224,6 @@ fn apply_projectile_hits(
                     && area_contains(impact, projectile.radius, unit_tf.translation, bounds_of(radius))
                     && vertical < scale::body(2.5)
                 {
-                    hits.write(hit(unit_entity, projectile.damage, true));
                     primary_hit = Some(unit_entity);
                     despawn = true;
                 }
@@ -250,36 +236,36 @@ fn apply_projectile_hits(
             despawn = true;
         }
 
-        if despawn && projectile.splash_radius > 0.0 {
-            let ratio = if primary_hit.is_some() { 0.45 } else { 1.0 };
-            for (unit_entity, unit_tf, team, health, radius) in &units {
-                if *team == projectile.team || !health.is_alive() || primary_hit == Some(unit_entity)
-                {
-                    continue;
-                }
-                if area_contains(impact, projectile.splash_radius, unit_tf.translation, bounds_of(radius)) {
-                    hits.write(hit(unit_entity, projectile.damage * ratio, false));
-                }
-            }
+        if !despawn {
+            continue;
         }
-
-        if despawn {
-            commands.entity(proj_entity).despawn();
-        }
-    }
-}
-
-fn resolve_projectile_hits(
-    mut hits: MessageReader<ProjectileHitEvent>,
-    mut damage: MessageWriter<DamageEvent>,
-) {
-    for hit in hits.read() {
-        damage.write(DamageEvent {
-            source: hit.payload.map(|p| p.caster),
-            target: hit.target,
-            amount: hit.damage,
-            damage_type: hit.damage_type,
+        let splashed = if projectile.splash_radius > 0.0 {
+            units
+                .iter()
+                .filter(|(unit_entity, unit_tf, team, health, radius)| {
+                    **team != projectile.team
+                        && health.is_alive()
+                        && primary_hit != Some(*unit_entity)
+                        && area_contains(
+                            impact,
+                            projectile.splash_radius,
+                            unit_tf.translation,
+                            bounds_of(*radius),
+                        )
+                })
+                .map(|(unit_entity, ..)| unit_entity)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        hits.write(ProjectileHitEvent {
+            payload: *payload,
+            team: projectile.team,
+            impact,
+            primary: primary_hit,
+            splashed,
         });
+        commands.entity(proj_entity).despawn();
     }
 }
 
@@ -413,8 +399,6 @@ fn spawn_spell_bolt(commands: &mut Commands, assets: &SharedAssets, request: &Sp
         origin,
         target,
         target_pos,
-        damage,
-        damage_type,
         splash_radius,
         payload,
     } = *request;
@@ -431,20 +415,16 @@ fn spawn_spell_bolt(commands: &mut Commands, assets: &SharedAssets, request: &Sp
         MeshMaterial3d(assets.spell_bolt_mat.clone()),
         transform,
         Projectile {
-            damage,
             speed: scale::u(34.0),
             team,
             radius: scale::body(0.85),
             lifetime: 2.5,
-            damage_type,
             splash_radius,
         },
+        payload,
         ProjectileStyle::SpellBolt,
         Lifetime(2.5),
     ));
-    if let Some(payload) = payload {
-        entity.insert(payload);
-    }
 
     if let Some(target) = target {
         entity.insert(ProjectileHome {
@@ -495,6 +475,58 @@ mod tests {
         let a = Vec3::new(0.0, 10.0, 0.0);
         let b = Vec3::new(3.0, -4.0, 4.0);
         assert!((flat_distance(a, b) - 5.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn projectile_reports_its_victims_without_dealing_damage() {
+        let mut world = World::new();
+        world.init_resource::<Messages<ProjectileHitEvent>>();
+        let unit = |world: &mut World, team: Team, x: f32| {
+            world
+                .spawn((Transform::from_xyz(x, 0.0, 0.0), team, Health::new(500.0)))
+                .id()
+        };
+        let target = unit(&mut world, Team::Dire, 0.0);
+        let splashed = unit(&mut world, Team::Dire, 30.0);
+        let far = unit(&mut world, Team::Dire, 900.0);
+        let ally = unit(&mut world, Team::Radiant, 20.0);
+        let caster = unit(&mut world, Team::Radiant, -500.0);
+        let payload = ProjectilePayload {
+            caster,
+            ability: AbilityId::Bolt,
+            rank: 1,
+            cast_target: Some(target),
+            aim: Vec3::ZERO,
+        };
+        world.spawn((
+            Transform::from_xyz(0.0, scale::body(1.0), 0.0),
+            Projectile {
+                speed: 1.0,
+                team: Team::Radiant,
+                radius: scale::body(0.85),
+                lifetime: 1.0,
+                splash_radius: 60.0,
+            },
+            payload,
+            ProjectileHome {
+                target,
+                last_pos: Vec3::ZERO,
+            },
+        ));
+        world.run_system_once(apply_projectile_hits).unwrap();
+
+        let hits: Vec<_> = world
+            .resource::<Messages<ProjectileHitEvent>>()
+            .iter_current_update_messages()
+            .cloned()
+            .collect();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].primary, Some(target));
+        assert_eq!(hits[0].splashed, vec![splashed]);
+        assert_eq!(hits[0].payload, payload);
+        for entity in [target, splashed, far, ally] {
+            assert_eq!(world.get::<Health>(entity).unwrap().current, 500.0);
+        }
     }
 
     #[test]

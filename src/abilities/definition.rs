@@ -40,6 +40,16 @@ impl RankValue {
         self
     }
 
+    /// Multiplies every rank's value (and the clamp bounds) by a positive `factor`.
+    pub const fn scaled(self, factor: f32) -> Self {
+        Self {
+            base: self.base * factor,
+            per_rank: self.per_rank * factor,
+            min: self.min * factor,
+            max: self.max * factor,
+        }
+    }
+
     pub fn at(self, rank: u32) -> f32 {
         (self.base + self.per_rank * rank.max(1) as f32).clamp(self.min, self.max)
     }
@@ -74,11 +84,15 @@ pub enum TargetTeam {
     Any,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AreaCenter {
+    /// The caster's position when the trigger fired.
     Caster,
-    /// The cast aim (unit position for unit targets, impact point for projectile hits).
+    /// The cast aim (unit position for unit targets, caster position for no-target casts).
     Aim,
+    /// Where the trigger happened (the aim for `OnCast`, the impact point for projectiles).
+    TriggerPoint,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -88,28 +102,65 @@ pub enum AreaRadius {
     Fixed(RankValue),
 }
 
-/// Who receives an effect.
+/// The moment a mechanic reports to the effect layer. Mechanics decide *when* a
+/// trigger fires and *who* is involved; effects tagged with the trigger decide *what*
+/// happens to them.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AbilityTrigger {
+    /// The cast point completed.
+    OnCast,
+    /// A projectile struck its unit target. Splash units are the affected units.
+    OnProjectileHit,
+    OnUnitContact,
+    /// A projectile ended without striking a unit (ground impact or lost target).
+    OnImpact,
+    OnChannelTick,
+    OnChannelEnd,
+    OnExpire,
+    /// Emitted by a custom mechanic, e.g. `Custom("on_skewer_end")`.
+    Custom(&'static str),
+}
+
+/// Who receives an effect, resolved from the [`AbilityTrigger`]'s context.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum EffectTargets {
+pub enum EffectTarget {
     Caster,
-    /// The cast's unit target (or the unit struck by a projectile).
-    UnitTarget,
-    Area {
+    /// The unit the ability was cast on.
+    CastTarget,
+    /// The unit that caused the trigger (projectile victim, contacted unit, …).
+    TriggerUnit,
+    /// Every unit the mechanic reported as involved (splash victims, dragged units, …).
+    AffectedUnits,
+    /// Living units matching `team` within `radius` of `center` when the trigger fires.
+    UnitsInRadius {
         center: AreaCenter,
         radius: AreaRadius,
         team: TargetTeam,
     },
 }
 
-impl EffectTargets {
+impl EffectTarget {
     pub const fn enemies_around(center: AreaCenter) -> Self {
-        Self::Area {
+        Self::UnitsInRadius {
             center,
             radius: AreaRadius::Ability,
             team: TargetTeam::Enemy,
         }
     }
+}
+
+/// Per-target adjustment of an effect's magnitude.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum EffectScaling {
+    #[default]
+    None,
+    /// Adds `ratio × caster attack damage`.
+    CasterAttackDamage(f32),
+    /// The effect only applies to targets whose health fraction is below the threshold.
+    TargetHealthBelow(f32),
 }
 
 /// Status templates; durations come from the owning effect.
@@ -124,6 +175,8 @@ pub enum StatusSpec {
     Forceful,
     /// Purges existing debuffs on application.
     DebuffImmunity,
+    /// Reduces the target's current move speed by `percent`.
+    Slow { percent: RankValue },
     Modifier {
         id: &'static str,
         kind: StatusKind,
@@ -146,7 +199,8 @@ impl StatusSpec {
         }
     }
 
-    pub fn build(self, rank: u32, duration: f32) -> StatusEffect {
+    /// `target_move_speed` is only read by percentage modifiers such as [`StatusSpec::Slow`].
+    pub fn build(self, rank: u32, duration: f32, target_move_speed: f32) -> StatusEffect {
         match self {
             StatusSpec::Stun => StatusEffect::stunned(duration),
             StatusSpec::Root => StatusEffect::rooted(duration),
@@ -155,6 +209,10 @@ impl StatusSpec {
             StatusSpec::Phased => StatusEffect::phased(duration),
             StatusSpec::Forceful => StatusEffect::forceful(duration),
             StatusSpec::DebuffImmunity => StatusEffect::debuff_immunity(duration),
+            StatusSpec::Slow { percent } => StatusEffect {
+                move_speed: -target_move_speed * (percent.at(rank) / 100.0).clamp(0.0, 1.0),
+                ..StatusEffect::debuff("slow", duration)
+            },
             StatusSpec::Modifier {
                 id,
                 kind,
@@ -185,40 +243,56 @@ pub enum RingStyle {
     Nova,
 }
 
-/// Reusable building blocks. Effects only emit gameplay events / commands; the
-/// shared damage, status, heal, movement, and projectile systems resolve them.
+/// What happens to each resolved target. Effects never touch `Health` or stats
+/// directly: they emit `DamageEvent` / `HealEvent` / `StatusEffectEvent`.
 #[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AbilityEffect {
     Damage {
         amount: RankValue,
         damage_type: DamageType,
-        targets: EffectTargets,
+        scaling: EffectScaling,
     },
     Heal {
         amount: RankValue,
-        targets: EffectTargets,
     },
     ApplyStatus {
         status: StatusSpec,
         duration: RankValue,
-        targets: EffectTargets,
     },
     /// Remove every status of `kind` (reverting their stat modifiers).
     Dispel {
         kind: StatusKind,
-        targets: EffectTargets,
     },
+    /// Escape hatch: runs the system registered under `id` with
+    /// `effects::AbilityEffectAppExt::register_custom_effect`. It still receives
+    /// resolved targets and should emit the shared gameplay events.
+    Custom {
+        id: &'static str,
+        value: RankValue,
+    },
+}
+
+/// One row of an ability's effect table: when `trigger` fires, apply `effect` to `target`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AbilityEffectEntry {
+    pub trigger: AbilityTrigger,
+    pub target: EffectTarget,
+    pub effect: AbilityEffect,
+}
+
+/// How an ability plays out in the world: movement, projectiles, and presentation.
+/// Mechanics report what they encounter as [`AbilityTrigger`]s instead of applying
+/// consequences themselves.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AbilityMechanic {
     /// Phased dash toward the aim, capped at `distance`.
     Dash { distance: RankValue },
-    /// Spell projectile toward the unit target (homing) or aim point. `on_hit`
-    /// effects resolve against the struck unit, with the impact point as the aim.
-    SpawnProjectile {
-        damage: RankValue,
-        damage_type: DamageType,
-        splash_radius: AreaRadius,
-        on_hit: Vec<AbilityEffect>,
-    },
+    /// Spell projectile toward the unit target (homing) or aim point. A unit strike
+    /// fires `OnProjectileHit`; ending without one fires `OnImpact`. Enemies within
+    /// `splash_radius` of the impact become the trigger's affected units.
+    Projectile { splash_radius: AreaRadius },
     /// Caster follows up with auto-attacks on the unit target.
     AttackUnitTarget,
     RingFx {
@@ -247,9 +321,11 @@ pub struct AbilityDefinition {
     pub backswing: f32,
     pub cooldown: RankValue,
     pub mana_cost: RankValue,
-    /// Common effects run on every successful cast. Abilities with unique logic can
-    /// additionally register a custom behavior (see `effects::AbilityAppExt`).
-    pub effects: Vec<AbilityEffect>,
+    /// Run on every successful cast. Abilities with unique mechanics can additionally
+    /// register a custom behavior (see `mechanics::AbilityAppExt`).
+    pub mechanics: Vec<AbilityMechanic>,
+    /// Consequences, keyed by the trigger that applies them.
+    pub effects: Vec<AbilityEffectEntry>,
 }
 
 impl AbilityDefinition {
@@ -269,6 +345,7 @@ impl AbilityDefinition {
             backswing: 0.25,
             cooldown: RankValue::ZERO,
             mana_cost: RankValue::ZERO,
+            mechanics: Vec::new(),
             effects: Vec::new(),
         }
     }
@@ -297,9 +374,23 @@ impl AbilityDefinition {
         self
     }
 
-    pub fn effect(mut self, effect: AbilityEffect) -> Self {
-        self.effects.push(effect);
+    pub fn mechanic(mut self, mechanic: AbilityMechanic) -> Self {
+        self.mechanics.push(mechanic);
         self
+    }
+
+    /// Apply `effect` to `target` whenever `trigger` fires.
+    pub fn on(mut self, trigger: AbilityTrigger, target: EffectTarget, effect: AbilityEffect) -> Self {
+        self.effects.push(AbilityEffectEntry {
+            trigger,
+            target,
+            effect,
+        });
+        self
+    }
+
+    pub fn effects_for(&self, trigger: AbilityTrigger) -> impl Iterator<Item = &AbilityEffectEntry> {
+        self.effects.iter().filter(move |entry| entry.trigger == trigger)
     }
 
     pub fn is_castable(&self) -> bool {

@@ -1,16 +1,16 @@
 //! Built-in ability definitions and the [`AbilityDefinitions`] registry.
 //!
-//! Most abilities are plain data: targeting, costs, and a list of reusable effects.
-//! Abilities with unique logic (e.g. Execute) keep their common data here and
-//! register a custom behavior in `custom.rs`.
+//! Abilities are plain data: targeting, costs, mechanics, and trigger-tagged effects.
+//! Abilities with unique mechanics register a custom behavior in `custom.rs`.
 
 use std::collections::HashMap;
 
 use bevy::prelude::*;
 
 use super::definition::{
-    classify, AbilityBehavior, AbilityDefinition, AbilityEffect, AreaCenter, AreaRadius,
-    EffectTargets, RankValue, RingStyle, StatusSpec, TargetType,
+    classify, AbilityBehavior, AbilityDefinition, AbilityEffect, AbilityMechanic,
+    AbilityTrigger, AreaCenter, AreaRadius, EffectScaling, EffectTarget, RankValue, RingStyle,
+    StatusSpec, TargetType,
 };
 use crate::components::{AbilityId, AbilityLoadout, DamageType, GeneratedAbilityDef};
 use crate::scale::{
@@ -51,8 +51,8 @@ pub fn register_loadout_definitions(
     }
 }
 
-const fn nova_ring() -> AbilityEffect {
-    AbilityEffect::RingFx {
+const fn nova_ring() -> AbilityMechanic {
+    AbilityMechanic::RingFx {
         center: AreaCenter::Aim,
         radius: AreaRadius::Ability,
         style: RingStyle::Nova,
@@ -60,8 +60,8 @@ const fn nova_ring() -> AbilityEffect {
     }
 }
 
-const fn shockwave_ring() -> AbilityEffect {
-    AbilityEffect::RingFx {
+const fn shockwave_ring() -> AbilityMechanic {
+    AbilityMechanic::RingFx {
         center: AreaCenter::Caster,
         radius: AreaRadius::Ability,
         style: RingStyle::Shockwave,
@@ -69,41 +69,75 @@ const fn shockwave_ring() -> AbilityEffect {
     }
 }
 
-fn magic_damage(amount: RankValue, targets: EffectTargets) -> AbilityEffect {
+const PROJECTILE: AbilityMechanic = AbilityMechanic::Projectile {
+    splash_radius: AreaRadius::Ability,
+};
+
+const fn damage(amount: RankValue, damage_type: DamageType, scaling: EffectScaling) -> AbilityEffect {
     AbilityEffect::Damage {
         amount,
-        damage_type: DamageType::Magical,
-        targets,
+        damage_type,
+        scaling,
     }
 }
 
-fn status(status: StatusSpec, duration: RankValue, targets: EffectTargets) -> AbilityEffect {
-    AbilityEffect::ApplyStatus {
-        status,
-        duration,
-        targets,
-    }
+const fn magic_damage(amount: RankValue) -> AbilityEffect {
+    damage(amount, DamageType::Magical, EffectScaling::None)
 }
 
-fn bolt(damage: RankValue) -> AbilityEffect {
-    AbilityEffect::SpawnProjectile {
-        damage,
-        damage_type: DamageType::Magical,
-        splash_radius: AreaRadius::Ability,
-        on_hit: Vec::new(),
-    }
+const fn status(status: StatusSpec, duration: RankValue) -> AbilityEffect {
+    AbilityEffect::ApplyStatus { status, duration }
+}
+
+/// Splash victims of a projectile that struck its target take this share of the damage.
+const SPLASH_DAMAGE_RATIO: f32 = 0.45;
+
+/// Projectile damage: full to the struck unit, reduced splash around it, and full
+/// splash when the projectile lands without striking a unit.
+fn projectile_damage(
+    def: AbilityDefinition,
+    amount: RankValue,
+    damage_type: DamageType,
+    scaling: EffectScaling,
+) -> AbilityDefinition {
+    def.on(
+        AbilityTrigger::OnProjectileHit,
+        EffectTarget::TriggerUnit,
+        damage(amount, damage_type, scaling),
+    )
+    .on(
+        AbilityTrigger::OnProjectileHit,
+        EffectTarget::AffectedUnits,
+        damage(amount.scaled(SPLASH_DAMAGE_RATIO), damage_type, scaling),
+    )
+    .on(
+        AbilityTrigger::OnImpact,
+        EffectTarget::AffectedUnits,
+        damage(amount, damage_type, scaling),
+    )
 }
 
 /// Unit-targeted spells use a small fixed indicator / splash radius.
 const UNIT_SPELL_RADIUS: RankValue = RankValue::fixed(20.0);
 
+pub const EXECUTE_DAMAGE: RankValue = RankValue::linear(110.0, 40.0);
+pub const EXECUTE_THRESHOLD: f32 = 0.35;
+/// Total damage multiplier against targets below [`EXECUTE_THRESHOLD`].
+pub const EXECUTE_MULTIPLIER: f32 = 1.55;
+
 pub fn builtin(id: AbilityId) -> AbilityDefinition {
-    if let Some(generated) = id.generated() {
-        return from_generated(id, generated);
-    }
+    let def = match id.generated() {
+        Some(generated) => from_generated(id, generated),
+        None => handwritten(id),
+    };
+    def
+}
+
+fn handwritten(id: AbilityId) -> AbilityDefinition {
+    use AbilityTrigger::OnCast;
     let def = AbilityDefinition::new(id);
-    let around_caster = EffectTargets::enemies_around(AreaCenter::Caster);
-    let around_aim = EffectTargets::enemies_around(AreaCenter::Aim);
+    let around_caster = EffectTarget::enemies_around(AreaCenter::Caster);
+    let around_aim = EffectTarget::enemies_around(AreaCenter::Aim);
     match id {
         AbilityId::Dash | AbilityId::Blink => {
             let distance = if id == AbilityId::Blink {
@@ -114,7 +148,7 @@ pub fn builtin(id: AbilityId) -> AbilityDefinition {
             def.targeting(TargetType::Point, distance, RankValue::fixed(48.0))
                 .costs(RankValue::linear(7.5, -0.35).at_least(4.0), RankValue::linear(35.0, 5.0))
                 .timing(0.05, 0.15)
-                .effect(AbilityEffect::Dash { distance })
+                .mechanic(AbilityMechanic::Dash { distance })
         }
         AbilityId::Shockwave | AbilityId::Flurry | AbilityId::FrostNova => {
             let (damage, radius_per_rank) = match id {
@@ -130,52 +164,72 @@ pub fn builtin(id: AbilityId) -> AbilityDefinition {
                 )
                 .costs(RankValue::linear(9.0, -0.4).at_least(5.0), RankValue::linear(50.0, 8.0))
                 .timing(0.25, 0.35)
-                .effect(shockwave_ring())
-                .effect(magic_damage(damage, around_caster));
+                .mechanic(shockwave_ring())
+                .on(OnCast, around_caster, magic_damage(damage));
             match id {
-                AbilityId::Shockwave => def.effect(status(
-                    StatusSpec::Forceful,
-                    RankValue::fixed(2.0),
-                    EffectTargets::Caster,
-                )),
-                AbilityId::FrostNova => {
-                    def.effect(status(StatusSpec::Root, RankValue::fixed(1.4), around_caster))
-                }
+                AbilityId::Shockwave => def.on(
+                    OnCast,
+                    EffectTarget::Caster,
+                    status(StatusSpec::Forceful, RankValue::fixed(2.0)),
+                ),
+                AbilityId::FrostNova => def.on(
+                    OnCast,
+                    around_caster,
+                    status(StatusSpec::Root, RankValue::fixed(1.4)),
+                ),
                 _ => def
-                    .effect(status(StatusSpec::Silence, RankValue::fixed(1.2), around_caster))
-                    .effect(status(StatusSpec::Disarm, RankValue::fixed(1.0), around_caster)),
+                    .on(OnCast, around_caster, status(StatusSpec::Silence, RankValue::fixed(1.2)))
+                    .on(OnCast, around_caster, status(StatusSpec::Disarm, RankValue::fixed(1.0))),
             }
         }
-        AbilityId::Bolt => def
-            .targeting(
+        AbilityId::Bolt => projectile_damage(
+            def.targeting(
                 TargetType::Unit,
                 RankValue::linear(ABILITY_UNIT_CAST_RANGE, 25.0),
                 UNIT_SPELL_RADIUS,
             )
             .costs(RankValue::linear(6.0, -0.3).at_least(3.0), RankValue::linear(45.0, 7.0))
             .timing(0.2, 0.3)
-            .effect(bolt(RankValue::linear(90.0, 30.0)))
-            .effect(AbilityEffect::AttackUnitTarget),
-        AbilityId::ArcMissile => def
-            .targeting(
+            .mechanic(PROJECTILE)
+            .mechanic(AbilityMechanic::AttackUnitTarget),
+            RankValue::linear(90.0, 30.0),
+            DamageType::Magical,
+            EffectScaling::None,
+        ),
+        AbilityId::ArcMissile => projectile_damage(
+            def.targeting(
                 TargetType::Point,
                 RankValue::linear(ABILITY_GROUND_CAST_RANGE, 20.0),
                 RankValue::linear(ABILITY_PROJECTILE_WIDTH, 8.0),
             )
             .costs(RankValue::linear(6.0, -0.3).at_least(3.0), RankValue::linear(45.0, 7.0))
             .timing(0.2, 0.3)
-            .effect(bolt(RankValue::linear(85.0, 28.0)))
-            .effect(AbilityEffect::AttackUnitTarget),
-        // Projectile + low-HP bonus damage live in `custom::execute`.
-        AbilityId::Execute => def
-            .targeting(
-                TargetType::Unit,
-                RankValue::linear(ABILITY_UNIT_CAST_RANGE, 25.0),
-                UNIT_SPELL_RADIUS,
+            .mechanic(PROJECTILE)
+            .mechanic(AbilityMechanic::AttackUnitTarget),
+            RankValue::linear(85.0, 28.0),
+            DamageType::Magical,
+            EffectScaling::None,
+        ),
+        // Base damage on every hit, plus a bonus that only lands on low-health targets.
+        AbilityId::Execute => {
+            let def = def
+                .targeting(
+                    TargetType::Unit,
+                    RankValue::linear(ABILITY_UNIT_CAST_RANGE, 25.0),
+                    UNIT_SPELL_RADIUS,
+                )
+                .costs(RankValue::linear(50.0, -4.0).at_least(30.0), RankValue::linear(100.0, 20.0))
+                .timing(0.3, 0.4)
+                .mechanic(PROJECTILE)
+                .mechanic(AbilityMechanic::AttackUnitTarget);
+            let def = projectile_damage(def, EXECUTE_DAMAGE, DamageType::Magical, EffectScaling::None);
+            projectile_damage(
+                def,
+                EXECUTE_DAMAGE.scaled(EXECUTE_MULTIPLIER - 1.0),
+                DamageType::Magical,
+                EffectScaling::TargetHealthBelow(EXECUTE_THRESHOLD),
             )
-            .costs(RankValue::linear(50.0, -4.0).at_least(30.0), RankValue::linear(100.0, 20.0))
-            .timing(0.3, 0.4)
-            .effect(AbilityEffect::AttackUnitTarget),
+        }
         AbilityId::Caltrops => def
             .targeting(
                 TargetType::Area,
@@ -184,24 +238,24 @@ pub fn builtin(id: AbilityId) -> AbilityDefinition {
             )
             .costs(RankValue::linear(8.0, -0.35).at_least(4.5), RankValue::linear(40.0, 6.0))
             .timing(0.15, 0.25)
-            .effect(nova_ring())
-            .effect(magic_damage(RankValue::linear(50.0, 18.0), around_aim)),
+            .mechanic(nova_ring())
+            .on(OnCast, around_aim, magic_damage(RankValue::linear(50.0, 18.0))),
         AbilityId::Barrier => {
             let duration = RankValue::linear(3.5, 0.4);
             def.costs(RankValue::linear(14.0, -0.5).at_least(8.0), RankValue::linear(55.0, 8.0))
                 .timing(0.1, 0.2)
-                .effect(status(StatusSpec::DebuffImmunity, duration, EffectTargets::Caster))
-                .effect(status(
-                    StatusSpec::armor_buff("barrier", RankValue::linear(6.0, 2.5)),
-                    duration,
-                    EffectTargets::Caster,
-                ))
-                .effect(AbilityEffect::RingFx {
+                .mechanic(AbilityMechanic::RingFx {
                     center: AreaCenter::Caster,
                     radius: AreaRadius::Fixed(RankValue::fixed(scale::u(2.5))),
                     style: RingStyle::Nova,
                     lifetime: 0.4,
                 })
+                .on(OnCast, EffectTarget::Caster, status(StatusSpec::DebuffImmunity, duration))
+                .on(
+                    OnCast,
+                    EffectTarget::Caster,
+                    status(StatusSpec::armor_buff("barrier", RankValue::linear(6.0, 2.5)), duration),
+                )
         }
         AbilityId::Nova | AbilityId::Meteor => {
             let ult_costs = |d: AbilityDefinition| {
@@ -214,21 +268,24 @@ pub fn builtin(id: AbilityId) -> AbilityDefinition {
                     RankValue::linear(ABILITY_GROUND_CAST_RANGE, 20.0),
                     RankValue::linear(ABILITY_GROUND_AOE, 20.0),
                 ))
-                .effect(AbilityEffect::Heal {
-                    amount: RankValue::linear(100.0, 40.0),
-                    targets: EffectTargets::Caster,
-                })
-                .effect(nova_ring())
-                .effect(magic_damage(RankValue::linear(160.0, 55.0), around_aim))
+                .mechanic(nova_ring())
+                .on(
+                    OnCast,
+                    EffectTarget::Caster,
+                    AbilityEffect::Heal {
+                        amount: RankValue::linear(100.0, 40.0),
+                    },
+                )
+                .on(OnCast, around_aim, magic_damage(RankValue::linear(160.0, 55.0)))
             } else {
                 ult_costs(def.targeting(
                     TargetType::Area,
                     RankValue::linear(ABILITY_GROUND_CAST_RANGE, 15.0),
                     RankValue::linear(ABILITY_ULT_AOE, 25.0),
                 ))
-                .effect(nova_ring())
-                .effect(magic_damage(RankValue::linear(180.0, 60.0), around_aim))
-                .effect(status(StatusSpec::Stun, RankValue::fixed(1.1), around_aim))
+                .mechanic(nova_ring())
+                .on(OnCast, around_aim, magic_damage(RankValue::linear(180.0, 60.0)))
+                .on(OnCast, around_aim, status(StatusSpec::Stun, RankValue::fixed(1.1)))
             }
         }
         // HeroGenerator stubs: castable, costed, no effects yet.
@@ -265,26 +322,25 @@ fn from_generated(id: AbilityId, g: GeneratedAbilityDef) -> AbilityDefinition {
     def.max_rank = g.max_rank;
     def.is_ultimate = g.is_ultimate;
 
-    let damage = RankValue::from_level_1(g.damage_base, g.damage_per_level).at_least(0.0);
+    let amount = RankValue::from_level_1(g.damage_base, g.damage_per_level).at_least(0.0);
     if behavior != AbilityBehavior::Active || g.damage_base <= 0.0 {
         return def;
     }
-    let damage_effect = |center| AbilityEffect::Damage {
-        amount: damage,
-        damage_type: g.damage_type,
-        targets: EffectTargets::enemies_around(center),
-    };
+    let primary = damage(amount, g.damage_type, EffectScaling::None);
     match target_type {
-        TargetType::NoTarget => def
-            .effect(shockwave_ring())
-            .effect(damage_effect(AreaCenter::Caster)),
-        TargetType::Area => def.effect(nova_ring()).effect(damage_effect(AreaCenter::Aim)),
-        TargetType::Unit | TargetType::Point => def.effect(AbilityEffect::SpawnProjectile {
-            damage,
-            damage_type: g.damage_type,
-            splash_radius: AreaRadius::Ability,
-            on_hit: Vec::new(),
-        }),
+        TargetType::NoTarget => def.mechanic(shockwave_ring()).on(
+            AbilityTrigger::OnCast,
+            EffectTarget::enemies_around(AreaCenter::Caster),
+            primary,
+        ),
+        TargetType::Area => def.mechanic(nova_ring()).on(
+            AbilityTrigger::OnCast,
+            EffectTarget::enemies_around(AreaCenter::Aim),
+            primary,
+        ),
+        TargetType::Unit | TargetType::Point => {
+            projectile_damage(def.mechanic(PROJECTILE), amount, g.damage_type, EffectScaling::None)
+        }
     }
 }
 
@@ -318,7 +374,7 @@ mod tests {
         assert!((def.cooldown.at(1) - slam.cooldown_at(1)).abs() < 1e-4);
         assert!((def.cooldown.at(7) - slam.cooldown_at(7)).abs() < 1e-4);
         assert!((def.mana_cost.at(3) - slam.mana_cost_at(3)).abs() < 1e-4);
-        assert!(def.effects.iter().any(|e| matches!(e, AbilityEffect::Damage { .. })));
+        assert!(def.effects.iter().any(|e| matches!(e.effect, AbilityEffect::Damage { .. })));
 
         assert_eq!(builtin(AbilityId::ArcaneLance).target_type, TargetType::Unit);
         let stone = builtin(AbilityId::StoneSkin);
@@ -326,6 +382,15 @@ mod tests {
         assert!(!stone.is_castable());
         assert_eq!(builtin(AbilityId::Overcharge).behavior, AbilityBehavior::Toggle);
         assert_eq!(builtin(AbilityId::Cataclysm).max_rank, 4);
+    }
+
+    #[test]
+    fn mechanics_and_effects_are_separate() {
+        let bolt = builtin(AbilityId::Bolt);
+        assert!(bolt.mechanics.contains(&PROJECTILE));
+        assert_eq!(bolt.effects_for(AbilityTrigger::OnCast).count(), 0);
+        assert_eq!(bolt.effects_for(AbilityTrigger::OnProjectileHit).count(), 2);
+        assert_eq!(bolt.effects_for(AbilityTrigger::OnImpact).count(), 1);
     }
 
     #[test]
