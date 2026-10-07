@@ -15,6 +15,7 @@ pub mod casting;
 pub mod catalog;
 pub mod custom;
 pub mod definition;
+pub mod effect_rows;
 pub mod effects;
 pub mod mechanics;
 

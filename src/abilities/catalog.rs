@@ -1,7 +1,8 @@
 //! Built-in ability definitions and the [`AbilityDefinitions`] registry.
 //!
 //! Abilities are plain data: targeting, costs, mechanics, and trigger-tagged effects.
-//! Abilities with unique mechanics register a custom behavior in `custom.rs`.
+//! Rows from `data/ability_effects.csv` are appended to every definition. Abilities
+//! with unique mechanics register a custom behavior in `custom.rs`.
 
 use std::collections::HashMap;
 
@@ -12,6 +13,7 @@ use super::definition::{
     AbilityTrigger, AreaCenter, AreaRadius, EffectScaling, EffectTarget, RankValue, RingStyle,
     StatusSpec, TargetType,
 };
+use super::effect_rows::csv_effects_for;
 use crate::components::{AbilityId, AbilityLoadout, DamageType, GeneratedAbilityDef};
 use crate::scale::{
     self, ABILITY_BLINK_RANGE, ABILITY_DASH_RANGE, ABILITY_GROUND_AOE, ABILITY_GROUND_CAST_RANGE,
@@ -126,10 +128,11 @@ pub const EXECUTE_THRESHOLD: f32 = 0.35;
 pub const EXECUTE_MULTIPLIER: f32 = 1.55;
 
 pub fn builtin(id: AbilityId) -> AbilityDefinition {
-    let def = match id.generated() {
+    let mut def = match id.generated() {
         Some(generated) => from_generated(id, generated),
         None => handwritten(id),
     };
+    def.effects.extend(csv_effects_for(id));
     def
 }
 
@@ -299,7 +302,7 @@ fn handwritten(id: AbilityId) -> AbilityDefinition {
 }
 
 /// AbilityGenerator output → definition. The primary damage effect is derived from
-/// the activation type; pseudocode extras still need hand-written effects.
+/// the activation type; pseudocode extras come from `data/ability_effects.csv`.
 fn from_generated(id: AbilityId, g: GeneratedAbilityDef) -> AbilityDefinition {
     let (behavior, target_type) = classify(g.ability_type);
     let mut aoe = RankValue::from_level_1(g.aoe_radius_base, g.aoe_radius_per_level).at_least(0.0);
@@ -382,6 +385,26 @@ mod tests {
         assert!(!stone.is_castable());
         assert_eq!(builtin(AbilityId::Overcharge).behavior, AbilityBehavior::Toggle);
         assert_eq!(builtin(AbilityId::Cataclysm).max_rank, 4);
+    }
+
+    #[test]
+    fn csv_effect_rows_extend_definitions() {
+        let slam = builtin(AbilityId::SeismicSlam);
+        assert!(slam.effects_for(AbilityTrigger::OnCast).any(|e| matches!(
+            e.effect,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Slow { .. },
+                ..
+            }
+        )));
+        let lance = builtin(AbilityId::ArcaneLance);
+        assert!(lance.effects_for(AbilityTrigger::OnProjectileHit).any(|e| matches!(
+            e.effect,
+            AbilityEffect::Damage {
+                scaling: EffectScaling::TargetHealthBelow(_),
+                ..
+            }
+        )));
     }
 
     #[test]
