@@ -114,15 +114,15 @@ impl ItemInstance {
         }
     }
 
-    /// Spend one use of a consumable. Returns how many units were used up (0 or 1).
-    pub fn consume(&mut self) -> u32 {
-        let def = self.id.definition();
+    /// Spend one use of a consumable with `max_charges` per unit. Returns how many
+    /// units were used up (0 or 1).
+    pub fn consume(&mut self, max_charges: Option<u32>) -> u32 {
         if let Some(charges) = self.charges.as_mut() {
             *charges = charges.saturating_sub(1);
             if *charges > 0 {
                 return 0;
             }
-            self.charges = def.max_charges;
+            self.charges = max_charges;
         }
         self.stack = self.stack.saturating_sub(1);
         1
@@ -776,7 +776,7 @@ fn handle_item_hotkeys(
         };
         spawn_item_use_fx(&mut commands, &assets, used, transform.translation);
         if let Some(item) = inv.slots[index].as_mut().filter(|_| used.definition().consumable) {
-            if item.consume() > 0 {
+            if item.consume(used.definition().max_charges) > 0 {
                 remove_passives(used.passives(), 1, &mut health, &mut mana, &mut stats, &mut attrs);
             }
             if item.stack == 0 {
@@ -1240,5 +1240,58 @@ mod tests {
         assert!(sp.contains(&ItemId::ManaCrystal));
         assert!(sp.contains(&ItemId::BladeOfAsh));
         assert!(sp.contains(&ItemId::RecipeSparkPendant));
+    }
+
+    #[test]
+    fn item_data_comes_from_definitions() {
+        let bracer = ItemId::IronBracer.passives();
+        assert_eq!(bracer.max_health, 100.0);
+        assert_eq!(bracer.armor, 4.0);
+        assert_eq!(ItemId::BladeOfAsh.passives().attack_speed_flat, 15.0);
+        assert!(ItemId::VialOfLight.has_active());
+        assert_eq!(ItemId::VialOfLight.active_cooldown(), Some(40.0));
+        assert!(!ItemId::IronBracer.has_active());
+        assert_eq!(ItemId::IronBracer.active_cooldown(), None);
+        assert_eq!(ItemId::SparkPendant.definition().sell_value, 375);
+        for &id in ItemId::all() {
+            assert_eq!(id.definition().id, id);
+        }
+    }
+
+    #[test]
+    fn attribute_passives_apply_and_revert() {
+        let mut health = Health::new(720.0);
+        let mut mana = Mana::new(320.0, 12.0);
+        let mut stats = CombatStats::simple(55.0, 8.0, 1.1, 4.0, 3.0, 12.0);
+        let mut attrs = HeroAttributes::starter();
+        let strength = attrs.strength;
+        let passives = ItemPassives {
+            strength: 10.0,
+            attack_speed_flat: 20.0,
+            ..default()
+        };
+        apply_passives(passives, &mut health, &mut mana, &mut stats, &mut attrs);
+        assert_eq!(attrs.strength, strength + 10.0);
+        assert_eq!(health.max, 720.0 + 10.0 * HeroAttributes::HP_PER_STR);
+        assert_eq!(stats.attack_speed_flat, 20.0);
+        remove_passives(passives, 1, &mut health, &mut mana, &mut stats, &mut attrs);
+        assert_eq!(attrs.strength, strength);
+        assert_eq!(health.max, 720.0);
+        assert_eq!(stats.attack_speed_flat, 0.0);
+    }
+
+    #[test]
+    fn consumables_spend_charges_then_units() {
+        let mut item = ItemInstance {
+            stack: 2,
+            charges: Some(2),
+            ..ItemInstance::new(ItemId::VialOfLight)
+        };
+        assert_eq!(item.consume(Some(2)), 0);
+        assert_eq!(item.consume(Some(2)), 1);
+        assert_eq!((item.stack, item.charges), (1, Some(2)));
+        let mut plain = ItemInstance::new(ItemId::VialOfLight);
+        assert_eq!(plain.consume(None), 1);
+        assert_eq!(plain.stack, 0);
     }
 }
