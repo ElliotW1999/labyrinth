@@ -47,7 +47,6 @@ fn attach_health_bars(
             .spawn((
                 Name::new("HealthBar"),
                 HealthBar { owner: entity },
-                // Fixed world orientation (no camera billboard).
                 Transform::default(),
                 Visibility::default(),
             ))
@@ -94,14 +93,20 @@ fn attach_health_bars(
 }
 
 fn sync_health_bars(
+    camera: Query<&GlobalTransform, With<GameCamera>>,
     owners: Query<(&Health, &GlobalTransform, Option<&SelectionBounds>), Without<HealthBar>>,
-    mut bars: Query<(&HealthBar, &mut Transform, &Children), With<HealthBar>>,
+    mut bars: Query<(&HealthBar, &mut Transform, Option<&Children>), With<HealthBar>>,
     mut fills: Query<&mut Transform, (With<HealthBarFill>, Without<HealthBar>)>,
     mut backgrounds: Query<
         &mut Transform,
         (Without<HealthBarFill>, Without<HealthBar>, With<Mesh3d>),
     >,
 ) {
+    // Face the camera's view plane so the bar stays screen-aligned as the camera moves.
+    let camera_rotation = camera
+        .single()
+        .map(|camera| camera.rotation())
+        .unwrap_or(Quat::IDENTITY);
     let mut fill_updates: Vec<(Entity, f32, f32)> = Vec::new();
     let mut bg_updates: Vec<(Entity, f32)> = Vec::new();
 
@@ -114,8 +119,7 @@ fn sync_health_bars(
         let width = bar_width(selection);
         let owner_pos = owner_gt.translation();
         bar_tf.translation = owner_pos + Vec3::Y * height;
-        // Keep axis-aligned — do not rotate with the camera.
-        bar_tf.rotation = Quat::IDENTITY;
+        bar_tf.rotation = camera_rotation;
 
         let fraction = if health.max <= 0.0 {
             0.0
@@ -123,6 +127,9 @@ fn sync_health_bars(
             (health.current / health.max).clamp(0.0, 1.0)
         };
 
+        let Some(children) = children else {
+            continue;
+        };
         for (i, child) in children.iter().enumerate() {
             if i == 0 {
                 bg_updates.push((child, width));
@@ -246,5 +253,36 @@ mod tests {
         world.init_resource::<SharedAssets>();
         let mut system = IntoSystem::into_system(attach_health_bars);
         system.initialize(&mut world);
+    }
+
+    #[test]
+    fn health_bars_stay_orthogonal_to_the_camera() {
+        let mut world = World::new();
+        let rotation = Quat::from_rotation_x(-0.9);
+        world.spawn((
+            GameCamera,
+            GlobalTransform::from_rotation(rotation),
+        ));
+        let owner = world
+            .spawn((
+                Health::new(100.0),
+                GlobalTransform::from_translation(Vec3::new(10.0, 0.0, -4.0)),
+            ))
+            .id();
+        let bar = world
+            .spawn((
+                HealthBar { owner },
+                Transform::default(),
+            ))
+            .id();
+
+        let mut system = IntoSystem::into_system(sync_health_bars);
+        system.initialize(&mut world);
+        let _ = system.run((), &mut world);
+
+        let transform = world.get::<Transform>(bar).unwrap();
+        let delta = transform.rotation.dot(rotation).abs();
+        assert!((delta - 1.0).abs() < 1e-4, "bar should match the camera orientation");
+        assert!(transform.translation.y > 0.0);
     }
 }

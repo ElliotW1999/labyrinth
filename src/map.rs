@@ -5,7 +5,7 @@ use bevy::prelude::*;
 use crate::components::{Ground, Lane, Obstacle, Team};
 use crate::resources::{MatchConfig, SharedAssets};
 use crate::scale;
-use crate::units::{spawn_ancient, spawn_tower};
+use crate::units::{spawn_ancient, spawn_tower, spawn_training_dummy};
 
 pub struct MapPlugin;
 
@@ -122,6 +122,7 @@ fn spawn_map(
         scale::v(-48.0, 1.25, -48.0),
     );
     spawn_ancient(&mut commands, &assets, Team::Dire, scale::v(48.0, 1.25, 48.0));
+    spawn_training_dummy(&mut commands, &assets);
 
     spawn_tower(
         &mut commands,
