@@ -198,18 +198,26 @@ IssueCommand (input / minimap / network host)
 
 ### Ability architecture
 
+Mechanics decide **when** something happens and **who** is involved; effects decide **what** happens to them.
+
 ```text
 AbilityDefinition (abilities/catalog.rs, AbilityDefinitions resource)
 AbilityState      (AbilityLoadout on the hero: level, cooldown, charges, toggled)
 input / AI → AbilityCastRequest → validate (usable, cooldown, mana, caster state, target, range)
-           → cast point → AbilityCastEvent → definition effects + optional custom behavior
-           → DamageEvent / HealEvent / StatusEffectEvent / SpawnProjectileEvent
-spell projectile impact → ProjectileHitEvent → DamageEvent (+ the projectile's on_hit effects)
+           → cast point → AbilityCastEvent
+           → mechanics: Dash / Projectile / AttackUnitTarget / RingFx / custom behavior
+           → AbilityTriggerEvent(TriggerContext)          OnCast, OnProjectileHit, OnImpact, Custom("on_…")
+           → effect entries whose trigger matches → resolve EffectTarget
+           → DamageEvent / HealEvent / StatusEffectEvent  (shared systems apply mitigation, immunity, stats)
+spell projectile → ProjectileHitEvent { primary, splashed } → OnProjectileHit (struck) / OnImpact (landed)
 ```
 
-- **Definitions** (`abilities/definition.rs`) are data: behavior (active / passive / toggle), target type (no-target / unit / point / area), target team, rank-scaled cast range, AoE, cooldown, mana, cast time, and a list of reusable `AbilityEffect`s (Damage, Heal, ApplyStatus, Dispel, Dash, SpawnProjectile with `on_hit`, AttackUnitTarget, RingFx)
+- **Definitions** (`abilities/definition.rs`) are data: behavior, target type, target team, rank-scaled cast range, AoE, cooldown, mana, cast time, a list of `AbilityMechanic`s, and a list of `AbilityEffectEntry { trigger, target, effect }`
+- **Mechanics** (`abilities/mechanics.rs`) move units and spawn projectiles. They never apply consequences; they write an `AbilityTriggerEvent` whose `TriggerContext` carries the caster, cast target, trigger unit, affected units, and trigger point
+- **Effects** (`abilities/effects.rs`): `resolve_ability_triggers` runs every entry tagged with the fired trigger. Targets: `Caster`, `CastTarget`, `TriggerUnit`, `AffectedUnits` (e.g. splash victims), `UnitsInRadius`. Effects: `Damage` (optional `EffectScaling`), `Heal`, `ApplyStatus`, `Dispel`, and `Custom { id }` for systems registered with `app.register_custom_effect(id, system)`
+- **Projectiles** (`combat.rs`) know their source, target / aim, speed, and collision / splash radius only
 - **Casting** (`abilities/casting.rs`) is shared by every caster; out-of-range casts walk into range and re-request. Mana and cooldown are paid when the cast point completes
-- **Custom behavior** (`abilities/custom.rs`): `app.register_ability_behavior(id, system)` runs a one-shot system with the `CastContext` after the common effects (Execute's low-HP bonus is the example)
+- **Custom mechanics** (`abilities/custom.rs`): `app.register_ability_behavior(id, system)` runs a one-shot system with the `CastContext`. It reports what happened with a trigger such as `AbilityTrigger::Custom("on_skewer_end")`, and the ability's effect entries apply the consequences
 
 Adding a simple ability: add an `AbilityId` variant (or use the generators), then add an arm to `catalog::builtin`:
 
@@ -218,17 +226,31 @@ AbilityId::Fireball => def
     .targeting(TargetType::Unit, RankValue::linear(600.0, 25.0), RankValue::ZERO)
     .costs(RankValue::fixed(8.0), RankValue::fixed(100.0))
     .timing(0.3, 0.4)
-    .effect(AbilityEffect::SpawnProjectile {
-        damage: RankValue::linear(150.0, 50.0),
-        damage_type: DamageType::Magical,
-        splash_radius: AreaRadius::Ability,
-        on_hit: vec![status(StatusSpec::Stun, RankValue::fixed(1.0), EffectTargets::UnitTarget)],
-    }),
+    .mechanic(PROJECTILE)
+    .on(OnProjectileHit, EffectTarget::TriggerUnit, magic_damage(RankValue::linear(150.0, 50.0)))
+    .on(OnProjectileHit, EffectTarget::TriggerUnit, status(StatusSpec::Stun, RankValue::fixed(1.0))),
 ```
+
+### Ability effects CSV
+
+`data/ability_effects.csv` adds effect entries to any ability without Rust code (embedded at build time and appended in `effect_index` order):
+
+```csv
+ability_id,effect_index,trigger,effect_target,effect_type,effect_id,value,damage_type,duration,radius,amount,scaling_type,scaling_value
+SeismicSlam,0,on_cast,units_in_radius,apply_status,slow,30,,1.5,,,,
+ArcaneLance,0,on_projectile_hit,trigger_unit,damage,,23.75,magical,,,8,target_health_below,0.35
+```
+
+- `ability_id`: Rust variant (`SeismicSlam`) or display name (`Seismic Slam`)
+- `trigger`: `on_cast`, `on_projectile_hit`, `on_impact`, `on_unit_contact`, `on_channel_tick`, `on_channel_end`, `on_expire`, or any other `on_…` name for a custom mechanic's trigger
+- `effect_target`: `caster`, `cast_target`, `trigger_unit`, `affected_units`, `units_in_radius` (enemies around the trigger point; `radius` or the ability AoE)
+- `effect_type` / `effect_id`: `damage`, `heal`, `apply_status` (`stun`, `root`, `silence`, `disarm`, `slow`, `phased`, `forceful`, `debuff_immunity`), `dispel` (`buff` / `debuff`), `custom` (registered id)
+- `value` is the rank-1 magnitude (damage, heal, slow %, custom value) and `amount` its per-rank increase; `duration` in seconds; `damage_type` `magical` (default) / `physical`
+- `scaling_type`: `caster_attack_damage` (adds `scaling_value` × caster attack damage) or `target_health_below` (only applies to targets below `scaling_value` health fraction); damage only
 
 ### Adding abilities (AbilityGenerator)
 
-Append ability kits via CSV — patches `AbilityId` + `GeneratedAbilityDef` in `src/components.rs` and writes pseudocode under `data/ability_pseudos/`. Generated data becomes an `AbilityDefinition` automatically (targeting, costs, and a primary damage effect); pseudocode extras still need effects or a custom behavior.
+Append ability kits via CSV — patches `AbilityId` + `GeneratedAbilityDef` in `src/components.rs` and writes pseudocode under `data/ability_pseudos/`. Generated data becomes an `AbilityDefinition` automatically (targeting, costs, and a primary damage effect); pseudocode extras go in `data/ability_effects.csv` (or a custom behavior).
 
 ```bash
 python3 scripts/AbilityGenerator.py data/abilities.example.csv
@@ -304,7 +326,7 @@ src/
   basic_attack.rs     Basic attack pipeline (BasicAttackEvent → windup → impact → DamageEvent)
   combat.rs           DamageEvent + mitigation, spell projectiles, death / gold / XP
   progression.rs      Hero XP, attributes, and level-up growth
-  abilities/          Ability definitions, cast pipeline, effects, custom behaviors, targeting UI
+  abilities/          Ability definitions, cast pipeline, mechanics → triggers → effects, CSV effect rows, targeting UI
   items.rs            Shop, inventory, sell, actives, status effects
   net/                Offline / host / client UDP session + hero snapshots
   ai.rs               Lane following + aggro

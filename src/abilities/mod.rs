@@ -5,15 +5,19 @@
 //! AbilityDefinition (catalog / AbilityDefinitions)   AbilityState (AbilityLoadout on the hero)
 //!          └──────────────┬──────────────────────────────────┘
 //! input / AI → AbilityCastRequest → validate → cast point → AbilityCastEvent
-//!          → definition effects + optional custom behavior
-//!          → DamageEvent / HealEvent / StatusEffectEvent / SpawnProjectileEvent
+//!          → mechanics (dash, projectile, custom behavior, …)   — WHEN and WHO
+//!          → AbilityTriggerEvent(TriggerContext)
+//!          → matching effect entries                              — WHAT
+//!          → DamageEvent / HealEvent / StatusEffectEvent
 //! ```
 
 pub mod casting;
 pub mod catalog;
 pub mod custom;
 pub mod definition;
+pub mod effect_rows;
 pub mod effects;
+pub mod mechanics;
 
 use bevy::prelude::*;
 
@@ -33,9 +37,10 @@ use casting::{
 use catalog::{register_loadout_definitions, AbilityDefinitions};
 use definition::{TargetTeam, TargetType};
 use effects::{
-    apply_heal_events, apply_projectile_on_hit_effects, apply_status_effect_events,
-    execute_ability_casts, CustomAbilityBehaviors, HealEvent, StatusEffectEvent,
+    apply_heal_events, apply_status_effect_events, resolve_ability_triggers, AbilityTriggerEvent,
+    CustomAbilityEffects, HealEvent, StatusEffectEvent,
 };
+use mechanics::{execute_ability_casts, projectile_hit_triggers, CustomAbilityBehaviors};
 
 pub struct AbilitiesPlugin;
 
@@ -44,8 +49,10 @@ impl Plugin for AbilitiesPlugin {
         app.init_resource::<AbilityTargeting>()
             .init_resource::<AbilityDefinitions>()
             .init_resource::<CustomAbilityBehaviors>()
+            .init_resource::<CustomAbilityEffects>()
             .add_message::<AbilityCastRequest>()
             .add_message::<AbilityCastEvent>()
+            .add_message::<AbilityTriggerEvent>()
             .add_message::<HealEvent>()
             .add_message::<StatusEffectEvent>()
             .add_systems(
@@ -61,7 +68,8 @@ impl Plugin for AbilitiesPlugin {
                     validate_cast_requests,
                     tick_ability_casting,
                     execute_ability_casts,
-                    apply_projectile_on_hit_effects,
+                    projectile_hit_triggers,
+                    resolve_ability_triggers,
                     spawn_requested_projectiles,
                     apply_heal_events,
                     apply_status_effect_events,
@@ -71,6 +79,7 @@ impl Plugin for AbilitiesPlugin {
                     .chain()
                     .run_if(crate::net::is_sim_authority)
                     .after(crate::movement::SimSet::Commands)
+                    .after(crate::combat::apply_projectile_hits)
                     .before(crate::combat::apply_damage_events),
             );
         custom::register(app);
@@ -506,8 +515,11 @@ mod tests {
     use std::time::Duration;
 
     use super::definition::{
-        AbilityDefinition, AbilityEffect, EffectTargets, RankValue, StatusSpec,
+        AbilityDefinition, AbilityEffect, AbilityMechanic, AbilityTrigger, AreaRadius,
+        EffectScaling, EffectTarget, RankValue, StatusSpec,
     };
+    use super::effects::{AbilityEffectAppExt, CustomEffectInput};
+    use super::mechanics::{AbilityAppExt, CastContext};
     use super::*;
     use crate::combat::{
         apply_damage_events, DamageEvent, ProjectileHitEvent, ProjectilePayload,
@@ -524,8 +536,10 @@ mod tests {
             .init_resource::<SharedAssets>()
             .init_resource::<AbilityDefinitions>()
             .init_resource::<CustomAbilityBehaviors>()
+            .init_resource::<CustomAbilityEffects>()
             .add_message::<AbilityCastRequest>()
             .add_message::<AbilityCastEvent>()
+            .add_message::<AbilityTriggerEvent>()
             .add_message::<HealEvent>()
             .add_message::<StatusEffectEvent>()
             .add_message::<DamageEvent>()
@@ -539,7 +553,8 @@ mod tests {
                     validate_cast_requests,
                     tick_ability_casting,
                     execute_ability_casts,
-                    apply_projectile_on_hit_effects,
+                    projectile_hit_triggers,
+                    resolve_ability_triggers,
                     apply_heal_events,
                     apply_status_effect_events,
                     apply_damage_events,
@@ -640,24 +655,68 @@ mod tests {
         assert!(app.world().get::<AbilityCasting>(caster).is_none(), "allies are invalid Bolt targets");
     }
 
-    #[test]
-    fn custom_behavior_runs_from_the_common_pipeline() {
-        let mut app = test_app();
-        let caster = spawn_caster(&mut app, KIT);
-        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(200.0, 0.0, 0.0));
-        app.world_mut().get_mut::<Health>(enemy).unwrap().current = 100.0;
+    fn hit(payload: ProjectilePayload, impact: Vec3, primary: Option<Entity>, splashed: Vec<Entity>) -> ProjectileHitEvent {
+        ProjectileHitEvent {
+            payload,
+            team: Team::Radiant,
+            impact,
+            primary,
+            splashed,
+        }
+    }
 
-        request(&mut app, caster, 2, CastTarget::Unit(enemy));
+    fn health(app: &App, entity: Entity) -> f32 {
+        app.world().get::<Health>(entity).unwrap().current
+    }
+
+    fn cast_and_collect_projectiles(app: &mut App, caster: Entity, slot: usize, target: Entity) -> Vec<SpawnProjectileEvent> {
+        request(app, caster, slot, CastTarget::Unit(target));
         let mut spawned = Vec::new();
         for _ in 0..12 {
-            step(&mut app);
+            step(app);
             let messages = app.world().resource::<Messages<SpawnProjectileEvent>>();
             spawned.extend(messages.iter_current_update_messages().copied());
         }
+        spawned
+    }
+
+    #[test]
+    fn execute_bonus_comes_from_effect_data() {
+        let mut app = test_app();
+        let caster = spawn_caster(&mut app, KIT);
+        let wounded = spawn_unit(&mut app, Team::Dire, Vec3::new(200.0, 0.0, 0.0));
+        let healthy = spawn_unit(&mut app, Team::Dire, Vec3::new(210.0, 0.0, 0.0));
+        app.world_mut().get_mut::<Health>(wounded).unwrap().current = 300.0;
+
+        let spawned = cast_and_collect_projectiles(&mut app, caster, 2, wounded);
         assert_eq!(spawned.len(), 1);
-        assert_eq!(spawned[0].target, Some(enemy));
-        assert!((spawned[0].damage - 150.0 * 1.55).abs() < 1e-3, "low-HP bonus applied");
-        assert!(app.world().get::<AttackTarget>(caster).is_some(), "common effects still run");
+        assert_eq!(spawned[0].target, Some(wounded));
+        assert!(app.world().get::<AttackTarget>(caster).is_some(), "mechanics still run");
+        assert_eq!(health(&app, wounded), 300.0, "the projectile itself deals nothing");
+
+        app.world_mut()
+            .write_message(hit(spawned[0].payload, Vec3::X * 200.0, Some(wounded), vec![healthy]));
+        step(&mut app);
+        let base = catalog::EXECUTE_DAMAGE.at(1);
+        assert!((health(&app, wounded) - (300.0 - base * catalog::EXECUTE_MULTIPLIER)).abs() < 1e-3);
+        assert!((health(&app, healthy) - (1000.0 - base * 0.45)).abs() < 1e-3, "splash, no bonus");
+    }
+
+    #[test]
+    fn projectile_landing_without_a_hit_splashes_full_damage() {
+        let mut app = test_app();
+        let caster = spawn_caster(&mut app, KIT);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(200.0, 0.0, 0.0));
+        let payload = ProjectilePayload {
+            caster,
+            ability: AbilityId::Bolt,
+            rank: 1,
+            cast_target: None,
+            aim: Vec3::X * 200.0,
+        };
+        app.world_mut().write_message(hit(payload, Vec3::X * 200.0, None, vec![enemy]));
+        step(&mut app);
+        assert!((health(&app, enemy) - (1000.0 - 120.0)).abs() < 1e-3);
     }
 
     #[test]
@@ -666,41 +725,99 @@ mod tests {
         let fireball = AbilityDefinition::new(AbilityId::Bulwark)
             .targeting(TargetType::Unit, RankValue::fixed(600.0), RankValue::ZERO)
             .costs(RankValue::fixed(8.0), RankValue::fixed(100.0))
-            .effect(AbilityEffect::SpawnProjectile {
-                damage: RankValue::fixed(200.0),
-                damage_type: DamageType::Magical,
-                splash_radius: definition::AreaRadius::Ability,
-                on_hit: vec![AbilityEffect::ApplyStatus {
+            .mechanic(AbilityMechanic::Projectile {
+                splash_radius: AreaRadius::Ability,
+            })
+            .on(
+                AbilityTrigger::OnProjectileHit,
+                EffectTarget::TriggerUnit,
+                AbilityEffect::Damage {
+                    amount: RankValue::fixed(200.0),
+                    damage_type: DamageType::Magical,
+                    scaling: EffectScaling::None,
+                },
+            )
+            .on(
+                AbilityTrigger::OnProjectileHit,
+                EffectTarget::TriggerUnit,
+                AbilityEffect::ApplyStatus {
                     status: StatusSpec::Stun,
                     duration: RankValue::fixed(2.0),
-                    targets: EffectTargets::UnitTarget,
-                }],
-            });
+                },
+            );
         app.world_mut().resource_mut::<AbilityDefinitions>().insert(fireball);
         let caster = spawn_caster(&mut app, KIT);
         let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(300.0, 0.0, 0.0));
 
-        request(&mut app, caster, 3, CastTarget::Unit(enemy));
-        let mut spawned = Vec::new();
-        for _ in 0..10 {
-            step(&mut app);
-            let messages = app.world().resource::<Messages<SpawnProjectileEvent>>();
-            spawned.extend(messages.iter_current_update_messages().copied());
-        }
+        let spawned = cast_and_collect_projectiles(&mut app, caster, 3, enemy);
         assert_eq!(spawned.len(), 1);
-        let payload: ProjectilePayload = spawned[0].payload.unwrap();
-        assert_eq!(payload.effect_index, Some(0));
+        assert_eq!(spawned[0].payload.cast_target, Some(enemy));
+        assert!(!app.world().get::<StatusEffects>(enemy).unwrap().is_stunned());
 
-        app.world_mut().write_message(ProjectileHitEvent {
-            target: enemy,
-            team: Team::Radiant,
-            impact: Vec3::new(300.0, 0.0, 0.0),
-            damage: 200.0,
-            damage_type: DamageType::Magical,
-            primary: true,
-            payload: Some(payload),
-        });
+        app.world_mut()
+            .write_message(hit(spawned[0].payload, Vec3::X * 300.0, Some(enemy), Vec::new()));
         step(&mut app);
         assert!(app.world().get::<StatusEffects>(enemy).unwrap().is_stunned());
+        assert_eq!(health(&app, enemy), 800.0);
+    }
+
+    fn skewer_end(
+        In(ctx): In<CastContext>,
+        units: Query<(Entity, &Team)>,
+        mut triggers: MessageWriter<AbilityTriggerEvent>,
+    ) {
+        let mut end = ctx.trigger(AbilityTrigger::Custom("on_skewer_end"), ctx.origin);
+        end.affected_units = units
+            .iter()
+            .filter(|(_, team)| **team != ctx.team)
+            .map(|(e, _)| e)
+            .collect();
+        triggers.write(AbilityTriggerEvent(end));
+    }
+
+    fn drain(In(input): In<CustomEffectInput>, mut heals: MessageWriter<HealEvent>) {
+        for target in input.targets {
+            heals.write(HealEvent {
+                source: Some(input.ctx.caster),
+                target,
+                amount: input.value,
+            });
+        }
+    }
+
+    #[test]
+    fn custom_mechanic_triggers_generic_and_custom_effects() {
+        let mut app = test_app();
+        app.register_ability_behavior(AbilityId::Bulwark, skewer_end)
+            .register_custom_effect("drain", drain);
+        let skewer = AbilityDefinition::new(AbilityId::Bulwark)
+            .costs(RankValue::fixed(8.0), RankValue::fixed(100.0))
+            .on(
+                AbilityTrigger::Custom("on_skewer_end"),
+                EffectTarget::AffectedUnits,
+                AbilityEffect::ApplyStatus {
+                    status: StatusSpec::Stun,
+                    duration: RankValue::fixed(1.0),
+                },
+            )
+            .on(
+                AbilityTrigger::Custom("on_skewer_end"),
+                EffectTarget::Caster,
+                AbilityEffect::Custom {
+                    id: "drain",
+                    value: RankValue::fixed(50.0),
+                },
+            );
+        app.world_mut().resource_mut::<AbilityDefinitions>().insert(skewer);
+        let caster = spawn_caster(&mut app, KIT);
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 500.0;
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(4000.0, 0.0, 0.0));
+
+        request(&mut app, caster, 3, CastTarget::None);
+        for _ in 0..12 {
+            step(&mut app);
+        }
+        assert!(app.world().get::<StatusEffects>(enemy).unwrap().is_stunned());
+        assert_eq!(health(&app, caster), 550.0);
     }
 }

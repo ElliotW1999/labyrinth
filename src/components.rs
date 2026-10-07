@@ -818,12 +818,12 @@ impl AbilityLoadout {
 
 #[derive(Component, Debug, Clone, Copy)]
 pub struct Projectile {
-    pub damage: f32,
     pub speed: f32,
     pub team: Team,
+    /// Collision radius against the homing target.
     pub radius: f32,
     pub lifetime: f32,
-    pub damage_type: DamageType,
+    /// Enemies this close to the impact are reported as splashed.
     pub splash_radius: f32,
 }
 
