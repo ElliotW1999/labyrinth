@@ -1,4 +1,4 @@
-//! Obstacle-course hazards (screen-top / world −Z strip): Firebreather and Heartpiercer.
+//! Obstacle-course hazards beside the Radiant ancient: Firebreather and Heartpiercer.
 
 use bevy::prelude::*;
 
@@ -71,11 +71,28 @@ pub struct HazardOrb {
 #[derive(Component, Debug, Clone, Copy)]
 pub struct ObstacleCourseGround;
 
-// Screen-top from the default camera is world −Z.
-pub const COURSE_MIN_X: f32 = scale::u(-28.0);
-pub const COURSE_MAX_X: f32 = scale::u(28.0);
-pub const COURSE_MIN_Z: f32 = scale::u(-68.0);
-pub const COURSE_MAX_Z: f32 = scale::u(-52.0);
+/// Original strip extents, in legacy layout units. The strip is recentered on the
+/// Radiant ancient (it used to sit on the pre-rescale map's north edge).
+const LEGACY_MIN_X: f32 = -28.0;
+const LEGACY_MAX_X: f32 = 28.0;
+const LEGACY_MIN_Z: f32 = -68.0;
+const LEGACY_MAX_Z: f32 = -52.0;
+
+/// World XZ of a point in the course's legacy layout. The near edge (`LEGACY_MAX_Z`)
+/// sits just south of the Radiant ancient.
+pub fn course_world(legacy_x: f32, legacy_z: f32) -> Vec2 {
+    let ancient = scale::ground(-48.0, -48.0);
+    let x = ancient.x + scale::u(legacy_x);
+    let south_of_near_edge = scale::u(LEGACY_MAX_Z - legacy_z);
+    let z = ancient.z - scale::u(20.0) - south_of_near_edge;
+    Vec2::new(x, z)
+}
+
+pub fn course_bounds() -> (Vec2, Vec2) {
+    let a = course_world(LEGACY_MIN_X, LEGACY_MIN_Z);
+    let b = course_world(LEGACY_MAX_X, LEGACY_MAX_Z);
+    (a.min(b), a.max(b))
+}
 
 fn spawn_obstacle_course(
     mut commands: Commands,
@@ -84,11 +101,13 @@ fn spawn_obstacle_course(
     assets: Res<SharedAssets>,
     mut fog_free: ResMut<FogFreeZones>,
 ) {
+    let (min_xz, max_xz) = course_bounds();
+    let pad = scale::u(2.0);
     fog_free.rects.push(FogRect {
-        min_x: COURSE_MIN_X - scale::u(2.0),
-        max_x: COURSE_MAX_X + scale::u(2.0),
-        min_z: COURSE_MIN_Z - scale::u(2.0),
-        max_z: COURSE_MAX_Z + scale::u(2.0),
+        min_x: min_xz.x - pad,
+        max_x: max_xz.x + pad,
+        min_z: min_xz.y - pad,
+        max_z: max_xz.y + pad,
     });
 
     let floor_mat = materials.add(StandardMaterial {
@@ -112,22 +131,24 @@ fn spawn_obstacle_course(
         ..default()
     });
 
-    let mid_z = (COURSE_MIN_Z + COURSE_MAX_Z) * 0.5;
-    let mid_x = (COURSE_MIN_X + COURSE_MAX_X) * 0.5;
-    let size_x = COURSE_MAX_X - COURSE_MIN_X;
-    let size_z = COURSE_MAX_Z - COURSE_MIN_Z;
+    let mid = (min_xz + max_xz) * 0.5;
+    let size = max_xz - min_xz;
+    let size_x = size.x;
+    let size_z = size.y;
+    let legacy_mid_z = (LEGACY_MIN_Z + LEGACY_MAX_Z) * 0.5;
 
     commands.spawn((
         Name::new("Obstacle Course Floor"),
         ObstacleCourseGround,
         Mesh3d(meshes.add(Cuboid::new(size_x, 0.12, size_z))),
         MeshMaterial3d(floor_mat),
-        Transform::from_xyz(mid_x, scale::u(0.06), mid_z),
+        Transform::from_xyz(mid.x, scale::u(0.06), mid.y),
     ));
 
     // Firebreather — faces +X and only shoots along that facing.
-    let mut fire_tf =
-        Transform::from_xyz(scale::u(-22.0), scale::u(1.6), mid_z).with_scale(Vec3::new(0.7, 0.85, 0.7));
+    let fire_at = course_world(-22.0, legacy_mid_z);
+    let mut fire_tf = Transform::from_xyz(fire_at.x, scale::u(1.6), fire_at.y)
+        .with_scale(Vec3::new(0.7, 0.85, 0.7));
     fire_tf.look_to(Dir3::X, Vec3::Y);
     commands.spawn((
         Name::new("Firebreather"),
@@ -145,12 +166,14 @@ fn spawn_obstacle_course(
         BoundRadius(scale::body(0.5)),
     ));
 
+    let pierce_at = course_world(22.0, legacy_mid_z);
     let piercer = commands
         .spawn((
             Name::new("Heartpiercer"),
             Mesh3d(assets.tower_mesh.clone()),
             MeshMaterial3d(pierce_mat),
-            Transform::from_xyz(scale::u(22.0), scale::u(1.6), mid_z).with_scale(Vec3::new(0.7, 0.85, 0.7)),
+            Transform::from_xyz(pierce_at.x, scale::u(1.6), pierce_at.y)
+                .with_scale(Vec3::new(0.7, 0.85, 0.7)),
             Heartpiercer {
                 damage: 80.0,
                 cooldown: 1.2,
@@ -162,11 +185,12 @@ fn spawn_obstacle_course(
         ))
         .id();
 
+    let plate_at = course_world(8.0, legacy_mid_z);
     commands.spawn((
         Name::new("Heartpiercer Plate"),
         Mesh3d(meshes.add(Cuboid::new(scale::u(4.0), scale::u(0.15), scale::u(4.0)))),
         MeshMaterial3d(plate_mat),
-        Transform::from_xyz(scale::u(8.0), scale::u(0.12), mid_z),
+        Transform::from_xyz(plate_at.x, scale::u(0.12), plate_at.y),
         PressurePlate {
             piercer,
             half_x: scale::u(2.0),
@@ -174,15 +198,17 @@ fn spawn_obstacle_course(
         },
     ));
 
-    for (i, pos) in [
-        Vec3::new(scale::u(-26.0), scale::body(3.2) * 0.5, COURSE_MIN_Z + scale::u(2.0)),
-        Vec3::new(scale::u(26.0), scale::body(3.2) * 0.5, COURSE_MIN_Z + scale::u(2.0)),
-        Vec3::new(scale::u(-26.0), scale::body(3.2) * 0.5, COURSE_MAX_Z - scale::u(2.0)),
-        Vec3::new(scale::u(26.0), scale::body(3.2) * 0.5, COURSE_MAX_Z - scale::u(2.0)),
+    for (i, (legacy_x, legacy_z)) in [
+        (-26.0, LEGACY_MIN_Z + 2.0),
+        (26.0, LEGACY_MIN_Z + 2.0),
+        (-26.0, LEGACY_MAX_Z - 2.0),
+        (26.0, LEGACY_MAX_Z - 2.0),
     ]
     .into_iter()
     .enumerate()
     {
+        let xz = course_world(legacy_x, legacy_z);
+        let pos = Vec3::new(xz.x, scale::body(3.2) * 0.5, xz.y);
         commands.spawn((
             Name::new(format!("Course Marker Tree {i}")),
             Mesh3d(assets.tree_mesh.clone()),
@@ -340,5 +366,20 @@ fn apply_hazard_hits(
         if hit {
             commands.entity(orb_entity).despawn();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn course_sits_just_south_of_the_radiant_ancient() {
+        let ancient = scale::ground(-48.0, -48.0);
+        let (min_xz, max_xz) = course_bounds();
+        assert!(max_xz.y < ancient.z - 100.0, "near edge should be south of the ancient");
+        assert!((min_xz.x + max_xz.x) * 0.5 - ancient.x < 1.0);
+        assert!(ancient.z - max_xz.y < scale::map(8.0));
+        assert!(max_xz.x - min_xz.x > 500.0);
     }
 }

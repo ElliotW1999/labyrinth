@@ -1,7 +1,10 @@
 //! HUD: vitals, spell bar, inventory, shop, unspent points, and minimap.
 
 use bevy::prelude::*;
+use bevy::ui::FocusPolicy;
 
+use crate::abilities::catalog::AbilityDefinitions;
+use crate::abilities::tooltip::{ability_tooltip_bits, TipTone};
 use crate::camera::CameraFocus;
 use crate::components::{
     AbilityId, AbilityLoadout, Ancient, CombatStats, Creep, Health, HeroAttributes, HeroProgress,
@@ -52,6 +55,7 @@ impl Plugin for UiPlugin {
                 Update,
                 (
                     update_item_tooltips,
+                    update_ability_tooltips,
                     refresh_net_status,
                     refresh_minimap,
                     handle_minimap_clicks,
@@ -79,6 +83,12 @@ struct HudHeroName;
 
 #[derive(Component)]
 struct HudLevel;
+
+#[derive(Component)]
+struct HudXpBarFill;
+
+#[derive(Component)]
+struct HudXpBarText;
 
 #[derive(Component)]
 struct HudGold;
@@ -231,6 +241,12 @@ struct ItemTooltip;
 struct ItemTooltipText;
 
 #[derive(Component)]
+struct AbilityTooltip;
+
+#[derive(Component)]
+struct AbilityTooltipText;
+
+#[derive(Component)]
 pub(crate) struct InventorySellMenu;
 
 #[derive(Component)]
@@ -310,12 +326,6 @@ fn spawn_hud(mut commands: Commands) {
                     TextColor(Color::srgb(0.85, 0.95, 0.7)),
                 ));
                 panel.spawn((
-                    HudLevel,
-                    Text::new("Level 1   XP 0 / 100"),
-                    TextFont::from_font_size(18.0),
-                    TextColor(Color::srgb(0.55, 0.9, 1.0)),
-                ));
-                panel.spawn((
                     HudGold,
                     Text::new("Gold: 0"),
                     TextFont::from_font_size(18.0),
@@ -370,6 +380,12 @@ fn spawn_hud(mut commands: Commands) {
                     })
                     .with_children(|col| {
                         col.spawn((
+                            HudHeroIconName,
+                            Text::new("—"),
+                            TextFont::from_font_size(13.0),
+                            TextColor(Color::srgb(0.9, 0.92, 0.96)),
+                        ));
+                        col.spawn((
                             HeroIconPlaceholder,
                             Node {
                                 width: px(HERO_ICON_SIZE),
@@ -391,11 +407,44 @@ fn spawn_hud(mut commands: Commands) {
                             ));
                         });
                         col.spawn((
-                            HudHeroIconName,
-                            Text::new("—"),
-                            TextFont::from_font_size(13.0),
-                            TextColor(Color::srgb(0.9, 0.92, 0.96)),
-                        ));
+                            Node {
+                                width: px(HERO_ICON_SIZE),
+                                height: px(12),
+                                border_radius: BorderRadius::all(px(3)),
+                                overflow: Overflow::clip(),
+                                ..default()
+                            },
+                            BackgroundColor(Color::srgba(0.08, 0.09, 0.12, 0.95)),
+                        ))
+                        .with_children(|bar| {
+                            bar.spawn((
+                                HudXpBarFill,
+                                Node {
+                                    position_type: PositionType::Absolute,
+                                    left: px(0),
+                                    top: px(0),
+                                    width: percent(0),
+                                    height: percent(100),
+                                    ..default()
+                                },
+                                BackgroundColor(Color::srgb(0.72, 0.55, 0.95)),
+                            ));
+                            bar.spawn((
+                                HudXpBarText,
+                                Text::new("0/100"),
+                                TextFont::from_font_size(10.0),
+                                TextLayout::new(Justify::Center, LineBreak::NoWrap),
+                                TextColor(Color::srgb(0.95, 0.95, 1.0)),
+                                Node {
+                                    position_type: PositionType::Absolute,
+                                    width: percent(100),
+                                    height: percent(100),
+                                    align_items: AlignItems::Center,
+                                    justify_content: JustifyContent::Center,
+                                    ..default()
+                                },
+                            ));
+                        });
                     });
 
                 panel
@@ -424,6 +473,16 @@ fn spawn_hud(mut commands: Commands) {
                                 spawn_stat_row(col, "STR", "--", HudStatId::Str, Color::srgb(0.95, 0.55, 0.45));
                                 spawn_stat_row(col, "AGI", "--", HudStatId::Agi, Color::srgb(0.45, 0.9, 0.55));
                                 spawn_stat_row(col, "INT", "--", HudStatId::Int, Color::srgb(0.45, 0.7, 1.0));
+                                col.spawn((
+                                    HudLevel,
+                                    Text::new("Level 1"),
+                                    TextFont::from_font_size(12.0),
+                                    TextColor(Color::srgb(0.55, 0.9, 1.0)),
+                                    Node {
+                                        margin: UiRect::top(px(4)),
+                                        ..default()
+                                    },
+                                ));
                             });
                         // Combat stats column (right)
                         table
@@ -785,11 +844,12 @@ fn spawn_hud(mut commands: Commands) {
             // Shared item tooltip (shop + inventory)
             root.spawn((
                 ItemTooltip,
+                FocusPolicy::Pass,
                 Node {
                     position_type: PositionType::Absolute,
                     left: px(24),
-                    bottom: px(220),
-                    width: px(260),
+                    top: px(24),
+                    width: px(280),
                     padding: UiRect::all(px(10)),
                     border: UiRect::all(px(1)),
                     border_radius: BorderRadius::all(px(6)),
@@ -806,6 +866,41 @@ fn spawn_hud(mut commands: Commands) {
                     Text::new(""),
                     TextFont::from_font_size(14.0),
                     TextColor(Color::srgb(0.95, 0.95, 1.0)),
+                    Node {
+                        width: px(260),
+                        ..default()
+                    },
+                ));
+            });
+
+            root.spawn((
+                AbilityTooltip,
+                FocusPolicy::Pass,
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: px(24),
+                    top: px(24),
+                    width: px(340),
+                    padding: UiRect::all(px(10)),
+                    border: UiRect::all(px(1)),
+                    border_radius: BorderRadius::all(px(6)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.05, 0.07, 0.12, 0.96)),
+                BorderColor::all(Color::srgb(0.55, 0.7, 0.95)),
+                Visibility::Hidden,
+                ZIndex(61),
+            ))
+            .with_children(|tip| {
+                tip.spawn((
+                    AbilityTooltipText,
+                    Text::new(""),
+                    TextFont::from_font_size(13.0),
+                    TextColor(Color::srgb(0.92, 0.94, 0.98)),
+                    Node {
+                        width: px(320),
+                        ..default()
+                    },
                 ));
             });
 
@@ -1058,6 +1153,7 @@ fn spawn_spell_icon(parent: &mut ChildSpawnerCommands, index: usize, id: Ability
     parent
         .spawn((
             SpellIcon { index },
+            Interaction::None,
             Node {
                 width: px(72),
                 height: px(72),
@@ -1212,24 +1308,39 @@ fn refresh_hud_text(
             Without<HudManaBarText>,
             Without<HudHealthRegenText>,
             Without<HudManaRegenText>,
+            Without<HudXpBarText>,
         ),
     >,
     mut hp_fill: Query<&mut Node, With<HudHealthBarFill>>,
     mut mp_fill: Query<&mut Node, (With<HudManaBarFill>, Without<HudHealthBarFill>)>,
+    mut xp_fill: Query<
+        &mut Node,
+        (
+            With<HudXpBarFill>,
+            Without<HudHealthBarFill>,
+            Without<HudManaBarFill>,
+        ),
+    >,
+    mut xp_text: Query<
+        &mut Text,
+        (
+            With<HudXpBarText>,
+            Without<HudLevel>,
+            Without<HudGold>,
+            Without<HudSkillPoints>,
+            Without<HudHealthBarText>,
+            Without<HudManaBarText>,
+            Without<HudHealthRegenText>,
+            Without<HudManaRegenText>,
+        ),
+    >,
 ) {
     let Ok((health, mana, wallet, progress, attrs, stats)) = hero.single() else {
         return;
     };
 
     if let Ok(mut text) = level_text.single_mut() {
-        if progress.level >= 25 {
-            *text = Text::new(format!("Level {}   MAX", progress.level));
-        } else {
-            *text = Text::new(format!(
-                "Level {}   XP {} / {}",
-                progress.level, progress.xp, progress.xp_to_next
-            ));
-        }
+        *text = Text::new(format!("Level {}", progress.level));
     }
     if let Ok(mut text) = gold_text.single_mut() {
         *text = Text::new(format!("Gold: {}", wallet.gold));
@@ -1289,6 +1400,21 @@ fn refresh_hud_text(
             HudStatId::Ms => format!("{:.0}", stats.move_speed),
         };
         *text = Text::new(value);
+    }
+
+    let (xp_frac, xp_label) = if progress.level >= 25 || progress.xp_to_next == 0 {
+        (1.0, "MAX".to_string())
+    } else {
+        (
+            (progress.xp as f32 / progress.xp_to_next as f32).clamp(0.0, 1.0),
+            format!("{}/{}", progress.xp, progress.xp_to_next),
+        )
+    };
+    if let Ok(mut node) = xp_fill.single_mut() {
+        node.width = percent(xp_frac * 100.0);
+    }
+    if let Ok(mut text) = xp_text.single_mut() {
+        *text = Text::new(xp_label);
     }
 }
 
@@ -1858,15 +1984,32 @@ fn handle_shop_buy_clicks(
     }
 }
 
+fn place_hover_tooltip(node: &mut Node, computed: &ComputedNode, cursor: Vec2, window: Vec2) {
+    let size = computed.size().max(Vec2::new(280.0, 80.0));
+    let mut x = cursor.x + 16.0;
+    let mut y = cursor.y + 18.0;
+    if x + size.x > window.x - 8.0 {
+        x = (cursor.x - size.x - 12.0).max(8.0);
+    }
+    if y + size.y > window.y - 8.0 {
+        y = (cursor.y - size.y - 12.0).max(8.0);
+    }
+    node.left = px(x);
+    node.top = px(y);
+    node.bottom = Val::Auto;
+    node.right = Val::Auto;
+}
+
 fn update_item_tooltips(
+    windows: Query<&Window>,
     shop_ui: Res<ShopUiState>,
     shop_items: Query<(&Interaction, &ShopBuyButton)>,
     inv_slots: Query<(&Interaction, &InventorySlotIcon)>,
     inv: Query<&Inventory, With<PlayerHero>>,
-    mut tip: Query<&mut Visibility, With<ItemTooltip>>,
+    mut tip: Query<(&mut Visibility, &mut Node, &ComputedNode), With<ItemTooltip>>,
     mut tip_text: Query<&mut Text, With<ItemTooltipText>>,
 ) {
-    let Ok(mut tip_vis) = tip.single_mut() else {
+    let Ok((mut tip_vis, mut tip_node, computed)) = tip.single_mut() else {
         return;
     };
     let Ok(mut text) = tip_text.single_mut() else {
@@ -1919,8 +2062,102 @@ fn update_item_tooltips(
     if let Some(body) = body {
         *text = Text::new(body);
         *tip_vis = Visibility::Visible;
+        if let Ok(window) = windows.single() {
+            if let Some(cursor) = window.cursor_position() {
+                place_hover_tooltip(
+                    &mut tip_node,
+                    computed,
+                    cursor,
+                    Vec2::new(window.width(), window.height()),
+                );
+            }
+        }
     } else {
         *tip_vis = Visibility::Hidden;
+    }
+}
+
+fn update_ability_tooltips(
+    mut commands: Commands,
+    windows: Query<&Window>,
+    defs: Res<AbilityDefinitions>,
+    hero: Query<&AbilityLoadout, With<PlayerHero>>,
+    icons: Query<(&Interaction, &SpellIcon)>,
+    plus: Query<(&Interaction, &SpellLevelButton)>,
+    mut tip: Query<(&mut Visibility, &mut Node, &ComputedNode), With<AbilityTooltip>>,
+    text: Query<Entity, With<AbilityTooltipText>>,
+    mut shown: Local<Option<(AbilityId, u32)>>,
+) {
+    let Ok((mut tip_vis, mut tip_node, computed)) = tip.single_mut() else {
+        return;
+    };
+    let Ok(text_entity) = text.single() else {
+        return;
+    };
+
+    let hovered = icons
+        .iter()
+        .find(|(interaction, _)| {
+            matches!(**interaction, Interaction::Hovered | Interaction::Pressed)
+        })
+        .map(|(_, icon)| icon.index)
+        .or_else(|| {
+            plus.iter()
+                .find(|(interaction, _)| {
+                    matches!(**interaction, Interaction::Hovered | Interaction::Pressed)
+                })
+                .map(|(_, button)| button.index)
+        });
+
+    let Some(index) = hovered else {
+        *tip_vis = Visibility::Hidden;
+        *shown = None;
+        return;
+    };
+    let Ok(loadout) = hero.single() else {
+        *tip_vis = Visibility::Hidden;
+        return;
+    };
+    let Some(slot) = loadout.slots.get(index) else {
+        *tip_vis = Visibility::Hidden;
+        return;
+    };
+
+    let key = (slot.id, slot.rank);
+    if *shown != Some(key) {
+        let def = defs
+            .get(slot.id)
+            .cloned()
+            .unwrap_or_else(|| crate::abilities::catalog::builtin(slot.id));
+        let bits = ability_tooltip_bits(&def, slot.rank);
+        commands.entity(text_entity).despawn_children();
+        commands.entity(text_entity).with_children(|parent| {
+            for bit in bits {
+                let color = match bit.tone {
+                    TipTone::Plain => Color::srgb(0.9, 0.92, 0.96),
+                    TipTone::Learned => Color::srgb(1.0, 0.88, 0.25),
+                    TipTone::Unlearned => Color::srgb(0.62, 0.66, 0.72),
+                };
+                parent.spawn((
+                    TextSpan::new(bit.text),
+                    TextFont::from_font_size(13.0),
+                    TextColor(color),
+                ));
+            }
+        });
+        *shown = Some(key);
+    }
+
+    *tip_vis = Visibility::Visible;
+    if let Ok(window) = windows.single() {
+        if let Some(cursor) = window.cursor_position() {
+            place_hover_tooltip(
+                &mut tip_node,
+                computed,
+                cursor,
+                Vec2::new(window.width(), window.height()),
+            );
+        }
     }
 }
 
@@ -2093,5 +2330,9 @@ mod tests {
         let mut world = World::new();
         let mut system = IntoSystem::into_system(refresh_hud_text);
         system.initialize(&mut world);
+        let mut tips = IntoSystem::into_system(update_ability_tooltips);
+        tips.initialize(&mut world);
+        let mut items = IntoSystem::into_system(update_item_tooltips);
+        items.initialize(&mut world);
     }
 }

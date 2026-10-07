@@ -21,6 +21,7 @@ pub mod definition;
 pub mod effects;
 pub mod generated;
 pub mod mechanics;
+pub mod tooltip;
 
 use bevy::prelude::*;
 
