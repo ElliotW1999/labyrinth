@@ -141,7 +141,6 @@ def level_count(row: Row, names: tuple[str, ...]) -> list[tuple[str, int]]:
 
 
 def parse_ability(row: Row, effect_rows: list[EffectRow], report: Report) -> Ability | None:
-    errors_before = len(report.errors)
     ident = check_id(row, "id", report)
     name = row.get("name")
     if not name:
@@ -172,7 +171,9 @@ def parse_ability(row: Row, effect_rows: list[EffectRow], report: Report) -> Abi
     max_charges = parse_scalar(row, "max_charges", report, integer=True, minimum=1)
     restore = parse_scalar(row, "charge_restore_time", report, minimum=0)
     speed = parse_scalar(row, "projectile_speed", report, minimum=1)
-    if len(report.errors) != errors_before or None in (ident, slot, ability_type, target_type, target_team) or not name:
+    # Keep going after value errors so effect rows are still validated; only the
+    # identifying enums are needed to interpret them.
+    if None in (ident, slot, ability_type, target_type, target_team) or not name:
         return None
 
     def err(fld: str, message: str) -> None:
@@ -216,8 +217,6 @@ def parse_ability(row: Row, effect_rows: list[EffectRow], report: Report) -> Abi
     else:
         rust_target = "NoTarget"
 
-    if len(report.errors) != errors_before:
-        return None
     return Ability(
         row=row,
         id=ident,

@@ -36,7 +36,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from generator_common import (  # noqa: E402
     EFFECT_COLUMNS,
-    PASSIVE_STATS,
     EffectContext,
     EffectRow,
     Report,
@@ -47,7 +46,6 @@ from generator_common import (  # noqa: E402
     parse_bool,
     parse_effect_rows,
     parse_enum,
-    parse_number,
     parse_scalar,
     read_blocks,
     read_csv,
@@ -170,7 +168,6 @@ def describe(effects: list[EffectRow]) -> str:
 
 
 def parse_item(row: Row, effects: list[EffectRow], report: Report) -> Item | None:
-    errors_before = len(report.errors)
     ident = check_id(row, "id", report)
     name = row.get("name")
     if not name:
@@ -188,7 +185,7 @@ def parse_item(row: Row, effects: list[EffectRow], report: Report) -> Item | Non
     max_charges = parse_scalar(row, "max_charges", report, integer=True, minimum=1)
     cooldown = parse_scalar(row, "cooldown", report, minimum=0)
     color = [parse_scalar(row, f"color_{c}", report, minimum=0) for c in "rgb"]
-    if len(report.errors) != errors_before or ident is None or item_type is None or cost is None or not name:
+    if ident is None or not name:
         return None
 
     def err(fld: str, message: str) -> None:
@@ -207,7 +204,7 @@ def parse_item(row: Row, effects: list[EffectRow], report: Report) -> Item | Non
         report.warn(row.file, row.line, "max_charges", row.get("max_charges"), "charges are only spent by consumable items")
     if item_type == "consumable" and not consumable:
         report.warn(row.file, row.line, "item_type", row.get("item_type"), "item_type consumable but consumable is false")
-    if sell_value is not None and sell_value > cost:
+    if sell_value is not None and cost is not None and sell_value > cost:
         report.warn(row.file, row.line, "sell_value", row.get("sell_value"), "sell value exceeds cost")
     if has_use and cooldown is None:
         report.warn(row.file, row.line, "cooldown", "", "on_use item without a cooldown column value; using 0s")
@@ -223,17 +220,15 @@ def parse_item(row: Row, effects: list[EffectRow], report: Report) -> Item | Non
     components = [c.strip() for c in re.split(r"[;|]", row.get("components")) if c.strip()]
     if len(components) > MAX_COMPONENTS:
         err("components", f"at most {MAX_COMPONENTS} recipe components")
-    if len(report.errors) != errors_before:
-        return None
     return Item(
         row=row,
         id=ident,
         variant=to_pascal_case(ident),
         name=name,
         short_label=short,
-        item_type=ITEM_TYPES[item_type],
-        cost=int(cost),
-        sell_value=int(sell_value) if sell_value is not None else int(cost) // 2,
+        item_type=ITEM_TYPES.get(item_type or "", "Utility"),
+        cost=int(cost or 0),
+        sell_value=int(sell_value) if sell_value is not None else int(cost or 0) // 2,
         tier=int(tier) if tier else 1,
         rarity=RARITIES[rarity],
         max_stack=int(max_stack) if stackable and max_stack else 1,

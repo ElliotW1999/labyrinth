@@ -176,9 +176,12 @@ class Report:
         self.warnings.append(Issue(file, row, fld, value, message))
 
     def print(self) -> None:
-        for issue in self.warnings:
+        def order(issue: Issue) -> tuple[str, int]:
+            return issue.file, issue.row or 0
+
+        for issue in sorted(self.warnings, key=order):
             print(f"warning: {issue}", file=sys.stderr)
-        for issue in self.errors:
+        for issue in sorted(self.errors, key=order):
             print(f"error: {issue}", file=sys.stderr)
 
     def fail_if_errors(self) -> None:
@@ -453,6 +456,10 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
         report.error(row.file, row.line, "trigger", e.trigger, ctx.invalid_trigger[e.trigger])
         return None
 
+    combo = ctx.invalid_combo.get((e.trigger, e.target))
+    if combo:
+        report.error(row.file, row.line, "effect_target", e.target, combo)
+
     # --- effect
     value = _levels(e, "value", ctx, report)
     duration = _levels(e, "duration", ctx, report, minimum=0)
@@ -460,7 +467,7 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
     radius = _levels(e, "radius", ctx, report, minimum=0)
     scaling_value = parse_scalar(row, "scaling_value", report)
     scaling_type = parse_enum(row, "scaling_type", sorted(SCALING_TYPES), report, required=False)
-    if len(report.errors) != errors_before:
+    if len(report.errors) != errors_before and not combo:
         return None
     if scaling_type and scaling_value is None:
         report.error(row.file, row.line, "scaling_value", "", f"required when scaling_type is {scaling_type}")
@@ -606,10 +613,6 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
         report.warn(row.file, row.line, "radius", row.get("radius"), "only used by units_in_radius targets")
 
     # --- target
-    combo = ctx.invalid_combo.get((e.trigger, e.target))
-    if combo:
-        report.error(row.file, row.line, "effect_target", e.target, combo)
-        return None
     target_name = e.target
     if target_name in ("caster", "owner"):
         target = "EffectTarget::Caster"
