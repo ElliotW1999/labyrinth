@@ -1,0 +1,3 @@
+id,name,item_type,cost,sell_value,tier,rarity,stackable,max_stack,consumable,max_charges,description
+gem,Gem,trinket,lots,,1,mythic,maybe,,false,,Unknown enums and bad numbers
+potion,Potion,consumable,50,25,1,common,false,3,true,,Max stack without stacking

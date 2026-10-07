@@ -1,0 +1,5 @@
+item_id,effect_index,trigger,effect_target,effect_type,effect_id,value,damage_type,duration,radius,amount,scaling_type,scaling_value
+potion,0,passive,owner,heal,,100,,,,,,
+potion,1,on_use,trigger_unit,heal,,100,,,,,,
+potion,2,on_cast,owner,heal,,100|200,,,,,,
+potion,3,on_use,units_in_radius,damage,,10,magical,,,,,

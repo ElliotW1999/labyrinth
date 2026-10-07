@@ -1,0 +1,8 @@
+ability_id,effect_index,trigger,effect_target,effect_type,effect_id,value,damage_type,duration,radius,amount,scaling_type,scaling_value
+fireball,0,on_cast,units_in_radius,damage,,100,,,,,,
+fireball,0,on_cast,units_in_radius,apply_status,,,,1,,,,
+fireball,1,on_projectile_hit,trigger_unit,damage,,100|200,magical,,,,,
+fireball,2,on_cast,cast_target,custom,,,,,,,,
+fireball,3,on_channel_end,caster,heal,,50,,,,,,
+fireball,4,on_cast,affected_units,damage,,10,fire,,,,,
+ghost,0,on_cast,caster,heal,,10,,,,,,

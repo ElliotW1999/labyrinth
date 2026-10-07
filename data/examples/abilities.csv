@@ -1,0 +1,5 @@
+id,name,slot,ability_type,target_type,target_team,cast_range,aoe_radius,cast_time,channel_time,cooldown,mana_cost,max_charges,charge_restore_time,projectile_type,projectile_speed,description
+shockwave,Shockwave,Q,active,point,enemy,1200,,0.3,,13|12|11|10,85|90|95|100,,,skillshot,900,Launches a wave that damages pulls and slows enemies
+skewer,Skewer,E,active,point,enemy,900,,0.25,,20|18|16|14,80,,,none,,Charges forward dragging enemies and slowing them at the end
+frost_lance,Frost Lance,W,active,unit,enemy,600,150,0.2,,6,70|80|90|100,2,12,targeted,1100,Homing lance; splashes and chills enemies near the target
+war_cry,War Cry,R,active,self,self,,400,0.1,,60|50|40,100|150|200,,,none,,Empowers the caster and nearby allies and knocks enemies back

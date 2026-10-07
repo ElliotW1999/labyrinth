@@ -1,0 +1,17 @@
+ability_id,effect_index,trigger,effect_target,effect_type,effect_id,value,damage_type,duration,radius,amount,scaling_type,scaling_value
+shockwave,0,on_projectile_hit,trigger_unit,damage,,75|150|225|300,magical,,,,,
+shockwave,1,on_projectile_hit,trigger_unit,movement,pull,,,,,,,
+shockwave,2,on_projectile_hit,trigger_unit,apply_status,slow,,,0.7|0.8|0.9|1.0,,75,,
+skewer,0,on_cast,caster,custom,skewer_movement,,,,,,,
+skewer,1,on_unit_contact,trigger_unit,custom,skewer_drag,,,,,,,
+skewer,2,on_skewer_end,affected_units,damage,,70|140|210|280,magical,,,,,
+skewer,3,on_skewer_end,affected_units,apply_status,slow,,,3,,40,,
+frost_lance,0,on_projectile_hit,trigger_unit,damage,,90|130|170|210,magical,,,,intelligence,1.5
+frost_lance,1,on_projectile_hit,affected_units,damage,,40|60|80|100,magical,,,,,
+frost_lance,2,on_impact,affected_units,damage,,90|130|170|210,magical,,,,,
+frost_lance,3,on_projectile_hit,trigger_unit,remove_status,buff,,,,,,,
+war_cry,0,on_cast,caster,stat_modifier,attack_damage,20|35|50,,6,,,,
+war_cry,1,on_cast,units_in_radius,heal,,100|150|200,,,,,strength,1
+war_cry,2,on_cast,caster,apply_status,debuff_immunity,,,2,,,,
+war_cry,3,on_cast,units_in_radius,movement,knockback,250,,0.4,400,,,
+war_cry,4,on_cast,units_in_radius,damage,,100|150|200,pure,,400,,,
