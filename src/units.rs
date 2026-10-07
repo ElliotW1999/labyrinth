@@ -4,7 +4,7 @@ use bevy::prelude::*;
 
 use crate::components::{
     Ancient, AttackCooldown, CombatStats, Creep, GoldBounty, Health, Lane, PlayerHero,
-    PlayerWallet, Team, Tower, XpBounty,
+    PlayerWallet, Team, Tower, TrainingDummy, XpBounty,
 };
 use crate::dimensions::UnitDimensions;
 use crate::heroes::{HeroId, HeroKind};
@@ -142,6 +142,34 @@ pub fn spawn_creep(
         },
     ));
     attach_mobile_unit_details(commands, id, assets, team, false);
+}
+
+/// Stationary 1000 HP target beside the Radiant ancient. Enemy team so the player
+/// can attack it; no lane follower, no attack, no movement.
+pub fn training_dummy_position() -> Vec3 {
+    scale::ground(-48.0, -51.0)
+}
+
+pub fn spawn_training_dummy(commands: &mut Commands, assets: &SharedAssets) {
+    let position = training_dummy_position();
+    let id = commands
+        .spawn((
+            Name::new("Training Dummy"),
+            Mesh3d(assets.creep_mesh.clone()),
+            MeshMaterial3d(assets.dire_mat.clone()),
+            Transform::from_translation(grounded(position, scale::CREEP_MODEL_HEIGHT)),
+            Team::Dire,
+            TrainingDummy,
+            Health::new(1000.0),
+            CombatStats::simple(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            AttackCooldown(0.0),
+            UnitDimensions::MELEE_CREEP.components(),
+            GoldBounty(0),
+            XpBounty(0),
+            crate::items::StatusEffects::default(),
+        ))
+        .id();
+    attach_mobile_unit_details(commands, id, assets, Team::Dire, false);
 }
 
 pub fn spawn_tower(
@@ -298,4 +326,21 @@ fn attach_mobile_unit_details(
             ));
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::obstacle_course::course_bounds;
+
+    #[test]
+    fn training_dummy_stands_between_the_ancient_and_the_course() {
+        let ancient = scale::ground(-48.0, -48.0);
+        let dummy = training_dummy_position();
+        let dist = Vec2::new(dummy.x - ancient.x, dummy.z - ancient.z).length();
+        assert!(dist < scale::map(6.0), "{dist}");
+        let (_min, max_xz) = course_bounds();
+        assert!(dummy.z > max_xz.y, "dummy should be north of the course");
+        assert_eq!(Health::new(1000.0).max, 1000.0);
+    }
 }

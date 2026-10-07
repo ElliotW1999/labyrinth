@@ -305,6 +305,11 @@ pub struct Creep {
     pub lane: Lane,
 }
 
+/// Practice target near the Radiant ancient. It is not a lane creep: nothing moves it
+/// or makes it act.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct TrainingDummy;
+
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Lane {
     Top,
