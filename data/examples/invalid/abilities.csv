@@ -1,0 +1,5 @@
+id,name,slot,ability_type,target_type,target_team,cast_range,aoe_radius,cast_time,channel_time,cooldown,mana_cost,max_charges,charge_restore_time,projectile_type,projectile_speed,description
+fireball,Fireball,Q,active,point,enemy,800,200,0.2,,10|9|8,100,,,none,600,Speed without a projectile
+fireball,Fireball Again,W,active,point,enemy,800,,0.2,,10,100,,,none,,Duplicate id
+lance,Lance,W,active,point,enemy,700,,0.2,,abc,100|110|,,5,targeted,,Bad numbers and targeting
+nova,Nova,X,channelled,area,foes,,300,0.2,,10,100,,,none,,Unknown enums

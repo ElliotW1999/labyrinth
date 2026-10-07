@@ -17,7 +17,9 @@ use bevy::prelude::*;
 use super::casting::AbilityCastEvent;
 use super::catalog::AbilityDefinitions;
 use super::definition::{AbilityMechanic, AbilityTrigger, AreaCenter, AreaRadius, RingStyle};
-use super::effects::{AbilityTriggerEvent, StatusChange, StatusEffectEvent, TriggerContext};
+use super::effects::{
+    AbilityTriggerEvent, EffectSource, StatusChange, StatusEffectEvent, TriggerContext,
+};
 use crate::combat::{ProjectileHitEvent, ProjectilePayload, SpawnProjectileEvent, flat_distance};
 use crate::components::{
     AbilityId, AttackMoveOrder, AttackTarget, CombatStats, Health, MoveTarget, Team,
@@ -37,6 +39,7 @@ pub struct CastContext {
     /// Living unit target, if the ability was cast on one.
     pub unit_target: Option<Entity>,
     pub aoe_radius: f32,
+    pub cast_range: f32,
 }
 
 impl CastContext {
@@ -46,7 +49,7 @@ impl CastContext {
             trigger,
             caster: self.caster,
             team: self.team,
-            ability: self.ability,
+            source: EffectSource::Ability(self.ability),
             rank: self.rank,
             origin: self.origin,
             aim: self.aim,
@@ -127,16 +130,36 @@ impl MechanicRunner<'_, '_> {
     pub fn run(&mut self, ctx: &CastContext, mechanic: &AbilityMechanic) {
         match mechanic {
             AbilityMechanic::Dash { distance } => self.dash(ctx, distance.at(ctx.rank)),
-            AbilityMechanic::Projectile { splash_radius } => {
+            AbilityMechanic::Projectile {
+                splash_radius,
+                speed,
+                skillshot,
+            } => {
                 let unit = ctx
                     .unit_target
+                    .filter(|_| !skillshot)
                     .and_then(|e| self.units.get(e).ok().map(|(tf, _)| (e, tf.translation)));
+                let target_pos = match unit {
+                    Some((_, pos)) => pos,
+                    None if *skillshot => {
+                        let dir = Vec3::new(ctx.aim.x - ctx.origin.x, 0.0, ctx.aim.z - ctx.origin.z)
+                            .normalize_or(Vec3::X);
+                        ctx.origin + dir * ctx.cast_range
+                    }
+                    None => ctx.aim,
+                };
                 self.projectiles.write(SpawnProjectileEvent {
                     team: ctx.team,
                     origin: ctx.origin,
                     target: unit.map(|(e, _)| e),
-                    target_pos: unit.map_or(ctx.aim, |(_, pos)| pos),
-                    splash_radius: Self::radius(ctx, *splash_radius),
+                    target_pos,
+                    speed: *speed,
+                    skillshot_width: skillshot.then_some(ctx.aoe_radius),
+                    splash_radius: if *skillshot {
+                        0.0
+                    } else {
+                        Self::radius(ctx, *splash_radius)
+                    },
                     payload: ProjectilePayload {
                         caster: ctx.caster,
                         ability: ctx.ability,
@@ -223,6 +246,7 @@ pub fn execute_ability_casts(
             aim: cast.aim,
             unit_target: cast.target.unit().and_then(|e| runner.living_unit(e)),
             aoe_radius: def.aoe_radius.at(cast.rank),
+            cast_range: def.cast_range.at(cast.rank),
         };
         for mechanic in &def.mechanics {
             runner.run(&ctx, mechanic);
@@ -254,7 +278,7 @@ pub fn projectile_hit_triggers(
             },
             caster: payload.caster,
             team: hit.team,
-            ability: payload.ability,
+            source: EffectSource::Ability(payload.ability),
             rank: payload.rank,
             origin: casters
                 .get(payload.caster)

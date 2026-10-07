@@ -8,15 +8,18 @@
 //!          → mechanics (dash, projectile, custom behavior, …)   — WHEN and WHO
 //!          → AbilityTriggerEvent(TriggerContext)
 //!          → matching effect entries                              — WHAT
-//!          → DamageEvent / HealEvent / StatusEffectEvent
+//!          → DamageEvent / HealEvent / ManaRestoreEvent / StatusEffectEvent / DisplacementEvent
 //! ```
+//!
+//! Items resolve their effect entries through the same trigger pipeline
+//! (`EffectSource::Item`).
 
 pub mod casting;
 pub mod catalog;
 pub mod custom;
 pub mod definition;
-pub mod effect_rows;
 pub mod effects;
+pub mod generated;
 pub mod mechanics;
 
 use bevy::prelude::*;
@@ -34,11 +37,13 @@ use casting::{
     check_usable, resolve_queued_ability_casts, team_allows, tick_ability_casting,
     validate_cast_requests, AbilityCastEvent, AbilityCastRequest,
 };
-use catalog::{register_loadout_definitions, AbilityDefinitions};
+use catalog::{register_loadout_definitions, restore_ability_charges, AbilityDefinitions};
 use definition::{TargetTeam, TargetType};
+use crate::displacement::{apply_displacement_events, tick_forced_movement, DisplacementEvent};
 use effects::{
-    apply_heal_events, apply_status_effect_events, resolve_ability_triggers, AbilityTriggerEvent,
-    CustomAbilityEffects, HealEvent, StatusEffectEvent,
+    apply_heal_events, apply_mana_restore_events, apply_status_effect_events,
+    resolve_ability_triggers, AbilityTriggerEvent, CustomAbilityEffects, HealEvent,
+    ManaRestoreEvent, StatusEffectEvent,
 };
 use mechanics::{execute_ability_casts, projectile_hit_triggers, CustomAbilityBehaviors};
 
@@ -54,13 +59,16 @@ impl Plugin for AbilitiesPlugin {
             .add_message::<AbilityCastEvent>()
             .add_message::<AbilityTriggerEvent>()
             .add_message::<HealEvent>()
+            .add_message::<ManaRestoreEvent>()
             .add_message::<StatusEffectEvent>()
+            .add_message::<DisplacementEvent>()
             .add_systems(
                 Update,
                 (
                     tick_ability_cooldowns,
                     regen_mana,
                     register_loadout_definitions,
+                    restore_ability_charges,
                     begin_or_cast_from_hotkeys,
                     update_targeting_indicators,
                     confirm_or_cancel_targeted_cast,
@@ -71,8 +79,14 @@ impl Plugin for AbilitiesPlugin {
                     projectile_hit_triggers,
                     resolve_ability_triggers,
                     spawn_requested_projectiles,
-                    apply_heal_events,
-                    apply_status_effect_events,
+                    (
+                        apply_heal_events,
+                        apply_mana_restore_events,
+                        apply_displacement_events,
+                        apply_status_effect_events,
+                        tick_forced_movement,
+                    )
+                        .chain(),
                     despawn_indicators,
                     animate_spell_fx,
                 )
@@ -516,9 +530,11 @@ mod tests {
 
     use super::definition::{
         AbilityDefinition, AbilityEffect, AbilityMechanic, AbilityTrigger, AreaRadius,
-        EffectScaling, EffectTarget, RankValue, StatusSpec,
+        DisplacementKind, EffectScaling, EffectTarget, RankValue, StatusSpec,
     };
-    use super::effects::{AbilityEffectAppExt, CustomEffectInput};
+    use super::effects::{AbilityEffectAppExt, CustomEffectInput, EffectSource, TriggerContext};
+    use crate::displacement::ForcedMovement;
+    use crate::items::ItemId;
     use super::mechanics::{AbilityAppExt, CastContext};
     use super::*;
     use crate::combat::{
@@ -526,7 +542,7 @@ mod tests {
         SpawnProjectileEvent,
     };
     use crate::components::{
-        AbilityCasting, AbilityId, AttackTarget, CombatStats, DamageType, Health, MoveTarget,
+        AbilityCasting, AbilityId, AttackTarget, BoundRadius, CombatStats, DamageType, Health, MoveTarget,
         QueuedAbilityCast,
     };
 
@@ -541,7 +557,9 @@ mod tests {
             .add_message::<AbilityCastEvent>()
             .add_message::<AbilityTriggerEvent>()
             .add_message::<HealEvent>()
+            .add_message::<ManaRestoreEvent>()
             .add_message::<StatusEffectEvent>()
+            .add_message::<DisplacementEvent>()
             .add_message::<DamageEvent>()
             .add_message::<SpawnProjectileEvent>()
             .add_message::<ProjectileHitEvent>()
@@ -556,7 +574,10 @@ mod tests {
                     projectile_hit_triggers,
                     resolve_ability_triggers,
                     apply_heal_events,
+                    apply_mana_restore_events,
+                    apply_displacement_events,
                     apply_status_effect_events,
+                    tick_forced_movement,
                     apply_damage_events,
                 )
                     .chain(),
@@ -727,6 +748,8 @@ mod tests {
             .costs(RankValue::fixed(8.0), RankValue::fixed(100.0))
             .mechanic(AbilityMechanic::Projectile {
                 splash_radius: AreaRadius::Ability,
+                speed: None,
+                skillshot: false,
             })
             .on(
                 AbilityTrigger::OnProjectileHit,
@@ -806,6 +829,8 @@ mod tests {
                 AbilityEffect::Custom {
                     id: "drain",
                     value: RankValue::fixed(50.0),
+                    amount: RankValue::ZERO,
+                    duration: RankValue::ZERO,
                 },
             );
         app.world_mut().resource_mut::<AbilityDefinitions>().insert(skewer);
@@ -819,5 +844,65 @@ mod tests {
         }
         assert!(app.world().get::<StatusEffects>(enemy).unwrap().is_stunned());
         assert_eq!(health(&app, caster), 550.0);
+    }
+
+    #[test]
+    fn item_on_use_resolves_through_the_shared_trigger_pipeline() {
+        let mut app = test_app();
+        let owner = spawn_caster(&mut app, KIT);
+        app.world_mut().get_mut::<Mana>(owner).unwrap().current = 500.0;
+        let near = spawn_unit(&mut app, Team::Dire, Vec3::new(60.0, 0.0, 0.0));
+        let far = spawn_unit(&mut app, Team::Dire, Vec3::new(2000.0, 0.0, 0.0));
+        app.world_mut().write_message(AbilityTriggerEvent(TriggerContext {
+            trigger: AbilityTrigger::OnUse,
+            caster: owner,
+            team: Team::Radiant,
+            source: EffectSource::Item(ItemId::SparkPendant),
+            rank: 1,
+            origin: Vec3::ZERO,
+            aim: Vec3::ZERO,
+            point: Vec3::ZERO,
+            cast_target: None,
+            trigger_unit: None,
+            affected_units: Vec::new(),
+        }));
+        step(&mut app);
+        assert!((health(&app, near) - 910.0).abs() < 1e-3);
+        assert_eq!(health(&app, far), 1000.0);
+        assert_eq!(app.world().get::<Mana>(owner).unwrap().current, 540.0);
+    }
+
+    #[test]
+    fn displace_effect_pulls_the_target_toward_the_caster() {
+        let mut app = test_app();
+        let hook = AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::Unit, RankValue::fixed(600.0), RankValue::ZERO)
+            .costs(RankValue::fixed(8.0), RankValue::fixed(100.0))
+            .on(
+                AbilityTrigger::OnCast,
+                EffectTarget::CastTarget,
+                AbilityEffect::Displace {
+                    kind: DisplacementKind::Pull,
+                    distance: None,
+                    duration: RankValue::fixed(0.3),
+                },
+            );
+        app.world_mut().resource_mut::<AbilityDefinitions>().insert(hook);
+        let caster = spawn_caster(&mut app, KIT);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(400.0, 0.0, 0.0));
+        for unit in [caster, enemy] {
+            app.world_mut().entity_mut(unit).insert(BoundRadius(24.0));
+        }
+
+        request(&mut app, caster, 3, CastTarget::Unit(enemy));
+        let mut was_rooted = false;
+        for _ in 0..30 {
+            step(&mut app);
+            was_rooted |= app.world().get::<StatusEffects>(enemy).unwrap().is_rooted();
+        }
+        let x = app.world().get::<Transform>(enemy).unwrap().translation.x;
+        assert!(was_rooted, "displaced units are rooted while moving");
+        assert!((x - 48.0).abs() < 1e-2, "pulled into contact, not onto the caster: {x}");
+        assert!(app.world().get::<ForcedMovement>(enemy).is_none());
     }
 }

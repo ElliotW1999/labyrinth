@@ -190,11 +190,7 @@ IssueCommand (input / minimap / network host)
 - Ultimates: up to 4 ranks; unlocked at overall levels 6 / 12 / 18 / 24
 - Each rank scales damage, cooldown, range, and mana cost
 - **Unit-targeted** spells (Bolt, Execute) require clicking a creep or hero
-- **Seismic Slam** (Untargeted) — primary damage only (derived from its generated data); see `data/ability_pseudos/SeismicSlam.pseudo.txt`
-- **Arcane Lance** (UnitTarget) — primary damage only (derived from its generated data); see `data/ability_pseudos/ArcaneLance.pseudo.txt`
-- **Cataclysm** (TargetArea, ultimate) — primary damage only (derived from its generated data); see `data/ability_pseudos/Cataclysm.pseudo.txt`
-- **Stone Skin** (Passive) — stub; see `data/ability_pseudos/StoneSkin.pseudo.txt`
-- **Overcharge** (Toggle) — stub; see `data/ability_pseudos/Overcharge.pseudo.txt`
+- **Seismic Slam**, **Arcane Lance**, **Cataclysm**, **Stone Skin**, **Overcharge** are generated from `data/abilities.csv` + `data/ability_effects.csv` (Stone Skin / Overcharge have no effects yet; see Limitations below)
 
 ### Ability architecture
 
@@ -231,33 +227,43 @@ AbilityId::Fireball => def
     .on(OnProjectileHit, EffectTarget::TriggerUnit, status(StatusSpec::Stun, RankValue::fixed(1.0))),
 ```
 
-### Ability effects CSV
+### Adding abilities (AbilityGenerator)
 
-`data/ability_effects.csv` adds effect entries to any ability without Rust code (embedded at build time and appended in `effect_index` order):
+`data/abilities.csv` + `data/ability_effects.csv` (joined on `ability_id`) generate `src/abilities/generated.rs`: one ordinary `AbilityDefinition` per ability, built with the same builder as `catalog.rs`. `catalog::builtin` prefers a generated definition over the hand-written one.
+
+```bash
+python3 scripts/AbilityGenerator.py                       # data/abilities.csv data/ability_effects.csv
+python3 scripts/AbilityGenerator.py a.csv a_fx.csv --check  # validate only
+python3 scripts/AbilityGenerator.py --dry-run             # print what would change
+```
+
+```csv
+id,name,slot,ability_type,target_type,target_team,cast_range,aoe_radius,cast_time,channel_time,cooldown,mana_cost,max_charges,charge_restore_time,projectile_type,projectile_speed,description
+shockwave,Shockwave,Q,active,point,enemy,1200,,0.3,,13|12|11|10,85|90|95|100,,,skillshot,900,Launches a wave that damages pulls and slows enemies
+```
+
+- Enums: `slot` Q/W/E/R/innate (R ⇒ ultimate), `ability_type` active/passive/toggle, `target_type` unit/point/direction/no_target/self, `target_team` enemy/ally/both/self, `projectile_type` none/targeted/skillshot
+- Level values: a single number or `a|b|c|d` (one per rank; arithmetic lists become `RankValue::from_level_1`, others a level table). Blank = not applicable
+- Optional extra columns: `cast_backswing` (default 0.25), `max_rank` (else the level-list length, else 4 for R / 7 otherwise)
+- Mechanics are derived: `targeted` / `skillshot` → projectile (skillshots hit every enemy along `cast_range`, width = `aoe_radius`); `no_target` + AoE → shockwave ring; `point` + AoE without a projectile → area ring
 
 ```csv
 ability_id,effect_index,trigger,effect_target,effect_type,effect_id,value,damage_type,duration,radius,amount,scaling_type,scaling_value
-SeismicSlam,0,on_cast,units_in_radius,apply_status,slow,30,,1.5,,,,
-ArcaneLance,0,on_projectile_hit,trigger_unit,damage,,23.75,magical,,,8,target_health_below,0.35
+shockwave,0,on_projectile_hit,trigger_unit,damage,,75|150|225|300,magical,,,,,
+shockwave,1,on_projectile_hit,trigger_unit,movement,pull,,,,,,,
+skewer,1,on_unit_contact,trigger_unit,custom,skewer_drag,,,,,,,
 ```
 
-- `ability_id`: Rust variant (`SeismicSlam`) or display name (`Seismic Slam`)
-- `trigger`: `on_cast`, `on_projectile_hit`, `on_impact`, `on_unit_contact`, `on_channel_tick`, `on_channel_end`, `on_expire`, or any other `on_…` name for a custom mechanic's trigger
-- `effect_target`: `caster`, `cast_target`, `trigger_unit`, `affected_units`, `units_in_radius` (enemies around the trigger point; `radius` or the ability AoE)
-- `effect_type` / `effect_id`: `damage`, `heal`, `apply_status` (`stun`, `root`, `silence`, `disarm`, `slow`, `phased`, `forceful`, `debuff_immunity`), `dispel` (`buff` / `debuff`), `custom` (registered id)
-- `value` is the rank-1 magnitude (damage, heal, slow %, custom value) and `amount` its per-rank increase; `duration` in seconds; `damage_type` `magical` (default) / `physical`
-- `scaling_type`: `caster_attack_damage` (adds `scaling_value` × caster attack damage) or `target_health_below` (only applies to targets below `scaling_value` health fraction); damage only
+- `trigger`: `on_cast`, `on_projectile_hit`, `on_unit_contact`, `on_impact`, `on_channel_tick`, `on_channel_end`, `on_expire`, or any other `on_…` name raised by a custom mechanic
+- `effect_target`: `caster`, `cast_target`, `trigger_unit`, `affected_units`, `units_in_radius` (around the trigger point; `radius` or the ability AoE; team from the ability / effect polarity)
+- `effect_type` (+ `effect_id`): `damage` (`value` or `amount`, `damage_type` physical/magical/pure), `heal` (`effect_id=mana` restores mana), `apply_status` (`stun`, `root`, `silence`, `disarm`, `slow` (% from `amount`/`value`), `phased`, `forceful`, `debuff_immunity`, or any id as a timed `stat_modifier`), `remove_status` (`buff`/`debuff` dispel, otherwise a status id), `movement` (`knockback` / `pull`; `value` = distance, `duration`), `stat_modifier` (`effect_id` = stat, `amount`, `duration`), `custom` (registered id; receives `value`, `amount`, `duration`)
+- `scaling_type`: `strength` / `agility` / `intelligence` / `attack_damage` × `scaling_value` (damage and heal)
 
-### Adding abilities (AbilityGenerator)
+### Generator validation
 
-Append ability kits via CSV — patches `AbilityId` + `GeneratedAbilityDef` in `src/components.rs` and writes pseudocode under `data/ability_pseudos/`. Generated data becomes an `AbilityDefinition` automatically (targeting, costs, and a primary damage effect); pseudocode extras go in `data/ability_effects.csv` (or a custom behavior).
+Both generators validate before writing anything and print `file:row [field=value] message` for every problem (exit 1): duplicate ids, effect rows for unknown owners, duplicate `effect_index` per owner, unknown enums, bad numbers / level lists (wrong length, negative), damage without an amount, `apply_status` / `custom` without `effect_id`, projectile speed without a projectile, `targeted` without unit targeting / `skillshot` without point or direction, charge restore time without charges, and trigger/target combinations that cannot resolve (e.g. `cast_target` on a `no_target` ability, `trigger_unit` on `on_cast` for items). `data/examples/` holds valid samples (shockwave, skewer, frost_hammer, blink_item, …) and `data/examples/invalid/` one row per error.
 
-```bash
-python3 scripts/AbilityGenerator.py data/abilities.example.csv
-python3 scripts/AbilityGenerator.py data/abilities.example.csv --dry-run
-```
-
-Required: `Ability_name`, `ability_type` (`passive` / `untargeted` / `unit_target` / `target_area` / `target_point` / `toggle`), `pseudocode`. Optional scaling: `cast_point`, `cast_backswing`, `mana_cost_base`, `mana_cost_per_level` (alias `cost_per_level`), `damage_base`, `damage_per_level`, `cast_range_*`, `aoe_radius_*`, `cooldown_base`, `cooldown_per_level`, `cooldown_min`, `is_ultimate`, `max_rank`, `damage_type`. Rows whose ability name already exists are skipped.
+Re-running overwrites: each owner lives in a `// <ability:id>` / `// <item:id>` block, CSV rows replace their own blocks and other blocks are kept, and the output is rustfmt-ed.
 
 ### Attributes
 
@@ -272,19 +278,30 @@ Required: `Ability_name`, `ability_type` (`passive` / `untargeted` / `unit_targe
 - Six inventory slots; RMB → **Sell (50%)** near shop; actives use ASDZXC
 - Heroes carry a `StatusEffects` list for buffs / debuffs
 - Heroes and creeps separate by collision size without pushing each other (moving units yield to stationary ones); the **forceful** buff can shove (e.g. Vanguard Shockwave). **Phased** (Dash/Blink) ignores unit collision.
-- **Heartwood Band** (550g) — 3 passive(s), passive-only; components: Iron Bracer
-- **Spark Pendant** (750g) — 2 passive(s), active stub; components: Mana Crystal, Blade of Ash
+- Every item is an `ItemDefinition` (`src/item_catalog.rs`): price, sell value, tier, rarity, stacking, charges, recipe components, and `AbilityEffectEntry` effects. Passive `PassiveStat` entries fold into stats; `on_use` (hotkeys), `on_attack` and `on_attack_hit` fire `AbilityTriggerEvent`s with `EffectSource::Item`, resolved by the same effect systems as abilities
 
 ### Adding items (ItemGenerator)
 
-Append shop items via CSV — patches `src/items.rs` markers (enum, passives, optional active stub + recipe components) and writes active pseudocode under `data/item_actives/`.
+`data/items.csv` + `data/item_effects.csv` (joined on `item_id`) generate `src/item_catalog.rs` and patch the `ItemId` enum / `ItemId::ALL` in `src/items.rs`.
 
 ```bash
-python3 scripts/ItemGenerator.py data/items.example.csv
-python3 scripts/ItemGenerator.py data/items.example.csv --dry-run
+python3 scripts/ItemGenerator.py            # data/items.csv data/item_effects.csv
+python3 scripts/ItemGenerator.py --check    # validate only
 ```
 
-Required: `Item_name`, `cost`. Optional: `short_label`, `description`, `passive_1`…`passive_5` (`stat=value`, e.g. `max_health=100`), `has_active`, `active_cooldown`, `active_pseudocode`, `components` (`;`-separated item names), `color_r/g/b`. Rows whose `Item_name` already exists are skipped. Actives are stubbed until you implement the pseudocode.
+```csv
+id,name,item_type,cost,sell_value,tier,rarity,stackable,max_stack,consumable,max_charges,description
+frost_hammer,Frost Hammer,weapon,2800,1400,3,rare,false,,false,,A heavy weapon imbued with frost
+```
+
+- `item_type` component/weapon/armor/accessory/consumable/utility/recipe, `rarity` common/uncommon/rare/epic/legendary; optional extras `short_label`, `cooldown`, `components` (`;`-separated ids), `color_r/g/b`
+- Effects use the ability effect schema with item triggers `passive` (must be `stat_modifier`: `max_health`, `health_regen`, `max_mana`, `mana_regen`, `attack_damage`, `attack_speed`, `armor`, `magic_resist`, `move_speed`, `strength`, `agility`, `intelligence`), `on_use`, `on_attack`, `on_attack_hit`, `on_damage_taken`, `on_kill`, `on_death` and targets `owner`, `cast_target`, `trigger_unit`, `attacker`, `affected_units`, `units_in_radius`
+- Consumables spend a charge (or one of the stack) per use and disappear when empty
+
+### Limitations
+
+Not yet expressible without engine changes: ability passives / toggle drains (Stone Skin, Overcharge), channel runtime (`channel_time` is stored; `on_channel_*` only fire from custom mechanics), delayed effects, cooldown floors other than explicit level lists, `%` attack speed or timed attribute buffs, item targeting (`cast_target` on items, e.g. a blink destination), and the `on_damage_taken` / `on_kill` / `on_death` item triggers (validated, not emitted yet). Displacement ignores obstacles.
+
 ## What's included
 
 - Three-lane map with river, jungle pockets, tree obstacles, towers, ancients, and a northern obstacle course
@@ -326,8 +343,10 @@ src/
   basic_attack.rs     Basic attack pipeline (BasicAttackEvent → windup → impact → DamageEvent)
   combat.rs           DamageEvent + mitigation, spell projectiles, death / gold / XP
   progression.rs      Hero XP, attributes, and level-up growth
-  abilities/          Ability definitions, cast pipeline, mechanics → triggers → effects, CSV effect rows, targeting UI
+  abilities/          Ability definitions, cast pipeline, mechanics → triggers → effects, generated.rs, targeting UI
   items.rs            Shop, inventory, sell, actives, status effects
+  item_catalog.rs     Generated ItemDefinitions (ItemGenerator)
+  displacement.rs     Knockback / pull forced movement
   net/                Offline / host / client UDP session + hero snapshots
   ai.rs               Lane following + aggro
   waves.rs            Periodic creep spawns
@@ -338,14 +357,14 @@ src/
   ui.rs               HUD (spell bar, inventory, shop gold, minimap)
 scripts/
   HeroGenerator.py     CSV → add HeroId + stub AbilityIds
-  ItemGenerator.py    CSV → add ItemId + passives / active stubs / components
-  AbilityGenerator.py CSV → add AbilityId + GeneratedAbilityDef + pseudocode
+  ItemGenerator.py    items.csv + item_effects.csv → ItemDefinitions
+  AbilityGenerator.py abilities.csv + ability_effects.csv → AbilityDefinitions
+  generator_common.py Shared CSV validation + effect → Rust translation
 data/
   heroes.example.csv  Sample input for HeroGenerator
-  items.example.csv   Sample input for ItemGenerator
-  abilities.example.csv Sample input for AbilityGenerator
-  item_actives/       Active pseudocode dumps from ItemGenerator
-  ability_pseudos/    Ability pseudocode dumps from AbilityGenerator
+  abilities.csv, ability_effects.csv  AbilityGenerator input
+  items.csv, item_effects.csv          ItemGenerator input
+  examples/           Sample CSVs (examples/invalid/ shows each validation error)
 ```
 
 ## Extending

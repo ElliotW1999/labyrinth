@@ -1,0 +1,10 @@
+item_id,effect_index,trigger,effect_target,effect_type,effect_id,value,damage_type,duration,radius,amount,scaling_type,scaling_value
+frost_hammer,0,passive,owner,stat_modifier,strength,12,,,,,,
+frost_hammer,1,passive,owner,stat_modifier,attack_damage,35,,,,,,
+frost_hammer,2,passive,owner,stat_modifier,attack_speed,10,,,,,,
+frost_hammer,3,on_attack_hit,trigger_unit,apply_status,slow,,,2,,25,,
+blink_item,0,on_use,owner,custom,blink_to_target_position,,,,,,,
+healing_salve,0,on_use,owner,heal,,250,,,,,,
+battle_horn,0,on_use,units_in_radius,stat_modifier,armor,5,,8,600,,,
+battle_horn,1,on_use,units_in_radius,damage,,60,physical,,600,,,
+battle_horn,2,on_attack,attacker,heal,mana,5,,,,,,

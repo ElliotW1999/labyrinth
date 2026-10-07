@@ -1,0 +1,5 @@
+id,name,item_type,cost,sell_value,tier,rarity,stackable,max_stack,consumable,max_charges,description,cooldown,components
+frost_hammer,Frost Hammer,weapon,2800,1400,3,rare,false,,false,,A heavy weapon imbued with frost,,
+blink_item,Blink Dagger,utility,2250,1125,2,epic,false,,false,,Teleport a short distance,15,
+healing_salve,Healing Salve,consumable,100,50,1,common,true,5,true,,Restores health over a short time,0.5,
+battle_horn,Battle Horn,accessory,1500,750,2,uncommon,false,,true,3,Three rallying blasts,20,

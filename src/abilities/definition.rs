@@ -1,17 +1,23 @@
 //! Static, data-driven ability definitions. Nothing here is mutated at runtime;
 //! per-hero state lives in [`crate::components::AbilityState`].
 
-use crate::components::{AbilityId, AbilityType, DamageType};
+use crate::components::{AbilityId, DamageType};
 use crate::items::{StatusEffect, StatusKind};
 
-/// A value that scales with ability level: `clamp(base + per_rank × rank, min, max)`.
-/// `rank` is clamped to at least 1 so unlearned abilities report their level-1 value.
+/// A value that scales with ability level: `clamp(base + per_rank × rank, min, max)`,
+/// or an explicit per-level table (`75|150|225|300` in the generator CSVs).
+/// `rank` is clamped to at least 1 so unlearned abilities report their level-1 value;
+/// tables repeat their last entry past the end.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RankValue {
     pub base: f32,
     pub per_rank: f32,
     pub min: f32,
     pub max: f32,
+    /// Per-level values (index 0 = rank 1). Empty for linear values.
+    pub levels: &'static [f32],
+    /// Applied after the clamp; see [`RankValue::scaled`].
+    pub factor: f32,
 }
 
 impl RankValue {
@@ -27,6 +33,16 @@ impl RankValue {
             per_rank,
             min: f32::NEG_INFINITY,
             max: f32::INFINITY,
+            levels: &[],
+            factor: 1.0,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub const fn levels(levels: &'static [f32]) -> Self {
+        Self {
+            levels,
+            ..Self::ZERO
         }
     }
 
@@ -40,18 +56,19 @@ impl RankValue {
         self
     }
 
-    /// Multiplies every rank's value (and the clamp bounds) by a positive `factor`.
-    pub const fn scaled(self, factor: f32) -> Self {
-        Self {
-            base: self.base * factor,
-            per_rank: self.per_rank * factor,
-            min: self.min * factor,
-            max: self.max * factor,
-        }
+    /// Multiplies every rank's value by `factor`.
+    pub const fn scaled(mut self, factor: f32) -> Self {
+        self.factor *= factor;
+        self
     }
 
     pub fn at(self, rank: u32) -> f32 {
-        (self.base + self.per_rank * rank.max(1) as f32).clamp(self.min, self.max)
+        let rank = rank.max(1);
+        let raw = match self.levels {
+            [] => self.base + self.per_rank * rank as f32,
+            levels => levels[(rank as usize).min(levels.len()) - 1],
+        };
+        raw.clamp(self.min, self.max) * self.factor
     }
 }
 
@@ -118,8 +135,28 @@ pub enum AbilityTrigger {
     OnChannelTick,
     OnChannelEnd,
     OnExpire,
+    /// Item stat bonuses held while the item is owned (applied on purchase, not resolved).
+    Passive,
+    /// An item was activated from the inventory.
+    OnUse,
+    /// The owner released a basic attack (trigger unit = the attack target).
+    OnAttack,
+    /// The owner's basic attack connected (trigger unit = the struck unit).
+    OnAttackHit,
+    OnDamageTaken,
+    OnKill,
+    OnDeath,
     /// Emitted by a custom mechanic, e.g. `Custom("on_skewer_end")`.
     Custom(&'static str),
+}
+
+/// Hero attribute used by [`EffectScaling::CasterAttribute`] and item stat bonuses.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Attribute {
+    Strength,
+    Agility,
+    Intelligence,
 }
 
 /// Who receives an effect, resolved from the [`AbilityTrigger`]'s context.
@@ -159,6 +196,8 @@ pub enum EffectScaling {
     None,
     /// Adds `ratio × caster attack damage`.
     CasterAttackDamage(f32),
+    /// Adds `ratio × caster attribute` (heroes only).
+    CasterAttribute(Attribute, f32),
     /// The effect only applies to targets whose health fraction is below the threshold.
     TargetHealthBelow(f32),
 }
@@ -237,6 +276,32 @@ impl StatusSpec {
     }
 }
 
+/// Direction of a forced movement.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisplacementKind {
+    /// Away from the trigger point (or the caster when they coincide).
+    Knockback,
+    /// Toward the caster.
+    Pull,
+}
+
+/// Permanent stat bonus granted by an item's `Passive` entries.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PassiveStat {
+    MaxHealth,
+    HealthRegen,
+    MaxMana,
+    ManaRegen,
+    AttackDamage,
+    AttackSpeed,
+    Armor,
+    MagicResist,
+    MoveSpeed,
+    Attribute(Attribute),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RingStyle {
     Shockwave,
@@ -255,6 +320,10 @@ pub enum AbilityEffect {
     },
     Heal {
         amount: RankValue,
+        scaling: EffectScaling,
+    },
+    RestoreMana {
+        amount: RankValue,
     },
     ApplyStatus {
         status: StatusSpec,
@@ -264,12 +333,29 @@ pub enum AbilityEffect {
     Dispel {
         kind: StatusKind,
     },
+    /// Remove statuses with this id (e.g. `"stun"`, `"slow"`).
+    RemoveStatus {
+        id: &'static str,
+    },
+    /// Forced movement over `duration`. `distance: None` pulls all the way to the caster.
+    Displace {
+        kind: DisplacementKind,
+        distance: Option<RankValue>,
+        duration: RankValue,
+    },
+    /// Permanent bonus while an item is owned; only meaningful under `AbilityTrigger::Passive`.
+    PassiveStat {
+        stat: PassiveStat,
+        amount: RankValue,
+    },
     /// Escape hatch: runs the system registered under `id` with
     /// `effects::AbilityEffectAppExt::register_custom_effect`. It still receives
     /// resolved targets and should emit the shared gameplay events.
     Custom {
         id: &'static str,
         value: RankValue,
+        amount: RankValue,
+        duration: RankValue,
     },
 }
 
@@ -292,7 +378,15 @@ pub enum AbilityMechanic {
     /// Spell projectile toward the unit target (homing) or aim point. A unit strike
     /// fires `OnProjectileHit`; ending without one fires `OnImpact`. Enemies within
     /// `splash_radius` of the impact become the trigger's affected units.
-    Projectile { splash_radius: AreaRadius },
+    ///
+    /// A `skillshot` instead flies the full cast range toward the aim, firing
+    /// `OnProjectileHit` for every enemy it passes within `aoe_radius`, then `OnImpact`.
+    Projectile {
+        splash_radius: AreaRadius,
+        /// World units per second; `None` uses the default spell projectile speed.
+        speed: Option<f32>,
+        skillshot: bool,
+    },
     /// Caster follows up with auto-attacks on the unit target.
     AttackUnitTarget,
     RingFx {
@@ -321,6 +415,11 @@ pub struct AbilityDefinition {
     pub backswing: f32,
     pub cooldown: RankValue,
     pub mana_cost: RankValue,
+    /// Seconds the caster channels after the cast point (`0` = not channelled).
+    pub channel_time: f32,
+    /// Charge-based abilities: maximum stored charges and seconds to restore one.
+    pub charges: Option<(u32, f32)>,
+    pub description: &'static str,
     /// Run on every successful cast. Abilities with unique mechanics can additionally
     /// register a custom behavior (see `mechanics::AbilityAppExt`).
     pub mechanics: Vec<AbilityMechanic>,
@@ -345,6 +444,9 @@ impl AbilityDefinition {
             backswing: 0.25,
             cooldown: RankValue::ZERO,
             mana_cost: RankValue::ZERO,
+            channel_time: 0.0,
+            charges: None,
+            description: "",
             mechanics: Vec::new(),
             effects: Vec::new(),
         }
@@ -374,6 +476,28 @@ impl AbilityDefinition {
         self
     }
 
+    pub fn team(mut self, target_team: TargetTeam) -> Self {
+        self.target_team = target_team;
+        self
+    }
+
+    #[allow(dead_code)]
+    pub fn channel(mut self, channel_time: f32) -> Self {
+        self.channel_time = channel_time.max(0.0);
+        self
+    }
+
+    #[allow(dead_code)]
+    pub fn charges(mut self, max_charges: u32, restore_time: f32) -> Self {
+        self.charges = Some((max_charges, restore_time));
+        self
+    }
+
+    pub fn description(mut self, description: &'static str) -> Self {
+        self.description = description;
+        self
+    }
+
     pub fn mechanic(mut self, mechanic: AbilityMechanic) -> Self {
         self.mechanics.push(mechanic);
         self
@@ -389,23 +513,12 @@ impl AbilityDefinition {
         self
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn effects_for(&self, trigger: AbilityTrigger) -> impl Iterator<Item = &AbilityEffectEntry> {
         self.effects.iter().filter(move |entry| entry.trigger == trigger)
     }
 
     pub fn is_castable(&self) -> bool {
         self.behavior != AbilityBehavior::Passive
-    }
-}
-
-/// Split AbilityGenerator's combined activation category into behavior + targeting.
-pub fn classify(ability_type: AbilityType) -> (AbilityBehavior, TargetType) {
-    match ability_type {
-        AbilityType::Passive => (AbilityBehavior::Passive, TargetType::NoTarget),
-        AbilityType::Toggle => (AbilityBehavior::Toggle, TargetType::NoTarget),
-        AbilityType::Untargeted => (AbilityBehavior::Active, TargetType::NoTarget),
-        AbilityType::UnitTarget => (AbilityBehavior::Active, TargetType::Unit),
-        AbilityType::TargetArea => (AbilityBehavior::Active, TargetType::Area),
-        AbilityType::TargetPoint => (AbilityBehavior::Active, TargetType::Point),
     }
 }

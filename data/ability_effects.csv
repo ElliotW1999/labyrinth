@@ -1,4 +1,7 @@
 ability_id,effect_index,trigger,effect_target,effect_type,effect_id,value,damage_type,duration,radius,amount,scaling_type,scaling_value
-SeismicSlam,0,on_cast,units_in_radius,apply_status,slow,30,,1.5,,,,
-ArcaneLance,0,on_projectile_hit,trigger_unit,damage,,23.75,magical,,,8,target_health_below,0.35
-Cataclysm,0,on_cast,units_in_radius,apply_status,stun,,,1.2,,,,
+seismic_slam,0,on_cast,units_in_radius,damage,,80|110|140|170|200|230|260,physical,,,,,
+seismic_slam,1,on_cast,units_in_radius,apply_status,slow,,,1.5,,30,,
+arcane_lance,0,on_projectile_hit,trigger_unit,damage,,95|127|159|191|223|255|287,magical,,,,,
+arcane_lance,1,on_projectile_hit,trigger_unit,damage,,23.75|31.75|39.75|47.75|55.75|63.75|71.75,magical,,,,target_health_below,0.35
+cataclysm,0,on_cast,units_in_radius,damage,,200|270|340|410,magical,,,,,
+cataclysm,1,on_cast,units_in_radius,apply_status,stun,,,1.2,,,,

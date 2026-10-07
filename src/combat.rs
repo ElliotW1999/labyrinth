@@ -46,6 +46,7 @@ impl Plugin for CombatPlugin {
                     animate_melee_slashes,
                     sync_attack_projectile_visuals,
                     fly_projectiles,
+                    skillshot_contacts,
                     apply_projectile_hits,
                     apply_damage_events,
                     tick_lifetimes,
@@ -182,8 +183,48 @@ pub struct SpawnProjectileEvent {
     pub origin: Vec3,
     pub target: Option<Entity>,
     pub target_pos: Vec3,
+    /// World units per second; `None` uses [`SPELL_PROJECTILE_SPEED`].
+    pub speed: Option<f32>,
+    /// Set for skillshots: hit every enemy within this distance of the path.
+    pub skillshot_width: Option<f32>,
     pub splash_radius: f32,
     pub payload: ProjectilePayload,
+}
+
+pub const SPELL_PROJECTILE_SPEED: f32 = scale::u(34.0);
+
+/// Piercing projectile: reports each enemy it passes once.
+#[derive(Component, Debug, Clone, Default)]
+pub struct Skillshot {
+    pub width: f32,
+    pub hit: Vec<Entity>,
+}
+
+pub fn skillshot_contacts(
+    mut hits: MessageWriter<ProjectileHitEvent>,
+    mut projectiles: Query<(&Transform, &Projectile, &ProjectilePayload, &mut Skillshot)>,
+    units: Query<(Entity, &Transform, &Team, &Health, Option<&BoundRadius>)>,
+) {
+    for (proj_tf, projectile, payload, mut skillshot) in &mut projectiles {
+        let impact = proj_tf.translation;
+        for (unit, unit_tf, team, health, bound) in &units {
+            if *team == projectile.team
+                || !health.is_alive()
+                || skillshot.hit.contains(&unit)
+                || !area_contains(impact, skillshot.width, unit_tf.translation, bounds_of(bound))
+            {
+                continue;
+            }
+            skillshot.hit.push(unit);
+            hits.write(ProjectileHitEvent {
+                payload: *payload,
+                team: projectile.team,
+                impact,
+                primary: Some(unit),
+                splashed: Vec::new(),
+            });
+        }
+    }
 }
 
 pub fn spawn_requested_projectiles(
@@ -342,6 +383,7 @@ pub fn apply_damage(raw: f32, damage_type: DamageType, stats: &CombatStats) -> f
     match damage_type {
         DamageType::Physical => mitigate(raw, stats.armor),
         DamageType::Magical => mitigate(raw, stats.magic_resist),
+        DamageType::Pure => raw.max(0.0),
     }
 }
 
@@ -399,9 +441,13 @@ fn spawn_spell_bolt(commands: &mut Commands, assets: &SharedAssets, request: &Sp
         origin,
         target,
         target_pos,
+        speed,
+        skillshot_width,
         splash_radius,
         payload,
     } = *request;
+    let speed = speed.unwrap_or(SPELL_PROJECTILE_SPEED).max(1.0);
+    let travel = flat_distance(origin, target_pos) / speed + 0.25;
     let start = origin + Vec3::Y * scale::body(1.2);
     let aim = (target_pos + Vec3::Y * scale::body(1.0)) - start;
     let mut transform = Transform::from_translation(start);
@@ -415,15 +461,15 @@ fn spawn_spell_bolt(commands: &mut Commands, assets: &SharedAssets, request: &Sp
         MeshMaterial3d(assets.spell_bolt_mat.clone()),
         transform,
         Projectile {
-            speed: scale::u(34.0),
+            speed,
             team,
             radius: scale::body(0.85),
-            lifetime: 2.5,
+            lifetime: travel.max(2.5),
             splash_radius,
         },
         payload,
         ProjectileStyle::SpellBolt,
-        Lifetime(2.5),
+        Lifetime(travel.max(2.5)),
     ));
 
     if let Some(target) = target {
@@ -432,12 +478,18 @@ fn spawn_spell_bolt(commands: &mut Commands, assets: &SharedAssets, request: &Sp
             last_pos: target_pos + Vec3::Y * scale::body(1.0),
         });
     } else {
-        let dist = flat_distance(origin, target_pos);
-        let travel = (dist / 34.0) + 0.05;
-        entity.insert(Lifetime(travel));
-        entity.insert(GroundBoltAim {
-            position: target_pos,
-        });
+        entity.insert((
+            Lifetime(travel),
+            GroundBoltAim {
+                position: target_pos,
+            },
+        ));
+        if let Some(width) = skillshot_width {
+            entity.insert(Skillshot {
+                width,
+                hit: Vec::new(),
+            });
+        }
     }
 }
 
