@@ -80,6 +80,10 @@ ITEM_TYPES = {
     "consumable": "Consumable",
     "utility": "Utility",
     "recipe": "Recipe",
+    "attributes": "Attributes",
+    "equipment": "Equipment",
+    "miscellaneous": "Miscellaneous",
+    "accessories": "Accessories",
 }
 RARITIES = {r: r.capitalize() for r in ("common", "uncommon", "rare", "epic", "legendary")}
 MAX_COMPONENTS = 5

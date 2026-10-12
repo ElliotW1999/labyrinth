@@ -21,9 +21,11 @@ pub struct ItemsPlugin;
 impl Plugin for ItemsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ShopUiState>()
+            .init_resource::<ShopUndoLog>()
             .init_resource::<InventoryContextMenu>()
             .add_message::<PurchaseItemRequest>()
             .add_message::<SellItemRequest>()
+            .add_message::<UndoShopRequest>()
             .add_systems(
                 Startup,
                 spawn_shops.after(crate::resources::load_shared_assets),
@@ -37,6 +39,8 @@ impl Plugin for ItemsPlugin {
                     item_attack_triggers,
                     try_purchase_from_ui,
                     try_sell_from_ui,
+                    try_undo_from_ui,
+                    clear_shop_undo_outside_range,
                 ),
             );
     }
@@ -48,6 +52,41 @@ pub struct ShopUiState {
     pub open: bool,
     /// Item shown in the components / detail popup (None = closed).
     pub detail: Option<ItemId>,
+}
+
+/// Purchases and sales that can still be reversed. Cleared on leaving shop range.
+#[derive(Resource, Debug, Clone, Default)]
+pub struct ShopUndoLog {
+    actions: Vec<ShopAction>,
+    /// Shown in the shop when the latest undo could not be applied.
+    pub notice: String,
+}
+
+impl ShopUndoLog {
+    pub fn pending(&self) -> usize {
+        self.actions.len()
+    }
+
+    fn clear_pending(&mut self) {
+        self.actions.clear();
+        self.notice.clear();
+    }
+}
+
+#[derive(Debug, Clone)]
+enum ShopAction {
+    /// Net inventory change of one buy, including any auto-combine that followed it.
+    Purchase {
+        gold_spent: u32,
+        /// Stacks consumed (components that were already owned, after a combine).
+        removed: Vec<(ItemId, u32)>,
+        /// Stacks gained (the bought item, or the combined result).
+        added: Vec<(ItemId, u32)>,
+    },
+    Sale {
+        refunded: u32,
+        item: ItemInstance,
+    },
 }
 
 /// World shop marker near a team base.
@@ -92,6 +131,33 @@ impl Inventory {
             None => self.slots[i] = Some(ItemInstance::new(id)),
         }
         true
+    }
+
+    fn count_of(&self, id: ItemId) -> u32 {
+        self.slots
+            .iter()
+            .flatten()
+            .filter(|item| item.id == id)
+            .map(|item| item.stack)
+            .sum()
+    }
+
+    /// Remove a single unit of `id`. Stacks above 1 shrink in place.
+    fn remove_one(&mut self, id: ItemId) -> bool {
+        for slot in &mut self.slots {
+            let Some(item) = slot else {
+                continue;
+            };
+            if item.id != id || item.stack == 0 {
+                continue;
+            }
+            item.stack -= 1;
+            if item.stack == 0 {
+                *slot = None;
+            }
+            return true;
+        }
+        false
     }
 }
 
@@ -329,6 +395,10 @@ pub enum ItemType {
     Utility,
     /// Recipe scrap combined with components; hidden from the default shop list.
     Recipe,
+    Attributes,
+    Equipment,
+    Miscellaneous,
+    Accessories,
 }
 
 impl ItemType {
@@ -341,6 +411,10 @@ impl ItemType {
             ItemType::Consumable => "Consumable",
             ItemType::Utility => "Utility",
             ItemType::Recipe => "Recipe",
+            ItemType::Attributes => "Attributes",
+            ItemType::Equipment => "Equipment",
+            ItemType::Miscellaneous => "Miscellaneous",
+            ItemType::Accessories => "Accessories",
         }
     }
 }
@@ -1168,6 +1242,7 @@ fn near_own_shop(hero_pos: Vec3, team: Team, shops: &Query<(&Transform, &ItemSho
 
 fn try_purchase_from_ui(
     mut events: MessageReader<PurchaseItemRequest>,
+    mut log: ResMut<ShopUndoLog>,
     mut hero: ShopHeroQuery,
     shops: Query<(&Transform, &ItemShop)>,
 ) {
@@ -1178,7 +1253,8 @@ fn try_purchase_from_ui(
     };
     let in_range = near_own_shop(hero_tf.translation, *team, &shops);
     for PurchaseItemRequest { item } in events.read() {
-        try_buy_item(
+        record_purchase(
+            &mut log,
             &mut wallet,
             &mut inv,
             &mut health,
@@ -1193,6 +1269,7 @@ fn try_purchase_from_ui(
 
 fn try_sell_from_ui(
     mut events: MessageReader<SellItemRequest>,
+    mut log: ResMut<ShopUndoLog>,
     mut menu: ResMut<InventoryContextMenu>,
     mut hero: ShopHeroQuery,
     shops: Query<(&Transform, &ItemShop)>,
@@ -1204,7 +1281,8 @@ fn try_sell_from_ui(
     };
     let in_range = near_own_shop(hero_tf.translation, *team, &shops);
     for SellItemRequest { slot } in events.read() {
-        if try_sell_item(
+        if record_sale(
+            &mut log,
             &mut wallet,
             &mut inv,
             &mut health,
@@ -1217,6 +1295,46 @@ fn try_sell_from_ui(
             menu.slot = None;
         }
     }
+}
+
+fn try_undo_from_ui(
+    mut events: MessageReader<UndoShopRequest>,
+    mut log: ResMut<ShopUndoLog>,
+    mut hero: ShopHeroQuery,
+    shops: Query<(&Transform, &ItemShop)>,
+) {
+    let Ok((hero_tf, team, mut wallet, mut inv, mut health, mut mana, mut stats, mut attrs)) =
+        hero.single_mut()
+    else {
+        for _ in events.read() {}
+        return;
+    };
+    let in_range = near_own_shop(hero_tf.translation, *team, &shops);
+    for _ in events.read() {
+        if !in_range {
+            continue;
+        }
+        try_undo_last(
+            &mut log,
+            &mut wallet,
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            &mut attrs,
+        );
+    }
+}
+
+fn clear_shop_undo_outside_range(
+    mut log: ResMut<ShopUndoLog>,
+    hero: Query<(&Transform, &Team), With<PlayerHero>>,
+    shops: Query<(&Transform, &ItemShop)>,
+) {
+    let in_range = hero.single().is_ok_and(|(hero_tf, team)| {
+        near_own_shop(hero_tf.translation, *team, &shops)
+    });
+    expire_shop_undo(&mut log, in_range);
 }
 
 /// Buy one unit of `item` (stacking onto a partial stack when possible).
@@ -1235,7 +1353,13 @@ pub fn try_buy_item(
     }
     wallet.gold -= item.cost();
     apply_passives(item.passives(), health, mana, stats, attrs);
-    inv.try_add(item)
+    if !inv.try_add(item) {
+        wallet.gold = wallet.gold.saturating_add(item.cost());
+        remove_passives(item.passives(), 1, health, mana, stats, attrs);
+        return false;
+    }
+    combine_ready_items(inv, health, mana, stats, attrs);
+    true
 }
 
 /// Sell a whole inventory slot for the item's sell value per unit. Must be in shop range.
@@ -1259,6 +1383,284 @@ pub fn try_sell_item(
     wallet.gold += item.id.definition().sell_value * item.stack;
     true
 }
+
+fn inventory_counts(inv: &Inventory) -> Vec<(ItemId, u32)> {
+    let mut counts = Vec::new();
+    for slot in inv.slots.iter().flatten() {
+        if let Some((_, count)) = counts.iter_mut().find(|(id, _)| *id == slot.id) {
+            *count += slot.stack;
+        } else {
+            counts.push((slot.id, slot.stack));
+        }
+    }
+    counts
+}
+
+fn count_in(counts: &[(ItemId, u32)], id: ItemId) -> u32 {
+    counts
+        .iter()
+        .find(|(item, _)| *item == id)
+        .map(|(_, count)| *count)
+        .unwrap_or(0)
+}
+
+fn count_diff(
+    before: &[(ItemId, u32)],
+    after: &[(ItemId, u32)],
+) -> (Vec<(ItemId, u32)>, Vec<(ItemId, u32)>) {
+    let mut ids = Vec::new();
+    for (id, _) in before.iter().chain(after.iter()) {
+        if !ids.contains(id) {
+            ids.push(*id);
+        }
+    }
+    let mut removed = Vec::new();
+    let mut added = Vec::new();
+    for id in ids {
+        let from = count_in(before, id);
+        let to = count_in(after, id);
+        if to > from {
+            added.push((id, to - from));
+        } else if from > to {
+            removed.push((id, from - to));
+        }
+    }
+    (removed, added)
+}
+
+/// Component multiset for `result`, or `None` when the item is not a build.
+fn component_needs(result: ItemId) -> Option<Vec<(ItemId, u32)>> {
+    let comps = result.recipe_components();
+    if comps.is_empty() || comps.contains(&result) {
+        return None;
+    }
+    let mut needs = Vec::new();
+    for &comp in comps {
+        if let Some((_, count)) = needs.iter_mut().find(|(id, _)| *id == comp) {
+            *count += 1;
+        } else {
+            needs.push((comp, 1));
+        }
+    }
+    Some(needs)
+}
+
+fn can_assemble(inv: &Inventory, result: ItemId, needs: &[(ItemId, u32)]) -> bool {
+    if needs.iter().any(|&(id, n)| inv.count_of(id) < n) {
+        return false;
+    }
+    let mut scratch = inv.clone();
+    for &(id, n) in needs {
+        for _ in 0..n {
+            if !scratch.remove_one(id) {
+                return false;
+            }
+        }
+    }
+    scratch.slot_for(result).is_some()
+}
+
+/// Combine every complete component set. Does not run during undo.
+fn combine_ready_items(
+    inv: &mut Inventory,
+    health: &mut Health,
+    mana: &mut Mana,
+    stats: &mut CombatStats,
+    attrs: &mut HeroAttributes,
+) {
+    for _ in 0..8 {
+        let Some(result) = ItemId::all().iter().copied().find(|&result| {
+            component_needs(result).is_some_and(|needs| can_assemble(inv, result, &needs))
+        }) else {
+            break;
+        };
+        let Some(needs) = component_needs(result) else {
+            break;
+        };
+        for &(id, n) in &needs {
+            remove_passives(id.passives(), n, health, mana, stats, attrs);
+            for _ in 0..n {
+                inv.remove_one(id);
+            }
+        }
+        if inv.try_add(result) {
+            apply_passives(result.passives(), health, mana, stats, attrs);
+        } else {
+            for &(id, n) in &needs {
+                for _ in 0..n {
+                    apply_passives(id.passives(), health, mana, stats, attrs);
+                    inv.try_add(id);
+                }
+            }
+            break;
+        }
+    }
+}
+
+fn record_purchase(
+    log: &mut ShopUndoLog,
+    wallet: &mut PlayerWallet,
+    inv: &mut Inventory,
+    health: &mut Health,
+    mana: &mut Mana,
+    stats: &mut CombatStats,
+    attrs: &mut HeroAttributes,
+    item: ItemId,
+    in_range: bool,
+) -> bool {
+    let before_gold = wallet.gold;
+    let before = inventory_counts(inv);
+    if !try_buy_item(wallet, inv, health, mana, stats, attrs, item, in_range) {
+        return false;
+    }
+    let (removed, added) = count_diff(&before, &inventory_counts(inv));
+    log.actions.push(ShopAction::Purchase {
+        gold_spent: before_gold.saturating_sub(wallet.gold),
+        removed,
+        added,
+    });
+    log.notice.clear();
+    true
+}
+
+fn record_sale(
+    log: &mut ShopUndoLog,
+    wallet: &mut PlayerWallet,
+    inv: &mut Inventory,
+    health: &mut Health,
+    mana: &mut Mana,
+    stats: &mut CombatStats,
+    attrs: &mut HeroAttributes,
+    slot: usize,
+    in_range: bool,
+) -> bool {
+    let Some(item) = inv.slots.get(slot).copied().flatten() else {
+        return false;
+    };
+    let before_gold = wallet.gold;
+    if !try_sell_item(wallet, inv, health, mana, stats, attrs, slot, in_range) {
+        return false;
+    }
+    log.actions.push(ShopAction::Sale {
+        refunded: wallet.gold.saturating_sub(before_gold),
+        item,
+    });
+    log.notice.clear();
+    true
+}
+
+fn undo_purchase(
+    wallet: &mut PlayerWallet,
+    inv: &mut Inventory,
+    health: &mut Health,
+    mana: &mut Mana,
+    stats: &mut CombatStats,
+    attrs: &mut HeroAttributes,
+    gold_spent: u32,
+    removed: &[(ItemId, u32)],
+    added: &[(ItemId, u32)],
+) -> bool {
+    if added.iter().any(|&(id, n)| inv.count_of(id) < n) {
+        return false;
+    }
+    let mut scratch = inv.clone();
+    for &(id, n) in added {
+        for _ in 0..n {
+            if !scratch.remove_one(id) {
+                return false;
+            }
+        }
+    }
+    for &(id, n) in removed {
+        for _ in 0..n {
+            if !scratch.try_add(id) {
+                return false;
+            }
+        }
+    }
+    for &(id, n) in added {
+        remove_passives(id.passives(), n, health, mana, stats, attrs);
+        for _ in 0..n {
+            inv.remove_one(id);
+        }
+    }
+    for &(id, n) in removed {
+        for _ in 0..n {
+            apply_passives(id.passives(), health, mana, stats, attrs);
+            inv.try_add(id);
+        }
+    }
+    wallet.gold = wallet.gold.saturating_add(gold_spent);
+    true
+}
+
+fn undo_sale(
+    wallet: &mut PlayerWallet,
+    inv: &mut Inventory,
+    health: &mut Health,
+    mana: &mut Mana,
+    stats: &mut CombatStats,
+    attrs: &mut HeroAttributes,
+    refunded: u32,
+    item: &ItemInstance,
+) -> bool {
+    if wallet.gold < refunded || inv.first_empty().is_none() {
+        return false;
+    }
+    let Some(slot) = inv.first_empty() else {
+        return false;
+    };
+    wallet.gold -= refunded;
+    for _ in 0..item.stack {
+        apply_passives(item.id.passives(), health, mana, stats, attrs);
+    }
+    inv.slots[slot] = Some(*item);
+    true
+}
+
+/// Pop the latest shop transaction. Restored components are not combined again.
+fn try_undo_last(
+    log: &mut ShopUndoLog,
+    wallet: &mut PlayerWallet,
+    inv: &mut Inventory,
+    health: &mut Health,
+    mana: &mut Mana,
+    stats: &mut CombatStats,
+    attrs: &mut HeroAttributes,
+) -> bool {
+    let Some(action) = log.actions.last().cloned() else {
+        return false;
+    };
+    let undone = match &action {
+        ShopAction::Purchase {
+            gold_spent,
+            removed,
+            added,
+        } => undo_purchase(
+            wallet, inv, health, mana, stats, attrs, *gold_spent, removed, added,
+        ),
+        ShopAction::Sale { refunded, item } => {
+            undo_sale(wallet, inv, health, mana, stats, attrs, *refunded, item)
+        }
+    };
+    if undone {
+        log.actions.pop();
+        log.notice.clear();
+    } else {
+        log.notice =
+            "Undo failed — the items or gold from that trade are no longer available.".to_string();
+    }
+    undone
+}
+
+fn expire_shop_undo(log: &mut ShopUndoLog, in_range: bool) {
+    if !in_range {
+        log.clear_pending();
+    }
+}
+
+#[derive(Message, Debug, Clone, Copy)]
+pub struct UndoShopRequest;
 
 #[cfg(test)]
 mod tests {
@@ -1525,5 +1927,150 @@ mod tests {
         let dist = Vec3::new(shop.x - dire.x, 0.0, shop.z - dire.z).length();
         assert!(dist > 80.0 && dist < scale::map(10.0), "{dist}");
         assert!(shop_purchase_range() > 200.0);
+    }
+
+    fn fresh_hero() -> (
+        PlayerWallet,
+        Inventory,
+        Health,
+        Mana,
+        CombatStats,
+        HeroAttributes,
+    ) {
+        (
+            PlayerWallet { gold: 2000 },
+            Inventory::empty(),
+            Health::new(720.0),
+            Mana::new(320.0, 12.0),
+            CombatStats::simple(55.0, 8.0, 1.1, 4.0, 3.0, 12.0),
+            HeroAttributes::starter(),
+        )
+    }
+
+    fn owned(inv: &Inventory) -> Vec<ItemId> {
+        inv.slots.iter().flatten().map(|item| item.id).collect()
+    }
+
+    #[test]
+    fn item_types_include_attributes_equipment_misc_and_accessories() {
+        assert_eq!(ItemType::Attributes.label(), "Attributes");
+        assert_eq!(ItemType::Equipment.label(), "Equipment");
+        assert_eq!(ItemType::Miscellaneous.label(), "Miscellaneous");
+        assert_eq!(ItemType::Accessories.label(), "Accessories");
+        assert_eq!(ItemId::IronBracer.definition().item_type, ItemType::Equipment);
+        assert_eq!(ItemId::SwiftBoots.definition().item_type, ItemType::Equipment);
+        assert_eq!(ItemId::VialOfLight.definition().item_type, ItemType::Miscellaneous);
+        assert_eq!(ItemId::ManaCrystal.definition().item_type, ItemType::Accessories);
+        assert_eq!(ItemId::HeartwoodBand.definition().item_type, ItemType::Accessories);
+        assert_eq!(ItemId::SparkPendant.definition().item_type, ItemType::Accessories);
+        assert_eq!(ItemId::RecipeHeartwoodBand.definition().item_type, ItemType::Recipe);
+    }
+
+    #[test]
+    fn buying_the_last_component_combines_and_undo_refunds_only_that_purchase() {
+        let (mut wallet, mut inv, mut health, mut mana, mut stats, mut attrs) = fresh_hero();
+        let mut log = ShopUndoLog::default();
+        assert!(record_purchase(
+            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs,
+            ItemId::IronBracer, true,
+        ));
+        assert_eq!(owned(&inv), vec![ItemId::IronBracer]);
+        assert_eq!(health.max, 820.0);
+        assert_eq!(stats.armor, 8.0);
+
+        assert!(record_purchase(
+            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs,
+            ItemId::RecipeHeartwoodBand, true,
+        ));
+        assert_eq!(owned(&inv), vec![ItemId::HeartwoodBand]);
+        assert!(!owned(&inv).contains(&ItemId::RecipeHeartwoodBand));
+        assert_eq!(wallet.gold, 2000 - ItemId::IronBracer.cost() - ItemId::RecipeHeartwoodBand.cost());
+        assert_eq!(health.max, 870.0);
+        assert_eq!(stats.armor, 7.0);
+        assert_eq!(mana.regen_per_sec, 14.0);
+        assert_eq!(log.pending(), 2);
+
+        assert!(try_undo_last(
+            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs,
+        ));
+        assert_eq!(owned(&inv), vec![ItemId::IronBracer]);
+        assert!(!owned(&inv).contains(&ItemId::HeartwoodBand));
+        assert!(!owned(&inv).contains(&ItemId::RecipeHeartwoodBand));
+        assert_eq!(wallet.gold, 2000 - ItemId::IronBracer.cost());
+        assert_eq!(health.max, 820.0);
+        assert_eq!(stats.armor, 8.0);
+        assert_eq!(mana.regen_per_sec, 12.0);
+        assert_eq!(log.pending(), 1);
+
+        assert!(try_undo_last(
+            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs,
+        ));
+        assert!(owned(&inv).is_empty());
+        assert_eq!(wallet.gold, 2000);
+        assert_eq!(health.max, 720.0);
+        assert_eq!(stats.armor, 4.0);
+        assert_eq!(log.pending(), 0);
+    }
+
+    #[test]
+    fn undo_reverses_a_plain_buy_and_a_sale_without_recombining() {
+        let (mut wallet, mut inv, mut health, mut mana, mut stats, mut attrs) = fresh_hero();
+        let mut log = ShopUndoLog::default();
+        assert!(record_purchase(
+            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs,
+            ItemId::SwiftBoots, true,
+        ));
+        assert!(try_undo_last(
+            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs,
+        ));
+        assert!(owned(&inv).is_empty());
+        assert_eq!(wallet.gold, 2000);
+        assert_eq!(stats.move_speed, 12.0);
+
+        assert!(record_purchase(
+            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs,
+            ItemId::IronBracer, true,
+        ));
+        inv.slots[0].as_mut().unwrap().cooldown_remaining = 3.5;
+        assert!(record_sale(
+            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs,
+            0, true,
+        ));
+        assert!(owned(&inv).is_empty());
+        assert_eq!(wallet.gold, 2000 - ItemId::IronBracer.cost() + ItemId::IronBracer.definition().sell_value);
+        assert!(try_undo_last(
+            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs,
+        ));
+        assert_eq!(owned(&inv), vec![ItemId::IronBracer]);
+        assert_eq!(inv.slots.iter().flatten().next().unwrap().cooldown_remaining, 3.5);
+        assert_eq!(wallet.gold, 2000 - ItemId::IronBracer.cost());
+        assert_eq!(health.max, 820.0);
+    }
+
+    #[test]
+    fn undo_refuses_when_the_combined_item_is_gone_and_leaving_range_locks_trades() {
+        let (mut wallet, mut inv, mut health, mut mana, mut stats, mut attrs) = fresh_hero();
+        let mut log = ShopUndoLog::default();
+        assert!(record_purchase(
+            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs,
+            ItemId::IronBracer, true,
+        ));
+        assert!(record_purchase(
+            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs,
+            ItemId::RecipeHeartwoodBand, true,
+        ));
+        let gold = wallet.gold;
+        inv.slots = [None, None, None, None, None, None];
+        assert!(!try_undo_last(
+            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs,
+        ));
+        assert_eq!(wallet.gold, gold);
+        assert_eq!(log.pending(), 2);
+        assert!(!log.notice.is_empty());
+
+        expire_shop_undo(&mut log, false);
+        assert_eq!(log.pending(), 0);
+        assert!(log.notice.is_empty());
+        expire_shop_undo(&mut log, true);
     }
 }

@@ -13,7 +13,7 @@ use crate::components::{
 use crate::heroes::HeroKind;
 use crate::items::{
     Inventory, InventoryContextMenu, ItemId, ItemShop, PurchaseItemRequest, SellItemRequest,
-    ShopUiState, StatusEffects, StatusKind,
+    ShopUiState, ShopUndoLog, StatusEffects, StatusKind, UndoShopRequest,
 };
 use crate::menu::MainMenuState;
 use crate::unit_commands::{IssueCommand, UnitCommand};
@@ -41,13 +41,14 @@ impl Plugin for UiPlugin {
                     handle_inventory_sell_clicks,
                     refresh_buffs_text,
                     handle_shop_toggle_button,
-                    sync_shop_panel_visibility,
                     handle_shop_item_clicks,
                     handle_shop_detail_clicks,
-                    sync_shop_detail_panel,
                     handle_shop_buy_clicks,
+                    handle_shop_undo_clicks,
                     handle_shop_backdrop_close,
                     handle_shop_close_keys,
+                    sync_shop_panel_visibility,
+                    sync_shop_detail_panel,
                     refresh_shop_status,
                 ),
             )
@@ -219,6 +220,12 @@ struct ShopDetailComponentLabel {
 
 #[derive(Component)]
 struct ShopDetailBuyButton;
+
+#[derive(Component)]
+struct ShopUndoButton;
+
+#[derive(Component)]
+struct ShopUndoLabel;
 
 #[derive(Component)]
 struct ShopDetailCloseButton;
@@ -729,8 +736,30 @@ fn spawn_hud(mut commands: Commands) {
                             spawn_shop_item(grid, item);
                         }
                     });
+                panel
+                    .spawn((
+                        Button,
+                        ShopUndoButton,
+                        Node {
+                            width: percent(100),
+                            height: px(32),
+                            align_items: AlignItems::Center,
+                            justify_content: JustifyContent::Center,
+                            border_radius: BorderRadius::all(px(5)),
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgb(0.18, 0.18, 0.2)),
+                    ))
+                    .with_children(|btn| {
+                        btn.spawn((
+                            ShopUndoLabel,
+                            Text::new("Undo"),
+                            TextFont::from_font_size(14.0),
+                            TextColor(Color::srgb(0.95, 0.9, 0.75)),
+                        ));
+                    });
                 panel.spawn((
-                    Text::new("Esc / click outside / $ to close"),
+                    Text::new("Undo reverses buys and sells until you leave the shop. Esc closes."),
                     TextFont::from_font_size(12.0),
                     TextColor(Color::srgba(0.7, 0.75, 0.8, 0.8)),
                 ));
@@ -1895,6 +1924,10 @@ fn sync_shop_detail_panel(
     };
     let Some(item) = shop_ui.detail.filter(|_| shop_ui.open) else {
         *panel_vis = Visibility::Hidden;
+        // Rows previously set to Visible ignore a hidden parent and stay on screen.
+        for (_, mut vis, _, _) in &mut rows {
+            *vis = Visibility::Hidden;
+        }
         return;
     };
     *panel_vis = Visibility::Visible;
@@ -1920,7 +1953,7 @@ fn sync_shop_detail_panel(
     let comps = item.recipe_components();
     for (button, mut vis, mut bg, mut border) in &mut rows {
         if let Some(comp) = comps.get(button.index).copied() {
-            *vis = Visibility::Visible;
+            *vis = Visibility::Inherited;
             *bg = BackgroundColor(Color::srgba(
                 comp.placeholder_color().to_srgba().red,
                 comp.placeholder_color().to_srgba().green,
@@ -1966,6 +1999,22 @@ fn handle_shop_close_keys(keys: Res<ButtonInput<KeyCode>>, mut shop_ui: ResMut<S
         shop_ui.detail = None;
     } else {
         shop_ui.open = false;
+    }
+}
+
+fn handle_shop_undo_clicks(
+    interactions: Query<&Interaction, (Changed<Interaction>, With<ShopUndoButton>)>,
+    shop_ui: Res<ShopUiState>,
+    log: Res<ShopUndoLog>,
+    mut writer: MessageWriter<UndoShopRequest>,
+) {
+    if !shop_ui.open || log.pending() == 0 {
+        return;
+    }
+    for interaction in &interactions {
+        if *interaction == Interaction::Pressed {
+            writer.write(UndoShopRequest);
+        }
     }
 }
 
@@ -2163,10 +2212,30 @@ fn update_ability_tooltips(
 
 fn refresh_shop_status(
     shop_ui: Res<ShopUiState>,
+    log: Res<ShopUndoLog>,
     hero: Query<(&Transform, &Team, &PlayerWallet, &Inventory), With<PlayerHero>>,
     shops: Query<(&Transform, &ItemShop)>,
-    mut status: Query<&mut Text, With<ShopStatusText>>,
+    mut status: Query<&mut Text, (With<ShopStatusText>, Without<ShopUndoLabel>)>,
+    mut undo_label: Query<&mut Text, (With<ShopUndoLabel>, Without<ShopStatusText>)>,
+    mut undo_btn: Query<(&Interaction, &mut BackgroundColor), With<ShopUndoButton>>,
 ) {
+    let pending = log.pending();
+    if let Ok(mut text) = undo_label.single_mut() {
+        *text = Text::new(if pending == 0 {
+            "Undo".to_string()
+        } else {
+            format!("Undo ({pending})")
+        });
+    }
+    if let Ok((interaction, mut color)) = undo_btn.single_mut() {
+        *color = if pending == 0 {
+            BackgroundColor(Color::srgb(0.18, 0.18, 0.2))
+        } else if matches!(*interaction, Interaction::Hovered | Interaction::Pressed) {
+            BackgroundColor(Color::srgb(0.72, 0.48, 0.16))
+        } else {
+            BackgroundColor(Color::srgb(0.55, 0.38, 0.12))
+        };
+    }
     if !shop_ui.open {
         return;
     }
@@ -2191,8 +2260,13 @@ fn refresh_shop_status(
         Some(n) => format!("free slot {}", n),
         None => "inventory full".into(),
     };
+    let notice = if log.notice.is_empty() {
+        String::new()
+    } else {
+        format!("  |  {}", log.notice)
+    };
     *text = Text::new(format!(
-        "{range_msg}  |  Gold: {}  |  {}  |  Hover item for details",
+        "{range_msg}  |  Gold: {}  |  {}  |  Hover item for details{notice}",
         wallet.gold, slots_msg
     ));
 }
@@ -2306,6 +2380,48 @@ mod tests {
         world.init_resource::<ShopUiState>();
         let mut system = IntoSystem::into_system(sync_shop_detail_panel);
         system.initialize(&mut world);
+    }
+
+    #[test]
+    fn shop_component_rows_hide_when_the_shop_closes() {
+        let mut world = World::new();
+        world.insert_resource(ShopUiState {
+            open: false,
+            detail: Some(ItemId::HeartwoodBand),
+        });
+        let panel = world.spawn((ShopDetailPanel, Visibility::Hidden)).id();
+        let row = world
+            .spawn((
+                ShopDetailComponentButton { index: 0 },
+                Visibility::Visible,
+                BackgroundColor(Color::WHITE),
+                BorderColor::all(Color::WHITE),
+            ))
+            .id();
+
+        let mut system = IntoSystem::into_system(sync_shop_detail_panel);
+        system.initialize(&mut world);
+        let _ = system.run((), &mut world);
+        assert_eq!(*world.get::<Visibility>(panel).unwrap(), Visibility::Hidden);
+        assert_eq!(
+            *world.get::<Visibility>(row).unwrap(),
+            Visibility::Hidden,
+            "component rows must not stay visible after the shop closes"
+        );
+
+        {
+            let mut shop = world.resource_mut::<ShopUiState>();
+            shop.open = true;
+            shop.detail = Some(ItemId::HeartwoodBand);
+        }
+        *world.get_mut::<Visibility>(row).unwrap() = Visibility::Visible;
+        let _ = system.run((), &mut world);
+        assert_eq!(*world.get::<Visibility>(panel).unwrap(), Visibility::Visible);
+        assert_eq!(
+            *world.get::<Visibility>(row).unwrap(),
+            Visibility::Inherited,
+            "shown rows follow the panel instead of forcing themselves visible"
+        );
     }
 
     /// Regression: sell clicks must not take Res + ResMut of the same menu (Bevy B0002).
