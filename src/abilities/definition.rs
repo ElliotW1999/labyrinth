@@ -1,6 +1,7 @@
 //! Static, data-driven ability definitions. Nothing here is mutated at runtime;
 //! per-hero state lives in [`crate::components::AbilityState`].
 
+pub use crate::actions::{TargetTeam, TargetType};
 use crate::components::{AbilityId, DamageType};
 use crate::items::{StatusEffect, StatusKind};
 
@@ -78,27 +79,6 @@ pub enum AbilityBehavior {
     Passive,
     /// Each cast flips [`crate::components::AbilityState::toggled`].
     Toggle,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TargetType {
-    NoTarget,
-    /// Must be cast on a unit matching `target_team`.
-    Unit,
-    /// Ground point / skillshot direction. A hovered unit is accepted as the aim.
-    Point,
-    /// Ground area centred on the aim. A hovered unit is accepted as the aim.
-    Area,
-}
-
-/// Which units an ability (or one of its effects) may affect, relative to the caster.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TargetTeam {
-    Enemy,
-    /// Same team, including the caster.
-    Ally,
-    Any,
 }
 
 #[allow(dead_code)]

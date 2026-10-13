@@ -7,9 +7,10 @@
 
 use bevy::prelude::*;
 
+use crate::actions::{Activation, QueuedActivation};
 use crate::components::{
-    AbilityCasting, Ancient, AttackMoveOrder, AttackSwing, AttackTarget, CollisionRadius,
-    CombatStats, MoveTarget, Obstacle, ObstacleShape, QueuedAbilityCast, Tower,
+    Ancient, AttackMoveOrder, AttackSwing, AttackTarget, CollisionRadius, CombatStats,
+    MoveTarget, Obstacle, ObstacleShape, Tower,
 };
 use crate::dimensions::{center_distance as flat_distance, collision_of};
 use crate::facing::turn_toward;
@@ -485,9 +486,9 @@ pub fn order_hero_move(commands: &mut Commands, hero: Entity, position: Vec3) {
         .insert(MoveTarget { position })
         .remove::<AttackTarget>()
         .remove::<AttackMoveOrder>()
-        .remove::<QueuedAbilityCast>()
+        .remove::<QueuedActivation>()
         .remove::<AttackSwing>()
-        .remove::<AbilityCasting>();
+        .remove::<Activation>();
 }
 
 /// Halt movement and cancel the current attack / attack-move / queued cast.
@@ -497,9 +498,9 @@ pub fn order_hero_stop(commands: &mut Commands, hero: Entity) {
         .remove::<MoveTarget>()
         .remove::<AttackTarget>()
         .remove::<AttackMoveOrder>()
-        .remove::<QueuedAbilityCast>()
+        .remove::<QueuedActivation>()
         .remove::<AttackSwing>()
-        .remove::<AbilityCasting>();
+        .remove::<Activation>();
 }
 
 /// Order a unit to attack another. Approach (if out of range) is handled by
@@ -510,9 +511,9 @@ pub fn order_attack_unit(commands: &mut Commands, attacker: Entity, target: Enti
         .entity(attacker)
         .insert(AttackTarget(target))
         .remove::<AttackSwing>()
-        .remove::<AbilityCasting>()
+        .remove::<Activation>()
         .remove::<AttackMoveOrder>()
-        .remove::<QueuedAbilityCast>()
+        .remove::<QueuedActivation>()
         .remove::<MoveTarget>()
         .remove::<crate::navigation::attack_position::AttackPositionGoal>();
 }
@@ -525,9 +526,9 @@ pub fn order_attack_move(commands: &mut Commands, hero: Entity, destination: Vec
             position: destination,
         })
         .remove::<AttackTarget>()
-        .remove::<QueuedAbilityCast>()
+        .remove::<QueuedActivation>()
         .remove::<AttackSwing>()
-        .remove::<AbilityCasting>();
+        .remove::<Activation>();
 }
 
 #[cfg(test)]

@@ -135,7 +135,7 @@ Each unit carries three explicit gameplay dimensions from `dimensions::UnitDimen
 ```
 IssueCommand (input / minimap / network host)
   → CommandQueue (normal: replace queue · Shift: append)
-  → order components (MoveTarget / AttackTarget / AttackMoveOrder / AbilityCastRequest)
+  → order components (MoveTarget / AttackTarget / AttackMoveOrder / ActivationRequest)
   → AI + attack positioning (free spot within range, not the target's center)
   → plan_paths: radius-aware A* on the static NavGrid (replans only when needed)
   → movement: follow waypoints, skip ahead on line of sight, local avoidance
@@ -199,8 +199,9 @@ Mechanics decide **when** something happens and **who** is involved; effects dec
 ```text
 AbilityDefinition (abilities/catalog.rs, AbilityDefinitions resource)
 AbilityState      (AbilityLoadout on the hero: level, cooldown, charges, toggled)
-input / AI → AbilityCastRequest → validate (usable, cooldown, mana, caster state, target, range)
-           → cast point → AbilityCastEvent
+input / AI → ActivationRequest { caster, source: Ability(slot) | Item(slot), target }   (actions/)
+           → validate (source available, cooldown + charges, mana, caster state, target, range)
+           → cast point → ActionFiredEvent → AbilityCastEvent / item OnUse → channel → backswing
            → mechanics: Dash / Projectile / AttackUnitTarget / RingFx / custom behavior
            → AbilityTriggerEvent(TriggerContext)          OnCast, OnProjectileHit, OnImpact, Custom("on_…")
            → effect entries whose trigger matches → resolve EffectTarget
@@ -212,7 +213,8 @@ spell projectile → ProjectileHitEvent { primary, splashed } → OnProjectileHi
 - **Mechanics** (`abilities/mechanics.rs`) move units and spawn projectiles. They never apply consequences; they write an `AbilityTriggerEvent` whose `TriggerContext` carries the caster, cast target, trigger unit, affected units, and trigger point
 - **Effects** (`abilities/effects.rs`): `resolve_ability_triggers` runs every entry tagged with the fired trigger. Targets: `Caster`, `CastTarget`, `TriggerUnit`, `AffectedUnits` (e.g. splash victims), `UnitsInRadius`. Effects: `Damage` (optional `EffectScaling`), `Heal`, `ApplyStatus`, `Dispel`, and `Custom { id }` for systems registered with `app.register_custom_effect(id, system)`
 - **Projectiles** (`combat.rs`) know their source, target / aim, speed, and collision / splash radius only
-- **Casting** (`abilities/casting.rs`) is shared by every caster; out-of-range casts walk into range and re-request. Mana and cooldown are paid when the cast point completes
+- **Activation** (`actions/`) is shared by abilities and active items: target types (no target, self, unit, point, area, direction), team rules (enemy / ally / both / self), range, cast point, channel, mana cost, cooldown, and charges. Out-of-range activations walk into range and re-request. Mana and cooldown are paid when the action fires. `ActionSources` asks the ability layer (learned / castable, rank) or the item layer (the inventory slot holds that active, per-copy cooldown and charges). Items carry an instance id, so two copies keep separate state and an in-flight use follows its copy if it changes slots
+- **Casting** (`abilities/casting.rs`) is the ability layer on top: learned / passive gating, the `ActionSpec` at the slot's rank, toggle state, and turning fired actions into `AbilityCastEvent`s and channel ends into `OnChannelEnd` triggers. Silence and stun both block abilities; only stun blocks items
 - **Custom mechanics** (`abilities/custom.rs`): `app.register_ability_behavior(id, system)` runs a one-shot system with the `CastContext`. It reports what happened with a trigger such as `AbilityTrigger::Custom("on_skewer_end")`, and the ability's effect entries apply the consequences
 
 Adding a simple ability: add an `AbilityId` variant (or use the generators), then add an arm to `catalog::builtin`:
@@ -275,7 +277,7 @@ Re-running overwrites: each owner lives in a `// <ability:id>` / `// <item:id>` 
 ### Items
 
 - Gold shop near each base; click an item for its build tree (components + recipe scraps); buy from the detail popup. Recipes are hidden from the default shop grid.
-- Six inventory slots; RMB → **Sell (50%)** near shop; actives use ASDZXC
+- Six inventory slots; RMB → **Sell (50%)** near shop; actives use ASDZXC through the same activation pipeline as abilities (no target and self fire on the key; unit, point, and direction enter targeting mode)
 - Heroes carry a `StatusEffects` list for buffs / debuffs
 - Heroes and creeps separate by collision size without pushing each other (moving units yield to stationary ones); the **forceful** buff can shove (e.g. Vanguard Shockwave). **Phased** (Dash/Blink) ignores unit collision.
 - Every item is an `ItemDefinition` (`src/item_catalog.rs`): price, sell value, tier, rarity, stacking, charges, recipe components, and `AbilityEffectEntry` effects. Passive `PassiveStat` entries fold into stats; `on_use` (hotkeys), `on_attack` and `on_attack_hit` fire `AbilityTriggerEvent`s with `EffectSource::Item`, resolved by the same effect systems as abilities
@@ -295,12 +297,13 @@ frost_hammer,Frost Hammer,weapon,2800,1400,3,rare,false,,false,,A heavy weapon i
 ```
 
 - `item_type` component/weapon/armor/accessory/consumable/utility/recipe, `rarity` common/uncommon/rare/epic/legendary; optional extras `short_label`, `cooldown`, `components` (`;`-separated ids), `color_r/g/b`
-- Effects use the ability effect schema with item triggers `passive` (must be `stat_modifier`: `max_health`, `health_regen`, `max_mana`, `mana_regen`, `attack_damage`, `attack_speed`, `armor`, `magic_resist`, `move_speed`, `strength`, `agility`, `intelligence`), `on_use`, `on_attack`, `on_attack_hit`, `on_damage_taken`, `on_kill`, `on_death` and targets `owner`, `cast_target`, `trigger_unit`, `attacker`, `affected_units`, `units_in_radius`
-- Consumables spend a charge (or one of the stack) per use and disappear when empty
+- Optional activation columns on items with `on_use` (blank = instant no-target use): `target_type` (`unit`, `point`, `direction`, `no_target`, `self`), `target_team` (`enemy`, `ally`, `both`, `self`), `cast_range`, `cast_time`, `channel_time`, `mana_cost`. Unit targets require `target_team`. Point, unit, and direction targets require `cast_range`. Teleport items must be `point` or `direction` so the destination is the cast aim
+- Effects use the ability effect schema with item triggers `passive` (must be `stat_modifier`: `max_health`, `health_regen`, `max_mana`, `mana_regen`, `attack_damage`, `attack_speed`, `armor`, `magic_resist`, `move_speed`, `strength`, `agility`, `intelligence`), `on_use`, `on_attack`, `on_attack_hit`, `on_damage_taken`, `on_kill`, `on_death` and targets `owner`, `cast_target` (unit and self actives), `trigger_unit`, `attacker`, `affected_units`, `units_in_radius`
+- Consumables spend a charge (or one of the stack) when the use fires, and disappear when empty. A rejected activation spends nothing
 
 ### Teleport
 
-`movement,teleport` (`on_cast` for abilities, `on_use` for items) is one shared effect: `AbilityEffect::Teleport` → `TeleportEvent` → `teleport.rs`. The destination is the trigger's aim point (the cast's point or target position; for items, the cursor's ground point when the active is used), never part of the CSV row. Cast time, cooldown, mana, and range stay with the cast / item-use systems.
+`movement,teleport` (`on_cast` for abilities, `on_use` for items) is one shared effect: `AbilityEffect::Teleport` → `TeleportEvent` → `teleport.rs`. The destination is the trigger's aim point (the cast's point or target position). Item teleports take that aim from a point or direction activation, so they use the same range and targeting indicator as abilities. Cast time, cooldown, mana, and range stay on the shared activation.
 
 - The destination must fit the target's `CollisionRadius` inside the map and clear of trees, towers, and ancients (`NavGrid`), and must not overlap a non-phased unit (phased targets ignore units, like normal collision). Otherwise nothing changes — no nearby fallback and no pushing — and a `TeleportRejectedEvent` is emitted.
 - On success the unit moves instantly, keeps its Y, health, mana, statuses, and cooldowns, and loses its `MoveTarget`, `NavPath`, attack-move, attack-position goal, and in-flight forced movement. A `TeleportCompletedEvent` is emitted. Attack and queued-cast orders are kept (units re-path from the new spot).
@@ -308,7 +311,7 @@ frost_hammer,Frost Hammer,weapon,2800,1400,3,rare,false,,false,,A heavy weapon i
 
 ### Limitations
 
-Not yet expressible without engine changes: ability passives / toggle drains (Stone Skin, Overcharge), channel runtime (`channel_time` is stored; `on_channel_*` only fire from custom mechanics), delayed effects, cooldown floors other than explicit level lists, `%` attack speed or timed attribute buffs, item targeting (`cast_target` on items; item aim is the cursor point, so teleport items have no range limit or targeting indicator), and the `on_damage_taken` / `on_kill` / `on_death` item triggers (validated, not emitted yet). Displacement ignores obstacles.
+Not yet expressible without engine changes: ability passives / toggle drains (Stone Skin, Overcharge), channel ticks (`on_channel_end` fires for abilities when a channel completes or is interrupted by silence / stun; item channels end the same way but do not emit an item trigger; `on_channel_tick` only fires from custom mechanics), delayed effects, cooldown floors other than explicit level lists, `%` attack speed or timed attribute buffs, and the `on_damage_taken` / `on_kill` / `on_death` item triggers (validated, not emitted yet). Item charges are spent on use and refill with the next unit of the stack; they do not regenerate over time the way ability charges do. An instant item (no cast point and no channel) fires without joining the command queue, so Shift does not queue it. Displacement ignores obstacles.
 
 ## What's included
 
@@ -351,7 +354,8 @@ src/
   basic_attack.rs     Basic attack pipeline (BasicAttackEvent → windup → impact → DamageEvent)
   combat.rs           DamageEvent + mitigation, spell projectiles, death / gold / XP
   progression.rs      Hero XP, attributes, and level-up growth
-  abilities/          Ability definitions, cast pipeline, mechanics → triggers → effects, generated.rs, targeting UI
+  actions/            Shared activation pipeline: targeting, range, cast point, channel, costs, cooldowns, charges
+  abilities/          Ability definitions, ability cast layer, mechanics → triggers → effects, generated.rs, targeting UI
   items.rs            Shop, inventory, sell, actives, status effects
   item_catalog.rs     Generated ItemDefinitions (ItemGenerator)
   displacement.rs     Knockback / pull forced movement

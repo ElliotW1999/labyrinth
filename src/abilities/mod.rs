@@ -4,7 +4,8 @@
 //! ```text
 //! AbilityDefinition (catalog / AbilityDefinitions)   AbilityState (AbilityLoadout on the hero)
 //!          └──────────────┬──────────────────────────────────┘
-//! input / AI → AbilityCastRequest → validate → cast point → AbilityCastEvent
+//! input / AI → ActivationRequest (shared `crate::actions` pipeline: validate → cast point
+//!   → channel) → AbilityCastEvent
 //!          → mechanics (dash, projectile, custom behavior, …)   — WHEN and WHO
 //!          → AbilityTriggerEvent(TriggerContext)
 //!          → matching effect entries                              — WHAT
@@ -34,10 +35,12 @@ use crate::picking::{cursor_ground_hit, cursor_ray, ground_hit, pick_under_ray, 
 use crate::resources::SharedAssets;
 use crate::scale;
 use crate::unit_commands::{IssueCommand, UnitCommand};
-use casting::{
-    check_usable, resolve_queued_ability_casts, team_allows, tick_ability_casting,
-    validate_cast_requests, AbilityCastEvent, AbilityCastRequest,
+use crate::actions::{
+    check_ready, resolve_queued_activations, team_allows, tick_activations,
+    validate_activation_requests, ActionId, ActionSource, ActionSources, ActionsPlugin,
+    ActivationRequest, DisableRule,
 };
+use casting::{ability_channel_end_triggers, emit_ability_casts, AbilityCastEvent};
 use catalog::{register_loadout_definitions, restore_ability_charges, AbilityDefinitions};
 use definition::{TargetTeam, TargetType};
 use crate::displacement::{apply_displacement_events, tick_forced_movement, DisplacementEvent};
@@ -59,7 +62,6 @@ impl Plugin for AbilitiesPlugin {
             .init_resource::<AbilityDefinitions>()
             .init_resource::<CustomAbilityBehaviors>()
             .init_resource::<CustomAbilityEffects>()
-            .add_message::<AbilityCastRequest>()
             .add_message::<AbilityCastEvent>()
             .add_message::<AbilityTriggerEvent>()
             .add_message::<HealEvent>()
@@ -79,10 +81,13 @@ impl Plugin for AbilitiesPlugin {
                     begin_or_cast_from_hotkeys,
                     update_targeting_indicators,
                     confirm_or_cancel_targeted_cast,
-                    resolve_queued_ability_casts,
-                    validate_cast_requests,
-                    tick_ability_casting,
+                    resolve_queued_activations,
+                    validate_activation_requests,
+                    tick_activations,
+                    emit_ability_casts,
+                    crate::items::resolve_item_uses,
                     execute_ability_casts,
+                    ability_channel_end_triggers,
                     projectile_hit_triggers,
                     resolve_ability_triggers,
                     spawn_requested_projectiles,
@@ -106,11 +111,14 @@ impl Plugin for AbilitiesPlugin {
                     .after(crate::combat::apply_projectile_hits)
                     .before(crate::combat::apply_damage_events),
             );
+        if !app.is_plugin_added::<ActionsPlugin>() {
+            app.add_plugins(ActionsPlugin);
+        }
         custom::register(app);
     }
 }
 
-/// Active targeting mode for a targeted ability (E / R).
+/// Active targeting mode for a targeted ability or item.
 #[derive(Resource, Debug, Clone, Copy, Default)]
 pub struct AbilityTargeting {
     pub active: Option<PendingTargetedCast>,
@@ -118,7 +126,7 @@ pub struct AbilityTargeting {
 
 #[derive(Debug, Clone, Copy)]
 pub struct PendingTargetedCast {
-    pub slot: usize,
+    pub source: ActionSource,
     pub cast_range: f32,
     /// AoE radius (area) or projectile width (point).
     pub aoe_radius: f32,
@@ -127,6 +135,7 @@ pub struct PendingTargetedCast {
     /// When true, show trajectory corridor instead of an AoE disc.
     pub point_target: bool,
     pub target_team: TargetTeam,
+    pub disable: DisableRule,
 }
 
 #[derive(Component)]
@@ -142,7 +151,7 @@ fn tick_ability_cooldowns(time: Res<Time>, mut query: Query<&mut AbilityLoadout>
     let dt = time.delta_secs();
     for mut loadout in &mut query {
         for slot in &mut loadout.slots {
-            slot.cooldown_remaining = (slot.cooldown_remaining - dt).max(0.0);
+            slot.cooldown.tick(dt);
         }
     }
 }
@@ -154,76 +163,95 @@ fn regen_mana(time: Res<Time>, mut query: Query<&mut Mana>) {
     }
 }
 
-/// QWER: no-target abilities issue a cast command immediately; targeted ones enter
-/// targeting mode. Shift queues the cast behind the current command.
+/// Ability (QWER) and item (A S D Z X C) hotkeys, in slot order.
+const ACTION_HOTKEYS: [(KeyCode, ActionSource); 10] = [
+    (KeyCode::KeyQ, ActionSource::Ability(0)),
+    (KeyCode::KeyW, ActionSource::Ability(1)),
+    (KeyCode::KeyE, ActionSource::Ability(2)),
+    (KeyCode::KeyR, ActionSource::Ability(3)),
+    (KeyCode::KeyA, ActionSource::Item(0)),
+    (KeyCode::KeyS, ActionSource::Item(1)),
+    (KeyCode::KeyD, ActionSource::Item(2)),
+    (KeyCode::KeyZ, ActionSource::Item(3)),
+    (KeyCode::KeyX, ActionSource::Item(4)),
+    (KeyCode::KeyC, ActionSource::Item(5)),
+];
+
+/// QWER / ASDZXC: no-target and self-target actions activate immediately; targeted ones
+/// enter targeting mode. Shift queues the activation behind the current command. Actions
+/// that don't occupy the caster (instant items) skip the command queue so current
+/// orders keep running.
 fn begin_or_cast_from_hotkeys(
     keys: Res<ButtonInput<KeyCode>>,
     mut targeting: ResMut<AbilityTargeting>,
     mut commands: Commands,
     assets: Res<SharedAssets>,
     defs: Res<AbilityDefinitions>,
+    sources: ActionSources,
     mut issue: MessageWriter<IssueCommand>,
-    hero: Query<(Entity, &Transform, &AbilityLoadout, &Mana, &StatusEffects), With<PlayerHero>>,
+    mut requests: MessageWriter<ActivationRequest>,
+    hero: Query<(Entity, &Transform, &Mana, &StatusEffects), With<PlayerHero>>,
 ) {
-    let Ok((hero_entity, transform, loadout, mana, statuses)) = hero.single() else {
+    let Ok((hero_entity, transform, mana, statuses)) = hero.single() else {
         return;
     };
 
-    if !statuses.can_cast() {
-        return;
-    }
-
     // Ctrl+QWER is reserved for spending skill points.
-    if keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight) {
-        return;
-    }
+    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
 
-    let casts = [
-        (KeyCode::KeyQ, 0usize),
-        (KeyCode::KeyW, 1),
-        (KeyCode::KeyE, 2),
-        (KeyCode::KeyR, 3),
-    ];
-
-    for (key, index) in casts {
-        if !keys.just_pressed(key) {
+    for (key, source) in ACTION_HOTKEYS {
+        if !keys.just_pressed(key) || (ctrl && matches!(source, ActionSource::Ability(_))) {
             continue;
         }
-
         // Switching hotkeys cancels the pending targeting mode. The current cast is
         // only replaced once the new command actually starts (see `unit_commands`).
         if targeting.active.is_some() {
             clear_targeting(&mut commands, &mut targeting);
         }
-
-        let Some(slot) = loadout.slots.get(index) else {
+        let Ok(spec) = sources.spec(hero_entity, source) else {
             continue;
         };
-        let Some(def) = defs.get(slot.id) else {
-            continue;
-        };
-        if check_usable(def, slot, mana, Some(statuses)).is_err() {
+        if spec.disable.blocks(Some(statuses)) {
             continue;
         }
 
-        if def.target_type == TargetType::NoTarget {
-            issue.write(IssueCommand {
-                unit: hero_entity,
-                command: UnitCommand::CastAbility {
-                    slot: index,
+        if check_ready(&spec.cooldown_state, &spec.cost, spec.disable, mana, Some(statuses))
+            .is_err()
+        {
+            continue;
+        }
+
+        if spec.target_type.is_instant() {
+            if spec.occupies_caster {
+                issue.write(IssueCommand {
+                    unit: hero_entity,
+                    command: UnitCommand::Activate {
+                        source,
+                        target: CastTarget::None,
+                    },
+                    queue: crate::input::shift_held(&keys),
+                });
+            } else {
+                requests.write(ActivationRequest {
+                    caster: hero_entity,
+                    source,
                     target: CastTarget::None,
-                },
-                queue: crate::input::shift_held(&keys),
-            });
+                });
+            }
             continue;
         }
+        let aoe_radius = match spec.action {
+            ActionId::Ability(id) => defs.get(id).map_or(0.0, |def| def.aoe_radius.at(spec.level)),
+            ActionId::Item { .. } => 0.0,
+        };
         let pending = PendingTargetedCast {
-            slot: index,
-            cast_range: def.cast_range.at(slot.rank),
-            aoe_radius: def.aoe_radius.at(slot.rank),
-            unit_only: def.target_type == TargetType::Unit,
-            point_target: def.target_type == TargetType::Point,
-            target_team: def.target_team,
+            source,
+            cast_range: spec.cast_range,
+            aoe_radius,
+            unit_only: spec.target_type == TargetType::Unit,
+            point_target: matches!(spec.target_type, TargetType::Point | TargetType::Direction),
+            target_team: spec.target_team,
+            disable: spec.disable,
         };
         targeting.active = Some(pending);
         spawn_indicators(
@@ -237,8 +265,8 @@ fn begin_or_cast_from_hotkeys(
     }
 }
 
-/// LMB confirms the pending targeted cast as a cast command (Shift queues it); range,
-/// costs, and target rules are checked by `casting::validate_cast_requests`.
+/// LMB confirms the pending targeted cast as an activate command (Shift queues it);
+/// range, costs, and target rules are checked by the shared activation pipeline.
 pub(crate) fn confirm_or_cancel_targeted_cast(
     mouse: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -277,7 +305,7 @@ pub(crate) fn confirm_or_cancel_targeted_cast(
         return;
     };
 
-    if !statuses.can_cast() {
+    if pending.disable.blocks(Some(statuses)) {
         clear_targeting(&mut commands, &mut targeting);
         return;
     }
@@ -300,8 +328,8 @@ pub(crate) fn confirm_or_cancel_targeted_cast(
     clear_targeting(&mut commands, &mut targeting);
     issue.write(IssueCommand {
         unit: hero_entity,
-        command: UnitCommand::CastAbility {
-            slot: pending.slot,
+        command: UnitCommand::Activate {
+            source: pending.source,
             target: unit_target.map_or(CastTarget::Point(hit), CastTarget::Unit),
         },
         queue: crate::input::shift_held(&keys),
@@ -547,6 +575,9 @@ mod tests {
     use crate::items::ItemId;
     use super::mechanics::{AbilityAppExt, CastContext};
     use super::*;
+    use crate::actions::{
+        Activation, ActionChannelEndEvent, ActionFiredEvent, ActivationRequest, QueuedActivation,
+    };
     use crate::components::CollisionRadius;
     use crate::teleport::TeleportError;
     use crate::navigation::{NavGrid, NavShape};
@@ -555,8 +586,7 @@ mod tests {
         SpawnProjectileEvent,
     };
     use crate::components::{
-        AbilityCasting, AbilityId, AttackTarget, BoundRadius, CombatStats, DamageType, Health, MoveTarget,
-        QueuedAbilityCast,
+        AbilityId, AbilityState, AttackTarget, BoundRadius, CombatStats, DamageType, Health, MoveTarget,
     };
 
     fn test_app() -> App {
@@ -566,7 +596,9 @@ mod tests {
             .init_resource::<AbilityDefinitions>()
             .init_resource::<CustomAbilityBehaviors>()
             .init_resource::<CustomAbilityEffects>()
-            .add_message::<AbilityCastRequest>()
+            .add_message::<ActivationRequest>()
+            .add_message::<ActionFiredEvent>()
+            .add_message::<ActionChannelEndEvent>()
             .add_message::<AbilityCastEvent>()
             .add_message::<AbilityTriggerEvent>()
             .add_message::<HealEvent>()
@@ -584,10 +616,13 @@ mod tests {
                 Update,
                 (
                     register_loadout_definitions,
-                    resolve_queued_ability_casts,
-                    validate_cast_requests,
-                    tick_ability_casting,
+                    resolve_queued_activations,
+                    validate_activation_requests,
+                    tick_activations,
+                    emit_ability_casts,
+                    crate::items::resolve_item_uses,
                     execute_ability_casts,
+                    ability_channel_end_triggers,
                     projectile_hit_triggers,
                     resolve_ability_triggers,
                     apply_heal_events,
@@ -637,11 +672,8 @@ mod tests {
     }
 
     fn request(app: &mut App, caster: Entity, slot: usize, target: CastTarget) {
-        app.world_mut().write_message(AbilityCastRequest {
-            caster,
-            slot,
-            target,
-        });
+        app.world_mut()
+            .write_message(ActivationRequest::ability(caster, slot, target));
     }
 
     const KIT: [AbilityId; 4] = [
@@ -670,7 +702,7 @@ mod tests {
         assert_eq!(world.get::<Health>(far).unwrap().current, 1000.0);
         let shockwave = catalog::builtin(AbilityId::Shockwave);
         assert_eq!(world.get::<Mana>(caster).unwrap().current, 1000.0 - shockwave.mana_cost.at(1));
-        assert!(world.get::<AbilityLoadout>(caster).unwrap().slots[0].cooldown_remaining > 0.0);
+        assert!(world.get::<AbilityLoadout>(caster).unwrap().slots[0].cooldown.remaining > 0.0);
         assert!(world.get::<StatusEffects>(caster).unwrap().can_push_units());
     }
 
@@ -682,16 +714,16 @@ mod tests {
         request(&mut app, caster, 1, CastTarget::Unit(enemy));
         step(&mut app);
         let world = app.world();
-        assert!(world.get::<QueuedAbilityCast>(caster).is_some());
+        assert!(world.get::<QueuedActivation>(caster).is_some());
         assert!(world.get::<MoveTarget>(caster).is_some());
-        assert!(world.get::<AbilityCasting>(caster).is_none());
+        assert!(world.get::<Activation>(caster).is_none());
         assert_eq!(world.get::<Mana>(caster).unwrap().current, 1000.0);
 
         let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(50.0, 0.0, 0.0));
-        app.world_mut().entity_mut(caster).remove::<QueuedAbilityCast>();
+        app.world_mut().entity_mut(caster).remove::<QueuedActivation>();
         request(&mut app, caster, 1, CastTarget::Unit(ally));
         step(&mut app);
-        assert!(app.world().get::<AbilityCasting>(caster).is_none(), "allies are invalid Bolt targets");
+        assert!(app.world().get::<Activation>(caster).is_none(), "allies are invalid Bolt targets");
     }
 
     fn hit(payload: ProjectilePayload, impact: Vec3, primary: Option<Entity>, splashed: Vec<Entity>) -> ProjectileHitEvent {
@@ -949,7 +981,7 @@ mod tests {
         assert_eq!(world.get::<Transform>(caster).unwrap().translation, Vec3::new(1500.0, 0.0, 300.0));
         assert!(world.get::<MoveTarget>(caster).is_none());
         assert_eq!(world.get::<Mana>(caster).unwrap().current, 900.0);
-        assert!(world.get::<AbilityLoadout>(caster).unwrap().slots[3].cooldown_remaining > 0.0);
+        assert!(world.get::<AbilityLoadout>(caster).unwrap().slots[3].cooldown.remaining > 0.0);
     }
 
     #[test]
@@ -1026,5 +1058,140 @@ mod tests {
         assert_eq!(world.get::<Transform>(by_ability).unwrap().translation, Vec3::new(2000.0, 0.0, 0.0));
         assert_eq!(world.get::<Transform>(by_item).unwrap().translation, Vec3::new(-2000.0, 0.0, 0.0));
         assert_eq!(world.get::<Transform>(ally).unwrap().translation, Vec3::new(0.0, 0.0, 2500.0));
+    }
+
+    fn channelled_heal() -> AbilityDefinition {
+        AbilityDefinition::new(AbilityId::Bulwark)
+            .costs(RankValue::fixed(8.0), RankValue::fixed(100.0))
+            .timing(0.1, 0.0)
+            .channel(0.5)
+            .on(
+                AbilityTrigger::OnChannelEnd,
+                EffectTarget::Caster,
+                AbilityEffect::Heal {
+                    amount: RankValue::fixed(200.0),
+                    scaling: EffectScaling::None,
+                },
+            )
+    }
+
+    #[test]
+    fn channelled_abilities_hold_the_activation_then_fire_on_channel_end() {
+        let mut app = test_app();
+        app.world_mut().resource_mut::<AbilityDefinitions>().insert(channelled_heal());
+        let caster = spawn_caster(&mut app, KIT);
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 500.0;
+
+        request(&mut app, caster, 3, CastTarget::None);
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        let activation = *app.world().get::<Activation>(caster).unwrap();
+        assert!(activation.fired && !activation.released(), "channelling after the cast point");
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 900.0, "paid at the cast point");
+        assert_eq!(health(&app, caster), 500.0);
+
+        for _ in 0..12 {
+            step(&mut app);
+        }
+        assert!(app.world().get::<Activation>(caster).is_none());
+        assert_eq!(health(&app, caster), 700.0, "OnChannelEnd effects ran once");
+    }
+
+    #[test]
+    fn stuns_interrupt_a_channel() {
+        let mut app = test_app();
+        app.world_mut().resource_mut::<AbilityDefinitions>().insert(channelled_heal());
+        let caster = spawn_caster(&mut app, KIT);
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 500.0;
+        request(&mut app, caster, 3, CastTarget::None);
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        app.world_mut().get_mut::<StatusEffects>(caster).unwrap().effects.push(
+            crate::items::StatusEffect::stunned(1.0),
+        );
+        step(&mut app);
+        let ends = app.world().resource::<Messages<ActionChannelEndEvent>>();
+        let ends: Vec<_> = ends.iter_current_update_messages().map(|e| e.completed).collect();
+        assert_eq!(ends, vec![false]);
+        assert!(app.world().get::<Activation>(caster).is_none_or(|a| a.released()));
+    }
+
+    #[test]
+    fn self_target_abilities_target_the_caster() {
+        let mut app = test_app();
+        let def = AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::SelfTarget, RankValue::ZERO, RankValue::ZERO)
+            .team(TargetTeam::SelfOnly)
+            .costs(RankValue::fixed(8.0), RankValue::fixed(100.0))
+            .on(
+                AbilityTrigger::OnCast,
+                EffectTarget::CastTarget,
+                AbilityEffect::Heal {
+                    amount: RankValue::fixed(100.0),
+                    scaling: EffectScaling::None,
+                },
+            );
+        app.world_mut().resource_mut::<AbilityDefinitions>().insert(def);
+        let caster = spawn_caster(&mut app, KIT);
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 500.0;
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::X * 50.0);
+        request(&mut app, caster, 3, CastTarget::Unit(ally));
+        for _ in 0..12 {
+            step(&mut app);
+        }
+        assert_eq!(health(&app, caster), 600.0);
+    }
+
+    #[test]
+    fn direction_abilities_fire_at_any_distance_along_the_direction() {
+        let mut app = test_app();
+        let def = AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::Direction, RankValue::fixed(400.0), RankValue::ZERO)
+            .costs(RankValue::fixed(8.0), RankValue::fixed(100.0));
+        app.world_mut().resource_mut::<AbilityDefinitions>().insert(def);
+        let caster = spawn_caster(&mut app, KIT);
+        request(&mut app, caster, 3, CastTarget::Point(Vec3::new(0.0, 0.0, 9000.0)));
+        let mut aims = Vec::new();
+        for _ in 0..30 {
+            step(&mut app);
+            let casts = app.world().resource::<Messages<AbilityCastEvent>>();
+            aims.extend(casts.iter_current_update_messages().map(|c| c.aim));
+        }
+        assert!(app.world().get::<QueuedActivation>(caster).is_none(), "never walks");
+        assert_eq!(aims, vec![Vec3::new(0.0, 0.0, 400.0)]);
+    }
+
+    #[test]
+    fn item_activation_without_an_inventory_does_nothing() {
+        let mut app = test_app();
+        let caster = spawn_caster(&mut app, KIT);
+        app.world_mut().write_message(ActivationRequest {
+            caster,
+            source: crate::actions::ActionSource::Item(0),
+            target: CastTarget::None,
+        });
+        step(&mut app);
+        assert!(app.world().get::<Activation>(caster).is_none());
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 1000.0);
+    }
+
+    #[test]
+    fn reskilled_slots_cancel_the_in_flight_cast() {
+        let mut app = test_app();
+        let caster = spawn_caster(&mut app, KIT);
+        request(&mut app, caster, 0, CastTarget::None);
+        step(&mut app);
+        assert!(app.world().get::<Activation>(caster).is_some());
+        app.world_mut().get_mut::<AbilityLoadout>(caster).unwrap().slots[0] = AbilityState {
+            rank: 1,
+            ..AbilityState::fresh(AbilityId::Bolt)
+        };
+        for _ in 0..12 {
+            step(&mut app);
+        }
+        assert!(app.world().get::<Activation>(caster).is_none());
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 1000.0, "nothing was paid");
     }
 }

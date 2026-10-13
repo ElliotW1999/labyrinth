@@ -50,7 +50,7 @@ pub fn register_loadout_definitions(
         for slot in &mut loadout.slots {
             defs.ensure_builtin(slot.id);
             if let Some((max_charges, _)) = defs.get(slot.id).and_then(|def| def.charges) {
-                slot.charges.get_or_insert(max_charges);
+                slot.cooldown.init_charges(max_charges);
             }
         }
     }
@@ -69,16 +69,7 @@ pub fn restore_ability_charges(
             else {
                 continue;
             };
-            let charges = slot.charges.get_or_insert(max_charges);
-            if *charges >= max_charges {
-                slot.charge_restore_remaining = restore_time;
-                continue;
-            }
-            slot.charge_restore_remaining -= dt;
-            if slot.charge_restore_remaining <= 0.0 {
-                *charges += 1;
-                slot.charge_restore_remaining += restore_time;
-            }
+            slot.cooldown.restore_charges(max_charges, restore_time, dt);
         }
     }
 }

@@ -4,15 +4,16 @@
 //! normal command clears the unit's [`CommandQueue`] and starts immediately; a
 //! queued (Shift) command is appended and starts when everything before it has
 //! finished. Starting a command reuses the existing order components
-//! (`MoveTarget`, `AttackTarget`, `AttackMoveOrder`, `AbilityCastRequest`), so
+//! (`MoveTarget`, `AttackTarget`, `AttackMoveOrder`, `ActivationRequest`), so
 //! the AI, navigation, and casting pipelines are unchanged.
 //!
 //! Completion:
 //! - `Move` — the unit arrived (or movement gave up next to a blocked goal): `MoveTarget` is gone.
 //! - `AttackMove` — `AttackMoveOrder` is gone (destination reached).
 //! - `Attack` — the target died / was removed, or the attack was cancelled by something else.
-//! - `CastAbility` — the ability fired (the next command may cancel its backswing), or the cast
-//!   was rejected / interrupted before firing. Unit, point, and no-target casts all follow this.
+//! - `Activate` — the ability / item fired (the next command may cancel its backswing), or the
+//!   activation was rejected / interrupted before firing. Unit, point, and no-target activations
+//!   all follow this; ones that fire without occupying the caster end after the grace period.
 //! - `Stop` — immediately.
 //!
 //! A command whose target is already invalid when it would start (dead or missing
@@ -23,10 +24,9 @@ use std::collections::VecDeque;
 
 use bevy::prelude::*;
 
-use crate::abilities::casting::AbilityCastRequest;
+use crate::actions::{ActionSource, ActivationRequest, Activation, QueuedActivation};
 use crate::components::{
-    AbilityCasting, AttackMoveOrder, AttackTarget, CastTarget, CollisionRadius, Health, MoveTarget,
-    QueuedAbilityCast,
+    AttackMoveOrder, AttackTarget, CastTarget, CollisionRadius, Health, MoveTarget,
 };
 use crate::dimensions::collision_of;
 use crate::movement::{order_attack_move, order_attack_unit, order_hero_move, order_hero_stop, SimSet};
@@ -40,7 +40,8 @@ pub enum UnitCommand {
     Move { destination: Vec3 },
     AttackMove { destination: Vec3 },
     Attack { target: Entity },
-    CastAbility { slot: usize, target: CastTarget },
+    /// Use an ability or active item through the shared `actions` pipeline.
+    Activate { source: ActionSource, target: CastTarget },
     Stop,
 }
 
@@ -49,7 +50,7 @@ impl UnitCommand {
     pub fn destination(&self) -> Option<Vec3> {
         match *self {
             UnitCommand::Move { destination } | UnitCommand::AttackMove { destination } => Some(destination),
-            UnitCommand::CastAbility {
+            UnitCommand::Activate {
                 target: CastTarget::Point(p),
                 ..
             } => Some(p),
@@ -116,7 +117,7 @@ impl Plugin for UnitCommandsPlugin {
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct CommandContext<'w, 's> {
     commands: Commands<'w, 's>,
-    casts: MessageWriter<'w, AbilityCastRequest>,
+    casts: MessageWriter<'w, ActivationRequest>,
     grid: Res<'w, NavGrid>,
     radii: Query<'w, 's, Option<&'static CollisionRadius>>,
     health: Query<'w, 's, &'static Health>,
@@ -156,16 +157,16 @@ impl CommandContext<'_, '_> {
                 order_attack_unit(&mut self.commands, unit, target);
                 Some(command)
             }
-            UnitCommand::CastAbility { slot, target } => {
+            UnitCommand::Activate { source, target } => {
                 if target.unit().is_some_and(|t| !self.target_alive(t)) {
                     return None;
                 }
                 self.commands
                     .entity(unit)
-                    .remove::<(QueuedAbilityCast, AbilityCasting)>();
-                self.casts.write(AbilityCastRequest {
+                    .remove::<(QueuedActivation, Activation)>();
+                self.casts.write(ActivationRequest {
                     caster: unit,
-                    slot,
+                    source,
                     target,
                 });
                 Some(command)
@@ -216,14 +217,14 @@ type OrderState<'a> = (
     Has<MoveTarget>,
     Has<AttackMoveOrder>,
     Option<&'a AttackTarget>,
-    Option<&'a AbilityCasting>,
-    Has<QueuedAbilityCast>,
+    Option<&'a Activation>,
+    Has<QueuedActivation>,
 );
 
 /// Outcome of checking the current command against the unit's order components.
 fn command_finished(
     active: &mut ActiveCommand,
-    (moving, attack_moving, attack, casting, queued_cast): (bool, bool, Option<&AttackTarget>, Option<&AbilityCasting>, bool),
+    (moving, attack_moving, attack, casting, queued_cast): (bool, bool, Option<&AttackTarget>, Option<&Activation>, bool),
     target_alive: impl Fn(Entity) -> bool,
 ) -> bool {
     active.frames += 1;
@@ -236,15 +237,16 @@ fn command_finished(
             }
             attack.is_some_and(|a| a.0 == target)
         }
-        UnitCommand::CastAbility { slot, target } => {
-            let mine = casting.filter(|c| c.slot == slot);
-            if mine.is_some_and(|c| c.fired) {
+        // A unit holds one activation, and starting this command replaced whatever was
+        // there, so the component belongs to this command even if an item copy moved slots.
+        UnitCommand::Activate { target, .. } => {
+            if casting.is_some_and(|c| c.released()) {
                 return true;
             }
-            if target.unit().is_some_and(|t| !target_alive(t)) && mine.is_none() {
+            if target.unit().is_some_and(|t| !target_alive(t)) && casting.is_none() {
                 return true;
             }
-            mine.is_some() || queued_cast
+            casting.is_some() || queued_cast
         }
         UnitCommand::Stop => return true,
     };
@@ -277,13 +279,16 @@ mod tests {
         Entity::from_raw_u32(i).unwrap()
     }
 
-    fn casting(slot: usize, fired: bool) -> AbilityCasting {
-        AbilityCasting {
-            slot,
-            ability: crate::components::AbilityId::Bolt,
+    fn casting(slot: usize, fired: bool) -> Activation {
+        Activation {
+            source: crate::actions::ActionSource::Ability(slot),
+            action: crate::actions::ActionId::Ability(crate::components::AbilityId::Bolt),
+            level: 1,
             target: CastTarget::None,
             aim: Vec3::ZERO,
+            disable: crate::actions::DisableRule::SilenceOrStun,
             point_remaining: 0.0,
+            channel_remaining: 0.0,
             backswing_remaining: 0.3,
             fired,
         }
@@ -313,16 +318,16 @@ mod tests {
 
     #[test]
     fn cast_completes_when_fired_or_rejected() {
-        let mut a = ActiveCommand::new(UnitCommand::CastAbility {
-            slot: 1,
+        let mut a = ActiveCommand::new(UnitCommand::Activate {
+            source: crate::actions::ActionSource::Ability(1),
             target: CastTarget::None,
         });
         assert!(!command_finished(&mut a, (false, false, None, Some(&casting(1, false)), false), |_| true));
         assert!(command_finished(&mut a, (false, false, None, Some(&casting(1, true)), false), |_| true));
 
         // Never takes effect (cooldown / mana): fails after the grace period.
-        let mut b = ActiveCommand::new(UnitCommand::CastAbility {
-            slot: 2,
+        let mut b = ActiveCommand::new(UnitCommand::Activate {
+            source: crate::actions::ActionSource::Ability(2),
             target: CastTarget::None,
         });
         let mut finished = false;
@@ -332,11 +337,23 @@ mod tests {
         assert!(finished);
 
         // Walking into range keeps it alive; the target dying ends it.
-        let mut c = ActiveCommand::new(UnitCommand::CastAbility {
-            slot: 1,
+        let mut c = ActiveCommand::new(UnitCommand::Activate {
+            source: crate::actions::ActionSource::Ability(1),
             target: CastTarget::Unit(e(9)),
         });
         assert!(!command_finished(&mut c, (true, false, None, None, true), |_| true));
         assert!(command_finished(&mut c, (true, false, None, None, true), |_| false));
+
+        // A channelled cast keeps the command until the channel ends.
+        let mut d = ActiveCommand::new(UnitCommand::Activate {
+            source: crate::actions::ActionSource::Ability(1),
+            target: CastTarget::None,
+        });
+        let channelling = Activation {
+            channel_remaining: 2.0,
+            ..casting(1, true)
+        };
+        assert!(!command_finished(&mut d, (false, false, None, Some(&channelling), false), |_| true));
+        assert!(command_finished(&mut d, (false, false, None, Some(&casting(1, true)), false), |_| true));
     }
 }

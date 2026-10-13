@@ -7,13 +7,14 @@ use bevy::prelude::*;
 
 use super::attack_position::assign_attack_positions;
 use super::NavPath;
-use crate::abilities::casting::{
-    resolve_queued_ability_casts, tick_ability_casting, validate_cast_requests, AbilityCastEvent,
-    AbilityCastRequest,
+use crate::abilities::casting::{emit_ability_casts, AbilityCastEvent};
+use crate::actions::{
+    resolve_queued_activations, tick_activations, validate_activation_requests, ActionFiredEvent,
+    ActionChannelEndEvent, Activation, ActivationRequest,
 };
 use crate::abilities::catalog::{register_loadout_definitions, AbilityDefinitions};
 use crate::components::{
-    AbilityCasting, AbilityId, AbilityLoadout, AttackTarget, BoundRadius, CastTarget,
+    AbilityId, AbilityLoadout, AttackTarget, BoundRadius, CastTarget,
     CollisionRadius, CombatStats, Health, Mana, MoveTarget, Obstacle, Team, Tower,
 };
 use crate::dimensions::{center_distance, edge_distance};
@@ -29,7 +30,9 @@ fn sim_app() -> App {
     let mut app = App::new();
     app.init_resource::<Time>()
         .init_resource::<AbilityDefinitions>()
-        .add_message::<AbilityCastRequest>()
+        .add_message::<ActivationRequest>()
+        .add_message::<ActionFiredEvent>()
+        .add_message::<ActionChannelEndEvent>()
         .add_message::<AbilityCastEvent>()
         .add_plugins((MovementPlugin, UnitCommandsPlugin))
         .add_systems(Update, assign_attack_positions.in_set(SimSet::Ai))
@@ -37,9 +40,10 @@ fn sim_app() -> App {
             Update,
             (
                 register_loadout_definitions,
-                resolve_queued_ability_casts,
-                validate_cast_requests,
-                tick_ability_casting,
+                resolve_queued_activations,
+                validate_activation_requests,
+                tick_activations,
+                emit_ability_casts,
             )
                 .chain()
                 .after(SimSet::Commands),
@@ -398,8 +402,8 @@ fn move_then_ability_then_move() {
     issue(
         &mut app,
         hero,
-        UnitCommand::CastAbility {
-            slot: 0,
+        UnitCommand::Activate {
+            source: crate::actions::ActionSource::Ability(0),
             target: CastTarget::None,
         },
         true,
@@ -411,7 +415,7 @@ fn move_then_ability_then_move() {
         &mut app,
         12.0,
         |w| {
-            if cast_at.is_none() && w.get::<AbilityCasting>(hero).is_some() {
+            if cast_at.is_none() && w.get::<Activation>(hero).is_some() {
                 cast_at = Some(pos(w, hero));
             }
         },
@@ -420,7 +424,7 @@ fn move_then_ability_then_move() {
     assert!(done);
     let cast_at = cast_at.expect("the queued ability was cast");
     assert!(center_distance(cast_at, first) < 10.0, "cast only after the first move finished");
-    assert!(app.world().get::<AbilityLoadout>(hero).unwrap().slots[0].cooldown_remaining > 0.0);
+    assert!(app.world().get::<AbilityLoadout>(hero).unwrap().slots[0].cooldown.remaining > 0.0);
     assert!(center_distance(pos(app.world(), hero), last) < 8.0);
 }
 
@@ -439,8 +443,8 @@ fn invalid_or_dead_targets_do_not_stall_the_queue() {
     issue(
         &mut app,
         hero,
-        UnitCommand::CastAbility {
-            slot: 1,
+        UnitCommand::Activate {
+            source: crate::actions::ActionSource::Ability(1),
             target: CastTarget::Unit(gone),
         },
         true,
@@ -449,8 +453,8 @@ fn invalid_or_dead_targets_do_not_stall_the_queue() {
     issue(
         &mut app,
         hero,
-        UnitCommand::CastAbility {
-            slot: 3,
+        UnitCommand::Activate {
+            source: crate::actions::ActionSource::Ability(3),
             target: CastTarget::None,
         },
         true,

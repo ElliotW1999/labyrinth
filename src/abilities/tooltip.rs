@@ -77,14 +77,17 @@ fn kind_line(def: &AbilityDefinition) -> String {
         },
         match def.target_type {
             TargetType::NoTarget => "No target",
+            TargetType::SelfTarget => "Self target",
             TargetType::Unit => "Unit target",
             TargetType::Point => "Point target",
             TargetType::Area => "Area target",
+            TargetType::Direction => "Direction",
         },
         match def.target_team {
             TargetTeam::Enemy => "Enemies",
             TargetTeam::Ally => "Allies",
             TargetTeam::Any => "Any unit",
+            TargetTeam::SelfOnly => "Self",
         },
     ];
     if def.is_ultimate {

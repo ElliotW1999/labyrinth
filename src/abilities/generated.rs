@@ -174,7 +174,7 @@ fn stone_skin() -> AbilityDefinition {
         .description(DESCRIPTION)
         .behavior(AbilityBehavior::Passive)
         .targeting(TargetType::NoTarget, RankValue::ZERO, RankValue::ZERO)
-        .team(TargetTeam::Ally)
+        .team(TargetTeam::SelfOnly)
         .costs(RankValue::ZERO, RankValue::ZERO)
         .timing(0.0, 0.25)
 }
@@ -187,7 +187,7 @@ fn overcharge() -> AbilityDefinition {
         .description(DESCRIPTION)
         .behavior(AbilityBehavior::Toggle)
         .targeting(TargetType::NoTarget, RankValue::ZERO, RankValue::ZERO)
-        .team(TargetTeam::Ally)
+        .team(TargetTeam::SelfOnly)
         .costs(RankValue::fixed(1.0), RankValue::from_level_1(15.0, 3.0))
         .timing(0.0, 0.0)
 }

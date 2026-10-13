@@ -166,20 +166,6 @@ impl CastTarget {
     }
 }
 
-/// In-progress ability cast point / backswing.
-#[derive(Component, Debug, Clone, Copy)]
-pub struct AbilityCasting {
-    pub slot: usize,
-    pub ability: AbilityId,
-    pub target: CastTarget,
-    pub aim: Vec3,
-    /// Time left in the cast point (ability fires when this hits 0).
-    pub point_remaining: f32,
-    /// After fire, remaining backswing (cancellable).
-    pub backswing_remaining: f32,
-    pub fired: bool,
-}
-
 /// Primary hero attributes. Level-ups raise these; each point feeds derived combat stats.
 #[derive(Component, Debug, Clone, Copy)]
 pub struct HeroAttributes {
@@ -279,16 +265,6 @@ pub struct AttackTarget(pub Entity);
 #[derive(Component, Debug, Clone, Copy)]
 pub struct AttackMoveOrder {
     pub destination: Vec3,
-}
-
-/// Validated cast waiting for the caster to walk into range; re-requested once in range.
-#[derive(Component, Debug, Clone, Copy)]
-pub struct QueuedAbilityCast {
-    pub slot: usize,
-    pub ability: AbilityId,
-    pub target: CastTarget,
-    /// Last known aim (tracks a unit target while it lives).
-    pub aim: Vec3,
 }
 
 #[derive(Component, Debug, Clone, Copy)]
@@ -564,11 +540,7 @@ pub struct AbilityState {
     pub id: AbilityId,
     /// Ability level; 0 = unlearned (cannot cast).
     pub rank: u32,
-    pub cooldown_remaining: f32,
-    /// Remaining charges for charge-based abilities (`None` = not charge-based).
-    pub charges: Option<u32>,
-    /// Seconds until the next charge is restored (while below the maximum).
-    pub charge_restore_remaining: f32,
+    pub cooldown: crate::actions::ActionCooldown,
     pub toggled: bool,
 }
 
@@ -577,9 +549,7 @@ impl AbilityState {
         Self {
             id,
             rank: 0,
-            cooldown_remaining: 0.0,
-            charges: None,
-            charge_restore_remaining: 0.0,
+            cooldown: crate::actions::ActionCooldown::default(),
             toggled: false,
         }
     }
