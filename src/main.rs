@@ -32,6 +32,7 @@ mod picking;
 mod progression;
 mod resources;
 mod scale;
+mod teleport;
 mod ui;
 mod unit_commands;
 mod units;

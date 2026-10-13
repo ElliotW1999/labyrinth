@@ -267,12 +267,14 @@ impl NavGrid {
             .all(|b| c.distance(b.center) >= b.radius + r)
     }
 
+    /// A circle of radius `r` at `p` lies fully inside the playable map.
+    pub fn contains(&self, p: Vec2, r: f32) -> bool {
+        p.x.abs().max(p.y.abs()) <= self.half_extent - r
+    }
+
     /// Exact test: a circle of radius `r` at `p` overlaps no static blocker and is inside the map.
     pub fn point_clear(&self, p: Vec2, r: f32) -> bool {
-        if p.x.abs().max(p.y.abs()) > self.half_extent - r {
-            return false;
-        }
-        self.shapes.iter().all(|s| s.distance(p) > r)
+        self.contains(p, r) && self.shapes.iter().all(|s| s.distance(p) > r)
     }
 
     /// Exact sweep test of a circle of radius `r` from `a` to `b` against static

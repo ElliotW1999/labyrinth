@@ -5,7 +5,7 @@
 //!   → the source's (ability or item) entries whose trigger matches
 //!   → resolve EffectTarget against the context (caster, trigger unit, affected units, …)
 //!   → AbilityEffect → DamageEvent / HealEvent / ManaRestoreEvent / StatusEffectEvent /
-//!                     DisplacementEvent (or a custom effect system)
+//!                     DisplacementEvent / TeleportEvent (or a custom effect system)
 //! ```
 
 use std::collections::HashMap;
@@ -23,6 +23,7 @@ use crate::combat::DamageEvent;
 use crate::components::{AbilityId, BoundRadius, CombatStats, Health, HeroAttributes, Mana, Team};
 use crate::dimensions::{area_contains, bounds_of};
 use crate::displacement::DisplacementEvent;
+use crate::teleport::TeleportEvent;
 use crate::items::{ItemId, StatusEffect, StatusEffects, StatusKind, apply_status};
 
 /// What owns the effect entries a trigger resolves against.
@@ -156,6 +157,7 @@ pub struct EffectRunner<'w, 's> {
     mana: MessageWriter<'w, ManaRestoreEvent>,
     statuses: MessageWriter<'w, StatusEffectEvent>,
     displacements: MessageWriter<'w, DisplacementEvent>,
+    teleports: MessageWriter<'w, TeleportEvent>,
 }
 
 impl EffectRunner<'_, '_> {
@@ -334,6 +336,15 @@ impl EffectRunner<'_, '_> {
                         point: ctx.point,
                         distance: distance.map(|d| d.at(rank)),
                         duration: duration.at(rank),
+                    });
+                }
+            }
+            AbilityEffect::Teleport => {
+                for target in targets {
+                    self.teleports.write(TeleportEvent {
+                        target,
+                        caster: ctx.caster,
+                        destination: ctx.aim,
                     });
                 }
             }

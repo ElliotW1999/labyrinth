@@ -256,7 +256,7 @@ skewer,1,on_unit_contact,trigger_unit,custom,skewer_drag,,,,,,,
 
 - `trigger`: `on_cast`, `on_projectile_hit`, `on_unit_contact`, `on_impact`, `on_channel_tick`, `on_channel_end`, `on_expire`, or any other `on_…` name raised by a custom mechanic
 - `effect_target`: `caster`, `cast_target`, `trigger_unit`, `affected_units`, `units_in_radius` (around the trigger point; `radius` or the ability AoE; team from the ability / effect polarity)
-- `effect_type` (+ `effect_id`): `damage` (`value` or `amount`, `damage_type` physical/magical/pure), `heal` (`effect_id=mana` restores mana), `apply_status` (`stun`, `root`, `silence`, `disarm`, `slow` (% from `amount`/`value`), `phased`, `forceful`, `debuff_immunity`, or any id as a timed `stat_modifier`), `remove_status` (`buff`/`debuff` dispel, otherwise a status id), `movement` (`knockback` / `pull`; `value` = distance, `duration`), `stat_modifier` (`effect_id` = stat, `amount`, `duration`), `custom` (registered id; receives `value`, `amount`, `duration`)
+- `effect_type` (+ `effect_id`): `damage` (`value` or `amount`, `damage_type` physical/magical/pure), `heal` (`effect_id=mana` restores mana), `apply_status` (`stun`, `root`, `silence`, `disarm`, `slow` (% from `amount`/`value`), `phased`, `forceful`, `debuff_immunity`, or any id as a timed `stat_modifier`), `remove_status` (`buff`/`debuff` dispel, otherwise a status id), `movement` (`knockback` / `pull`; `value` = distance, `duration`; `teleport` sends `caster` / `owner` / `cast_target` / `trigger_unit` to the cast's aim point — see Teleport below), `stat_modifier` (`effect_id` = stat, `amount`, `duration`), `custom` (registered id; receives `value`, `amount`, `duration`)
 - `scaling_type`: `strength` / `agility` / `intelligence` / `attack_damage` × `scaling_value` (damage and heal)
 
 ### Generator validation
@@ -298,9 +298,17 @@ frost_hammer,Frost Hammer,weapon,2800,1400,3,rare,false,,false,,A heavy weapon i
 - Effects use the ability effect schema with item triggers `passive` (must be `stat_modifier`: `max_health`, `health_regen`, `max_mana`, `mana_regen`, `attack_damage`, `attack_speed`, `armor`, `magic_resist`, `move_speed`, `strength`, `agility`, `intelligence`), `on_use`, `on_attack`, `on_attack_hit`, `on_damage_taken`, `on_kill`, `on_death` and targets `owner`, `cast_target`, `trigger_unit`, `attacker`, `affected_units`, `units_in_radius`
 - Consumables spend a charge (or one of the stack) per use and disappear when empty
 
+### Teleport
+
+`movement,teleport` (`on_cast` for abilities, `on_use` for items) is one shared effect: `AbilityEffect::Teleport` → `TeleportEvent` → `teleport.rs`. The destination is the trigger's aim point (the cast's point or target position; for items, the cursor's ground point when the active is used), never part of the CSV row. Cast time, cooldown, mana, and range stay with the cast / item-use systems.
+
+- The destination must fit the target's `CollisionRadius` inside the map and clear of trees, towers, and ancients (`NavGrid`), and must not overlap a non-phased unit (phased targets ignore units, like normal collision). Otherwise nothing changes — no nearby fallback and no pushing — and a `TeleportRejectedEvent` is emitted.
+- On success the unit moves instantly, keeps its Y, health, mana, statuses, and cooldowns, and loses its `MoveTarget`, `NavPath`, attack-move, attack-position goal, and in-flight forced movement. A `TeleportCompletedEvent` is emitted. Attack and queued-cast orders are kept (units re-path from the new spot).
+- Costs are paid at cast / use time, so a rejected teleport still spends mana and starts the cooldown.
+
 ### Limitations
 
-Not yet expressible without engine changes: ability passives / toggle drains (Stone Skin, Overcharge), channel runtime (`channel_time` is stored; `on_channel_*` only fire from custom mechanics), delayed effects, cooldown floors other than explicit level lists, `%` attack speed or timed attribute buffs, item targeting (`cast_target` on items, e.g. a blink destination), and the `on_damage_taken` / `on_kill` / `on_death` item triggers (validated, not emitted yet). Displacement ignores obstacles.
+Not yet expressible without engine changes: ability passives / toggle drains (Stone Skin, Overcharge), channel runtime (`channel_time` is stored; `on_channel_*` only fire from custom mechanics), delayed effects, cooldown floors other than explicit level lists, `%` attack speed or timed attribute buffs, item targeting (`cast_target` on items; item aim is the cursor point, so teleport items have no range limit or targeting indicator), and the `on_damage_taken` / `on_kill` / `on_death` item triggers (validated, not emitted yet). Displacement ignores obstacles.
 
 ## What's included
 
@@ -347,6 +355,7 @@ src/
   items.rs            Shop, inventory, sell, actives, status effects
   item_catalog.rs     Generated ItemDefinitions (ItemGenerator)
   displacement.rs     Knockback / pull forced movement
+  teleport.rs         Teleport effect: destination validation, instant relocation, completion / rejection events
   net/                Offline / host / client UDP session + hero snapshots
   ai.rs               Lane following + aggro
   waves.rs            Periodic creep spawns

@@ -10,9 +10,10 @@ use crate::abilities::effects::{AbilityTriggerEvent, EffectSource, TriggerContex
 use crate::basic_attack::{BasicAttackImpactEvent, BasicAttackReleaseEvent};
 use crate::combat::flat_distance;
 use crate::components::{
-    CombatStats, DamageType, Health, HeroAttributes, Lifetime, Mana, PlayerHero, PlayerWallet,
-    SpellFx, Team,
+    CombatStats, DamageType, Ground, Health, HeroAttributes, Lifetime, Mana, PlayerHero,
+    PlayerWallet, SpellFx, Team,
 };
+use crate::picking::cursor_ground_hit;
 use crate::resources::SharedAssets;
 use crate::scale;
 
@@ -897,6 +898,7 @@ fn describe_item_effect(entry: &AbilityEffectEntry) -> Option<String> {
         }
         AbilityEffect::Dispel { kind } => format!("Dispel {kind:?}s"),
         AbilityEffect::RemoveStatus { id } => format!("Remove {id}"),
+        AbilityEffect::Teleport => "Teleport to the target point".to_string(),
         AbilityEffect::Custom { id, .. } => format!("Custom: {id}"),
         AbilityEffect::PassiveStat { .. } => return None,
     };
@@ -1167,6 +1169,9 @@ fn handle_item_hotkeys(
         With<PlayerHero>,
     >,
     mut triggers: MessageWriter<AbilityTriggerEvent>,
+    windows: Query<&Window>,
+    camera: Query<(&Camera, &GlobalTransform)>,
+    ground: Query<&GlobalTransform, With<Ground>>,
 ) {
     let picks = [
         (KeyCode::KeyA, 0usize),
@@ -1191,8 +1196,9 @@ fn handle_item_hotkeys(
         return;
     };
 
+    let aim = cursor_ground_hit(&windows, &camera, &ground).unwrap_or(transform.translation);
     for index in pressed {
-        let Some(used) = try_use_item(&mut inv, index, hero_entity, transform.translation, *team, &mut triggers) else {
+        let Some(used) = try_use_item(&mut inv, index, hero_entity, transform.translation, aim, *team, &mut triggers) else {
             continue;
         };
         spawn_item_use_fx(&mut commands, &assets, used, transform.translation);
@@ -1208,12 +1214,14 @@ fn handle_item_hotkeys(
 }
 
 /// Starts the active's cooldown and fires its `OnUse` trigger; effects are resolved by
-/// the shared trigger pipeline. Returns the used item.
+/// the shared trigger pipeline. `aim` is the cursor's ground point (the destination for
+/// movement effects such as teleport). Returns the used item.
 pub fn try_use_item(
     inv: &mut Inventory,
     index: usize,
     owner: Entity,
     position: Vec3,
+    aim: Vec3,
     team: Team,
     triggers: &mut MessageWriter<AbilityTriggerEvent>,
 ) -> Option<ItemId> {
@@ -1223,15 +1231,9 @@ pub fn try_use_item(
         return None;
     }
     item.cooldown_remaining = cooldown;
-    triggers.write(AbilityTriggerEvent(item_trigger(
-        AbilityTrigger::OnUse,
-        item.id,
-        owner,
-        team,
-        position,
-        None,
-        position,
-    )));
+    let mut context = item_trigger(AbilityTrigger::OnUse, item.id, owner, team, position, None, position);
+    context.aim = aim;
+    triggers.write(AbilityTriggerEvent(context));
     Some(item.id)
 }
 
@@ -1808,6 +1810,29 @@ pub struct UndoShopRequest;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn item_use_trigger_carries_the_cursor_aim() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut world = World::new();
+        world.init_resource::<Messages<AbilityTriggerEvent>>();
+        let owner = world.spawn_empty().id();
+        let mut inv = Inventory::empty();
+        assert!(inv.try_add(ItemId::SparkPendant));
+        let aim = Vec3::new(900.0, 0.0, -300.0);
+        let used = world
+            .run_system_once(move |mut triggers: MessageWriter<AbilityTriggerEvent>| {
+                try_use_item(&mut inv, 0, owner, Vec3::ZERO, aim, Team::Radiant, &mut triggers)
+            })
+            .unwrap();
+        assert_eq!(used, Some(ItemId::SparkPendant));
+        let messages = world.resource::<Messages<AbilityTriggerEvent>>();
+        let contexts: Vec<_> = messages.iter_current_update_messages().collect();
+        assert_eq!(contexts.len(), 1);
+        assert_eq!(contexts[0].0.aim, aim);
+        assert_eq!(contexts[0].0.origin, Vec3::ZERO);
+        assert_eq!(contexts[0].0.point, Vec3::ZERO, "the trigger point stays at the owner");
+    }
 
     #[test]
     fn buy_applies_passives_and_fills_slot() {

@@ -102,7 +102,9 @@ STATUSES = {
     "spell_immunity": ("StatusSpec::DebuffImmunity", "spell_immunity", True),
 }
 
-MOVEMENTS = {"knockback": "Knockback", "pull": "Pull"}
+MOVEMENTS = {"knockback": "Knockback", "pull": "Pull", "teleport": None}
+# Teleport sends every target to the cast's aim point, so only single-target selectors make sense.
+TELEPORT_TARGETS = ("caster", "owner", "cast_target", "trigger_unit")
 DEFAULT_MOVEMENT_DURATION = 0.3
 
 # Timed stat modifiers map onto `StatusSpec::Modifier` fields.
@@ -557,14 +559,21 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
         if effect_id not in MOVEMENTS:
             report.error(row.file, row.line, "effect_id", row.get("effect_id"), f"unknown movement; expected one of: {', '.join(MOVEMENTS)}")
             return None
-        if effect_id == "knockback" and not _require(e, "value", report, "knockback distance"):
-            return None
-        _unused(e, report, "damage_type", "amount")
-        distance = f"Some({rank_value(value)})" if value else "None"
-        effect = (
-            f"AbilityEffect::Displace {{ kind: DisplacementKind::{MOVEMENTS[effect_id]}, "
-            f"distance: {distance}, duration: {rank_value(duration or [DEFAULT_MOVEMENT_DURATION])} }}"
-        )
+        if effect_id == "teleport":
+            if e.target not in TELEPORT_TARGETS:
+                report.error(row.file, row.line, "effect_target", e.target, f"teleport sends its target to the cast's aim point; use one of: {', '.join(TELEPORT_TARGETS)}")
+                return None
+            _unused(e, report, "damage_type", "amount", "value", "duration", "radius")
+            effect = "AbilityEffect::Teleport"
+        else:
+            if effect_id == "knockback" and not _require(e, "value", report, "knockback distance"):
+                return None
+            _unused(e, report, "damage_type", "amount")
+            distance = f"Some({rank_value(value)})" if value else "None"
+            effect = (
+                f"AbilityEffect::Displace {{ kind: DisplacementKind::{MOVEMENTS[effect_id]}, "
+                f"distance: {distance}, duration: {rank_value(duration or [DEFAULT_MOVEMENT_DURATION])} }}"
+            )
     elif t == "stat_modifier":
         if not _require(e, "effect_id", report, "stat to modify") or not _require(e, "value", report, "stat bonus") or not no_scaling():
             return None
