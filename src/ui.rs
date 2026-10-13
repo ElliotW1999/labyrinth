@@ -1572,8 +1572,8 @@ fn refresh_spell_bar(
         if let Some(slot) = loadout.slots.get(meta.index) {
             if slot.rank == 0 {
                 *text = Text::new("locked");
-            } else if slot.cooldown_remaining > 0.05 {
-                *text = Text::new(format!("{:.0}s", slot.cooldown_remaining.ceil()));
+            } else if slot.cooldown.remaining > 0.05 {
+                *text = Text::new(format!("{:.0}s", slot.cooldown.remaining.ceil()));
             } else {
                 *text = Text::new("ready");
             }

@@ -7,6 +7,7 @@
 //! `cargo run -- --mode host` / `cargo run -- --mode client --addr 127.0.0.1:7777`
 
 mod abilities;
+mod actions;
 mod ai;
 mod basic_attack;
 mod camera;

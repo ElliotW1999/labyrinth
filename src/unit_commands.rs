@@ -23,10 +23,9 @@ use std::collections::VecDeque;
 
 use bevy::prelude::*;
 
-use crate::abilities::casting::AbilityCastRequest;
+use crate::actions::{ActivationRequest, Activation, QueuedActivation};
 use crate::components::{
-    AbilityCasting, AttackMoveOrder, AttackTarget, CastTarget, CollisionRadius, Health, MoveTarget,
-    QueuedAbilityCast,
+    AttackMoveOrder, AttackTarget, CastTarget, CollisionRadius, Health, MoveTarget,
 };
 use crate::dimensions::collision_of;
 use crate::movement::{order_attack_move, order_attack_unit, order_hero_move, order_hero_stop, SimSet};
@@ -116,7 +115,7 @@ impl Plugin for UnitCommandsPlugin {
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct CommandContext<'w, 's> {
     commands: Commands<'w, 's>,
-    casts: MessageWriter<'w, AbilityCastRequest>,
+    casts: MessageWriter<'w, ActivationRequest>,
     grid: Res<'w, NavGrid>,
     radii: Query<'w, 's, Option<&'static CollisionRadius>>,
     health: Query<'w, 's, &'static Health>,
@@ -162,12 +161,8 @@ impl CommandContext<'_, '_> {
                 }
                 self.commands
                     .entity(unit)
-                    .remove::<(QueuedAbilityCast, AbilityCasting)>();
-                self.casts.write(AbilityCastRequest {
-                    caster: unit,
-                    slot,
-                    target,
-                });
+                    .remove::<(QueuedActivation, Activation)>();
+                self.casts.write(ActivationRequest::ability(unit, slot, target));
                 Some(command)
             }
             UnitCommand::Stop => {
@@ -216,14 +211,14 @@ type OrderState<'a> = (
     Has<MoveTarget>,
     Has<AttackMoveOrder>,
     Option<&'a AttackTarget>,
-    Option<&'a AbilityCasting>,
-    Has<QueuedAbilityCast>,
+    Option<&'a Activation>,
+    Has<QueuedActivation>,
 );
 
 /// Outcome of checking the current command against the unit's order components.
 fn command_finished(
     active: &mut ActiveCommand,
-    (moving, attack_moving, attack, casting, queued_cast): (bool, bool, Option<&AttackTarget>, Option<&AbilityCasting>, bool),
+    (moving, attack_moving, attack, casting, queued_cast): (bool, bool, Option<&AttackTarget>, Option<&Activation>, bool),
     target_alive: impl Fn(Entity) -> bool,
 ) -> bool {
     active.frames += 1;
@@ -237,8 +232,8 @@ fn command_finished(
             attack.is_some_and(|a| a.0 == target)
         }
         UnitCommand::CastAbility { slot, target } => {
-            let mine = casting.filter(|c| c.slot == slot);
-            if mine.is_some_and(|c| c.fired) {
+            let mine = casting.filter(|c| c.is_ability_slot(slot));
+            if mine.is_some_and(|c| c.released()) {
                 return true;
             }
             if target.unit().is_some_and(|t| !target_alive(t)) && mine.is_none() {
@@ -277,13 +272,15 @@ mod tests {
         Entity::from_raw_u32(i).unwrap()
     }
 
-    fn casting(slot: usize, fired: bool) -> AbilityCasting {
-        AbilityCasting {
-            slot,
-            ability: crate::components::AbilityId::Bolt,
+    fn casting(slot: usize, fired: bool) -> Activation {
+        Activation {
+            source: crate::actions::ActionSource::Ability(slot),
+            action: crate::actions::ActionId::Ability(crate::components::AbilityId::Bolt),
+            level: 1,
             target: CastTarget::None,
             aim: Vec3::ZERO,
             point_remaining: 0.0,
+            channel_remaining: 0.0,
             backswing_remaining: 0.3,
             fired,
         }
@@ -338,5 +335,17 @@ mod tests {
         });
         assert!(!command_finished(&mut c, (true, false, None, None, true), |_| true));
         assert!(command_finished(&mut c, (true, false, None, None, true), |_| false));
+
+        // A channelled cast keeps the command until the channel ends.
+        let mut d = ActiveCommand::new(UnitCommand::CastAbility {
+            slot: 1,
+            target: CastTarget::None,
+        });
+        let channelling = Activation {
+            channel_remaining: 2.0,
+            ..casting(1, true)
+        };
+        assert!(!command_finished(&mut d, (false, false, None, Some(&channelling), false), |_| true));
+        assert!(command_finished(&mut d, (false, false, None, Some(&casting(1, true)), false), |_| true));
     }
 }

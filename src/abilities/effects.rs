@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use bevy::ecs::system::{SystemId, SystemParam};
 use bevy::prelude::*;
 
-use super::casting::team_allows;
+use crate::actions::team_allows;
 use super::catalog::AbilityDefinitions;
 use super::definition::{
     AbilityEffect, AbilityEffectEntry, AbilityTrigger, AreaCenter, AreaRadius, Attribute,
