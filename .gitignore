@@ -14,3 +14,15 @@ wasm/
 # Python generators
 __pycache__/
 scripts/__pycache__/
+.vs/labyrinth/v18/workspaceFileList.bin
+.vs/labyrinth.slnx/v18/DocumentLayout.json
+.vs/labyrinth.slnx/v18/Browse.VC.db
+.vs/labyrinth.slnx/v18/.wsuo
+.vs/labyrinth.slnx/FileContentIndex/dbd03d37-85f1-42c1-9687-27fb6a0a0688.vsidx
+.vs/labyrinth.slnx/FileContentIndex/915ff4a1-a22b-4a7a-a5b2-e5ed41628114.vsidx
+.vs/labyrinth.slnx/FileContentIndex/9047d928-df4c-4436-8b04-78c00f84ecf5.vsidx
+.vs/labyrinth.slnx/FileContentIndex/779381cc-dd30-4d9d-a741-b0a57215d554.vsidx
+.vs/labyrinth.slnx/FileContentIndex/5f267f2a-c4c5-46d8-8679-0ae7d77d248b.vsidx
+.vs/slnx.sqlite
+.vs/VSWorkspaceState.json
+/data
