@@ -102,6 +102,13 @@ STATUSES = {
     "spell_immunity": ("StatusSpec::DebuffImmunity", "spell_immunity", True),
 }
 
+# Activation targeting shared by abilities and active items.
+TARGET_TYPES = ("unit", "point", "direction", "no_target", "self")
+# Effect-polarity teams (`units_in_radius` defaults); "self" areas still mean allies.
+TARGET_TEAMS = {"enemy": "Enemy", "ally": "Ally", "both": "Any", "self": "Ally"}
+# Activation team rule (`TargetTeam` of the action).
+ACTION_TEAMS = {**TARGET_TEAMS, "self": "SelfOnly"}
+
 MOVEMENTS = {"knockback": "Knockback", "pull": "Pull", "teleport": None}
 # Teleport sends every target to the cast's aim point, so only single-target selectors make sense.
 TELEPORT_TARGETS = ("caster", "owner", "cast_target", "trigger_unit")

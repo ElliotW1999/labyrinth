@@ -36,10 +36,11 @@ use crate::resources::SharedAssets;
 use crate::scale;
 use crate::unit_commands::{IssueCommand, UnitCommand};
 use crate::actions::{
-    resolve_queued_activations, team_allows, tick_activations, validate_activation_requests,
-    ActionsPlugin,
+    check_ready, resolve_queued_activations, team_allows, tick_activations,
+    validate_activation_requests, ActionId, ActionSource, ActionSources, ActionsPlugin,
+    ActivationRequest, DisableRule,
 };
-use casting::{ability_channel_end_triggers, check_usable, emit_ability_casts, AbilityCastEvent};
+use casting::{ability_channel_end_triggers, emit_ability_casts, AbilityCastEvent};
 use catalog::{register_loadout_definitions, restore_ability_charges, AbilityDefinitions};
 use definition::{TargetTeam, TargetType};
 use crate::displacement::{apply_displacement_events, tick_forced_movement, DisplacementEvent};
@@ -84,6 +85,7 @@ impl Plugin for AbilitiesPlugin {
                     validate_activation_requests,
                     tick_activations,
                     emit_ability_casts,
+                    crate::items::resolve_item_uses,
                     execute_ability_casts,
                     ability_channel_end_triggers,
                     projectile_hit_triggers,
@@ -116,7 +118,7 @@ impl Plugin for AbilitiesPlugin {
     }
 }
 
-/// Active targeting mode for a targeted ability (E / R).
+/// Active targeting mode for a targeted ability or item.
 #[derive(Resource, Debug, Clone, Copy, Default)]
 pub struct AbilityTargeting {
     pub active: Option<PendingTargetedCast>,
@@ -124,7 +126,7 @@ pub struct AbilityTargeting {
 
 #[derive(Debug, Clone, Copy)]
 pub struct PendingTargetedCast {
-    pub slot: usize,
+    pub source: ActionSource,
     pub cast_range: f32,
     /// AoE radius (area) or projectile width (point).
     pub aoe_radius: f32,
@@ -133,6 +135,7 @@ pub struct PendingTargetedCast {
     /// When true, show trajectory corridor instead of an AoE disc.
     pub point_target: bool,
     pub target_team: TargetTeam,
+    pub disable: DisableRule,
 }
 
 #[derive(Component)]
@@ -160,76 +163,95 @@ fn regen_mana(time: Res<Time>, mut query: Query<&mut Mana>) {
     }
 }
 
-/// QWER: no-target abilities issue a cast command immediately; targeted ones enter
-/// targeting mode. Shift queues the cast behind the current command.
+/// Ability (QWER) and item (A S D Z X C) hotkeys, in slot order.
+const ACTION_HOTKEYS: [(KeyCode, ActionSource); 10] = [
+    (KeyCode::KeyQ, ActionSource::Ability(0)),
+    (KeyCode::KeyW, ActionSource::Ability(1)),
+    (KeyCode::KeyE, ActionSource::Ability(2)),
+    (KeyCode::KeyR, ActionSource::Ability(3)),
+    (KeyCode::KeyA, ActionSource::Item(0)),
+    (KeyCode::KeyS, ActionSource::Item(1)),
+    (KeyCode::KeyD, ActionSource::Item(2)),
+    (KeyCode::KeyZ, ActionSource::Item(3)),
+    (KeyCode::KeyX, ActionSource::Item(4)),
+    (KeyCode::KeyC, ActionSource::Item(5)),
+];
+
+/// QWER / ASDZXC: no-target and self-target actions activate immediately; targeted ones
+/// enter targeting mode. Shift queues the activation behind the current command. Actions
+/// that don't occupy the caster (instant items) skip the command queue so current
+/// orders keep running.
 fn begin_or_cast_from_hotkeys(
     keys: Res<ButtonInput<KeyCode>>,
     mut targeting: ResMut<AbilityTargeting>,
     mut commands: Commands,
     assets: Res<SharedAssets>,
     defs: Res<AbilityDefinitions>,
+    sources: ActionSources,
     mut issue: MessageWriter<IssueCommand>,
-    hero: Query<(Entity, &Transform, &AbilityLoadout, &Mana, &StatusEffects), With<PlayerHero>>,
+    mut requests: MessageWriter<ActivationRequest>,
+    hero: Query<(Entity, &Transform, &Mana, &StatusEffects), With<PlayerHero>>,
 ) {
-    let Ok((hero_entity, transform, loadout, mana, statuses)) = hero.single() else {
+    let Ok((hero_entity, transform, mana, statuses)) = hero.single() else {
         return;
     };
 
-    if !statuses.can_cast() {
-        return;
-    }
-
     // Ctrl+QWER is reserved for spending skill points.
-    if keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight) {
-        return;
-    }
+    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
 
-    let casts = [
-        (KeyCode::KeyQ, 0usize),
-        (KeyCode::KeyW, 1),
-        (KeyCode::KeyE, 2),
-        (KeyCode::KeyR, 3),
-    ];
-
-    for (key, index) in casts {
-        if !keys.just_pressed(key) {
+    for (key, source) in ACTION_HOTKEYS {
+        if !keys.just_pressed(key) || (ctrl && matches!(source, ActionSource::Ability(_))) {
             continue;
         }
-
         // Switching hotkeys cancels the pending targeting mode. The current cast is
         // only replaced once the new command actually starts (see `unit_commands`).
         if targeting.active.is_some() {
             clear_targeting(&mut commands, &mut targeting);
         }
-
-        let Some(slot) = loadout.slots.get(index) else {
+        let Ok(spec) = sources.spec(hero_entity, source) else {
             continue;
         };
-        let Some(def) = defs.get(slot.id) else {
-            continue;
-        };
-        if check_usable(def, slot, mana, Some(statuses)).is_err() {
+        if spec.disable.blocks(Some(statuses)) {
             continue;
         }
 
-        if def.target_type.is_instant() {
-            issue.write(IssueCommand {
-                unit: hero_entity,
-                command: UnitCommand::CastAbility {
-                    slot: index,
+        if check_ready(&spec.cooldown_state, &spec.cost, spec.disable, mana, Some(statuses))
+            .is_err()
+        {
+            continue;
+        }
+
+        if spec.target_type.is_instant() {
+            if spec.occupies_caster {
+                issue.write(IssueCommand {
+                    unit: hero_entity,
+                    command: UnitCommand::Activate {
+                        source,
+                        target: CastTarget::None,
+                    },
+                    queue: crate::input::shift_held(&keys),
+                });
+            } else {
+                requests.write(ActivationRequest {
+                    caster: hero_entity,
+                    source,
                     target: CastTarget::None,
-                },
-                queue: crate::input::shift_held(&keys),
-            });
+                });
+            }
             continue;
         }
+        let aoe_radius = match spec.action {
+            ActionId::Ability(id) => defs.get(id).map_or(0.0, |def| def.aoe_radius.at(spec.level)),
+            ActionId::Item { .. } => 0.0,
+        };
         let pending = PendingTargetedCast {
-            slot: index,
-            cast_range: def.cast_range.at(slot.rank),
-            aoe_radius: def.aoe_radius.at(slot.rank),
-            unit_only: def.target_type == TargetType::Unit,
-            point_target: matches!(def.target_type, TargetType::Point | TargetType::Direction),
-            target_team: def.target_team,
+            source,
+            cast_range: spec.cast_range,
+            aoe_radius,
+            unit_only: spec.target_type == TargetType::Unit,
+            point_target: matches!(spec.target_type, TargetType::Point | TargetType::Direction),
+            target_team: spec.target_team,
+            disable: spec.disable,
         };
         targeting.active = Some(pending);
         spawn_indicators(
@@ -243,8 +265,8 @@ fn begin_or_cast_from_hotkeys(
     }
 }
 
-/// LMB confirms the pending targeted cast as a cast command (Shift queues it); range,
-/// costs, and target rules are checked by `casting::validate_cast_requests`.
+/// LMB confirms the pending targeted cast as an activate command (Shift queues it);
+/// range, costs, and target rules are checked by the shared activation pipeline.
 pub(crate) fn confirm_or_cancel_targeted_cast(
     mouse: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -283,7 +305,7 @@ pub(crate) fn confirm_or_cancel_targeted_cast(
         return;
     };
 
-    if !statuses.can_cast() {
+    if pending.disable.blocks(Some(statuses)) {
         clear_targeting(&mut commands, &mut targeting);
         return;
     }
@@ -306,8 +328,8 @@ pub(crate) fn confirm_or_cancel_targeted_cast(
     clear_targeting(&mut commands, &mut targeting);
     issue.write(IssueCommand {
         unit: hero_entity,
-        command: UnitCommand::CastAbility {
-            slot: pending.slot,
+        command: UnitCommand::Activate {
+            source: pending.source,
             target: unit_target.map_or(CastTarget::Point(hit), CastTarget::Unit),
         },
         queue: crate::input::shift_held(&keys),
@@ -598,6 +620,7 @@ mod tests {
                     validate_activation_requests,
                     tick_activations,
                     emit_ability_casts,
+                    crate::items::resolve_item_uses,
                     execute_ability_casts,
                     ability_channel_end_triggers,
                     projectile_hit_triggers,
@@ -1141,7 +1164,7 @@ mod tests {
     }
 
     #[test]
-    fn item_sources_are_not_activated_by_the_shared_pipeline_yet() {
+    fn item_activation_without_an_inventory_does_nothing() {
         let mut app = test_app();
         let caster = spawn_caster(&mut app, KIT);
         app.world_mut().write_message(ActivationRequest {

@@ -31,7 +31,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from generator_common import (  # noqa: E402
+    ACTION_TEAMS,
     EFFECT_COLUMNS,
+    TARGET_TEAMS,
+    TARGET_TYPES,
     EffectContext,
     EffectRow,
     Report,
@@ -78,11 +81,6 @@ ABILITY_COLUMNS = (
 
 SLOTS = ("q", "w", "e", "r", "innate")
 ABILITY_TYPES = {"active": "Active", "passive": "Passive", "toggle": "Toggle"}
-TARGET_TYPES = ("unit", "point", "direction", "no_target", "self")
-# Effect-polarity teams (`units_in_radius` defaults); "self" areas still mean allies.
-TARGET_TEAMS = {"enemy": "Enemy", "ally": "Ally", "both": "Any", "self": "Ally"}
-# Activation team rule (`AbilityDefinition::team`).
-ACTION_TEAMS = {**TARGET_TEAMS, "self": "SelfOnly"}
 PROJECTILE_TYPES = ("none", "targeted", "skillshot")
 LEVEL_FIELDS = ("cast_range", "aoe_radius", "cooldown", "mana_cost")
 EFFECT_LEVEL_FIELDS = ("value", "duration", "amount", "radius")

@@ -7,13 +7,16 @@ use crate::abilities::definition::{
     EffectScaling, EffectTarget, PassiveStat, RankValue, StatusSpec,
 };
 use crate::abilities::effects::{AbilityTriggerEvent, EffectSource, TriggerContext};
+use crate::actions::{
+    ActionCooldown, ActionCost, ActionFiredEvent, ActionId, ActionSpec,
+    DisableRule, TargetTeam, TargetType,
+};
 use crate::basic_attack::{BasicAttackImpactEvent, BasicAttackReleaseEvent};
 use crate::combat::flat_distance;
 use crate::components::{
-    CombatStats, DamageType, Ground, Health, HeroAttributes, Lifetime, Mana, PlayerHero,
+    CastTarget, CombatStats, DamageType, Health, HeroAttributes, Lifetime, Mana, PlayerHero,
     PlayerWallet, SpellFx, Team,
 };
-use crate::picking::cursor_ground_hit;
 use crate::resources::SharedAssets;
 use crate::scale;
 
@@ -36,7 +39,6 @@ impl Plugin for ItemsPlugin {
                 (
                     tick_item_cooldowns,
                     tick_status_effects,
-                    handle_item_hotkeys,
                     item_attack_triggers,
                     try_purchase_from_ui,
                     try_sell_from_ui,
@@ -162,11 +164,31 @@ impl Inventory {
         }
         false
     }
+
+    /// Slot currently holding `instance`.
+    pub fn slot_of(&self, instance: ItemInstanceId) -> Option<usize> {
+        self.slots
+            .iter()
+            .position(|s| s.is_some_and(|item| item.instance == instance))
+    }
+}
+
+/// Identity of one inventory stack, unique for the whole run. Each copy of an item
+/// keeps its own cooldown and charges, and in-flight activations follow it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ItemInstanceId(u64);
+
+impl ItemInstanceId {
+    pub fn next() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct ItemInstance {
     pub id: ItemId,
+    pub instance: ItemInstanceId,
     pub cooldown_remaining: f32,
     /// Units in this slot (stackable items).
     pub stack: u32,
@@ -178,6 +200,7 @@ impl ItemInstance {
     pub fn new(id: ItemId) -> Self {
         Self {
             id,
+            instance: ItemInstanceId::next(),
             cooldown_remaining: 0.0,
             stack: 1,
             charges: id.definition().max_charges,
@@ -558,10 +581,91 @@ pub struct ItemDefinition {
     pub max_charges: Option<u32>,
     /// Active cooldown in seconds (items with `OnUse` effects).
     pub cooldown: f32,
+    /// Targeting, timing, and cost of the active (ignored without `OnUse` effects).
+    pub activation: ItemActivation,
     pub components: &'static [ItemId],
     pub color: [f32; 3],
     pub description: &'static str,
     pub effects: &'static [AbilityEffectEntry],
+}
+
+/// How an active item is aimed and cast; the shared `actions` pipeline enforces it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ItemActivation {
+    pub target_type: TargetType,
+    pub target_team: TargetTeam,
+    pub cast_range: f32,
+    pub cast_time: f32,
+    pub channel_time: f32,
+    pub mana_cost: f32,
+}
+
+impl ItemActivation {
+    /// No target, no cast point, free: fires on the key press.
+    pub const INSTANT: Self = Self {
+        target_type: TargetType::NoTarget,
+        target_team: TargetTeam::SelfOnly,
+        cast_range: 0.0,
+        cast_time: 0.0,
+        channel_time: 0.0,
+        mana_cost: 0.0,
+    };
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemUseError {
+    EmptySlot,
+    NoActive,
+}
+
+/// [`ActionSpec`] for the active item in `slot`: the item layer's half of the shared
+/// activation pipeline (ownership and availability here; readiness, targeting, range,
+/// and timing in `actions`).
+pub fn item_action_spec(inventory: &Inventory, slot: usize) -> Result<ActionSpec, ItemUseError> {
+    let item = inventory
+        .slots
+        .get(slot)
+        .copied()
+        .flatten()
+        .filter(|item| item.stack > 0)
+        .ok_or(ItemUseError::EmptySlot)?;
+    if !item.id.has_active() {
+        return Err(ItemUseError::NoActive);
+    }
+    let def = item.id.definition();
+    let activation = def.activation;
+    Ok(ActionSpec {
+        action: ActionId::Item {
+            item: item.id,
+            instance: item.instance,
+        },
+        level: 1,
+        target_type: activation.target_type,
+        target_team: activation.target_team,
+        cast_range: activation.cast_range,
+        cast_time: activation.cast_time,
+        channel_time: activation.channel_time,
+        backswing: 0.0,
+        cost: ActionCost {
+            mana: activation.mana_cost,
+        },
+        cooldown: def.cooldown,
+        cooldown_state: ActionCooldown {
+            remaining: item.cooldown_remaining,
+            charges: item.charges,
+            charge_restore_remaining: 0.0,
+        },
+        disable: DisableRule::Stun,
+        occupies_caster: activation.cast_time > 0.0 || activation.channel_time > 0.0,
+    })
+}
+
+/// Start the item's cooldown. Charges and stacks are spent by `resolve_item_uses`,
+/// which also removes the passives of a used-up unit.
+pub fn commit_item(inventory: &mut Inventory, slot: usize, spec: &ActionSpec) {
+    if let Some(item) = inventory.slots.get_mut(slot).and_then(|s| s.as_mut()) {
+        item.cooldown_remaining = spec.cooldown;
+    }
 }
 
 impl ItemDefinition {
@@ -638,6 +742,10 @@ impl ItemId {
     }
 
     pub fn definition(self) -> &'static ItemDefinition {
+        #[cfg(test)]
+        if let Some(def) = definition_override(self) {
+            return def;
+        }
         crate::item_catalog::definition(self)
     }
 
@@ -735,6 +843,7 @@ impl ItemId {
         Color::srgb(r, g, b)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn active_cooldown(self) -> Option<f32> {
         self.has_active().then(|| self.definition().cooldown)
     }
@@ -1151,90 +1260,76 @@ pub fn apply_debuff_immunity(
     apply_status(statuses, stats, StatusEffect::debuff_immunity(duration))
 }
 
-fn handle_item_hotkeys(
-    keys: Res<ButtonInput<KeyCode>>,
+/// Item layer of the shared `actions` pipeline: once an item activation fires (cooldown
+/// already started, mana paid), spawn its feedback, fire `OnUse`, and spend a charge or
+/// unit of consumables. Finds the copy by instance, so it follows a moved stack.
+#[allow(clippy::type_complexity)]
+pub fn resolve_item_uses(
+    mut fired: MessageReader<ActionFiredEvent>,
     mut commands: Commands,
     assets: Res<SharedAssets>,
-    mut hero: Query<
-        (
-            Entity,
-            &Transform,
-            &Team,
-            &mut Inventory,
-            &mut Health,
-            &mut Mana,
-            &mut CombatStats,
-            &mut HeroAttributes,
-        ),
-        With<PlayerHero>,
-    >,
+    mut owners: Query<(
+        &Transform,
+        &Team,
+        &mut Inventory,
+        &mut Health,
+        &mut Mana,
+        &mut CombatStats,
+        &mut HeroAttributes,
+    )>,
     mut triggers: MessageWriter<AbilityTriggerEvent>,
-    windows: Query<&Window>,
-    camera: Query<(&Camera, &GlobalTransform)>,
-    ground: Query<&GlobalTransform, With<Ground>>,
 ) {
-    let picks = [
-        (KeyCode::KeyA, 0usize),
-        (KeyCode::KeyS, 1),
-        (KeyCode::KeyD, 2),
-        (KeyCode::KeyZ, 3),
-        (KeyCode::KeyX, 4),
-        (KeyCode::KeyC, 5),
-    ];
-    let pressed: Vec<usize> = picks
-        .into_iter()
-        .filter(|(key, _)| keys.just_pressed(*key))
-        .map(|(_, i)| i)
-        .collect();
-    if pressed.is_empty() {
-        return;
-    }
-
-    let Ok((hero_entity, transform, team, mut inv, mut health, mut mana, mut stats, mut attrs)) =
-        hero.single_mut()
-    else {
-        return;
-    };
-
-    let aim = cursor_ground_hit(&windows, &camera, &ground).unwrap_or(transform.translation);
-    for index in pressed {
-        let Some(used) = try_use_item(&mut inv, index, hero_entity, transform.translation, aim, *team, &mut triggers) else {
+    for event in fired.read() {
+        let ActionId::Item { item, instance } = event.action else {
             continue;
         };
-        spawn_item_use_fx(&mut commands, &assets, used, transform.translation);
-        if let Some(item) = inv.slots[index].as_mut().filter(|_| used.definition().consumable) {
-            if item.consume(used.definition().max_charges) > 0 {
-                remove_passives(used.passives(), 1, &mut health, &mut mana, &mut stats, &mut attrs);
-            }
-            if item.stack == 0 {
-                inv.slots[index] = None;
-            }
+        let Ok((transform, team, mut inv, mut health, mut mana, mut stats, mut attrs)) =
+            owners.get_mut(event.caster)
+        else {
+            continue;
+        };
+        let position = transform.translation;
+        spawn_item_use_fx(&mut commands, &assets, item, position);
+        triggers.write(AbilityTriggerEvent(item_use_trigger(
+            item,
+            event.caster,
+            *team,
+            position,
+            event.aim,
+            event.target,
+        )));
+
+        let def = item.definition();
+        let Some(index) = inv.slot_of(instance).filter(|_| def.consumable) else {
+            continue;
+        };
+        let Some(slot) = inv.slots[index].as_mut() else {
+            continue;
+        };
+        if slot.consume(def.max_charges) > 0 {
+            remove_passives(item.passives(), 1, &mut health, &mut mana, &mut stats, &mut attrs);
+        }
+        if slot.stack == 0 {
+            inv.slots[index] = None;
         }
     }
 }
 
-/// Starts the active's cooldown and fires its `OnUse` trigger; effects are resolved by
-/// the shared trigger pipeline. `aim` is the cursor's ground point (the destination for
-/// movement effects such as teleport). Returns the used item.
-pub fn try_use_item(
-    inv: &mut Inventory,
-    index: usize,
+/// `OnUse` context of a fired item: effects centred on the caster read `origin` /
+/// `point`; point and direction targets (e.g. teleport destinations) read `aim`.
+fn item_use_trigger(
+    item: ItemId,
     owner: Entity,
+    team: Team,
     position: Vec3,
     aim: Vec3,
-    team: Team,
-    triggers: &mut MessageWriter<AbilityTriggerEvent>,
-) -> Option<ItemId> {
-    let item = inv.slots.get_mut(index).and_then(|s| s.as_mut())?;
-    let cooldown = item.id.active_cooldown()?;
-    if item.cooldown_remaining > 0.0 {
-        return None;
+    target: CastTarget,
+) -> TriggerContext {
+    TriggerContext {
+        aim,
+        cast_target: target.unit(),
+        ..item_trigger(AbilityTrigger::OnUse, item, owner, team, position, None, position)
     }
-    item.cooldown_remaining = cooldown;
-    let mut context = item_trigger(AbilityTrigger::OnUse, item.id, owner, team, position, None, position);
-    context.aim = aim;
-    triggers.write(AbilityTriggerEvent(context));
-    Some(item.id)
 }
 
 fn item_trigger(
@@ -1808,30 +1903,78 @@ fn expire_shop_undo(log: &mut ShopUndoLog, in_range: bool) {
 pub struct UndoShopRequest;
 
 #[cfg(test)]
+thread_local! {
+    static DEFINITION_OVERRIDE: std::cell::RefCell<Vec<&'static ItemDefinition>> =
+        std::cell::RefCell::new(Vec::new());
+}
+
+#[cfg(test)]
+fn definition_override(id: ItemId) -> Option<&'static ItemDefinition> {
+    DEFINITION_OVERRIDE.with(|slot| slot.borrow().iter().rev().find(|def| def.id == id).copied())
+}
+
+/// Test definitions stand in for catalog rows so activation tests can cover target
+/// types the shipped items do not use. Overrides are per-thread and dropped with the guard.
+#[cfg(test)]
+struct DefinitionOverride {
+    previous: Vec<&'static ItemDefinition>,
+}
+
+#[cfg(test)]
+impl DefinitionOverride {
+    fn install(defs: impl IntoIterator<Item = ItemDefinition>) -> Self {
+        let leaked = defs
+            .into_iter()
+            .map(|def| &*Box::leak(Box::new(def)))
+            .collect();
+        let previous =
+            DEFINITION_OVERRIDE.with(|slot| std::mem::replace(&mut *slot.borrow_mut(), leaked));
+        Self { previous }
+    }
+}
+
+#[cfg(test)]
+impl Drop for DefinitionOverride {
+    fn drop(&mut self) {
+        DEFINITION_OVERRIDE.with(|slot| {
+            *slot.borrow_mut() = std::mem::take(&mut self.previous);
+        });
+    }
+}
+
+#[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
+    use crate::abilities::catalog::{register_loadout_definitions, AbilityDefinitions};
+    use crate::abilities::effects::{apply_heal_events, resolve_ability_triggers, HealEvent};
+    use crate::actions::{
+        resolve_queued_activations, tick_activations, validate_activation_requests, Activation,
+        ActivationRequest, QueuedActivation,
+    };
+    use crate::components::{AbilityId, AbilityLoadout, MoveTarget};
+    use crate::displacement::DisplacementEvent;
+    use crate::resources::SharedAssets;
+    use crate::teleport::TeleportEvent;
 
     #[test]
-    fn item_use_trigger_carries_the_cursor_aim() {
-        use bevy::ecs::system::RunSystemOnce;
-        let mut world = World::new();
-        world.init_resource::<Messages<AbilityTriggerEvent>>();
-        let owner = world.spawn_empty().id();
-        let mut inv = Inventory::empty();
-        assert!(inv.try_add(ItemId::SparkPendant));
+    fn item_use_trigger_keeps_the_owner_point_and_the_aim() {
+        let owner = Entity::from_raw_u32(1).unwrap();
         let aim = Vec3::new(900.0, 0.0, -300.0);
-        let used = world
-            .run_system_once(move |mut triggers: MessageWriter<AbilityTriggerEvent>| {
-                try_use_item(&mut inv, 0, owner, Vec3::ZERO, aim, Team::Radiant, &mut triggers)
-            })
-            .unwrap();
-        assert_eq!(used, Some(ItemId::SparkPendant));
-        let messages = world.resource::<Messages<AbilityTriggerEvent>>();
-        let contexts: Vec<_> = messages.iter_current_update_messages().collect();
-        assert_eq!(contexts.len(), 1);
-        assert_eq!(contexts[0].0.aim, aim);
-        assert_eq!(contexts[0].0.origin, Vec3::ZERO);
-        assert_eq!(contexts[0].0.point, Vec3::ZERO, "the trigger point stays at the owner");
+        let context = item_use_trigger(
+            ItemId::SparkPendant,
+            owner,
+            Team::Radiant,
+            Vec3::ZERO,
+            aim,
+            CastTarget::Point(aim),
+        );
+        assert_eq!(context.aim, aim);
+        assert_eq!(context.origin, Vec3::ZERO);
+        assert_eq!(context.point, Vec3::ZERO, "area effects stay centred on the owner");
+        assert_eq!(context.cast_target, None);
+        assert_eq!(context.trigger, AbilityTrigger::OnUse);
     }
 
     #[test]
@@ -2282,5 +2425,471 @@ mod tests {
         assert_eq!(log.pending(), 0);
         assert!(log.notice.is_empty());
         expire_shop_undo(&mut log, true);
+    }
+
+    fn item_app() -> App {
+        let mut app = App::new();
+        // Definition overrides live in a thread local. The multi-threaded executor would
+        // run these systems on another thread and miss them.
+        app.edit_schedule(Update, |schedule| {
+            schedule.set_executor(bevy::ecs::schedule::SingleThreadedExecutor::new());
+        });
+        app.init_resource::<Time>()
+            .init_resource::<SharedAssets>()
+            .init_resource::<AbilityDefinitions>()
+            .init_resource::<crate::abilities::effects::CustomAbilityEffects>()
+            .add_message::<ActivationRequest>()
+            .add_message::<crate::actions::ActionFiredEvent>()
+            .add_message::<crate::actions::ActionChannelEndEvent>()
+            .add_message::<AbilityTriggerEvent>()
+            .add_message::<HealEvent>()
+            .add_message::<crate::abilities::effects::ManaRestoreEvent>()
+            .add_message::<crate::abilities::effects::StatusEffectEvent>()
+            .add_message::<crate::combat::DamageEvent>()
+            .add_message::<DisplacementEvent>()
+            .add_message::<TeleportEvent>()
+            .add_systems(
+                Update,
+                (
+                    register_loadout_definitions,
+                    resolve_queued_activations,
+                    validate_activation_requests,
+                    tick_activations,
+                    resolve_item_uses,
+                    resolve_ability_triggers,
+                    apply_heal_events,
+                )
+                    .chain(),
+            );
+        app
+    }
+
+    fn step(app: &mut App) {
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_secs_f32(0.05));
+        app.update();
+    }
+
+    fn spawn_caster(app: &mut App, mana: f32) -> Entity {
+        let mut stats = CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 300.0);
+        stats.turn_rate = 1_000.0;
+        app.world_mut()
+            .spawn((
+                Transform::from_translation(Vec3::ZERO),
+                Team::Radiant,
+                Health::new(1000.0),
+                Mana::new(mana, 0.0),
+                stats,
+                HeroAttributes::starter(),
+                Inventory::empty(),
+                StatusEffects::default(),
+            ))
+            .id()
+    }
+
+    fn give(app: &mut App, caster: Entity, id: ItemId) -> ItemInstanceId {
+        let mut inventory = app.world_mut().get_mut::<Inventory>(caster).unwrap();
+        assert!(inventory.try_add(id), "inventory rejected {id:?}");
+        inventory.slots.iter().flatten().last().unwrap().instance
+    }
+
+    fn request(app: &mut App, caster: Entity, slot: usize, target: CastTarget) {
+        app.world_mut()
+            .write_message(ActivationRequest::item(caster, slot, target));
+    }
+
+    fn heal_effect() -> &'static [AbilityEffectEntry] {
+        Box::leak(Box::new([AbilityEffectEntry {
+            trigger: AbilityTrigger::OnUse,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::Heal {
+                amount: RankValue::fixed(10.0),
+                scaling: EffectScaling::None,
+            },
+        }]))
+    }
+
+    fn test_item(id: ItemId, activation: ItemActivation) -> ItemDefinition {
+        ItemDefinition {
+            id,
+            name: "Test Active",
+            short_label: "TA",
+            item_type: ItemType::Miscellaneous,
+            cost: 1,
+            sell_value: 0,
+            tier: 1,
+            rarity: ItemRarity::Common,
+            max_stack: 1,
+            consumable: false,
+            max_charges: None,
+            cooldown: 5.0,
+            activation,
+            components: &[],
+            color: [1.0, 1.0, 1.0],
+            description: "test",
+            effects: heal_effect(),
+        }
+    }
+
+    fn aimed(
+        target_type: TargetType,
+        target_team: TargetTeam,
+        cast_range: f32,
+        cast_time: f32,
+        channel_time: f32,
+        mana_cost: f32,
+    ) -> ItemActivation {
+        ItemActivation {
+            target_type,
+            target_team,
+            cast_range,
+            cast_time,
+            channel_time,
+            mana_cost,
+        }
+    }
+
+    fn slot(app: &App, caster: Entity, index: usize) -> Option<ItemInstance> {
+        app.world().get::<Inventory>(caster).unwrap().slots[index]
+    }
+
+    fn health_of(app: &App, entity: Entity) -> f32 {
+        app.world().get::<Health>(entity).unwrap().current
+    }
+
+    fn triggers(app: &App) -> Vec<crate::abilities::effects::TriggerContext> {
+        app.world()
+            .resource::<Messages<AbilityTriggerEvent>>()
+            .iter_current_update_messages()
+            .map(|event| event.0.clone())
+            .collect()
+    }
+
+    fn run_until_fired(app: &mut App, frames: usize) -> bool {
+        for _ in 0..frames {
+            step(app);
+            if !triggers(app).is_empty() {
+                return true;
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn no_target_item_heals_starts_cooldown_and_ignores_silence() {
+        let mut app = item_app();
+        let caster = spawn_caster(&mut app, 200.0);
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 40.0;
+        app.world_mut()
+            .get_mut::<StatusEffects>(caster)
+            .unwrap()
+            .effects
+            .push(StatusEffect::silenced(5.0));
+        give(&mut app, caster, ItemId::VialOfLight);
+
+        request(&mut app, caster, 0, CastTarget::None);
+        step(&mut app);
+
+        assert_eq!(health_of(&app, caster), 220.0, "180 heal from the catalog active");
+        assert_eq!(slot(&app, caster, 0).unwrap().cooldown_remaining, 40.0);
+        assert!(app.world().get::<Activation>(caster).is_none(), "instant items do not occupy the caster");
+        let fired = triggers(&app);
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0].aim, Vec3::ZERO, "no-target items aim at the caster");
+        assert_eq!(fired[0].source, crate::abilities::effects::EffectSource::Item(ItemId::VialOfLight));
+    }
+
+    #[test]
+    fn stunned_caster_and_passive_items_do_not_activate() {
+        let mut app = item_app();
+        let caster = spawn_caster(&mut app, 200.0);
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 40.0;
+        app.world_mut()
+            .get_mut::<StatusEffects>(caster)
+            .unwrap()
+            .effects
+            .push(StatusEffect::stunned(5.0));
+        give(&mut app, caster, ItemId::VialOfLight);
+        give(&mut app, caster, ItemId::IronBracer);
+
+        request(&mut app, caster, 0, CastTarget::None);
+        request(&mut app, caster, 1, CastTarget::None);
+        step(&mut app);
+
+        assert_eq!(health_of(&app, caster), 40.0);
+        assert_eq!(slot(&app, caster, 0).unwrap().cooldown_remaining, 0.0);
+        assert_eq!(slot(&app, caster, 1).unwrap().cooldown_remaining, 0.0);
+        assert!(triggers(&app).is_empty());
+    }
+
+    #[test]
+    fn each_target_type_resolves_and_invalid_or_unpaid_uses_spend_nothing() {
+        let mut app = item_app();
+        let _defs = DefinitionOverride::install([
+            test_item(
+                ItemId::StormRod,
+                aimed(TargetType::Unit, TargetTeam::Enemy, 200.0, 0.0, 0.0, 25.0),
+            ),
+            test_item(
+                ItemId::WardstoneCloak,
+                aimed(TargetType::Point, TargetTeam::Any, 150.0, 0.0, 0.0, 0.0),
+            ),
+            test_item(
+                ItemId::SparkPendant,
+                aimed(TargetType::Direction, TargetTeam::Any, 120.0, 0.0, 0.0, 0.0),
+            ),
+            test_item(
+                ItemId::HeartwoodBand,
+                aimed(TargetType::SelfTarget, TargetTeam::SelfOnly, 0.0, 0.0, 0.0, 0.0),
+            ),
+        ]);
+        let caster = spawn_caster(&mut app, 100.0);
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 50.0;
+        let enemy = app
+            .world_mut()
+            .spawn((
+                Transform::from_translation(Vec3::new(80.0, 0.0, 0.0)),
+                Team::Dire,
+                Health::new(100.0),
+            ))
+            .id();
+        let ally = app
+            .world_mut()
+            .spawn((
+                Transform::from_translation(Vec3::new(40.0, 0.0, 0.0)),
+                Team::Radiant,
+                Health::new(100.0),
+            ))
+            .id();
+        let far = app
+            .world_mut()
+            .spawn((
+                Transform::from_translation(Vec3::new(800.0, 0.0, 0.0)),
+                Team::Dire,
+                Health::new(100.0),
+            ))
+            .id();
+        give(&mut app, caster, ItemId::StormRod);
+        give(&mut app, caster, ItemId::WardstoneCloak);
+        give(&mut app, caster, ItemId::SparkPendant);
+        give(&mut app, caster, ItemId::HeartwoodBand);
+
+        request(&mut app, caster, 0, CastTarget::Unit(ally));
+        step(&mut app);
+        assert!(triggers(&app).is_empty(), "allies are not valid enemy-item targets");
+        assert_eq!(slot(&app, caster, 0).unwrap().cooldown_remaining, 0.0);
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 100.0);
+
+        request(&mut app, caster, 0, CastTarget::Unit(far));
+        step(&mut app);
+        assert!(app.world().get::<QueuedActivation>(caster).is_some());
+        assert!(app.world().get::<MoveTarget>(caster).is_some());
+        assert_eq!(slot(&app, caster, 0).unwrap().cooldown_remaining, 0.0, "walking into range is free");
+        assert_eq!(health_of(&app, caster), 50.0);
+
+        app.world_mut().get_mut::<Transform>(caster).unwrap().translation = Vec3::new(700.0, 0.0, 0.0);
+        step(&mut app);
+        let fired = triggers(&app);
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0].cast_target, Some(far));
+        assert_eq!(slot(&app, caster, 0).unwrap().cooldown_remaining, 5.0);
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 75.0);
+        assert_eq!(health_of(&app, caster), 60.0);
+
+        app.world_mut().get_mut::<Inventory>(caster).unwrap().slots[0]
+            .as_mut()
+            .unwrap()
+            .cooldown_remaining = 0.0;
+        app.world_mut().get_mut::<Mana>(caster).unwrap().current = 10.0;
+        request(&mut app, caster, 0, CastTarget::Unit(enemy));
+        step(&mut app);
+        assert!(triggers(&app).is_empty(), "unaffordable uses do not start the cooldown");
+        assert_eq!(slot(&app, caster, 0).unwrap().cooldown_remaining, 0.0);
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 10.0);
+
+        let point = Vec3::new(400.0, 0.0, 0.0);
+        request(&mut app, caster, 1, CastTarget::Point(point));
+        step(&mut app);
+        assert!(app.world().get::<QueuedActivation>(caster).is_some(), "the point is out of range");
+        assert_eq!(slot(&app, caster, 1).unwrap().cooldown_remaining, 0.0);
+        app.world_mut().entity_mut(caster).remove::<QueuedActivation>();
+
+        app.world_mut().get_mut::<Transform>(caster).unwrap().translation = Vec3::ZERO;
+        request(&mut app, caster, 1, CastTarget::Point(Vec3::new(100.0, 0.0, 0.0)));
+        step(&mut app);
+        assert_eq!(triggers(&app)[0].aim, Vec3::new(100.0, 0.0, 0.0));
+        assert_eq!(slot(&app, caster, 1).unwrap().cooldown_remaining, 5.0);
+
+        request(&mut app, caster, 2, CastTarget::Point(Vec3::new(300.0, 0.0, 0.0)));
+        step(&mut app);
+        let aim = triggers(&app)[0].aim;
+        let along = Vec3::new(aim.x, 0.0, aim.z).length();
+        assert!((along - 120.0).abs() < 1.0, "direction aim is projected to cast range, got {along}");
+        assert!(app.world().get::<QueuedActivation>(caster).is_none());
+
+        request(&mut app, caster, 3, CastTarget::None);
+        step(&mut app);
+        assert_eq!(triggers(&app)[0].cast_target, Some(caster));
+        assert_eq!(triggers(&app)[0].aim, Vec3::ZERO);
+    }
+
+    #[test]
+    fn charges_are_per_copy_and_rejected_uses_keep_them() {
+        let mut def = test_item(
+            ItemId::BladeOfAsh,
+            aimed(TargetType::NoTarget, TargetTeam::SelfOnly, 0.0, 0.0, 0.0, 0.0),
+        );
+        def.consumable = true;
+        def.max_charges = Some(2);
+        def.cooldown = 0.0;
+        let _defs = DefinitionOverride::install([def]);
+
+        let mut app = item_app();
+        let caster = spawn_caster(&mut app, 50.0);
+        let first = give(&mut app, caster, ItemId::BladeOfAsh);
+        let second = give(&mut app, caster, ItemId::BladeOfAsh);
+        assert_ne!(first, second, "each copy has its own instance");
+        assert_eq!(slot(&app, caster, 0).unwrap().charges, Some(2));
+        assert_eq!(slot(&app, caster, 1).unwrap().charges, Some(2));
+
+        slot_set_charges(&mut app, caster, 0, Some(0));
+        request(&mut app, caster, 0, CastTarget::None);
+        step(&mut app);
+        assert!(triggers(&app).is_empty());
+        assert_eq!(slot(&app, caster, 0).unwrap().charges, Some(0), "an empty copy is not spent");
+        assert_eq!(slot(&app, caster, 1).unwrap().charges, Some(2));
+
+        slot_set_charges(&mut app, caster, 0, Some(2));
+        request(&mut app, caster, 0, CastTarget::None);
+        step(&mut app);
+        assert_eq!(slot(&app, caster, 0).unwrap().charges, Some(1));
+        assert_eq!(slot(&app, caster, 1).unwrap().charges, Some(2), "the other copy is untouched");
+
+        request(&mut app, caster, 1, CastTarget::None);
+        step(&mut app);
+        assert_eq!(slot(&app, caster, 1).unwrap().charges, Some(1));
+    }
+
+    fn slot_set_charges(app: &mut App, caster: Entity, index: usize, charges: Option<u32>) {
+        app.world_mut().get_mut::<Inventory>(caster).unwrap().slots[index]
+            .as_mut()
+            .unwrap()
+            .charges = charges;
+    }
+
+    #[test]
+    fn cast_time_pays_on_fire_and_follows_the_instance_across_slots() {
+        let _defs = DefinitionOverride::install([test_item(
+            ItemId::AegisCharm,
+            aimed(TargetType::Point, TargetTeam::Any, 300.0, 0.3, 0.2, 30.0),
+        )]);
+        let mut app = item_app();
+        let caster = spawn_caster(&mut app, 100.0);
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 50.0;
+        let instance = give(&mut app, caster, ItemId::AegisCharm);
+        let aim = Vec3::new(100.0, 0.0, 0.0);
+
+        request(&mut app, caster, 0, CastTarget::Point(aim));
+        step(&mut app);
+        assert!(app.world().get::<Activation>(caster).is_some());
+        assert!(triggers(&app).is_empty());
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 100.0);
+        assert_eq!(slot(&app, caster, 0).unwrap().cooldown_remaining, 0.0);
+
+        {
+            let mut inventory = app.world_mut().get_mut::<Inventory>(caster).unwrap();
+            let item = inventory.slots[0].take();
+            inventory.slots[2] = item;
+        }
+        assert!(run_until_fired(&mut app, 12));
+        assert!(slot(&app, caster, 0).is_none());
+        let moved = slot(&app, caster, 2).unwrap();
+        assert_eq!(moved.instance, instance);
+        assert_eq!(moved.cooldown_remaining, 5.0, "the cooldown lands on the copy, not the old slot");
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 70.0);
+        assert!(
+            app.world().get::<Activation>(caster).is_some(),
+            "the channel keeps the caster after the item fires"
+        );
+        assert_eq!(health_of(&app, caster), 60.0);
+    }
+
+    #[test]
+    fn removing_the_item_during_the_cast_point_cancels_for_free() {
+        let _defs = DefinitionOverride::install([test_item(
+            ItemId::ManaCrystal,
+            aimed(TargetType::NoTarget, TargetTeam::SelfOnly, 0.0, 0.4, 0.0, 15.0),
+        )]);
+        let mut app = item_app();
+        let caster = spawn_caster(&mut app, 40.0);
+        let before = health_of(&app, caster);
+        give(&mut app, caster, ItemId::ManaCrystal);
+        request(&mut app, caster, 0, CastTarget::None);
+        step(&mut app);
+        app.world_mut().get_mut::<Inventory>(caster).unwrap().slots[0] = None;
+        for _ in 0..12 {
+            step(&mut app);
+        }
+        assert!(app.world().get::<Activation>(caster).is_none());
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 40.0);
+        assert_eq!(health_of(&app, caster), before);
+    }
+
+    #[test]
+    fn silence_blocks_an_ability_while_an_item_still_fires() {
+        let mut app = item_app();
+        let caster = spawn_caster(&mut app, 500.0);
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 40.0;
+        let mut loadout = AbilityLoadout::from_abilities([
+            AbilityId::Shockwave,
+            AbilityId::Bolt,
+            AbilityId::Execute,
+            AbilityId::Bulwark,
+        ]);
+        for slot in &mut loadout.slots {
+            slot.rank = 1;
+        }
+        app.world_mut().entity_mut(caster).insert(loadout);
+        app.world_mut()
+            .get_mut::<StatusEffects>(caster)
+            .unwrap()
+            .effects
+            .push(StatusEffect::silenced(5.0));
+        give(&mut app, caster, ItemId::VialOfLight);
+
+        app.world_mut()
+            .write_message(ActivationRequest::ability(caster, 0, CastTarget::None));
+        step(&mut app);
+        assert!(app.world().get::<Activation>(caster).is_none(), "silence blocks abilities");
+        assert_eq!(
+            app.world().get::<AbilityLoadout>(caster).unwrap().slots[0].cooldown.remaining,
+            0.0
+        );
+
+        request(&mut app, caster, 0, CastTarget::None);
+        step(&mut app);
+        assert_eq!(health_of(&app, caster), 220.0, "silence does not block items");
+        assert!(slot(&app, caster, 0).unwrap().cooldown_remaining > 0.0);
+    }
+
+    #[test]
+    fn distinct_instances_keep_distinct_cooldowns() {
+        let mut app = item_app();
+        let caster = spawn_caster(&mut app, 100.0);
+        give(&mut app, caster, ItemId::VialOfLight);
+        give(&mut app, caster, ItemId::VialOfLight);
+        request(&mut app, caster, 0, CastTarget::None);
+        step(&mut app);
+        assert!(slot(&app, caster, 0).unwrap().cooldown_remaining > 0.0);
+        assert_eq!(slot(&app, caster, 1).unwrap().cooldown_remaining, 0.0);
+        request(&mut app, caster, 0, CastTarget::None);
+        step(&mut app);
+        assert_eq!(
+            slot(&app, caster, 0).unwrap().cooldown_remaining,
+            40.0,
+            "the rejected second use does not refresh or clear the cooldown"
+        );
+        assert_eq!(slot(&app, caster, 1).unwrap().cooldown_remaining, 0.0);
     }
 }

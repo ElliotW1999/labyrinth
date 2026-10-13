@@ -210,6 +210,8 @@ mod tests {
             cost: ActionCost::default(),
             cooldown: 0.0,
             cooldown_state: ActionCooldown::default(),
+            disable: crate::actions::DisableRule::SilenceOrStun,
+            occupies_caster: true,
         }
     }
 
