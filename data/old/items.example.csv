@@ -1,0 +1,4 @@
+Item_name,cost,short_label,description,passive_1,passive_2,passive_3,passive_4,passive_5,has_active,active_cooldown,active_pseudocode,components,color_r,color_g,color_b
+Iron Bracer,300,IB,,max_health=100,armor=4,,,,false,,,,,,
+Heartwood Band,550,HB,,max_health=150,armor=3,mana_regen=2,,,false,,,Iron Bracer,,,
+Spark Pendant,750,SP,,attack_damage=10,max_mana=60,,,,true,25,On use: deal 90 magical damage to enemies in a 4.5 radius and restore 40 mana to self,Mana Crystal;Blade of Ash,0.85,0.55,0.25

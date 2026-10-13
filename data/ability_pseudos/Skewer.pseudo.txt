@@ -1,0 +1,13 @@
+Ability: Skewer
+Rust id: AbilityId::Skewer
+Type: TargetPoint
+Ultimate: False
+Max rank: 7
+Cast point / backswing: 3.0 / 0.33
+Mana: 80.0 + 0.0/level
+Damage (Physical): 70.0 + 70.0/level
+Cast range: 900.0 + 75.0/level
+AoE: 145.0 + 0.0/level
+Cooldown: 22.0 + -2.0/level (min 8.0)
+Pseudocode:
+rushes forward, unit hit on the way will be dragged to the destination, then damaged and affected by slowed movement (20% base, increasing by 10% per level) and attack speed (Slowed by 10 at base, increasing by 10 per level) for 3.25 seconds.

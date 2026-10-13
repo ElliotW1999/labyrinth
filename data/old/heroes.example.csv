@@ -1,0 +1,4 @@
+Hero_name,is_melee,Ability_Q_Name,Ability_W_Name,Ability_E_Name,Ability_R_Name,base_STR,base_AGI,base_INT,STR_per_level,AGI_per_level,INT_per_level,primary,blurb,base_health,base_mana,attack_damage,attack_range,move_speed,armor,magic_resist
+Vanguard,true,Dash,Shockwave,Bolt,Nova,22,16,14,2.6,1.7,1.6,STR,Should be skipped — already exists,,,,,,
+Warden,true,Bulwark,ShieldBash,Taunt,Aegis,24,14,12,3.0,1.4,1.2,STR,Str tank — stub kit,,,,,,
+Hexer,false,HexBolt,Curse,Ward,Ritual,13,15,25,1.5,1.6,3.1,INT,Int support — stub kit,,,,,,

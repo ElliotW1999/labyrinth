@@ -25,6 +25,53 @@ pub fn definition(id: ItemId) -> &'static ItemDefinition {
         ItemId::SparkPendant => &SPARK_PENDANT,
         ItemId::RecipeHeartwoodBand => &RECIPE_HEARTWOOD_BAND,
         ItemId::RecipeSparkPendant => &RECIPE_SPARK_PENDANT,
+        ItemId::GauntletsOfStrength => &GAUNTLETS_OF_STRENGTH,
+        ItemId::SlippersOfAgility => &SLIPPERS_OF_AGILITY,
+        ItemId::MantleOfIntelligence => &MANTLE_OF_INTELLIGENCE,
+        ItemId::Circlet => &CIRCLET,
+        ItemId::BeltOfStrength => &BELT_OF_STRENGTH,
+        ItemId::BandOfElvenskin => &BAND_OF_ELVENSKIN,
+        ItemId::RobeOfTheMagi => &ROBE_OF_THE_MAGI,
+        ItemId::Crown => &CROWN,
+        ItemId::OgreAxe => &OGRE_AXE,
+        ItemId::BladeOfAlacrity => &BLADE_OF_ALACRITY,
+        ItemId::StaffOfWizardry => &STAFF_OF_WIZARDRY,
+        ItemId::Diadem => &DIADEM,
+        ItemId::RingOfProtection => &RING_OF_PROTECTION,
+        ItemId::BladesOfAttack => &BLADES_OF_ATTACK,
+        ItemId::GlovesOfHaste => &GLOVES_OF_HASTE,
+        ItemId::Chainmail => &CHAINMAIL,
+        ItemId::HelmOfIronWill => &HELM_OF_IRON_WILL,
+        ItemId::Broadsword => &BROADSWORD,
+        ItemId::BlitzKnuckles => &BLITZ_KNUCKLES,
+        ItemId::Claymore => &CLAYMORE,
+        ItemId::MithrilHammer => &MITHRIL_HAMMER,
+        ItemId::RingOfRegen => &RING_OF_REGEN,
+        ItemId::SagesMask => &SAGES_MASK,
+        ItemId::FluffyHat => &FLUFFY_HAT,
+        ItemId::WindLace => &WIND_LACE,
+        ItemId::Cloak => &CLOAK,
+        ItemId::BootsOfSpeed => &BOOTS_OF_SPEED,
+        ItemId::RingOfHealth => &RING_OF_HEALTH,
+        ItemId::VoidStone => &VOID_STONE,
+        ItemId::VitalityBooster => &VITALITY_BOOSTER,
+        ItemId::PointBooster => &POINT_BOOSTER,
+        ItemId::Platemail => &PLATEMAIL,
+        ItemId::Hyperstone => &HYPERSTONE,
+        ItemId::UltimateOrb => &ULTIMATE_ORB,
+        ItemId::DemonEdge => &DEMON_EDGE,
+        ItemId::MysticStaff => &MYSTIC_STAFF,
+        ItemId::Reaver => &REAVER,
+        ItemId::Eaglesong => &EAGLESONG,
+        ItemId::SacredRelic => &SACRED_RELIC,
+        ItemId::NullTalisman => &NULL_TALISMAN,
+        ItemId::RecipeNull => &RECIPE_NULL,
+        ItemId::WraithBand => &WRAITH_BAND,
+        ItemId::RecipeWraith => &RECIPE_WRAITH,
+        ItemId::Bracer => &BRACER,
+        ItemId::RecipeBracer => &RECIPE_BRACER,
+        ItemId::FalconBlade => &FALCON_BLADE,
+        ItemId::RecipeFalcon => &RECIPE_FALCON,
     }
 }
 
@@ -489,3 +536,1472 @@ static RECIPE_SPARK_PENDANT: ItemDefinition = ItemDefinition {
     effects: &[],
 };
 // </item:recipe_spark_pendant>
+
+// <item:gauntlets_of_strength>
+static GAUNTLETS_OF_STRENGTH: ItemDefinition = ItemDefinition {
+    id: ItemId::GauntletsOfStrength,
+    name: "Gauntlets of Strength",
+    short_label: "1",
+    item_type: ItemType::Attributes,
+    cost: 140,
+    sell_value: 70,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.516889, 0.614885, 0.035844],
+    description: "strength=3",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::Attribute(Attribute::Strength),
+            amount: RankValue::fixed(3.0),
+        },
+    }],
+};
+// </item:gauntlets_of_strength>
+
+// <item:slippers_of_agility>
+static SLIPPERS_OF_AGILITY: ItemDefinition = ItemDefinition {
+    id: ItemId::SlippersOfAgility,
+    name: "Slippers of Agility",
+    short_label: "2",
+    item_type: ItemType::Attributes,
+    cost: 140,
+    sell_value: 70,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.555829, 0.420836, 0.858455],
+    description: "agility=3",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::Attribute(Attribute::Agility),
+            amount: RankValue::fixed(3.0),
+        },
+    }],
+};
+// </item:slippers_of_agility>
+
+// <item:mantle_of_intelligence>
+static MANTLE_OF_INTELLIGENCE: ItemDefinition = ItemDefinition {
+    id: ItemId::MantleOfIntelligence,
+    name: "Mantle of Intelligence",
+    short_label: "3",
+    item_type: ItemType::Attributes,
+    cost: 140,
+    sell_value: 70,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.150999, 0.055254, 0.152935],
+    description: "int=3",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::Attribute(Attribute::Intelligence),
+            amount: RankValue::fixed(3.0),
+        },
+    }],
+};
+// </item:mantle_of_intelligence>
+
+// <item:circlet>
+static CIRCLET: ItemDefinition = ItemDefinition {
+    id: ItemId::Circlet,
+    name: "Circlet",
+    short_label: "4",
+    item_type: ItemType::Attributes,
+    cost: 155,
+    sell_value: 77,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.869189, 0.303361, 0.068359],
+    description: "+2 Strength, +2 Agility, +2 Intelligence",
+    effects: &[
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::Attribute(Attribute::Strength),
+                amount: RankValue::fixed(2.0),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::Attribute(Attribute::Agility),
+                amount: RankValue::fixed(2.0),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::Attribute(Attribute::Intelligence),
+                amount: RankValue::fixed(2.0),
+            },
+        },
+    ],
+};
+// </item:circlet>
+
+// <item:belt_of_strength>
+static BELT_OF_STRENGTH: ItemDefinition = ItemDefinition {
+    id: ItemId::BeltOfStrength,
+    name: "Belt of Strength",
+    short_label: "5",
+    item_type: ItemType::Attributes,
+    cost: 450,
+    sell_value: 225,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.213755, 0.748499, 0.761759],
+    description: "+6 Strength",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::Attribute(Attribute::Strength),
+            amount: RankValue::fixed(6.0),
+        },
+    }],
+};
+// </item:belt_of_strength>
+
+// <item:band_of_elvenskin>
+static BAND_OF_ELVENSKIN: ItemDefinition = ItemDefinition {
+    id: ItemId::BandOfElvenskin,
+    name: "Band of Elvenskin",
+    short_label: "6",
+    item_type: ItemType::Attributes,
+    cost: 450,
+    sell_value: 225,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.445778, 0.40736, 0.639721],
+    description: "+6 Agility",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::Attribute(Attribute::Agility),
+            amount: RankValue::fixed(6.0),
+        },
+    }],
+};
+// </item:band_of_elvenskin>
+
+// <item:robe_of_the_magi>
+static ROBE_OF_THE_MAGI: ItemDefinition = ItemDefinition {
+    id: ItemId::RobeOfTheMagi,
+    name: "Robe of the Magi",
+    short_label: "7",
+    item_type: ItemType::Attributes,
+    cost: 450,
+    sell_value: 225,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.587978, 0.704258, 0.656904],
+    description: "+6 Intelligence",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::Attribute(Attribute::Intelligence),
+            amount: RankValue::fixed(6.0),
+        },
+    }],
+};
+// </item:robe_of_the_magi>
+
+// <item:crown>
+static CROWN: ItemDefinition = ItemDefinition {
+    id: ItemId::Crown,
+    name: "Crown",
+    short_label: "8",
+    item_type: ItemType::Attributes,
+    cost: 450,
+    sell_value: 225,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.382526, 0.388026, 0.119821],
+    description: "+4 Strength, +4 Agility, +4 Intelligence",
+    effects: &[
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::Attribute(Attribute::Strength),
+                amount: RankValue::fixed(4.0),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::Attribute(Attribute::Agility),
+                amount: RankValue::fixed(4.0),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::Attribute(Attribute::Intelligence),
+                amount: RankValue::fixed(4.0),
+            },
+        },
+    ],
+};
+// </item:crown>
+
+// <item:ogre_axe>
+static OGRE_AXE: ItemDefinition = ItemDefinition {
+    id: ItemId::OgreAxe,
+    name: "Ogre Axe",
+    short_label: "9",
+    item_type: ItemType::Attributes,
+    cost: 1000,
+    sell_value: 500,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.475776, 0.459536, 0.232334],
+    description: "+10 Strength",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::Attribute(Attribute::Strength),
+            amount: RankValue::fixed(10.0),
+        },
+    }],
+};
+// </item:ogre_axe>
+
+// <item:blade_of_alacrity>
+static BLADE_OF_ALACRITY: ItemDefinition = ItemDefinition {
+    id: ItemId::BladeOfAlacrity,
+    name: "Blade of Alacrity",
+    short_label: "10",
+    item_type: ItemType::Attributes,
+    cost: 1000,
+    sell_value: 500,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.087442, 0.534115, 0.563519],
+    description: "+10 Agility",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::Attribute(Attribute::Agility),
+            amount: RankValue::fixed(10.0),
+        },
+    }],
+};
+// </item:blade_of_alacrity>
+
+// <item:staff_of_wizardry>
+static STAFF_OF_WIZARDRY: ItemDefinition = ItemDefinition {
+    id: ItemId::StaffOfWizardry,
+    name: "Staff of Wizardry",
+    short_label: "11",
+    item_type: ItemType::Attributes,
+    cost: 1000,
+    sell_value: 500,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.602067, 0.756279, 0.763747],
+    description: "+10 Intelligence",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::Attribute(Attribute::Intelligence),
+            amount: RankValue::fixed(10.0),
+        },
+    }],
+};
+// </item:staff_of_wizardry>
+
+// <item:diadem>
+static DIADEM: ItemDefinition = ItemDefinition {
+    id: ItemId::Diadem,
+    name: "Diadem",
+    short_label: "12",
+    item_type: ItemType::Attributes,
+    cost: 1000,
+    sell_value: 500,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.386505, 0.16439, 0.748044],
+    description: "+6 Strength, +6 Agility, +6 Intelligence",
+    effects: &[
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::Attribute(Attribute::Strength),
+                amount: RankValue::fixed(6.0),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::Attribute(Attribute::Agility),
+                amount: RankValue::fixed(6.0),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::Attribute(Attribute::Intelligence),
+                amount: RankValue::fixed(6.0),
+            },
+        },
+    ],
+};
+// </item:diadem>
+
+// <item:ring_of_protection>
+static RING_OF_PROTECTION: ItemDefinition = ItemDefinition {
+    id: ItemId::RingOfProtection,
+    name: "Ring of Protection",
+    short_label: "13",
+    item_type: ItemType::Equipment,
+    cost: 175,
+    sell_value: 87,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.160697, 0.897607, 0.48483],
+    description: "+1 Armor",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::Armor,
+            amount: RankValue::fixed(1.0),
+        },
+    }],
+};
+// </item:ring_of_protection>
+
+// <item:blades_of_attack>
+static BLADES_OF_ATTACK: ItemDefinition = ItemDefinition {
+    id: ItemId::BladesOfAttack,
+    name: "Blades of Attack",
+    short_label: "14",
+    item_type: ItemType::Equipment,
+    cost: 450,
+    sell_value: 225,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.364704, 0.130958, 0.233807],
+    description: "+9 Attack Damage",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::AttackDamage,
+            amount: RankValue::fixed(9.0),
+        },
+    }],
+};
+// </item:blades_of_attack>
+
+// <item:gloves_of_haste>
+static GLOVES_OF_HASTE: ItemDefinition = ItemDefinition {
+    id: ItemId::GlovesOfHaste,
+    name: "Gloves of Haste",
+    short_label: "15",
+    item_type: ItemType::Equipment,
+    cost: 450,
+    sell_value: 225,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.867077, 0.476364, 0.931099],
+    description: "+20 Attack Speed",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::AttackSpeed,
+            amount: RankValue::fixed(20.0),
+        },
+    }],
+};
+// </item:gloves_of_haste>
+
+// <item:chainmail>
+static CHAINMAIL: ItemDefinition = ItemDefinition {
+    id: ItemId::Chainmail,
+    name: "Chainmail",
+    short_label: "16",
+    item_type: ItemType::Equipment,
+    cost: 500,
+    sell_value: 250,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.147085, 0.191, 0.353596],
+    description: "+4 Armor",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::Armor,
+            amount: RankValue::fixed(4.0),
+        },
+    }],
+};
+// </item:chainmail>
+
+// <item:helm_of_iron_will>
+static HELM_OF_IRON_WILL: ItemDefinition = ItemDefinition {
+    id: ItemId::HelmOfIronWill,
+    name: "Helm of Iron Will",
+    short_label: "17",
+    item_type: ItemType::Equipment,
+    cost: 975,
+    sell_value: 487,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.944502, 0.41497, 0.679339],
+    description: "+4 Armor, +4 HP Regen",
+    effects: &[
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::Armor,
+                amount: RankValue::fixed(4.0),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::HealthRegen,
+                amount: RankValue::fixed(4.0),
+            },
+        },
+    ],
+};
+// </item:helm_of_iron_will>
+
+// <item:broadsword>
+static BROADSWORD: ItemDefinition = ItemDefinition {
+    id: ItemId::Broadsword,
+    name: "Broadsword",
+    short_label: "18",
+    item_type: ItemType::Equipment,
+    cost: 1000,
+    sell_value: 500,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.777136, 0.12556, 0.214086],
+    description: "+15 Attack Damage",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::AttackDamage,
+            amount: RankValue::fixed(15.0),
+        },
+    }],
+};
+// </item:broadsword>
+
+// <item:blitz_knuckles>
+static BLITZ_KNUCKLES: ItemDefinition = ItemDefinition {
+    id: ItemId::BlitzKnuckles,
+    name: "Blitz Knuckles",
+    short_label: "19",
+    item_type: ItemType::Equipment,
+    cost: 1000,
+    sell_value: 500,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.340461, 0.517428, 0.552337],
+    description: "+35 Attack Speed",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::AttackSpeed,
+            amount: RankValue::fixed(35.0),
+        },
+    }],
+};
+// </item:blitz_knuckles>
+
+// <item:claymore>
+static CLAYMORE: ItemDefinition = ItemDefinition {
+    id: ItemId::Claymore,
+    name: "Claymore",
+    short_label: "20",
+    item_type: ItemType::Equipment,
+    cost: 1350,
+    sell_value: 675,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.634315, 0.84682, 0.179153],
+    description: "+20 Attack Damage",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::AttackDamage,
+            amount: RankValue::fixed(20.0),
+        },
+    }],
+};
+// </item:claymore>
+
+// <item:mithril_hammer>
+static MITHRIL_HAMMER: ItemDefinition = ItemDefinition {
+    id: ItemId::MithrilHammer,
+    name: "Mithril Hammer",
+    short_label: "21",
+    item_type: ItemType::Equipment,
+    cost: 1600,
+    sell_value: 800,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.874903, 0.783335, 0.969273],
+    description: "+24 Attack Damage",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::AttackDamage,
+            amount: RankValue::fixed(24.0),
+        },
+    }],
+};
+// </item:mithril_hammer>
+
+// <item:ring_of_regen>
+static RING_OF_REGEN: ItemDefinition = ItemDefinition {
+    id: ItemId::RingOfRegen,
+    name: "Ring of Regen",
+    short_label: "22",
+    item_type: ItemType::Miscellaneous,
+    cost: 175,
+    sell_value: 87,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.864521, 0.810188, 0.075594],
+    description: "+1.25 HP Regen",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::HealthRegen,
+            amount: RankValue::fixed(1.25),
+        },
+    }],
+};
+// </item:ring_of_regen>
+
+// <item:sages_mask>
+static SAGES_MASK: ItemDefinition = ItemDefinition {
+    id: ItemId::SagesMask,
+    name: "Sage's Mask",
+    short_label: "23",
+    item_type: ItemType::Miscellaneous,
+    cost: 175,
+    sell_value: 87,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.394797, 0.006352, 0.129863],
+    description: "+0.7 Mana Regen",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::ManaRegen,
+            amount: RankValue::fixed(0.7),
+        },
+    }],
+};
+// </item:sages_mask>
+
+// <item:fluffy_hat>
+static FLUFFY_HAT: ItemDefinition = ItemDefinition {
+    id: ItemId::FluffyHat,
+    name: "Fluffy Hat",
+    short_label: "24",
+    item_type: ItemType::Miscellaneous,
+    cost: 250,
+    sell_value: 125,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.867102, 0.443369, 0.617093],
+    description: "+125 HP",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::MaxHealth,
+            amount: RankValue::fixed(125.0),
+        },
+    }],
+};
+// </item:fluffy_hat>
+
+// <item:wind_lace>
+static WIND_LACE: ItemDefinition = ItemDefinition {
+    id: ItemId::WindLace,
+    name: "Wind Lace",
+    short_label: "25",
+    item_type: ItemType::Miscellaneous,
+    cost: 225,
+    sell_value: 112,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.891719, 0.784245, 0.618807],
+    description: "+15 Move Speed",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::MoveSpeed,
+            amount: RankValue::fixed(15.0),
+        },
+    }],
+};
+// </item:wind_lace>
+
+// <item:cloak>
+static CLOAK: ItemDefinition = ItemDefinition {
+    id: ItemId::Cloak,
+    name: "Cloak",
+    short_label: "26",
+    item_type: ItemType::Miscellaneous,
+    cost: 900,
+    sell_value: 450,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.429949, 0.635604, 0.91239],
+    description: "+18 Magic Resist",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::MagicResist,
+            amount: RankValue::fixed(18.0),
+        },
+    }],
+};
+// </item:cloak>
+
+// <item:boots_of_speed>
+static BOOTS_OF_SPEED: ItemDefinition = ItemDefinition {
+    id: ItemId::BootsOfSpeed,
+    name: "Boots of Speed",
+    short_label: "27",
+    item_type: ItemType::Miscellaneous,
+    cost: 500,
+    sell_value: 250,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.250722, 0.70488, 0.620872],
+    description: "+45 Move Speed",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::MoveSpeed,
+            amount: RankValue::fixed(45.0),
+        },
+    }],
+};
+// </item:boots_of_speed>
+
+// <item:ring_of_health>
+static RING_OF_HEALTH: ItemDefinition = ItemDefinition {
+    id: ItemId::RingOfHealth,
+    name: "Ring of Health",
+    short_label: "28",
+    item_type: ItemType::Miscellaneous,
+    cost: 700,
+    sell_value: 350,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.946942, 0.075446, 0.731179],
+    description: "+4.5 HP Regen",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::HealthRegen,
+            amount: RankValue::fixed(4.5),
+        },
+    }],
+};
+// </item:ring_of_health>
+
+// <item:void_stone>
+static VOID_STONE: ItemDefinition = ItemDefinition {
+    id: ItemId::VoidStone,
+    name: "Void Stone",
+    short_label: "29",
+    item_type: ItemType::Miscellaneous,
+    cost: 700,
+    sell_value: 350,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.235744, 0.084974, 0.323563],
+    description: "+1.75 Mana Regen",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::ManaRegen,
+            amount: RankValue::fixed(1.75),
+        },
+    }],
+};
+// </item:void_stone>
+
+// <item:vitality_booster>
+static VITALITY_BOOSTER: ItemDefinition = ItemDefinition {
+    id: ItemId::VitalityBooster,
+    name: "Vitality Booster",
+    short_label: "30",
+    item_type: ItemType::Miscellaneous,
+    cost: 1000,
+    sell_value: 500,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.373, 0.624857, 0.111124],
+    description: "+250 HP",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::MaxHealth,
+            amount: RankValue::fixed(250.0),
+        },
+    }],
+};
+// </item:vitality_booster>
+
+// <item:point_booster>
+static POINT_BOOSTER: ItemDefinition = ItemDefinition {
+    id: ItemId::PointBooster,
+    name: "Point Booster",
+    short_label: "31",
+    item_type: ItemType::Miscellaneous,
+    cost: 1200,
+    sell_value: 600,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.479267, 0.747601, 0.270537],
+    description: "+175 HP, +175 Mana",
+    effects: &[
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::MaxHealth,
+                amount: RankValue::fixed(175.0),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::MaxMana,
+                amount: RankValue::fixed(175.0),
+            },
+        },
+    ],
+};
+// </item:point_booster>
+
+// <item:platemail>
+static PLATEMAIL: ItemDefinition = ItemDefinition {
+    id: ItemId::Platemail,
+    name: "Platemail",
+    short_label: "32",
+    item_type: ItemType::Miscellaneous,
+    cost: 1400,
+    sell_value: 700,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.83386, 0.868362, 0.52432],
+    description: "+10 Armor",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::Armor,
+            amount: RankValue::fixed(10.0),
+        },
+    }],
+};
+// </item:platemail>
+
+// <item:hyperstone>
+static HYPERSTONE: ItemDefinition = ItemDefinition {
+    id: ItemId::Hyperstone,
+    name: "Hyperstone",
+    short_label: "33",
+    item_type: ItemType::Miscellaneous,
+    cost: 2000,
+    sell_value: 1000,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.776503, 0.483045, 0.647583],
+    description: "+60 Attack Speed",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::AttackSpeed,
+            amount: RankValue::fixed(60.0),
+        },
+    }],
+};
+// </item:hyperstone>
+
+// <item:ultimate_orb>
+static ULTIMATE_ORB: ItemDefinition = ItemDefinition {
+    id: ItemId::UltimateOrb,
+    name: "Ultimate Orb",
+    short_label: "34",
+    item_type: ItemType::Miscellaneous,
+    cost: 2800,
+    sell_value: 1400,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.396828, 0.421143, 0.409471],
+    description: "+15 Strength, +15 Agility, +15 Intelligence",
+    effects: &[
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::Attribute(Attribute::Strength),
+                amount: RankValue::fixed(15.0),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::Attribute(Attribute::Agility),
+                amount: RankValue::fixed(15.0),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::Attribute(Attribute::Intelligence),
+                amount: RankValue::fixed(15.0),
+            },
+        },
+    ],
+};
+// </item:ultimate_orb>
+
+// <item:demon_edge>
+static DEMON_EDGE: ItemDefinition = ItemDefinition {
+    id: ItemId::DemonEdge,
+    name: "Demon Edge",
+    short_label: "35",
+    item_type: ItemType::Miscellaneous,
+    cost: 2200,
+    sell_value: 1100,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.288831, 0.219397, 0.03644],
+    description: "+40 Attack Damage",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::AttackDamage,
+            amount: RankValue::fixed(40.0),
+        },
+    }],
+};
+// </item:demon_edge>
+
+// <item:mystic_staff>
+static MYSTIC_STAFF: ItemDefinition = ItemDefinition {
+    id: ItemId::MysticStaff,
+    name: "Mystic Staff",
+    short_label: "36",
+    item_type: ItemType::Miscellaneous,
+    cost: 2800,
+    sell_value: 1400,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.175355, 0.108079, 0.92867],
+    description: "+25 Intelligence",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::Attribute(Attribute::Intelligence),
+            amount: RankValue::fixed(25.0),
+        },
+    }],
+};
+// </item:mystic_staff>
+
+// <item:reaver>
+static REAVER: ItemDefinition = ItemDefinition {
+    id: ItemId::Reaver,
+    name: "Reaver",
+    short_label: "37",
+    item_type: ItemType::Miscellaneous,
+    cost: 2800,
+    sell_value: 1400,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.883542, 0.952181, 0.64178],
+    description: "+25 Strength",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::Attribute(Attribute::Strength),
+            amount: RankValue::fixed(25.0),
+        },
+    }],
+};
+// </item:reaver>
+
+// <item:eaglesong>
+static EAGLESONG: ItemDefinition = ItemDefinition {
+    id: ItemId::Eaglesong,
+    name: "Eaglesong",
+    short_label: "38",
+    item_type: ItemType::Miscellaneous,
+    cost: 2800,
+    sell_value: 1400,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.443321, 0.706815, 0.034995],
+    description: "+25 Agility",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::Attribute(Attribute::Agility),
+            amount: RankValue::fixed(25.0),
+        },
+    }],
+};
+// </item:eaglesong>
+
+// <item:sacred_relic>
+static SACRED_RELIC: ItemDefinition = ItemDefinition {
+    id: ItemId::SacredRelic,
+    name: "Sacred Relic",
+    short_label: "39",
+    item_type: ItemType::Miscellaneous,
+    cost: 3400,
+    sell_value: 1700,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.810812, 0.615413, 0.941747],
+    description: "+55 Attack Damage",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::AttackDamage,
+            amount: RankValue::fixed(55.0),
+        },
+    }],
+};
+// </item:sacred_relic>
+
+// <item:null_talisman>
+static NULL_TALISMAN: ItemDefinition = ItemDefinition {
+    id: ItemId::NullTalisman,
+    name: "Null Talisman",
+    short_label: "40",
+    item_type: ItemType::Accessories,
+    cost: 505,
+    sell_value: 252,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[
+        ItemId::Circlet,
+        ItemId::MantleOfIntelligence,
+        ItemId::RecipeNull,
+    ],
+    color: [0.854529, 0.152149, 0.742026],
+    description: "+2 Strength, +2 Agility, +5 Intelligence",
+    effects: &[
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::Attribute(Attribute::Strength),
+                amount: RankValue::fixed(2.0),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::Attribute(Attribute::Agility),
+                amount: RankValue::fixed(2.0),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::Attribute(Attribute::Intelligence),
+                amount: RankValue::fixed(5.0),
+            },
+        },
+    ],
+};
+// </item:null_talisman>
+
+// <item:recipe_null>
+static RECIPE_NULL: ItemDefinition = ItemDefinition {
+    id: ItemId::RecipeNull,
+    name: "Recipe: Null Talisman",
+    short_label: "41",
+    item_type: ItemType::Recipe,
+    cost: 210,
+    sell_value: 105,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.315147, 0.244832, 0.89219],
+    description: "",
+    effects: &[],
+};
+// </item:recipe_null>
+
+// <item:wraith_band>
+static WRAITH_BAND: ItemDefinition = ItemDefinition {
+    id: ItemId::WraithBand,
+    name: "Wraith Band",
+    short_label: "42",
+    item_type: ItemType::Accessories,
+    cost: 505,
+    sell_value: 252,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[
+        ItemId::Circlet,
+        ItemId::SlippersOfAgility,
+        ItemId::RecipeWraith,
+    ],
+    color: [0.988371, 0.650599, 0.187329],
+    description: "+2 Strength, +5 Agility, +2 Intelligence",
+    effects: &[
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::Attribute(Attribute::Strength),
+                amount: RankValue::fixed(2.0),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::Attribute(Attribute::Agility),
+                amount: RankValue::fixed(5.0),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::Attribute(Attribute::Intelligence),
+                amount: RankValue::fixed(2.0),
+            },
+        },
+    ],
+};
+// </item:wraith_band>
+
+// <item:recipe_wraith>
+static RECIPE_WRAITH: ItemDefinition = ItemDefinition {
+    id: ItemId::RecipeWraith,
+    name: "Recipe: Wraith Band",
+    short_label: "43",
+    item_type: ItemType::Recipe,
+    cost: 210,
+    sell_value: 105,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.499596, 0.875601, 0.454348],
+    description: "",
+    effects: &[],
+};
+// </item:recipe_wraith>
+
+// <item:bracer>
+static BRACER: ItemDefinition = ItemDefinition {
+    id: ItemId::Bracer,
+    name: "Bracer",
+    short_label: "44",
+    item_type: ItemType::Accessories,
+    cost: 505,
+    sell_value: 252,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[
+        ItemId::Circlet,
+        ItemId::GauntletsOfStrength,
+        ItemId::RecipeBracer,
+    ],
+    color: [0.440344, 0.367315, 0.696991],
+    description: "+5 Strength, +2 Agility, +2 Intelligence",
+    effects: &[
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::Attribute(Attribute::Strength),
+                amount: RankValue::fixed(5.0),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::Attribute(Attribute::Agility),
+                amount: RankValue::fixed(2.0),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::Attribute(Attribute::Intelligence),
+                amount: RankValue::fixed(2.0),
+            },
+        },
+    ],
+};
+// </item:bracer>
+
+// <item:recipe_bracer>
+static RECIPE_BRACER: ItemDefinition = ItemDefinition {
+    id: ItemId::RecipeBracer,
+    name: "Recipe: Bracer",
+    short_label: "45",
+    item_type: ItemType::Recipe,
+    cost: 210,
+    sell_value: 105,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.358461, 0.783632, 0.52908],
+    description: "",
+    effects: &[],
+};
+// </item:recipe_bracer>
+
+// <item:falcon_blade>
+static FALCON_BLADE: ItemDefinition = ItemDefinition {
+    id: ItemId::FalconBlade,
+    name: "Falcon Blade",
+    short_label: "46",
+    item_type: ItemType::Accessories,
+    cost: 1125,
+    sell_value: 562,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[
+        ItemId::BladesOfAttack,
+        ItemId::FluffyHat,
+        ItemId::SagesMask,
+        ItemId::RecipeFalcon,
+    ],
+    color: [0.566989, 0.680867, 0.011773],
+    description: "+200 HP, +1.8 Mana Regen, +14 Attack Damage",
+    effects: &[
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::MaxHealth,
+                amount: RankValue::fixed(200.0),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::ManaRegen,
+                amount: RankValue::fixed(1.8),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::AttackDamage,
+                amount: RankValue::fixed(14.0),
+            },
+        },
+    ],
+};
+// </item:falcon_blade>
+
+// <item:recipe_falcon>
+static RECIPE_FALCON: ItemDefinition = ItemDefinition {
+    id: ItemId::RecipeFalcon,
+    name: "Recipe: Falcon Blade",
+    short_label: "47",
+    item_type: ItemType::Recipe,
+    cost: 250,
+    sell_value: 125,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    components: &[],
+    color: [0.492675, 0.399693, 0.109166],
+    description: "",
+    effects: &[],
+};
+// </item:recipe_falcon>

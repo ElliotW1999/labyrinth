@@ -1,13 +1,60 @@
 id,name,item_type,cost,sell_value,tier,rarity,stackable,max_stack,consumable,max_charges,description,short_label,cooldown,components,color_r,color_g,color_b
-iron_bracer,Iron Bracer,equipment,300,150,1,common,false,,false,,"+100 HP, +4 Armor",IB,,,0.55,0.55,0.6
-swift_boots,Swift Boots,equipment,450,225,1,common,false,,false,,+65 Move Speed,SB,,,0.35,0.7,0.45
-mana_crystal,Mana Crystal,accessories,350,175,1,common,false,,false,,"+80 Mana, +4 Mana Regen",MC,,,0.3,0.45,0.95
-blade_of_ash,Blade of Ash,weapons,800,400,1,uncommon,false,,false,,"+18 Attack Damage, +15 Attack Speed",BA,,,0.85,0.35,0.25
-aegis_charm,Aegis Charm,armor,700,350,1,uncommon,false,,false,,"+6 Armor, +5 Magic Resist",AC,,,0.7,0.65,0.35
-vial_of_light,Vial of Light,miscellaneous,400,200,1,common,false,,false,,Active: Heal 180 HP,VL,40,,0.95,0.9,0.55
-storm_rod,Storm Rod,magical,900,450,2,rare,false,,false,,+12 AD. Active: 140 magic AoE,SR,30,,0.45,0.35,0.95
-wardstone_cloak,Wardstone Cloak,support,650,325,1,uncommon,false,,false,,"+80 HP, +4 MR. Active: +8 Armor 5s",WC,35,,0.4,0.55,0.5
-heartwood_band,Heartwood Band,artifacts,550,275,2,uncommon,false,,false,,+150 HP. +3 Armor. +2 Mana Regen,HB,,iron_bracer;recipe_heartwood_band,0.405294,0.452353,0.558235
-spark_pendant,Spark Pendant,magical,750,375,2,rare,false,,false,,+10 Attack Damage. +60 Mana. Active: deal 90 magical damage to nearby enemies and restore 40 mana,SP,25,mana_crystal;blade_of_ash;recipe_spark_pendant,0.85,0.55,0.25
-recipe_heartwood_band,Recipe: Heartwood Band,recipe,250,125,1,common,false,,false,,Combines with components into Heartwood Band,R-HB,,,0.55,0.5,0.35
-recipe_spark_pendant,Recipe: Spark Pendant,recipe,200,100,1,common,false,,false,,Combines with components into Spark Pendant,R-SP,,,0.6,0.45,0.25
+iron_bracer,Iron Bracer,equipment,300,150,1,common,FALSE,,FALSE,,"+100 HP, +4 Armor",IB,,,0.55,0.55,0.6
+swift_boots,Swift Boots,equipment,450,225,1,common,FALSE,,FALSE,,+65 Move Speed,SB,,,0.35,0.7,0.45
+mana_crystal,Mana Crystal,accessories,350,175,1,common,FALSE,,FALSE,,"+80 Mana, +4 Mana Regen",MC,,,0.3,0.45,0.95
+blade_of_ash,Blade of Ash,weapons,800,400,1,uncommon,FALSE,,FALSE,,"+18 Attack Damage, +15 Attack Speed",BA,,,0.85,0.35,0.25
+aegis_charm,Aegis Charm,armor,700,350,1,uncommon,FALSE,,FALSE,,"+6 Armor, +5 Magic Resist",AC,,,0.7,0.65,0.35
+vial_of_light,Vial of Light,miscellaneous,400,200,1,common,FALSE,,FALSE,,Active: Heal 180 HP,VL,40,,0.95,0.9,0.55
+storm_rod,Storm Rod,magical,900,450,2,rare,FALSE,,FALSE,,+12 AD. Active: 140 magic AoE,SR,30,,0.45,0.35,0.95
+wardstone_cloak,Wardstone Cloak,support,650,325,1,uncommon,FALSE,,FALSE,,"+80 HP, +4 MR. Active: +8 Armor 5s",WC,35,,0.4,0.55,0.5
+heartwood_band,Heartwood Band,artifacts,550,275,2,uncommon,FALSE,,FALSE,,+150 HP. +3 Armor. +2 Mana Regen,HB,,iron_bracer;recipe_heartwood_band,0.405294,0.452353,0.558235
+spark_pendant,Spark Pendant,magical,750,375,2,rare,FALSE,,FALSE,,+10 Attack Damage. +60 Mana. Active: deal 90 magical damage to nearby enemies and restore 40 mana,SP,25,mana_crystal;blade_of_ash;recipe_spark_pendant,0.85,0.55,0.25
+recipe_heartwood_band,Recipe: Heartwood Band,recipe,250,125,1,common,FALSE,,FALSE,,Combines with components into Heartwood Band,R-HB,,,0.55,0.5,0.35
+recipe_spark_pendant,Recipe: Spark Pendant,recipe,200,100,1,common,FALSE,,FALSE,,Combines with components into Spark Pendant,R-SP,,,0.6,0.45,0.25
+gauntlets_of_strength,Gauntlets of Strength,attributes,140,70,,,FALSE,,FALSE,,strength=3,1,,,0.516888918,0.614885486,0.035844415
+slippers_of_agility,Slippers of Agility,attributes,140,70,,,FALSE,,FALSE,,agility=3,2,,,0.555829366,0.420836457,0.8584548
+mantle_of_intelligence,Mantle of Intelligence,attributes,140,70,,,FALSE,,FALSE,,int=3,3,,,0.150999339,0.05525399,0.152934962
+circlet,Circlet,attributes,155,77,,,FALSE,,FALSE,,,4,,,0.869188925,0.303360567,0.068359443
+belt_of_strength,Belt of Strength,attributes,450,225,,,FALSE,,FALSE,,,5,,,0.213754623,0.748498906,0.761759087
+band_of_elvenskin,Band of Elvenskin,attributes,450,225,,,FALSE,,FALSE,,,6,,,0.445777856,0.407359993,0.639720972
+robe_of_the_magi,Robe of the Magi,attributes,450,225,,,FALSE,,FALSE,,,7,,,0.587978053,0.704258354,0.656904161
+crown,Crown,attributes,450,225,,,FALSE,,FALSE,,,8,,,0.382525886,0.3880261,0.119820521
+ogre_axe,Ogre Axe,attributes,1000,500,,,FALSE,,FALSE,,,9,,,0.475776155,0.459535958,0.232333699
+blade_of_alacrity,Blade of Alacrity,attributes,1000,500,,,FALSE,,FALSE,,,10,,,0.087441826,0.534114672,0.563519297
+staff_of_wizardry,Staff of Wizardry,attributes,1000,500,,,FALSE,,FALSE,,,11,,,0.602066694,0.756279182,0.763746813
+diadem,Diadem,attributes,1000,500,,,FALSE,,FALSE,,,12,,,0.386504743,0.164389941,0.748044301
+ring_of_protection,Ring of Protection,equipment,175,87,,,FALSE,,FALSE,,,13,,,0.160697425,0.897606909,0.484830029
+blades_of_attack,Blades of Attack,equipment,450,225,,,FALSE,,FALSE,,,14,,,0.364703746,0.130958236,0.233807183
+gloves_of_haste,Gloves of Haste,equipment,450,225,,,FALSE,,FALSE,,,15,,,0.867077439,0.47636427,0.93109877
+chainmail,Chainmail,equipment,500,250,,,FALSE,,FALSE,,,16,,,0.147084579,0.190999667,0.353596098
+helm_of_iron_will,Helm of Iron Will,equipment,975,487,,,FALSE,,FALSE,,,17,,,0.944502159,0.414970467,0.679339356
+broadsword,Broadsword,equipment,1000,500,,,FALSE,,FALSE,,,18,,,0.777136102,0.125559762,0.214085828
+blitz_knuckles,Blitz Knuckles,equipment,1000,500,,,FALSE,,FALSE,,,19,,,0.340460993,0.517428269,0.552336895
+claymore,Claymore,equipment,1350,675,,,FALSE,,FALSE,,,20,,,0.634315372,0.84681957,0.179152557
+mithril_hammer,Mithril Hammer,equipment,1600,800,,,FALSE,,FALSE,,,21,,,0.874903141,0.783335437,0.969272957
+ring_of_regen,Ring of Regen,miscellaneous,175,87,,,FALSE,,FALSE,,,22,,,0.864521089,0.810188154,0.07559355
+sages_mask,Sage's Mask,miscellaneous,175,87,,,FALSE,,FALSE,,,23,,,0.394797215,0.006351606,0.129862718
+fluffy_hat,Fluffy Hat,miscellaneous,250,125,,,FALSE,,FALSE,,,24,,,0.867102276,0.443369114,0.617092888
+wind_lace,Wind Lace,miscellaneous,225,112,,,FALSE,,FALSE,,,25,,,0.891718999,0.784244963,0.61880693
+cloak,Cloak,miscellaneous,900,450,,,FALSE,,FALSE,,,26,,,0.429948579,0.635604392,0.912390317
+boots_of_speed,Boots of Speed,miscellaneous,500,250,,,FALSE,,FALSE,,,27,,,0.250722212,0.704879781,0.620872069
+ring_of_health,Ring of Health,miscellaneous,700,350,,,FALSE,,FALSE,,,28,,,0.946941545,0.075446487,0.731178549
+void_stone,Void Stone,miscellaneous,700,350,,,FALSE,,FALSE,,,29,,,0.235743519,0.084973584,0.323562629
+vitality_booster,Vitality Booster,miscellaneous,1000,500,,,FALSE,,FALSE,,,30,,,0.372999866,0.624857318,0.111123794
+point_booster,Point Booster,miscellaneous,1200,600,,,FALSE,,FALSE,,,31,,,0.479267122,0.747601415,0.270536814
+platemail,Platemail,miscellaneous,1400,700,,,FALSE,,FALSE,,,32,,,0.83386038,0.86836203,0.524320326
+hyperstone,Hyperstone,miscellaneous,2000,1000,,,FALSE,,FALSE,,,33,,,0.776503208,0.483044912,0.647583191
+ultimate_orb,Ultimate Orb,miscellaneous,2800,1400,,,FALSE,,FALSE,,,34,,,0.396828332,0.421143281,0.409471052
+demon_edge,Demon Edge,miscellaneous,2200,1100,,,FALSE,,FALSE,,,35,,,0.288831004,0.21939683,0.036440367
+mystic_staff,Mystic Staff,miscellaneous,2800,1400,,,FALSE,,FALSE,,,36,,,0.175355209,0.108079104,0.928670029
+reaver,Reaver,miscellaneous,2800,1400,,,FALSE,,FALSE,,,37,,,0.883542112,0.952181435,0.64178042
+eaglesong,Eaglesong,miscellaneous,2800,1400,,,FALSE,,FALSE,,,38,,,0.443321296,0.706815357,0.034995289
+sacred_relic,Sacred Relic,miscellaneous,3400,1700,,,FALSE,,FALSE,,,39,,,0.81081219,0.615412834,0.941747415
+null_talisman,Null Talisman,accessories,505,252,,,FALSE,,FALSE,,,40,,circlet;mantle_of_intelligence;recipe_null,0.854528917,0.152148503,0.742025976
+recipe_null,Recipe: Null Talisman,recipe,210,105,,,FALSE,,FALSE,,,41,,,0.315146614,0.244832158,0.892189527
+wraith_band,Wraith Band,accessories,505,252,,,FALSE,,FALSE,,,42,,circlet;slippers_of_agility;recipe_wraith,0.988370854,0.650598656,0.187329342
+recipe_wraith,Recipe: Wraith Band,recipe,210,105,,,FALSE,,FALSE,,,43,,,0.499596119,0.875601477,0.454347809
+bracer,Bracer,accessories,505,252,,,FALSE,,FALSE,,,44,,circlet;gauntlets_of_strength;recipe_bracer,0.44034381,0.367314595,0.696991103
+recipe_bracer,Recipe: Bracer,recipe,210,105,,,FALSE,,FALSE,,,45,,,0.358461084,0.783631774,0.529080482
+falcon_blade,Falcon Blade,accessories,1125,562,,,FALSE,,FALSE,,,46,,blades_of_attack;fluffy_hat;sages_mask;recipe_falcon,0.566989158,0.680867166,0.011772641
+recipe_falcon,Recipe: Falcon Blade,recipe,250,125,,,FALSE,,FALSE,,,47,,,0.492675267,0.399693131,0.109166338

@@ -1,0 +1,13 @@
+Ability: Reverse Polarity
+Rust id: AbilityId::ReversePolarity
+Type: Untargeted
+Ultimate: True
+Max rank: 4
+Cast point / backswing: 0.3 / 1.3
+Mana: 150.0 + 75.0/level
+Damage (Physical): 75.0 + 75.0/level
+Cast range: 0.0 + 0.0/level
+AoE: 430.0 + 0.0/level
+Cooldown: 120.0 + 0.0/level (min 120.0)
+Pseudocode:
+Pulls all nearby enemies in front of him and stunning them (2.5seconds base, 0.5 per level) with a powerful slam and dealing damage.

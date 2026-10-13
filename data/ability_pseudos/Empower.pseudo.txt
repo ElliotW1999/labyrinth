@@ -1,0 +1,13 @@
+Ability: Empower
+Rust id: AbilityId::Empower
+Type: UnitTarget
+Ultimate: False
+Max rank: 7
+Cast point / backswing: 0.3 / 1.07
+Mana: 45.0 + 10.0/level
+Damage (Physical): 0.0 + 0.0/level
+Cast range: 800.0 + 0.0/level
+AoE: 0.0 + 0.0/level
+Cooldown: 8.0 + 0.0/level (min 8.0)
+Pseudocode:
+Gives an allied unit bonus damage (not base damage) and cleave on attack. If cast on self, receives 50% larger bonus. Damage bonus and cleave damage bonus is 16% at base, increasing 8% per level. Cleave radius is a trapezoid of bases 150, 360 and height of 650
