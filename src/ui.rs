@@ -13,7 +13,7 @@ use crate::components::{
 use crate::heroes::HeroKind;
 use crate::items::{
     Inventory, InventoryContextMenu, ItemId, ItemShop, PurchaseItemRequest, SellItemRequest,
-    ShopUiState, ShopUndoLog, StatusEffects, StatusKind, UndoShopRequest,
+    ShopTab, ShopUiState, ShopUndoLog, StatusEffects, StatusKind, UndoShopRequest,
 };
 use crate::menu::MainMenuState;
 use crate::unit_commands::{IssueCommand, UnitCommand};
@@ -47,6 +47,7 @@ impl Plugin for UiPlugin {
                     handle_shop_undo_clicks,
                     handle_shop_backdrop_close,
                     handle_shop_close_keys,
+                    handle_shop_tab_clicks,
                     sync_shop_panel_visibility,
                     sync_shop_detail_panel,
                     refresh_shop_status,
@@ -239,6 +240,11 @@ struct ShopBuyButton {
 }
 
 #[derive(Component)]
+struct ShopTabButton {
+    tab: ShopTab,
+}
+
+#[derive(Component)]
 struct ShopBackdrop;
 
 #[derive(Component)]
@@ -282,6 +288,23 @@ enum MinimapDotKind {
 }
 
 const MINIMAP_SIZE: f32 = 180.0;
+/// Previous shop icons were 86×92. Half of each side is a quarter of the area.
+const SHOP_ICON_WIDTH: f32 = 43.0;
+const SHOP_ICON_HEIGHT: f32 = 46.0;
+const SHOP_ICON_GAP: f32 = 8.0;
+const SHOP_COLUMNS: u32 = 8;
+const SHOP_PAD: f32 = 14.0;
+const SHOP_BORDER: f32 = 2.0;
+const SHOP_SCREEN_MARGIN: f32 = 16.0;
+
+fn shop_grid_width() -> f32 {
+    // Extra pixels keep the eighth icon from wrapping when flex gaps round up.
+    SHOP_COLUMNS as f32 * SHOP_ICON_WIDTH + (SHOP_COLUMNS - 1) as f32 * SHOP_ICON_GAP + 4.0
+}
+
+fn shop_panel_width() -> f32 {
+    shop_grid_width() + SHOP_PAD * 2.0 + SHOP_BORDER * 2.0
+}
 const MAX_MINIMAP_DOTS: usize = 64;
 const SHOP_BUTTON_WIDTH: f32 = 108.0;
 const SHOP_BUTTON_HEIGHT: f32 = 44.0;
@@ -687,20 +710,19 @@ fn spawn_hud(mut commands: Commands) {
                 ZIndex(40),
             ));
 
-            // Shop panel (starts hidden)
+            // Shop panel (starts hidden), top-right, wide enough for 8 icons.
             root.spawn((
                 ShopPanel,
                 BlocksWorldRmb,
                 Node {
                     position_type: PositionType::Absolute,
-                    left: percent(50),
-                    top: percent(50),
-                    margin: UiRect::new(px(-200), px(0), px(-210), px(0)),
-                    width: px(400),
+                    right: px(SHOP_SCREEN_MARGIN),
+                    top: px(SHOP_SCREEN_MARGIN),
+                    width: px(shop_panel_width()),
                     flex_direction: FlexDirection::Column,
                     row_gap: px(10),
-                    padding: UiRect::all(px(14)),
-                    border: UiRect::all(px(2)),
+                    padding: UiRect::all(px(SHOP_PAD)),
+                    border: UiRect::all(px(SHOP_BORDER)),
                     border_radius: BorderRadius::all(px(10)),
                     ..default()
                 },
@@ -725,10 +747,41 @@ fn spawn_hud(mut commands: Commands) {
                     .spawn(Node {
                         width: percent(100),
                         flex_direction: FlexDirection::Row,
+                        column_gap: px(8),
+                        ..default()
+                    })
+                    .with_children(|row| {
+                        for tab in ShopTab::all() {
+                            row.spawn((
+                                Button,
+                                ShopTabButton { tab },
+                                Node {
+                                    height: px(28),
+                                    flex_grow: 1.0,
+                                    align_items: AlignItems::Center,
+                                    justify_content: JustifyContent::Center,
+                                    border_radius: BorderRadius::all(px(5)),
+                                    ..default()
+                                },
+                                BackgroundColor(Color::srgb(0.16, 0.18, 0.22)),
+                            ))
+                            .with_children(|btn| {
+                                btn.spawn((
+                                    Text::new(tab.label()),
+                                    TextFont::from_font_size(14.0),
+                                    TextColor(Color::srgb(0.95, 0.92, 0.8)),
+                                ));
+                            });
+                        }
+                    });
+                panel
+                    .spawn(Node {
+                        width: px(shop_grid_width()),
+                        flex_direction: FlexDirection::Row,
                         flex_wrap: FlexWrap::Wrap,
-                        column_gap: px(10),
-                        row_gap: px(10),
-                        justify_content: JustifyContent::Center,
+                        column_gap: px(SHOP_ICON_GAP),
+                        row_gap: px(SHOP_ICON_GAP),
+                        justify_content: JustifyContent::FlexStart,
                         ..default()
                     })
                     .with_children(|grid| {
@@ -771,9 +824,8 @@ fn spawn_hud(mut commands: Commands) {
                 BlocksWorldRmb,
                 Node {
                     position_type: PositionType::Absolute,
-                    left: percent(50),
-                    top: percent(50),
-                    margin: UiRect::new(px(-170), px(0), px(-200), px(0)),
+                    right: px(SHOP_SCREEN_MARGIN + shop_panel_width() + 12.0),
+                    top: px(SHOP_SCREEN_MARGIN),
                     width: px(340),
                     flex_direction: FlexDirection::Column,
                     row_gap: px(8),
@@ -1149,15 +1201,16 @@ fn spawn_shop_item(parent: &mut ChildSpawnerCommands, item: ItemId) {
             Button,
             ShopBuyButton { item },
             Node {
-                width: px(86),
-                height: px(92),
+                width: px(SHOP_ICON_WIDTH),
+                height: px(SHOP_ICON_HEIGHT),
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
-                row_gap: px(4),
-                padding: UiRect::all(px(4)),
-                border: UiRect::all(px(2)),
-                border_radius: BorderRadius::all(px(8)),
+                row_gap: px(1),
+                padding: UiRect::all(px(2)),
+                border: UiRect::all(px(1)),
+                border_radius: BorderRadius::all(px(4)),
+                overflow: Overflow::clip(),
                 ..default()
             },
             BackgroundColor(item.placeholder_color()),
@@ -1166,12 +1219,12 @@ fn spawn_shop_item(parent: &mut ChildSpawnerCommands, item: ItemId) {
         .with_children(|btn| {
             btn.spawn((
                 Text::new(item.short_label()),
-                TextFont::from_font_size(20.0),
+                TextFont::from_font_size(11.0),
                 TextColor(Color::WHITE),
             ));
             btn.spawn((
                 Text::new(item.name()),
-                TextFont::from_font_size(11.0),
+                TextFont::from_font_size(8.0),
                 TextColor(Color::srgb(0.95, 0.95, 1.0)),
             ));
         });
@@ -1818,10 +1871,45 @@ fn handle_shop_toggle_button(
     }
 }
 
+fn handle_shop_tab_clicks(
+    interactions: Query<(&Interaction, &ShopTabButton), Changed<Interaction>>,
+    mut shop_ui: ResMut<ShopUiState>,
+) {
+    if !shop_ui.open {
+        return;
+    }
+    for (interaction, button) in &interactions {
+        if *interaction == Interaction::Pressed {
+            shop_ui.tab = button.tab;
+        }
+    }
+}
+
 fn sync_shop_panel_visibility(
     shop_ui: Res<ShopUiState>,
-    mut panel: Query<&mut Visibility, (With<ShopPanel>, Without<ShopBackdrop>, Without<ShopDetailPanel>)>,
-    mut backdrop: Query<&mut Visibility, (With<ShopBackdrop>, Without<ShopPanel>, Without<ShopDetailPanel>)>,
+    mut panel: Query<
+        &mut Visibility,
+        (
+            With<ShopPanel>,
+            Without<ShopBackdrop>,
+            Without<ShopDetailPanel>,
+            Without<ShopBuyButton>,
+        ),
+    >,
+    mut backdrop: Query<
+        &mut Visibility,
+        (
+            With<ShopBackdrop>,
+            Without<ShopPanel>,
+            Without<ShopDetailPanel>,
+            Without<ShopBuyButton>,
+        ),
+    >,
+    mut items: Query<
+        (&ShopBuyButton, &mut Visibility),
+        (Without<ShopPanel>, Without<ShopBackdrop>, Without<ShopDetailPanel>),
+    >,
+    mut tabs: Query<(&ShopTabButton, &mut BackgroundColor)>,
 ) {
     let vis = if shop_ui.open {
         Visibility::Visible
@@ -1833,6 +1921,21 @@ fn sync_shop_panel_visibility(
     }
     if let Ok(mut v) = backdrop.single_mut() {
         *v = vis;
+    }
+    // Inherited follows the shop panel. Visible would keep the other tab on screen when it closes.
+    for (button, mut item_vis) in &mut items {
+        *item_vis = if shop_ui.tab.accepts(button.item.definition().item_type) {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+    }
+    for (button, mut color) in &mut tabs {
+        *color = if button.tab == shop_ui.tab {
+            BackgroundColor(Color::srgb(0.55, 0.42, 0.12))
+        } else {
+            BackgroundColor(Color::srgb(0.16, 0.18, 0.22))
+        };
     }
 }
 
@@ -2388,6 +2491,7 @@ mod tests {
         world.insert_resource(ShopUiState {
             open: false,
             detail: Some(ItemId::HeartwoodBand),
+            ..default()
         });
         let panel = world.spawn((ShopDetailPanel, Visibility::Hidden)).id();
         let row = world
@@ -2421,6 +2525,77 @@ mod tests {
             *world.get::<Visibility>(row).unwrap(),
             Visibility::Inherited,
             "shown rows follow the panel instead of forcing themselves visible"
+        );
+    }
+
+    #[test]
+    fn shop_panel_fits_eight_quarter_size_icons() {
+        assert_eq!(SHOP_ICON_WIDTH * 2.0, 86.0);
+        assert_eq!(SHOP_ICON_HEIGHT * 2.0, 92.0);
+        assert_eq!(SHOP_COLUMNS, 8);
+        let grid = shop_grid_width();
+        assert!(grid >= 8.0 * 43.0 + 7.0 * SHOP_ICON_GAP);
+        assert!(shop_panel_width() > 400.0);
+        assert!(shop_panel_width() >= grid + SHOP_PAD * 2.0);
+    }
+
+    #[test]
+    fn shop_tabs_show_only_their_items() {
+        let mut world = World::new();
+        world.insert_resource(ShopUiState {
+            open: true,
+            tab: ShopTab::Basics,
+            ..default()
+        });
+        let basic = world
+            .spawn((
+                ShopBuyButton {
+                    item: ItemId::IronBracer,
+                },
+                Visibility::Hidden,
+            ))
+            .id();
+        let upgrade = world
+            .spawn((
+                ShopBuyButton {
+                    item: ItemId::BladeOfAsh,
+                },
+                Visibility::Visible,
+            ))
+            .id();
+        let basics_tab = world
+            .spawn((
+                ShopTabButton {
+                    tab: ShopTab::Basics,
+                },
+                BackgroundColor(Color::NONE),
+            ))
+            .id();
+        let upgrades_tab = world
+            .spawn((
+                ShopTabButton {
+                    tab: ShopTab::Upgrades,
+                },
+                BackgroundColor(Color::NONE),
+            ))
+            .id();
+
+        let mut system = IntoSystem::into_system(sync_shop_panel_visibility);
+        system.initialize(&mut world);
+        let _ = system.run((), &mut world);
+        assert_eq!(*world.get::<Visibility>(basic).unwrap(), Visibility::Inherited);
+        assert_eq!(*world.get::<Visibility>(upgrade).unwrap(), Visibility::Hidden);
+
+        world.resource_mut::<ShopUiState>().tab = ShopTab::Upgrades;
+        let _ = system.run((), &mut world);
+        assert_eq!(*world.get::<Visibility>(basic).unwrap(), Visibility::Hidden);
+        assert_eq!(
+            *world.get::<Visibility>(upgrade).unwrap(),
+            Visibility::Inherited
+        );
+        assert_ne!(
+            world.get::<BackgroundColor>(basics_tab).unwrap().0,
+            world.get::<BackgroundColor>(upgrades_tab).unwrap().0
         );
     }
 
