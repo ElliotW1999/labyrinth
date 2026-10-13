@@ -220,7 +220,9 @@ fn effect_rows(trigger: AbilityTrigger, effect: &AbilityEffect) -> Vec<(String, 
             }
             rows
         }
-        AbilityEffect::Dispel { .. } | AbilityEffect::RemoveStatus { .. } => Vec::new(),
+        AbilityEffect::Dispel { .. }
+        | AbilityEffect::RemoveStatus { .. }
+        | AbilityEffect::Teleport => Vec::new(),
     }
 }
 
@@ -268,6 +270,7 @@ fn effect_notes(trigger: AbilityTrigger, effect: &AbilityEffect) -> Vec<String> 
             StatusKind::Debuff => vec![format!("Dispel debuffs ({tag})")],
         },
         AbilityEffect::RemoveStatus { id } => vec![format!("Remove {id} ({tag})")],
+        AbilityEffect::Teleport => vec![format!("Teleports to the target point ({tag})")],
         AbilityEffect::Displace { distance: None, kind, .. } => match kind {
             DisplacementKind::Pull => vec![format!("Pulls to the caster ({tag})")],
             DisplacementKind::Knockback => Vec::new(),

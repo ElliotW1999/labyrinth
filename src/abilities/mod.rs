@@ -46,6 +46,9 @@ use effects::{
     resolve_ability_triggers, AbilityTriggerEvent, CustomAbilityEffects, HealEvent,
     ManaRestoreEvent, StatusEffectEvent,
 };
+use crate::teleport::{
+    apply_teleport_events, TeleportCompletedEvent, TeleportEvent, TeleportRejectedEvent,
+};
 use mechanics::{execute_ability_casts, projectile_hit_triggers, CustomAbilityBehaviors};
 
 pub struct AbilitiesPlugin;
@@ -63,6 +66,9 @@ impl Plugin for AbilitiesPlugin {
             .add_message::<ManaRestoreEvent>()
             .add_message::<StatusEffectEvent>()
             .add_message::<DisplacementEvent>()
+            .add_message::<TeleportEvent>()
+            .add_message::<TeleportCompletedEvent>()
+            .add_message::<TeleportRejectedEvent>()
             .add_systems(
                 Update,
                 (
@@ -85,6 +91,9 @@ impl Plugin for AbilitiesPlugin {
                         apply_mana_restore_events,
                         apply_displacement_events,
                         apply_status_effect_events,
+                        // Before the AI and navigation stages, so the orders it drops
+                        // are gone before they are replanned or re-issued.
+                        apply_teleport_events.before(crate::movement::SimSet::Ai),
                         tick_forced_movement,
                     )
                         .chain(),
@@ -538,6 +547,9 @@ mod tests {
     use crate::items::ItemId;
     use super::mechanics::{AbilityAppExt, CastContext};
     use super::*;
+    use crate::components::CollisionRadius;
+    use crate::teleport::TeleportError;
+    use crate::navigation::{NavGrid, NavShape};
     use crate::combat::{
         apply_damage_events, DamageEvent, ProjectileHitEvent, ProjectilePayload,
         SpawnProjectileEvent,
@@ -561,6 +573,10 @@ mod tests {
             .add_message::<ManaRestoreEvent>()
             .add_message::<StatusEffectEvent>()
             .add_message::<DisplacementEvent>()
+            .add_message::<TeleportEvent>()
+            .add_message::<TeleportCompletedEvent>()
+            .add_message::<TeleportRejectedEvent>()
+            .init_resource::<NavGrid>()
             .add_message::<DamageEvent>()
             .add_message::<SpawnProjectileEvent>()
             .add_message::<ProjectileHitEvent>()
@@ -578,6 +594,7 @@ mod tests {
                     apply_mana_restore_events,
                     apply_displacement_events,
                     apply_status_effect_events,
+                    apply_teleport_events,
                     tick_forced_movement,
                     apply_damage_events,
                 )
@@ -905,5 +922,109 @@ mod tests {
         assert!(was_rooted, "displaced units are rooted while moving");
         assert!((x - 48.0).abs() < 1e-2, "pulled into contact, not onto the caster: {x}");
         assert!(app.world().get::<ForcedMovement>(enemy).is_none());
+    }
+
+    fn blink_ability() -> AbilityDefinition {
+        AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::Point, RankValue::fixed(2000.0), RankValue::ZERO)
+            .costs(RankValue::fixed(8.0), RankValue::fixed(100.0))
+            .on(AbilityTrigger::OnCast, EffectTarget::Caster, AbilityEffect::Teleport)
+    }
+
+    #[test]
+    fn teleport_ability_relocates_the_caster_after_paying_costs() {
+        let mut app = test_app();
+        app.world_mut().resource_mut::<AbilityDefinitions>().insert(blink_ability());
+        let caster = spawn_caster(&mut app, KIT);
+        app.world_mut().entity_mut(caster).insert((
+            CollisionRadius(40.0),
+            MoveTarget { position: Vec3::new(-900.0, 0.0, 0.0) },
+        ));
+
+        request(&mut app, caster, 3, CastTarget::Point(Vec3::new(1500.0, 0.0, 300.0)));
+        for _ in 0..12 {
+            step(&mut app);
+        }
+        let world = app.world();
+        assert_eq!(world.get::<Transform>(caster).unwrap().translation, Vec3::new(1500.0, 0.0, 300.0));
+        assert!(world.get::<MoveTarget>(caster).is_none());
+        assert_eq!(world.get::<Mana>(caster).unwrap().current, 900.0);
+        assert!(world.get::<AbilityLoadout>(caster).unwrap().slots[3].cooldown_remaining > 0.0);
+    }
+
+    #[test]
+    fn teleport_ability_into_an_obstacle_leaves_the_caster_in_place() {
+        let mut app = test_app();
+        app.world_mut().resource_mut::<AbilityDefinitions>().insert(blink_ability());
+        app.world_mut()
+            .resource_mut::<NavGrid>()
+            .rebuild(vec![NavShape::Circle { center: Vec2::new(1500.0, 0.0), radius: 120.0 }]);
+        let caster = spawn_caster(&mut app, KIT);
+        app.world_mut().entity_mut(caster).insert(CollisionRadius(40.0));
+
+        request(&mut app, caster, 3, CastTarget::Point(Vec3::new(1450.0, 0.0, 0.0)));
+        let mut rejections = Vec::new();
+        for _ in 0..12 {
+            step(&mut app);
+            let messages = app.world().resource::<Messages<TeleportRejectedEvent>>();
+            rejections.extend(messages.iter_current_update_messages().map(|e| e.reason));
+        }
+        let world = app.world();
+        assert_eq!(rejections, vec![TeleportError::Blocked]);
+        assert_eq!(world.get::<Transform>(caster).unwrap().translation, Vec3::ZERO);
+    }
+
+    fn item_context(owner: Entity, aim: Vec3) -> TriggerContext {
+        TriggerContext {
+            trigger: AbilityTrigger::OnUse,
+            caster: owner,
+            team: Team::Radiant,
+            source: EffectSource::Item(ItemId::SparkPendant),
+            rank: 1,
+            origin: Vec3::ZERO,
+            aim,
+            point: Vec3::ZERO,
+            cast_target: None,
+            trigger_unit: None,
+            affected_units: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn items_and_abilities_teleport_through_the_same_effect() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut app = test_app();
+        app.world_mut().resource_mut::<AbilityDefinitions>().insert(blink_ability());
+        let by_ability = spawn_caster(&mut app, KIT);
+        let by_item = spawn_unit(&mut app, Team::Radiant, Vec3::new(0.0, 0.0, 800.0));
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(0.0, 0.0, -800.0));
+        for unit in [by_ability, by_item, ally] {
+            app.world_mut().entity_mut(unit).insert(CollisionRadius(40.0));
+        }
+
+        request(&mut app, by_ability, 3, CastTarget::Point(Vec3::new(2000.0, 0.0, 0.0)));
+        for _ in 0..12 {
+            step(&mut app);
+        }
+
+        // An item's `OnUse` trigger resolves its entries through this same executor, with
+        // `EffectSource::Item` in the context: once on its owner, once on another unit.
+        app.world_mut()
+            .run_system_once(move |mut runner: effects::EffectRunner| {
+                let mut ctx = item_context(by_item, Vec3::new(-2000.0, 0.0, 0.0));
+                let targets = runner.targets(&ctx, EffectTarget::Caster, 0.0);
+                runner.execute(&ctx, &AbilityEffect::Teleport, targets);
+                ctx.trigger_unit = Some(ally);
+                ctx.aim = Vec3::new(0.0, 0.0, 2500.0);
+                let targets = runner.targets(&ctx, EffectTarget::TriggerUnit, 0.0);
+                runner.execute(&ctx, &AbilityEffect::Teleport, targets);
+            })
+            .unwrap();
+        step(&mut app);
+
+        let world = app.world();
+        assert_eq!(world.get::<Transform>(by_ability).unwrap().translation, Vec3::new(2000.0, 0.0, 0.0));
+        assert_eq!(world.get::<Transform>(by_item).unwrap().translation, Vec3::new(-2000.0, 0.0, 0.0));
+        assert_eq!(world.get::<Transform>(ally).unwrap().translation, Vec3::new(0.0, 0.0, 2500.0));
     }
 }
