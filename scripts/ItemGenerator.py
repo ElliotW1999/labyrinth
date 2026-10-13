@@ -16,6 +16,12 @@ Optional extra columns (kept from the previous generator format): `short_label`,
 `cooldown` (active cooldown in seconds), `components` (`;`-separated item ids),
 `color_r` / `color_g` / `color_b` (0..1).
 
+Optional activation columns for items with `on_use` effects (blank = instant no-target
+use, as before): `target_type` (unit, point, direction, no_target, self),
+`target_team` (enemy, ally, both, self), `cast_range`, `cast_time`, `channel_time`,
+`mana_cost`. Active items run through the same activation pipeline as abilities
+(targeting, range, cast point, channel, costs).
+
 Usage:
   python3 scripts/ItemGenerator.py                     # data/items.csv + data/item_effects.csv
   python3 scripts/ItemGenerator.py my_items.csv my_item_effects.csv
@@ -35,7 +41,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from generator_common import (  # noqa: E402
+    ACTION_TEAMS,
     EFFECT_COLUMNS,
+    TARGET_TYPES,
     EffectContext,
     EffectRow,
     Report,
@@ -89,6 +97,14 @@ ITEM_TYPES = {
     "weapons": "Weapons",
     "artifacts": "Artifacts",
 }
+ACTIVATION_COLUMNS = ("target_type", "target_team", "cast_range", "cast_time", "channel_time", "mana_cost")
+RUST_TARGET_TYPES = {
+    "unit": "Unit",
+    "point": "Point",
+    "direction": "Direction",
+    "no_target": "NoTarget",
+    "self": "SelfTarget",
+}
 RARITIES = {r: r.capitalize() for r in ("common", "uncommon", "rare", "epic", "legendary")}
 MAX_COMPONENTS = 5
 NOT_EMITTED = {
@@ -122,12 +138,30 @@ GENERATED_HEADER = """\
 use crate::abilities::definition::{
     AbilityEffect, AbilityEffectEntry, AbilityTrigger, AreaCenter, AreaRadius, Attribute,
     DisplacementKind, EffectScaling, EffectTarget, PassiveStat, RankValue, StatusSpec, TargetTeam,
+    TargetType,
 };
 #[allow(unused_imports)]
 use crate::components::DamageType;
 #[allow(unused_imports)]
-use crate::items::{ItemDefinition, ItemId, ItemRarity, ItemType, StatusKind};
+use crate::items::{ItemActivation, ItemDefinition, ItemId, ItemRarity, ItemType, StatusKind};
 """
+
+
+@dataclass
+class Activation:
+    target_type: str
+    target_team: str
+    cast_range: float
+    cast_time: float
+    channel_time: float
+    mana_cost: float
+
+    @property
+    def is_instant(self) -> bool:
+        return self == INSTANT
+
+
+INSTANT = Activation("no_target", "self", 0.0, 0.0, 0.0, 0.0)
 
 
 @dataclass
@@ -146,6 +180,7 @@ class Item:
     consumable: bool
     max_charges: int | None
     cooldown: float
+    activation: Activation
     components: list[str]
     color: tuple[float, float, float]
     description: str
@@ -222,6 +257,7 @@ def parse_item(row: Row, effects: list[EffectRow], report: Report) -> Item | Non
         err("color_r", "colors are 0..1 floats")
     if any(c is None for c in color) and any(c is not None for c in color):
         err("color_r", "set all of color_r, color_g, color_b or none")
+    activation = parse_activation(row, has_use, report)
     short = row.get("short_label") or short_label_from_name(name)
     if len(short) > 4:
         err("short_label", "at most 4 characters")
@@ -243,21 +279,68 @@ def parse_item(row: Row, effects: list[EffectRow], report: Report) -> Item | Non
         consumable=consumable,
         max_charges=int(max_charges) if max_charges else None,
         cooldown=cooldown or 0.0,
+        activation=activation,
         components=components,
         color=tuple(color) if all(c is not None for c in color) else color_from_name(name),  # type: ignore[arg-type]
         description=row.get("description") or describe(effects),
     )
 
 
+def parse_activation(row: Row, has_use: bool, report: Report) -> Activation:
+    """Targeting / timing / cost of the active; blank columns keep the instant default."""
+    present = [c for c in ACTIVATION_COLUMNS if row.get(c)]
+    if not has_use:
+        for column in present:
+            report.warn(row.file, row.line, column, row.get(column), "ignored: the item has no on_use effects")
+        return INSTANT
+    target_type = parse_enum(row, "target_type", TARGET_TYPES, report, required=False) or "no_target"
+    default_team = "self" if target_type in ("no_target", "self") else "both"
+    target_team = parse_enum(row, "target_team", list(ACTION_TEAMS), report, required=False) or default_team
+    cast_range = parse_scalar(row, "cast_range", report, minimum=0)
+    cast_time = parse_scalar(row, "cast_time", report, minimum=0)
+    channel_time = parse_scalar(row, "channel_time", report, minimum=0)
+    mana_cost = parse_scalar(row, "mana_cost", report, minimum=0)
+
+    def err(fld: str, message: str) -> None:
+        report.error(row.file, row.line, fld, row.get(fld), message)
+
+    if target_type == "unit" and not row.get("target_team"):
+        err("target_team", "required for unit-targeted items (enemy, ally, or both)")
+    if target_team == "self" and target_type not in ("self", "no_target"):
+        err("target_team", f"target_team self requires target_type self or no_target (got {target_type})")
+    if target_type == "self" and target_team != "self":
+        err("target_team", "target_type self requires target_team self")
+    if target_type in ("unit", "point", "direction") and not cast_range:
+        err("cast_range", f"required for {target_type}-targeted items")
+    if target_type in ("no_target", "self") and cast_range:
+        report.warn(row.file, row.line, "cast_range", row.get("cast_range"), f"ignored: {target_type} items have no range")
+    return Activation(
+        target_type=target_type,
+        target_team=target_team,
+        cast_range=(cast_range or 0.0) if target_type not in ("no_target", "self") else 0.0,
+        cast_time=cast_time or 0.0,
+        channel_time=channel_time or 0.0,
+        mana_cost=mana_cost or 0.0,
+    )
+
+
 def effect_context(item: Item) -> EffectContext:
+    target_type = item.activation.target_type
     ctx = EffectContext(
         kind="item",
         owner_id=item.id,
         levels=None,
-        center_for={"on_use": "Caster", "passive": "Caster"},
+        center_for={"on_use": "Caster" if target_type in ("no_target", "self") else "Aim", "passive": "Caster"},
     )
     for trigger in ("passive", "on_use", "on_attack", "on_attack_hit", "on_damage_taken", "on_kill", "on_death"):
-        ctx.invalid_combo[(trigger, "cast_target")] = "items have no cast target (no item targeting yet)"
+        if trigger == "on_use" and target_type in ("unit", "self"):
+            continue
+        reason = (
+            f"{target_type} items have no cast target; use target_type unit or self"
+            if trigger == "on_use"
+            else f"{trigger} has no cast target"
+        )
+        ctx.invalid_combo[(trigger, "cast_target")] = reason
     for target in ("trigger_unit", "affected_units", "attacker", "units_in_radius"):
         ctx.invalid_combo[("passive", target)] = "passive bonuses apply to the owner"
     for target in ("trigger_unit", "affected_units", "attacker"):
@@ -286,6 +369,7 @@ def item_static(item: Item) -> str:
         f"    consumable: {'true' if item.consumable else 'false'},",
         f"    max_charges: {f'Some({item.max_charges})' if item.max_charges else 'None'},",
         f"    cooldown: {f32(item.cooldown)},",
+        f"    activation: {activation_rust(item.activation)},",
         f"    components: &[{components}],",
         f"    color: [{f32(r)}, {f32(g)}, {f32(b)}],",
         f"    description: {rust_str(item.description)},",
@@ -295,6 +379,16 @@ def item_static(item: Item) -> str:
         lines.append(f"        AbilityEffectEntry {{ trigger: {trigger}, target: {target}, effect: {effect} }},")
     lines += ["    ],", "};", f"// </item:{item.id}>"]
     return "\n".join(lines) + "\n"
+
+
+def activation_rust(a: Activation) -> str:
+    if a.is_instant:
+        return "ItemActivation::INSTANT"
+    return (
+        f"ItemActivation {{ target_type: TargetType::{RUST_TARGET_TYPES[a.target_type]}, "
+        f"target_team: TargetTeam::{ACTION_TEAMS[a.target_team]}, cast_range: {f32(a.cast_range)}, "
+        f"cast_time: {f32(a.cast_time)}, channel_time: {f32(a.channel_time)}, mana_cost: {f32(a.mana_cost)} }}"
+    )
 
 
 def render_generated(blocks: dict[str, str]) -> str:
@@ -359,6 +453,20 @@ def load(items_csv: Path, effects_csv: Path, existing_ids: set[str]) -> tuple[li
         for effect in effects:
             if effect.trigger == "passive" and effect.effect_type != "stat_modifier":
                 report.error(effect.row.file, effect.row.line, "effect_type", effect.effect_type, "passive item effects must be stat_modifier (use on_use / on_attack_hit for the rest)")
+                continue
+            if (
+                effect.trigger == "on_use"
+                and effect.effect_type == "movement"
+                and effect.row.get("effect_id").lower() == "teleport"
+                and item.activation.target_type not in ("point", "direction")
+            ):
+                report.error(
+                    effect.row.file,
+                    effect.row.line,
+                    "effect_id",
+                    effect.row.get("effect_id"),
+                    "teleport items need a destination: set target_type point or direction (and a cast_range) in the items CSV",
+                )
                 continue
             if effect.trigger in NOT_EMITTED:
                 report.warn(effect.row.file, effect.row.line, "trigger", effect.trigger, NOT_EMITTED[effect.trigger])

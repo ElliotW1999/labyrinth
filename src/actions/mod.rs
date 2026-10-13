@@ -10,13 +10,16 @@
 //!    └─ ok → Activation: turn → cast point
 //!               → re-check, pay cost, ActionSources::commit (cooldown, charges, source rules)
 //!               → ActionFiredEvent → channel → ActionChannelEndEvent → backswing
+//!    (actions that don't occupy the caster fire right away and keep current orders)
 //! ```
 //!
 //! Source layers own what is specific to them: the ability layer
 //! (`abilities::casting`) decides whether an ability is learned / castable, builds
 //! its [`ActionSpec`] from the definition and rank, and turns
-//! [`ActionFiredEvent`]s into ability casts. An item layer will plug in the same way
-//! (inventory ownership, item availability) through [`ActionSource::Item`].
+//! [`ActionFiredEvent`]s into ability casts. The item layer (`items`) checks that the
+//! caster's inventory slot holds an active item, builds the spec from the item's
+//! activation data and instance cooldown / charges, and spends charges / stacks and
+//! fires `OnUse` from [`ActionFiredEvent`]s.
 
 pub mod pipeline;
 pub mod resources;
@@ -25,32 +28,37 @@ pub mod targeting;
 use bevy::prelude::*;
 
 use crate::components::{AbilityId, CastTarget};
-use crate::items::ItemId;
+use crate::items::{ItemId, ItemInstanceId};
 
-pub use pipeline::{resolve_queued_activations, tick_activations, validate_activation_requests};
-pub use resources::{ActionCooldown, ActionCost, check_ready};
+pub use pipeline::{
+    ActionSources, resolve_queued_activations, tick_activations, validate_activation_requests,
+};
+pub use resources::{ActionCooldown, ActionCost, DisableRule, check_ready};
 pub use targeting::{
     CasterInfo, ResolvedTarget, TargetTeam, TargetType, UnitInfo, in_range, resolve_target,
     team_allows,
 };
 
 /// Which slot of the caster an activation comes from.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ActionSource {
     /// Index into the caster's `AbilityLoadout`.
     Ability(usize),
-    /// Index into the caster's `Inventory` (not wired yet; rejected as unavailable).
+    /// Index into the caster's `Inventory`.
     Item(usize),
 }
 
 /// What occupies the source slot. Stored on in-flight activations so a slot that
 /// changed contents (re-skilled, item sold) cancels instead of firing something else.
-#[allow(dead_code)]
+/// Items carry their instance so each copy keeps its own cooldown and charges and an
+/// in-flight use follows that copy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ActionId {
     Ability(AbilityId),
-    Item(ItemId),
+    Item {
+        item: ItemId,
+        instance: ItemInstanceId,
+    },
 }
 
 /// Attempt to activate `source` on `caster`, aimed at `target`.
@@ -61,11 +69,20 @@ pub struct ActivationRequest {
     pub target: CastTarget,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 impl ActivationRequest {
     pub fn ability(caster: Entity, slot: usize, target: CastTarget) -> Self {
         Self {
             caster,
             source: ActionSource::Ability(slot),
+            target,
+        }
+    }
+
+    pub fn item(caster: Entity, slot: usize, target: CastTarget) -> Self {
+        Self {
+            caster,
+            source: ActionSource::Item(slot),
             target,
         }
     }
@@ -91,6 +108,11 @@ pub struct ActionSpec {
     pub cooldown: f32,
     /// Current cooldown / charge state of the source slot.
     pub cooldown_state: ActionCooldown,
+    pub disable: DisableRule,
+    /// Holds an [`Activation`] (stops the caster, turns, cast point, channel,
+    /// backswing). When false (no cast point or channel) the action fires the moment
+    /// it is validated in range, without touching the caster's current orders.
+    pub occupies_caster: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,6 +133,7 @@ pub struct Activation {
     pub level: u32,
     pub target: CastTarget,
     pub aim: Vec3,
+    pub disable: DisableRule,
     /// Time left in the cast point (the action fires when this hits 0).
     pub point_remaining: f32,
     /// After firing, remaining channel time (interrupted by silence / stun).
@@ -121,10 +144,6 @@ pub struct Activation {
 }
 
 impl Activation {
-    pub fn is_ability_slot(&self, slot: usize) -> bool {
-        self.source == ActionSource::Ability(slot)
-    }
-
     /// Fired and no longer channelling: the order it came from is done.
     pub fn released(&self) -> bool {
         self.fired && self.channel_remaining <= 0.0

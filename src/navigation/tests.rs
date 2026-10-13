@@ -402,8 +402,8 @@ fn move_then_ability_then_move() {
     issue(
         &mut app,
         hero,
-        UnitCommand::CastAbility {
-            slot: 0,
+        UnitCommand::Activate {
+            source: crate::actions::ActionSource::Ability(0),
             target: CastTarget::None,
         },
         true,
@@ -443,8 +443,8 @@ fn invalid_or_dead_targets_do_not_stall_the_queue() {
     issue(
         &mut app,
         hero,
-        UnitCommand::CastAbility {
-            slot: 1,
+        UnitCommand::Activate {
+            source: crate::actions::ActionSource::Ability(1),
             target: CastTarget::Unit(gone),
         },
         true,
@@ -453,8 +453,8 @@ fn invalid_or_dead_targets_do_not_stall_the_queue() {
     issue(
         &mut app,
         hero,
-        UnitCommand::CastAbility {
-            slot: 3,
+        UnitCommand::Activate {
+            source: crate::actions::ActionSource::Ability(3),
             target: CastTarget::None,
         },
         true,

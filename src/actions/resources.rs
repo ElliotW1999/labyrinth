@@ -67,11 +67,30 @@ impl ActionCooldown {
     }
 }
 
+/// Which statuses stop the caster from starting (or continuing) an action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisableRule {
+    /// Abilities: silence and stun.
+    SilenceOrStun,
+    /// Items: only stun.
+    Stun,
+}
+
+impl DisableRule {
+    pub fn blocks(self, statuses: Option<&StatusEffects>) -> bool {
+        statuses.is_some_and(|s| match self {
+            DisableRule::SilenceOrStun => !s.can_cast(),
+            DisableRule::Stun => s.is_stunned(),
+        })
+    }
+}
+
 /// Source-independent readiness: off cooldown with a charge, affordable, and the
-/// caster is able to act (not silenced / stunned).
+/// caster is able to act under `disable`.
 pub fn check_ready(
     cooldown: &ActionCooldown,
     cost: &ActionCost,
+    disable: DisableRule,
     mana: &Mana,
     statuses: Option<&StatusEffects>,
 ) -> Result<(), ActionError> {
@@ -81,7 +100,7 @@ pub fn check_ready(
     if !cost.affordable(mana) {
         return Err(ActionError::NotEnoughMana);
     }
-    if statuses.is_some_and(|s| !s.can_cast()) {
+    if disable.blocks(statuses) {
         return Err(ActionError::CasterDisabled);
     }
     Ok(())
@@ -127,20 +146,21 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            check_ready(&cooling, &cost, &Mana::new(0.0, 0.0), None),
+            check_ready(&cooling, &cost, DisableRule::SilenceOrStun, &Mana::new(0.0, 0.0), None),
             Err(ActionError::OnCooldown)
         );
         assert_eq!(
             check_ready(
                 &ActionCooldown::default(),
                 &cost,
+                DisableRule::SilenceOrStun,
                 &Mana::new(10.0, 0.0),
                 None
             ),
             Err(ActionError::NotEnoughMana)
         );
         assert_eq!(
-            check_ready(&ActionCooldown::default(), &cost, &mana, None),
+            check_ready(&ActionCooldown::default(), &cost, DisableRule::SilenceOrStun, &mana, None),
             Ok(())
         );
     }

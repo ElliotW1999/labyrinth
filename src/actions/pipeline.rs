@@ -4,7 +4,7 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use super::{
-    ActionChannelEndEvent, ActionError, ActionFiredEvent, ActionSource, ActionSpec, Activation,
+    ActionChannelEndEvent, ActionError, ActionFiredEvent, ActionId, ActionSource, ActionSpec, Activation,
     ActivationRequest, CasterInfo, QueuedActivation, ResolvedTarget, UnitInfo, check_ready,
     in_range, resolve_target,
 };
@@ -15,7 +15,7 @@ use crate::components::{
     CombatStats, Health, Mana, MoveTarget, Team,
 };
 use crate::dimensions::bounds_of;
-use crate::items::StatusEffects;
+use crate::items::{Inventory, StatusEffects, commit_item, item_action_spec};
 
 /// Resolves an [`ActionSource`] to its [`ActionSpec`] and commits it, delegating the
 /// source-specific rules to the owning layer.
@@ -23,6 +23,7 @@ use crate::items::StatusEffects;
 pub struct ActionSources<'w, 's> {
     ability_defs: Res<'w, AbilityDefinitions>,
     loadouts: Query<'w, 's, &'static mut AbilityLoadout>,
+    inventories: Query<'w, 's, &'static mut Inventory>,
 }
 
 impl ActionSources<'_, '_> {
@@ -41,7 +42,10 @@ impl ActionSources<'_, '_> {
                     .ok_or(ActionError::Unavailable)?;
                 ability_action_spec(def, state).map_err(|_| ActionError::Unavailable)
             }
-            ActionSource::Item(_) => Err(ActionError::Unavailable),
+            ActionSource::Item(slot) => {
+                let inventory = self.inventories.get(caster).map_err(|_| ActionError::Unavailable)?;
+                item_action_spec(inventory, slot).map_err(|_| ActionError::Unavailable)
+            }
         }
     }
 
@@ -60,21 +64,63 @@ impl ActionSources<'_, '_> {
                     commit_ability(def, state, spec);
                 }
             }
-            ActionSource::Item(_) => {}
+            ActionSource::Item(slot) => {
+                if let Ok(mut inventory) = self.inventories.get_mut(caster) {
+                    commit_item(&mut inventory, slot, spec);
+                }
+            }
         }
     }
 
-    /// The source's spec, only while the slot still holds the action that started.
+    /// Where `action` lives now and its current spec. Ability slots must still hold the
+    /// same ability; items follow their instance even if it moved to another slot.
     fn current(
         &self,
         caster: Entity,
         source: ActionSource,
-        action: super::ActionId,
-    ) -> Option<ActionSpec> {
+        action: ActionId,
+    ) -> Option<(ActionSource, ActionSpec)> {
+        let source = match (source, action) {
+            (ActionSource::Item(_), ActionId::Item { instance, .. }) => {
+                ActionSource::Item(self.inventories.get(caster).ok()?.slot_of(instance)?)
+            }
+            _ => source,
+        };
         self.spec(caster, source)
             .ok()
             .filter(|spec| spec.action == action)
+            .map(|spec| (source, spec))
     }
+}
+
+/// Pay, commit, and announce an action whose cast point is over.
+#[allow(clippy::too_many_arguments)]
+fn fire(
+    sources: &mut ActionSources,
+    fired: &mut MessageWriter<ActionFiredEvent>,
+    mana: &mut Mana,
+    statuses: Option<&StatusEffects>,
+    caster: Entity,
+    source: ActionSource,
+    spec: &ActionSpec,
+    target: CastTarget,
+    aim: Vec3,
+) -> bool {
+    if check_ready(&spec.cooldown_state, &spec.cost, spec.disable, mana, statuses).is_err()
+        || !spec.cost.pay(mana)
+    {
+        return false;
+    }
+    sources.commit(caster, source, spec);
+    fired.write(ActionFiredEvent {
+        caster,
+        source,
+        action: spec.action,
+        level: spec.level,
+        target,
+        aim,
+    });
+    true
 }
 
 type CasterQuery<'w, 's> = Query<
@@ -83,7 +129,7 @@ type CasterQuery<'w, 's> = Query<
     (
         &'static Transform,
         &'static Team,
-        &'static Mana,
+        &'static mut Mana,
         Option<&'static StatusEffects>,
         Option<&'static BoundRadius>,
     ),
@@ -114,19 +160,21 @@ fn unit_info(units: &UnitQuery, entity: Entity) -> Option<UnitInfo> {
 
 pub fn validate_activation_requests(
     mut commands: Commands,
-    sources: ActionSources,
+    mut sources: ActionSources,
     mut requests: MessageReader<ActivationRequest>,
-    casters: CasterQuery,
+    mut fired: MessageWriter<ActionFiredEvent>,
+    mut casters: CasterQuery,
     units: UnitQuery,
 ) {
     for request in requests.read() {
-        let Ok((transform, team, mana, statuses, bound)) = casters.get(request.caster) else {
+        let Ok((transform, team, mut mana, statuses, bound)) = casters.get_mut(request.caster)
+        else {
             continue;
         };
         let Ok(spec) = sources.spec(request.caster, request.source) else {
             continue;
         };
-        if check_ready(&spec.cooldown_state, &spec.cost, mana, statuses).is_err() {
+        if check_ready(&spec.cooldown_state, &spec.cost, spec.disable, &mana, statuses).is_err() {
             continue;
         }
         let caster = CasterInfo {
@@ -140,9 +188,25 @@ pub fn validate_activation_requests(
             continue;
         };
 
+        let in_range = in_range(&spec, caster.position, caster.bounds, &resolved);
+        if in_range && !spec.occupies_caster {
+            fire(
+                &mut sources,
+                &mut fired,
+                &mut mana,
+                statuses,
+                request.caster,
+                request.source,
+                &spec,
+                resolved.target,
+                resolved.aim,
+            );
+            continue;
+        }
+
         let mut entity = commands.entity(request.caster);
         entity.remove::<(AttackTarget, AttackMoveOrder)>();
-        if !in_range(&spec, caster.position, caster.bounds, &resolved) {
+        if !in_range {
             entity.insert((
                 QueuedActivation {
                     source: request.source,
@@ -164,6 +228,7 @@ pub fn validate_activation_requests(
                 level: spec.level,
                 target: resolved.target,
                 aim: resolved.aim,
+                disable: spec.disable,
                 point_remaining: spec.cast_time,
                 channel_remaining: spec.channel_time,
                 backswing_remaining: spec.backswing,
@@ -186,12 +251,13 @@ pub fn resolve_queued_activations(
     units: UnitQuery,
 ) {
     for (caster, transform, mut queued, bound) in &mut casters {
-        let Some(spec) = sources.current(caster, queued.source, queued.action) else {
+        let Some((source, spec)) = sources.current(caster, queued.source, queued.action) else {
             commands
                 .entity(caster)
                 .remove::<(QueuedActivation, MoveTarget)>();
             continue;
         };
+        queued.source = source;
 
         let mut target_bounds = None;
         if let CastTarget::Unit(entity) = queued.target {
@@ -251,7 +317,7 @@ pub fn tick_activations(
 ) {
     let dt = time.delta_secs();
     for (entity, mut transform, mut activation, mut mana, statuses, stats) in &mut casters {
-        let disabled = statuses.is_some_and(|s| !s.can_cast());
+        let disabled = activation.disable.blocks(statuses);
         if activation.fired {
             if activation.channel_remaining > 0.0 {
                 activation.channel_remaining = if disabled {
@@ -291,28 +357,29 @@ pub fn tick_activations(
             continue;
         }
 
-        let Some(spec) = sources.current(entity, activation.source, activation.action) else {
+        let Some((source, spec)) = sources.current(entity, activation.source, activation.action)
+        else {
             commands.entity(entity).remove::<Activation>();
             continue;
         };
-        if check_ready(&spec.cooldown_state, &spec.cost, &mana, statuses).is_err()
-            || !spec.cost.pay(&mut mana)
-        {
+        let (target, aim) = (activation.target, activation.aim);
+        if !fire(
+            &mut sources,
+            &mut fired,
+            &mut mana,
+            statuses,
+            entity,
+            source,
+            &spec,
+            target,
+            aim,
+        ) {
             commands.entity(entity).remove::<Activation>();
             continue;
         }
-        sources.commit(entity, activation.source, &spec);
-
+        activation.source = source;
         activation.fired = true;
         activation.level = spec.level;
-        fired.write(ActionFiredEvent {
-            caster: entity,
-            source: activation.source,
-            action: spec.action,
-            level: spec.level,
-            target: activation.target,
-            aim: activation.aim,
-        });
         if activation.channel_remaining <= 0.0 && activation.backswing_remaining <= 0.0 {
             commands.entity(entity).remove::<Activation>();
         }

@@ -14,11 +14,10 @@ use bevy::prelude::*;
 use super::definition::{AbilityBehavior, AbilityDefinition, AbilityTrigger};
 use super::effects::{AbilityTriggerEvent, EffectSource, TriggerContext};
 use crate::actions::{
-    ActionChannelEndEvent, ActionCost, ActionError, ActionFiredEvent, ActionId, ActionSource,
-    ActionSpec, check_ready,
+    ActionChannelEndEvent, ActionCost, ActionFiredEvent, ActionId, ActionSource, ActionSpec,
+    DisableRule,
 };
-use crate::components::{AbilityId, AbilityState, CastTarget, Mana, Team};
-use crate::items::StatusEffects;
+use crate::components::{AbilityId, AbilityState, CastTarget, Team};
 
 /// A cast passed validation, finished its cast point, and paid its costs.
 /// Effects and custom behaviors run from this event.
@@ -36,7 +35,6 @@ pub struct AbilityCastEvent {
 pub enum CastError {
     Passive,
     NotLearned,
-    Action(ActionError),
 }
 
 /// The shared activation rules of `def` at the slot's rank. Fails for abilities that
@@ -65,19 +63,9 @@ pub fn ability_action_spec(
         },
         cooldown: def.cooldown.at(state.rank),
         cooldown_state: state.cooldown,
+        disable: DisableRule::SilenceOrStun,
+        occupies_caster: true,
     })
-}
-
-/// Checks shared by hotkeys (feedback), request validation, and the cast-point commit:
-/// castable, learned, off cooldown with a charge, affordable, caster not silenced/stunned.
-pub fn check_usable(
-    def: &AbilityDefinition,
-    state: &AbilityState,
-    mana: &Mana,
-    statuses: Option<&StatusEffects>,
-) -> Result<(), CastError> {
-    let spec = ability_action_spec(def, state)?;
-    check_ready(&spec.cooldown_state, &spec.cost, mana, statuses).map_err(CastError::Action)
 }
 
 /// Ability bookkeeping once a cast commits (mana is already paid).
@@ -143,7 +131,29 @@ pub fn ability_channel_end_triggers(
 mod tests {
     use super::*;
     use crate::abilities::catalog::builtin;
-    use crate::actions::{ActionCooldown, CasterInfo, UnitInfo, resolve_target};
+    use crate::actions::{
+        ActionCooldown, ActionError, CasterInfo, UnitInfo, check_ready, resolve_target,
+    };
+    use crate::components::Mana;
+    use crate::items::StatusEffects;
+
+    #[derive(Debug, PartialEq)]
+    enum Unusable {
+        Cast(CastError),
+        Action(ActionError),
+    }
+
+    /// What the hotkeys and the pipeline check before an ability activates.
+    fn check_usable(
+        def: &AbilityDefinition,
+        state: &AbilityState,
+        mana: &Mana,
+        statuses: Option<&StatusEffects>,
+    ) -> Result<(), Unusable> {
+        let spec = ability_action_spec(def, state).map_err(Unusable::Cast)?;
+        check_ready(&spec.cooldown_state, &spec.cost, spec.disable, mana, statuses)
+            .map_err(Unusable::Action)
+    }
 
     fn learned(id: AbilityId) -> AbilityState {
         AbilityState {
@@ -162,7 +172,7 @@ mod tests {
         );
         assert_eq!(
             check_usable(&bolt, &AbilityState::fresh(AbilityId::Bolt), &mana, None),
-            Err(CastError::NotLearned)
+            Err(Unusable::Cast(CastError::NotLearned))
         );
         let cooling = AbilityState {
             cooldown: ActionCooldown {
@@ -173,7 +183,7 @@ mod tests {
         };
         assert_eq!(
             check_usable(&bolt, &cooling, &mana, None),
-            Err(CastError::Action(ActionError::OnCooldown))
+            Err(Unusable::Action(ActionError::OnCooldown))
         );
         assert_eq!(
             check_usable(
@@ -182,12 +192,12 @@ mod tests {
                 &Mana::new(10.0, 0.0),
                 None
             ),
-            Err(CastError::Action(ActionError::NotEnoughMana))
+            Err(Unusable::Action(ActionError::NotEnoughMana))
         );
         let stone = builtin(AbilityId::StoneSkin);
         assert_eq!(
             check_usable(&stone, &learned(AbilityId::StoneSkin), &mana, None),
-            Err(CastError::Passive)
+            Err(Unusable::Cast(CastError::Passive))
         );
     }
 
