@@ -52,6 +52,8 @@ pub struct ShopUiState {
     pub open: bool,
     /// Item shown in the components / detail popup (None = closed).
     pub detail: Option<ItemId>,
+    /// Which category page the shop grid is showing.
+    pub tab: ShopTab,
 }
 
 /// Purchases and sales that can still be reversed. Cleared on leaving shop range.
@@ -399,6 +401,10 @@ pub enum ItemType {
     Equipment,
     Miscellaneous,
     Accessories,
+    Support,
+    Magical,
+    Weapons,
+    Artifacts,
 }
 
 impl ItemType {
@@ -415,6 +421,49 @@ impl ItemType {
             ItemType::Equipment => "Equipment",
             ItemType::Miscellaneous => "Miscellaneous",
             ItemType::Accessories => "Accessories",
+            ItemType::Support => "Support",
+            ItemType::Magical => "Magical",
+            ItemType::Weapons => "Weapons",
+            ItemType::Artifacts => "Artifacts",
+        }
+    }
+}
+
+/// Shop grid pages. Recipes stay off both tabs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ShopTab {
+    #[default]
+    Basics,
+    Upgrades,
+}
+
+impl ShopTab {
+    pub fn label(self) -> &'static str {
+        match self {
+            ShopTab::Basics => "Basics",
+            ShopTab::Upgrades => "Upgrades",
+        }
+    }
+
+    pub fn all() -> [ShopTab; 2] {
+        [ShopTab::Basics, ShopTab::Upgrades]
+    }
+
+    pub fn accepts(self, item_type: ItemType) -> bool {
+        match self {
+            ShopTab::Basics => matches!(
+                item_type,
+                ItemType::Attributes | ItemType::Equipment | ItemType::Miscellaneous
+            ),
+            ShopTab::Upgrades => matches!(
+                item_type,
+                ItemType::Accessories
+                    | ItemType::Support
+                    | ItemType::Magical
+                    | ItemType::Armor
+                    | ItemType::Weapons
+                    | ItemType::Artifacts
+            ),
         }
     }
 }
@@ -1957,13 +2006,55 @@ mod tests {
         assert_eq!(ItemType::Equipment.label(), "Equipment");
         assert_eq!(ItemType::Miscellaneous.label(), "Miscellaneous");
         assert_eq!(ItemType::Accessories.label(), "Accessories");
+        assert_eq!(ItemType::Support.label(), "Support");
+        assert_eq!(ItemType::Magical.label(), "Magical");
+        assert_eq!(ItemType::Weapons.label(), "Weapons");
+        assert_eq!(ItemType::Artifacts.label(), "Artifacts");
         assert_eq!(ItemId::IronBracer.definition().item_type, ItemType::Equipment);
         assert_eq!(ItemId::SwiftBoots.definition().item_type, ItemType::Equipment);
         assert_eq!(ItemId::VialOfLight.definition().item_type, ItemType::Miscellaneous);
         assert_eq!(ItemId::ManaCrystal.definition().item_type, ItemType::Accessories);
-        assert_eq!(ItemId::HeartwoodBand.definition().item_type, ItemType::Accessories);
-        assert_eq!(ItemId::SparkPendant.definition().item_type, ItemType::Accessories);
+        assert_eq!(ItemId::BladeOfAsh.definition().item_type, ItemType::Weapons);
+        assert_eq!(ItemId::AegisCharm.definition().item_type, ItemType::Armor);
+        assert_eq!(ItemId::StormRod.definition().item_type, ItemType::Magical);
+        assert_eq!(ItemId::WardstoneCloak.definition().item_type, ItemType::Support);
+        assert_eq!(ItemId::HeartwoodBand.definition().item_type, ItemType::Artifacts);
+        assert_eq!(ItemId::SparkPendant.definition().item_type, ItemType::Magical);
         assert_eq!(ItemId::RecipeHeartwoodBand.definition().item_type, ItemType::Recipe);
+    }
+
+    #[test]
+    fn shop_tabs_split_basics_and_upgrades() {
+        assert!(ShopTab::Basics.accepts(ItemType::Attributes));
+        assert!(ShopTab::Basics.accepts(ItemType::Equipment));
+        assert!(ShopTab::Basics.accepts(ItemType::Miscellaneous));
+        assert!(ShopTab::Upgrades.accepts(ItemType::Accessories));
+        assert!(ShopTab::Upgrades.accepts(ItemType::Support));
+        assert!(ShopTab::Upgrades.accepts(ItemType::Magical));
+        assert!(ShopTab::Upgrades.accepts(ItemType::Armor));
+        assert!(ShopTab::Upgrades.accepts(ItemType::Weapons));
+        assert!(ShopTab::Upgrades.accepts(ItemType::Artifacts));
+        assert!(!ShopTab::Basics.accepts(ItemType::Armor));
+        assert!(!ShopTab::Upgrades.accepts(ItemType::Equipment));
+        assert!(!ShopTab::Upgrades.accepts(ItemType::Recipe));
+
+        let basics: Vec<_> = ItemId::shop_listed()
+            .filter(|id| ShopTab::Basics.accepts(id.definition().item_type))
+            .collect();
+        let upgrades: Vec<_> = ItemId::shop_listed()
+            .filter(|id| ShopTab::Upgrades.accepts(id.definition().item_type))
+            .collect();
+        assert!(basics.contains(&ItemId::IronBracer));
+        assert!(basics.contains(&ItemId::SwiftBoots));
+        assert!(basics.contains(&ItemId::VialOfLight));
+        assert!(upgrades.contains(&ItemId::ManaCrystal));
+        assert!(upgrades.contains(&ItemId::BladeOfAsh));
+        assert!(upgrades.contains(&ItemId::AegisCharm));
+        assert!(upgrades.contains(&ItemId::StormRod));
+        assert!(upgrades.contains(&ItemId::WardstoneCloak));
+        assert!(upgrades.contains(&ItemId::HeartwoodBand));
+        assert!(upgrades.contains(&ItemId::SparkPendant));
+        assert_eq!(basics.len() + upgrades.len(), ItemId::shop_listed().count());
     }
 
     #[test]
