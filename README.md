@@ -135,7 +135,7 @@ Each unit carries three explicit gameplay dimensions from `dimensions::UnitDimen
 ```
 IssueCommand (input / minimap / network host)
   → CommandQueue (normal: replace queue · Shift: append)
-  → order components (MoveTarget / AttackTarget / AttackMoveOrder / AbilityCastRequest)
+  → order components (MoveTarget / AttackTarget / AttackMoveOrder / ActivationRequest)
   → AI + attack positioning (free spot within range, not the target's center)
   → plan_paths: radius-aware A* on the static NavGrid (replans only when needed)
   → movement: follow waypoints, skip ahead on line of sight, local avoidance
@@ -199,8 +199,9 @@ Mechanics decide **when** something happens and **who** is involved; effects dec
 ```text
 AbilityDefinition (abilities/catalog.rs, AbilityDefinitions resource)
 AbilityState      (AbilityLoadout on the hero: level, cooldown, charges, toggled)
-input / AI → AbilityCastRequest → validate (usable, cooldown, mana, caster state, target, range)
-           → cast point → AbilityCastEvent
+input / AI → ActivationRequest { caster, source: Ability(slot), target }   (actions/)
+           → validate (learned / castable, cooldown + charges, mana, caster state, target, range)
+           → cast point → ActionFiredEvent → AbilityCastEvent → channel → OnChannelEnd → backswing
            → mechanics: Dash / Projectile / AttackUnitTarget / RingFx / custom behavior
            → AbilityTriggerEvent(TriggerContext)          OnCast, OnProjectileHit, OnImpact, Custom("on_…")
            → effect entries whose trigger matches → resolve EffectTarget
@@ -212,7 +213,8 @@ spell projectile → ProjectileHitEvent { primary, splashed } → OnProjectileHi
 - **Mechanics** (`abilities/mechanics.rs`) move units and spawn projectiles. They never apply consequences; they write an `AbilityTriggerEvent` whose `TriggerContext` carries the caster, cast target, trigger unit, affected units, and trigger point
 - **Effects** (`abilities/effects.rs`): `resolve_ability_triggers` runs every entry tagged with the fired trigger. Targets: `Caster`, `CastTarget`, `TriggerUnit`, `AffectedUnits` (e.g. splash victims), `UnitsInRadius`. Effects: `Damage` (optional `EffectScaling`), `Heal`, `ApplyStatus`, `Dispel`, and `Custom { id }` for systems registered with `app.register_custom_effect(id, system)`
 - **Projectiles** (`combat.rs`) know their source, target / aim, speed, and collision / splash radius only
-- **Casting** (`abilities/casting.rs`) is shared by every caster; out-of-range casts walk into range and re-request. Mana and cooldown are paid when the cast point completes
+- **Activation** (`actions/`) is shared by every caster and action source: target types (no target, self, unit, point, area, direction), team rules (enemy / ally / both / self), range, cast point, channel, mana cost, cooldown, and charges. Out-of-range activations walk into range and re-request. Mana and cooldown are paid when the cast point completes. Each source plugs in through `ActionSources`; items are not migrated yet
+- **Casting** (`abilities/casting.rs`) is the ability layer on top: learned / passive gating, the `ActionSpec` at the slot's rank, toggle state, and turning fired actions into `AbilityCastEvent`s and channel ends into `OnChannelEnd` triggers
 - **Custom mechanics** (`abilities/custom.rs`): `app.register_ability_behavior(id, system)` runs a one-shot system with the `CastContext`. It reports what happened with a trigger such as `AbilityTrigger::Custom("on_skewer_end")`, and the ability's effect entries apply the consequences
 
 Adding a simple ability: add an `AbilityId` variant (or use the generators), then add an arm to `catalog::builtin`:
@@ -308,7 +310,7 @@ frost_hammer,Frost Hammer,weapon,2800,1400,3,rare,false,,false,,A heavy weapon i
 
 ### Limitations
 
-Not yet expressible without engine changes: ability passives / toggle drains (Stone Skin, Overcharge), channel runtime (`channel_time` is stored; `on_channel_*` only fire from custom mechanics), delayed effects, cooldown floors other than explicit level lists, `%` attack speed or timed attribute buffs, item targeting (`cast_target` on items; item aim is the cursor point, so teleport items have no range limit or targeting indicator), and the `on_damage_taken` / `on_kill` / `on_death` item triggers (validated, not emitted yet). Displacement ignores obstacles.
+Not yet expressible without engine changes: ability passives / toggle drains (Stone Skin, Overcharge), channel ticks (`on_channel_end` fires when a channel completes or is interrupted by silence / stun; `on_channel_tick` only fires from custom mechanics), delayed effects, cooldown floors other than explicit level lists, `%` attack speed or timed attribute buffs, item targeting (`cast_target` on items; item aim is the cursor point, so teleport items have no range limit or targeting indicator), and the `on_damage_taken` / `on_kill` / `on_death` item triggers (validated, not emitted yet). Displacement ignores obstacles.
 
 ## What's included
 
@@ -351,7 +353,8 @@ src/
   basic_attack.rs     Basic attack pipeline (BasicAttackEvent → windup → impact → DamageEvent)
   combat.rs           DamageEvent + mitigation, spell projectiles, death / gold / XP
   progression.rs      Hero XP, attributes, and level-up growth
-  abilities/          Ability definitions, cast pipeline, mechanics → triggers → effects, generated.rs, targeting UI
+  actions/            Shared activation pipeline: targeting, range, cast point, channel, costs, cooldowns, charges
+  abilities/          Ability definitions, ability cast layer, mechanics → triggers → effects, generated.rs, targeting UI
   items.rs            Shop, inventory, sell, actives, status effects
   item_catalog.rs     Generated ItemDefinitions (ItemGenerator)
   displacement.rs     Knockback / pull forced movement

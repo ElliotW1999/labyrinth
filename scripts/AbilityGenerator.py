@@ -79,7 +79,10 @@ ABILITY_COLUMNS = (
 SLOTS = ("q", "w", "e", "r", "innate")
 ABILITY_TYPES = {"active": "Active", "passive": "Passive", "toggle": "Toggle"}
 TARGET_TYPES = ("unit", "point", "direction", "no_target", "self")
+# Effect-polarity teams (`units_in_radius` defaults); "self" areas still mean allies.
 TARGET_TEAMS = {"enemy": "Enemy", "ally": "Ally", "both": "Any", "self": "Ally"}
+# Activation team rule (`AbilityDefinition::team`).
+ACTION_TEAMS = {**TARGET_TEAMS, "self": "SelfOnly"}
 PROJECTILE_TYPES = ("none", "targeted", "skillshot")
 LEVEL_FIELDS = ("cast_range", "aoe_radius", "cooldown", "mana_cost")
 EFFECT_LEVEL_FIELDS = ("value", "duration", "amount", "radius")
@@ -212,8 +215,12 @@ def parse_ability(row: Row, effect_rows: list[EffectRow], report: Report) -> Abi
         rust_target = "Unit"
     elif target_type == "point" and projectile == "none" and aoe_radius and any(aoe_radius):
         rust_target = "Area"
-    elif target_type in ("point", "direction"):
+    elif target_type == "point":
         rust_target = "Point"
+    elif target_type == "direction":
+        rust_target = "Direction"
+    elif target_type == "self":
+        rust_target = "SelfTarget"
     else:
         rust_target = "NoTarget"
 
@@ -244,7 +251,7 @@ def parse_ability(row: Row, effect_rows: list[EffectRow], report: Report) -> Abi
 
 
 def effect_context(a: Ability) -> EffectContext:
-    on_cast_center = "Caster" if a.rust_target_type == "NoTarget" else "Aim"
+    on_cast_center = "Caster" if a.rust_target_type in ("NoTarget", "SelfTarget") else "Aim"
     ctx = EffectContext(
         kind="ability",
         owner_id=a.id,
@@ -290,7 +297,7 @@ def ability_fn(a: Ability) -> str:
     if a.projectile == "skillshot" and not (a.aoe_radius and any(a.aoe_radius)):
         aoe = "RankValue::fixed(scale::ABILITY_PROJECTILE_WIDTH)"
     lines.append(f"        .targeting(TargetType::{a.rust_target_type}, {rank_value(a.cast_range)}, {aoe})")
-    lines.append(f"        .team(TargetTeam::{TARGET_TEAMS[a.target_team]})")
+    lines.append(f"        .team(TargetTeam::{ACTION_TEAMS[a.target_team]})")
     lines.append(f"        .costs({rank_value(a.cooldown)}, {rank_value(a.mana_cost)})")
     lines.append(f"        .timing({f32(a.cast_time)}, {f32(a.backswing)})")
     if a.channel_time:
@@ -305,7 +312,7 @@ def ability_fn(a: Ability) -> str:
             f"splash_radius: AreaRadius::Ability, speed: {speed}, skillshot: {skillshot} }})"
         )
     elif a.behavior == "Active" and a.aoe_radius and any(a.aoe_radius):
-        if a.rust_target_type == "NoTarget":
+        if a.rust_target_type in ("NoTarget", "SelfTarget"):
             lines.append("        .mechanic(shockwave_ring())")
         elif a.rust_target_type == "Area":
             lines.append("        .mechanic(nova_ring())")
