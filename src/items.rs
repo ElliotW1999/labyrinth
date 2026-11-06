@@ -12,10 +12,10 @@ use crate::actions::{
     DisableRule, TargetTeam, TargetType,
 };
 use crate::basic_attack::{BasicAttackImpactEvent, BasicAttackReleaseEvent};
-use crate::combat::flat_distance;
+use crate::combat::{DamageEvent, flat_distance};
 use crate::components::{
     CastTarget, CombatStats, DamageType, Health, HeroAttributes, Lifetime, Mana, PlayerHero,
-    PlayerWallet, SpellFx, Team,
+    PlayerWallet, ShieldPool, SpellFx, Team,
 };
 use crate::resources::SharedAssets;
 use crate::scale;
@@ -38,7 +38,7 @@ impl Plugin for ItemsPlugin {
                 Update,
                 (
                     tick_item_cooldowns,
-                    tick_status_effects,
+                    tick_status_effects.before(crate::combat::apply_damage_events),
                     item_attack_triggers,
                     try_purchase_from_ui,
                     try_sell_from_ui,
@@ -246,6 +246,12 @@ pub struct StatusEffect {
     pub magic_resist: f32,
     pub move_speed: f32,
     pub heal_per_sec: f32,
+    pub damage_per_sec: f32,
+    pub dot_damage_type: DamageType,
+    pub dot_source: Option<Entity>,
+    /// Added to [`ShieldPool`] on apply; removed on expire.
+    pub shield_amount: f32,
+    pub damage_immune: bool,
     /// When true, skip collision with creeps and heroes (buildings/trees still block).
     pub ignore_unit_collision: bool,
     /// When true, this unit claims more separation against overlapping creeps/heroes.
@@ -268,6 +274,11 @@ impl StatusEffect {
             magic_resist: 0.0,
             move_speed: 0.0,
             heal_per_sec: 0.0,
+            damage_per_sec: 0.0,
+            dot_damage_type: DamageType::Magical,
+            dot_source: None,
+            shield_amount: 0.0,
+            damage_immune: false,
             ignore_unit_collision: false,
             force_unit_push: false,
             silenced: false,
@@ -275,6 +286,21 @@ impl StatusEffect {
             rooted: false,
             disarmed: false,
             debuff_immune: false,
+        }
+    }
+
+    pub fn shield(amount: f32, duration: f32) -> Self {
+        Self {
+            shield_amount: amount,
+            ..Self::buff("shield", duration)
+        }
+    }
+
+    pub fn burn(dps: f32, damage_type: DamageType, duration: f32) -> Self {
+        Self {
+            damage_per_sec: dps,
+            dot_damage_type: damage_type,
+            ..Self::debuff("burn", duration)
         }
     }
 
@@ -377,6 +403,12 @@ impl StatusEffects {
         self.effects
             .iter()
             .any(|e| e.debuff_immune && e.remaining > 0.0)
+    }
+
+    pub fn has_damage_immunity(&self) -> bool {
+        self.effects
+            .iter()
+            .any(|e| e.damage_immune && e.remaining > 0.0)
     }
 
     pub fn can_move(&self) -> bool {
@@ -885,6 +917,11 @@ pub struct ItemPassives {
     pub strength: f32,
     pub agility: f32,
     pub intelligence: f32,
+    pub spell_amp: f32,
+    pub outgoing_physical_amp: f32,
+    pub incoming_damage_amp: f32,
+    pub damage_block: f32,
+    pub damage_reflect: f32,
 }
 
 impl ItemId {
@@ -909,6 +946,11 @@ impl ItemId {
                 PassiveStat::Attribute(Attribute::Strength) => &mut p.strength,
                 PassiveStat::Attribute(Attribute::Agility) => &mut p.agility,
                 PassiveStat::Attribute(Attribute::Intelligence) => &mut p.intelligence,
+                PassiveStat::SpellAmp => &mut p.spell_amp,
+                PassiveStat::OutgoingPhysicalAmp => &mut p.outgoing_physical_amp,
+                PassiveStat::IncomingDamageAmp => &mut p.incoming_damage_amp,
+                PassiveStat::DamageBlock => &mut p.damage_block,
+                PassiveStat::DamageReflect => &mut p.damage_reflect,
             };
             *field += value;
         }
@@ -1037,6 +1079,12 @@ fn scaling_label(scaling: EffectScaling) -> Option<String> {
         EffectScaling::TargetHealthBelow(fraction) => {
             Some(format!("below {:.0}% health", fraction * 100.0))
         }
+        EffectScaling::TargetMissingHealth(ratio) => Some(format!("+ {ratio:.2}× missing health")),
+        EffectScaling::TargetMaxHealth(ratio) => Some(format!("+ {ratio:.2}× max health")),
+        EffectScaling::TargetCurrentHealth(ratio) => Some(format!("+ {ratio:.2}× current health")),
+        EffectScaling::DistanceFromCaster { falloff } => {
+            Some(format!("−{:.0}% at max range", falloff * 100.0))
+        }
     }
 }
 
@@ -1085,6 +1133,11 @@ fn adjust_passives(
     stats.magic_resist += passives.magic_resist * count;
     stats.move_speed += passives.move_speed * count;
     stats.attack_speed_flat += passives.attack_speed_flat * count;
+    stats.outgoing_spell_amp += passives.spell_amp * count;
+    stats.outgoing_physical_amp += passives.outgoing_physical_amp * count;
+    stats.incoming_damage_amp += passives.incoming_damage_amp * count;
+    stats.damage_block += passives.damage_block * count;
+    stats.damage_reflect += passives.damage_reflect * count;
     stats.recompute_attack_speed(attrs.agility);
 }
 
@@ -1180,15 +1233,30 @@ fn tick_item_cooldowns(time: Res<Time>, mut inventories: Query<&mut Inventory>) 
 
 fn tick_status_effects(
     time: Res<Time>,
-    mut units: Query<(&mut StatusEffects, &mut CombatStats, &mut Health)>,
+    mut damage: MessageWriter<DamageEvent>,
+    mut units: Query<(
+        Entity,
+        &mut StatusEffects,
+        &mut CombatStats,
+        &mut Health,
+        Option<&mut ShieldPool>,
+    )>,
 ) {
     let dt = time.delta_secs();
-    for (mut statuses, mut stats, mut health) in &mut units {
+    for (entity, mut statuses, mut stats, mut health, shield) in &mut units {
         let mut i = 0;
         while i < statuses.effects.len() {
             let effect = &mut statuses.effects[i];
             if effect.heal_per_sec > 0.0 {
                 health.current = (health.current + effect.heal_per_sec * dt).min(health.max);
+            }
+            if effect.damage_per_sec > 0.0 {
+                damage.write(DamageEvent::dot(
+                    effect.dot_source,
+                    entity,
+                    effect.damage_per_sec * dt,
+                    effect.dot_damage_type,
+                ));
             }
             effect.remaining -= dt;
             if effect.remaining <= 0.0 {
@@ -1197,6 +1265,11 @@ fn tick_status_effects(
                 stats.armor -= expired.armor;
                 stats.magic_resist -= expired.magic_resist;
                 stats.move_speed -= expired.move_speed;
+                if expired.shield_amount > 0.0 {
+                    if let Some(pool) = shield.as_deref_mut() {
+                        pool.amount = (pool.amount - expired.shield_amount).max(0.0);
+                    }
+                }
             } else {
                 i += 1;
             }

@@ -266,3 +266,21 @@ Examples: `data/ability_effects.csv` (Seismic Slam AoE physical, Arcane Lance ex
 - Netcode replication of damage numbers  
 - VFX for crit / block / shield break  
 - Renaming `Barrier` ability (cosmetic; note in implementer PR if shields added)
+
+---
+
+## Implemented (2026-11-06, PR #51)
+
+Phases **1–7** landed on branch `cursor/damage-mechanics-architect-415b`:
+
+| Phase | Done |
+| --- | --- |
+| 1 | `resolve_incoming_damage` / `resolve_outgoing_amount`; enriched `DamageEvent`; shield-before-HP tests |
+| 2 | New `EffectScaling` variants + `generator_common.py` CSV keys |
+| 3 | Amp / spell amp on `CombatStats` + item `PassiveStat` hooks |
+| 4 | `ShieldPool`, block, Barrier shield buff (armor + debuff immunity unchanged) |
+| 5 | Cleave on basic attacks; Bolt chain via `bolt_chain` custom effect |
+| 6 | DoT via `damage_per_sec` → `DamageEvent` |
+| 7 | Seeded `CombatRng`, `DamageTestHooks::force_crit`, reflection |
+
+README damage table added. **Limitations for tester:** no shipped CSV row for pure/burn/scaling demos yet; damage sharing / `OnChannelTick` / split physical-magic shields still out of scope; hazard orbs still call `apply_damage` directly.

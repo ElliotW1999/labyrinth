@@ -20,7 +20,9 @@ use super::definition::{
     EffectScaling, EffectTarget,
 };
 use crate::combat::DamageEvent;
-use crate::components::{AbilityId, BoundRadius, CombatStats, Health, HeroAttributes, Mana, Team};
+use crate::components::{
+    AbilityId, BoundRadius, CombatStats, Health, HeroAttributes, Mana, ShieldPool, Team,
+};
 use crate::dimensions::{area_contains, bounds_of};
 use crate::displacement::DisplacementEvent;
 use crate::teleport::TeleportEvent;
@@ -225,6 +227,7 @@ impl EffectRunner<'_, '_> {
         base: f32,
         scaling: EffectScaling,
         target: Entity,
+        cast_range: f32,
     ) -> Option<f32> {
         match scaling {
             EffectScaling::None => Some(base),
@@ -246,10 +249,36 @@ impl EffectRunner<'_, '_> {
                 .ok()
                 .filter(|(_, _, _, hp, _)| hp.current / hp.max.max(1.0) < threshold)
                 .map(|_| base),
+            EffectScaling::TargetMissingHealth(ratio) => self.units.get(target).ok().map(|(_, _, _, hp, _)| {
+                base + ratio * (hp.max - hp.current).max(0.0)
+            }),
+            EffectScaling::TargetMaxHealth(ratio) => self
+                .units
+                .get(target)
+                .ok()
+                .map(|(_, _, _, hp, _)| base + ratio * hp.max),
+            EffectScaling::TargetCurrentHealth(ratio) => self
+                .units
+                .get(target)
+                .ok()
+                .map(|(_, _, _, hp, _)| base + ratio * hp.current),
+            EffectScaling::DistanceFromCaster { falloff } => {
+                let target_pos = self.units.get(target).ok().map(|(_, tf, ..)| tf.translation)?;
+                let dist = crate::combat::flat_distance(ctx.origin, target_pos);
+                let max = cast_range.max(1.0);
+                let t = (dist / max).clamp(0.0, 1.0);
+                Some(base * (1.0 - falloff * t))
+            }
         }
     }
 
-    pub fn execute(&mut self, ctx: &TriggerContext, effect: &AbilityEffect, targets: Vec<Entity>) {
+    pub fn execute(
+        &mut self,
+        ctx: &TriggerContext,
+        effect: &AbilityEffect,
+        targets: Vec<Entity>,
+        cast_range: f32,
+    ) {
         let source = Some(ctx.caster);
         let rank = ctx.rank;
         match *effect {
@@ -259,20 +288,22 @@ impl EffectRunner<'_, '_> {
                 scaling,
             } => {
                 for target in targets {
-                    if let Some(amount) = self.scaled_amount(ctx, amount.at(rank), scaling, target)
+                    if let Some(amount) =
+                        self.scaled_amount(ctx, amount.at(rank), scaling, target, cast_range)
                     {
-                        self.damage.write(DamageEvent {
-                            source,
+                        self.damage.write(DamageEvent::spell(
+                            ctx.caster,
                             target,
                             amount,
                             damage_type,
-                        });
+                        ));
                     }
                 }
             }
             AbilityEffect::Heal { amount, scaling } => {
                 for target in targets {
-                    if let Some(amount) = self.scaled_amount(ctx, amount.at(rank), scaling, target)
+                    if let Some(amount) =
+                        self.scaled_amount(ctx, amount.at(rank), scaling, target, cast_range)
                     {
                         self.heals.write(HealEvent {
                             source,
@@ -293,14 +324,12 @@ impl EffectRunner<'_, '_> {
             AbilityEffect::ApplyStatus { status, duration } => {
                 for target in targets {
                     let move_speed = self.stats.get(target).map_or(0.0, |s| s.move_speed);
+                    let mut built = status.build(rank, duration.at(rank), move_speed);
+                    built.dot_source = source;
                     self.statuses.write(StatusEffectEvent {
                         source,
                         target,
-                        change: StatusChange::Apply(status.build(
-                            rank,
-                            duration.at(rank),
-                            move_speed,
-                        )),
+                        change: StatusChange::Apply(built),
                     });
                 }
             }
@@ -390,9 +419,13 @@ pub fn resolve_ability_triggers(
             },
             EffectSource::Item(id) => (id.definition().effects, 0.0),
         };
+        let cast_range = match ctx.source {
+            EffectSource::Ability(id) => defs.get(id).map_or(0.0, |d| d.cast_range.at(ctx.rank)),
+            EffectSource::Item(_) => 0.0,
+        };
         for entry in entries.iter().filter(|entry| entry.trigger == ctx.trigger) {
             let targets = runner.targets(ctx, entry.target, aoe_radius);
-            runner.execute(ctx, &entry.effect, targets);
+            runner.execute(ctx, &entry.effect, targets, cast_range);
         }
     }
 }
@@ -434,11 +467,12 @@ fn remove_statuses(
 }
 
 pub fn apply_status_effect_events(
+    mut commands: Commands,
     mut events: MessageReader<StatusEffectEvent>,
-    mut units: Query<(&mut StatusEffects, &mut CombatStats)>,
+    mut units: Query<(Entity, &mut StatusEffects, &mut CombatStats, Option<&mut ShieldPool>)>,
 ) {
     for event in events.read() {
-        let Ok((mut statuses, mut stats)) = units.get_mut(event.target) else {
+        let Ok((entity, mut statuses, mut stats, shield)) = units.get_mut(event.target) else {
             continue;
         };
         match &event.change {
@@ -446,7 +480,29 @@ pub fn apply_status_effect_events(
                 if effect.debuff_immune {
                     remove_statuses(&mut statuses, &mut stats, |e| e.kind == StatusKind::Debuff);
                 }
+                let refresh_shield = effect.shield_amount > 0.0;
+                let old_shield = if refresh_shield {
+                    statuses
+                        .effects
+                        .iter()
+                        .find(|e| e.id == effect.id)
+                        .map(|e| e.shield_amount)
+                        .unwrap_or(0.0)
+                } else {
+                    0.0
+                };
                 apply_status(&mut statuses, &mut stats, effect.clone());
+                if effect.shield_amount > 0.0 {
+                    if let Some(pool) = shield {
+                        pool.amount = (pool.amount - old_shield).max(0.0) + effect.shield_amount;
+                    } else {
+                        commands
+                            .entity(entity)
+                            .insert(ShieldPool {
+                                amount: effect.shield_amount,
+                            });
+                    }
+                }
             }
             StatusChange::Dispel(kind) => {
                 remove_statuses(&mut statuses, &mut stats, |e| e.kind == *kind)

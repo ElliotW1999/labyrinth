@@ -100,6 +100,8 @@ STATUSES = {
     "forceful": ("StatusSpec::Forceful", "forceful", True),
     "debuff_immunity": ("StatusSpec::DebuffImmunity", "spell_immunity", True),
     "spell_immunity": ("StatusSpec::DebuffImmunity", "spell_immunity", True),
+    "shield": (None, "shield", True),
+    "burn": (None, "burn", False),
 }
 
 # Activation targeting shared by abilities and active items.
@@ -138,6 +140,11 @@ PASSIVE_STATS = {
     "strength": "PassiveStat::Attribute(Attribute::Strength)",
     "agility": "PassiveStat::Attribute(Attribute::Agility)",
     "intelligence": "PassiveStat::Attribute(Attribute::Intelligence)",
+    "spell_amp": "PassiveStat::SpellAmp",
+    "outgoing_physical_amp": "PassiveStat::OutgoingPhysicalAmp",
+    "incoming_damage_amp": "PassiveStat::IncomingDamageAmp",
+    "damage_block": "PassiveStat::DamageBlock",
+    "damage_reflect": "PassiveStat::DamageReflect",
 }
 
 SCALING_TYPES = {
@@ -146,6 +153,10 @@ SCALING_TYPES = {
     "intelligence": "EffectScaling::CasterAttribute(Attribute::Intelligence, {v})",
     "attack_damage": "EffectScaling::CasterAttackDamage({v})",
     "target_health_below": "EffectScaling::TargetHealthBelow({v})",
+    "target_missing_health": "EffectScaling::TargetMissingHealth({v})",
+    "target_max_health": "EffectScaling::TargetMaxHealth({v})",
+    "target_current_health": "EffectScaling::TargetCurrentHealth({v})",
+    "distance": "EffectScaling::DistanceFromCaster {{ falloff: {v} }}",
 }
 
 
@@ -542,9 +553,32 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             spec = f"StatusSpec::Slow {{ percent: {rank_value(percent)} }}"
             if amount:
                 _unused(e, report, "value")
+        elif effect_id == "shield":
+            pool = amount or value
+            if not pool:
+                report.error(row.file, row.line, "amount", "", "required: shield pool amount")
+                return None
+            spec = f"StatusSpec::Shield {{ amount: {rank_value(pool)} }}"
+            _unused(e, report, "value")
+        elif effect_id == "burn":
+            dps = value or amount
+            if not dps:
+                report.error(row.file, row.line, "value", "", "required: burn damage per second")
+                return None
+            if not _require(e, "damage_type", report, "physical, magical, or pure"):
+                return None
+            damage_type = parse_enum(row, "damage_type", list(DAMAGE_TYPES), report, required=False)
+            if damage_type is None:
+                return None
+            spec = (
+                f"StatusSpec::Burn {{ dps: {rank_value(dps)}, "
+                f"damage_type: DamageType::{DAMAGE_TYPES[damage_type]} }}"
+            )
+            _unused(e, report, "amount")
         else:
             _unused(e, report, "value", "amount")
-        _unused(e, report, "damage_type")
+        if effect_id not in ("burn",):
+            _unused(e, report, "damage_type")
         effect = f"AbilityEffect::ApplyStatus {{ status: {spec}, duration: {rank_value(duration)} }}"
     elif t in ("remove_status", "dispel"):
         if not _require(e, "effect_id", report, "buff, debuff, or a status id") or not no_scaling():
