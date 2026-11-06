@@ -450,6 +450,7 @@ pub enum ItemId {
     RecipeBracer,
     FalconBlade,
     RecipeFalcon,
+    BlinkDagger,
     // </item_generator:item_enum>
 }
 
@@ -738,6 +739,7 @@ impl ItemId {
             ItemId::RecipeBracer,
             ItemId::FalconBlade,
             ItemId::RecipeFalcon,
+            ItemId::BlinkDagger,
             // </item_generator:item_all>
         ]
     }

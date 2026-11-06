@@ -73,6 +73,7 @@ pub fn definition(id: ItemId) -> &'static ItemDefinition {
         ItemId::RecipeBracer => &RECIPE_BRACER,
         ItemId::FalconBlade => &FALCON_BLADE,
         ItemId::RecipeFalcon => &RECIPE_FALCON,
+        ItemId::BlinkDagger => &BLINK_DAGGER,
     }
 }
 
@@ -275,7 +276,14 @@ static VIAL_OF_LIGHT: ItemDefinition = ItemDefinition {
     consumable: false,
     max_charges: None,
     cooldown: 40.0,
-    activation: ItemActivation::INSTANT,
+    activation: ItemActivation {
+        target_type: TargetType::NoTarget,
+        target_team: TargetTeam::Any,
+        cast_range: 0.0,
+        cast_time: 0.0,
+        channel_time: 0.0,
+        mana_cost: 0.0,
+    },
     components: &[],
     color: [0.95, 0.9, 0.55],
     description: "Active: Heal 180 HP",
@@ -304,7 +312,14 @@ static STORM_ROD: ItemDefinition = ItemDefinition {
     consumable: false,
     max_charges: None,
     cooldown: 30.0,
-    activation: ItemActivation::INSTANT,
+    activation: ItemActivation {
+        target_type: TargetType::NoTarget,
+        target_team: TargetTeam::Any,
+        cast_range: 0.0,
+        cast_time: 0.0,
+        channel_time: 0.0,
+        mana_cost: 0.0,
+    },
     components: &[],
     color: [0.45, 0.35, 0.95],
     description: "+12 AD. Active: 140 magic AoE",
@@ -356,7 +371,14 @@ static WARDSTONE_CLOAK: ItemDefinition = ItemDefinition {
     consumable: false,
     max_charges: None,
     cooldown: 35.0,
-    activation: ItemActivation::INSTANT,
+    activation: ItemActivation {
+        target_type: TargetType::NoTarget,
+        target_team: TargetTeam::Any,
+        cast_range: 0.0,
+        cast_time: 0.0,
+        channel_time: 0.0,
+        mana_cost: 0.0,
+    },
     components: &[],
     color: [0.4, 0.55, 0.5],
     description: "+80 HP, +4 MR. Active: +8 Armor 5s",
@@ -457,7 +479,14 @@ static SPARK_PENDANT: ItemDefinition = ItemDefinition {
     consumable: false,
     max_charges: None,
     cooldown: 25.0,
-    activation: ItemActivation::INSTANT,
+    activation: ItemActivation {
+        target_type: TargetType::NoTarget,
+        target_team: TargetTeam::Any,
+        cast_range: 0.0,
+        cast_time: 0.0,
+        channel_time: 0.0,
+        mana_cost: 0.0,
+    },
     components: &[
         ItemId::ManaCrystal,
         ItemId::BladeOfAsh,
@@ -2065,3 +2094,36 @@ static RECIPE_FALCON: ItemDefinition = ItemDefinition {
     effects: &[],
 };
 // </item:recipe_falcon>
+
+// <item:blink_dagger>
+static BLINK_DAGGER: ItemDefinition = ItemDefinition {
+    id: ItemId::BlinkDagger,
+    name: "Blink Dagger",
+    short_label: "BD",
+    item_type: ItemType::Utility,
+    cost: 2250,
+    sell_value: 1125,
+    tier: 2,
+    rarity: ItemRarity::Epic,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 15.0,
+    activation: ItemActivation {
+        target_type: TargetType::Point,
+        target_team: TargetTeam::Any,
+        cast_range: 800.0,
+        cast_time: 0.0,
+        channel_time: 0.0,
+        mana_cost: 0.0,
+    },
+    components: &[],
+    color: [0.45, 0.35, 0.85],
+    description: "Teleport a short distance",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::OnUse,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::Teleport,
+    }],
+};
+// </item:blink_dagger>

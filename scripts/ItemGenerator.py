@@ -17,10 +17,12 @@ Optional extra columns (kept from the previous generator format): `short_label`,
 `color_r` / `color_g` / `color_b` (0..1).
 
 Optional activation columns for items with `on_use` effects (blank = instant no-target
-use, as before): `target_type` (unit, point, direction, no_target, self),
-`target_team` (enemy, ally, both, self), `cast_range`, `cast_time`, `channel_time`,
-`mana_cost`. Active items run through the same activation pipeline as abilities
-(targeting, range, cast point, channel, costs).
+use, as before): `charge_restore_time`, `target_type`, `target_team`, `cast_range`,
+`cast_time`, `channel_time`, `mana_cost`, `projectile_type`, `projectile_speed`
+(`cooldown` stays on the item row). Active items run through the same activation
+pipeline as abilities (targeting, range, cast point, channel, costs). Item
+`projectile_*` columns are validated but not emitted yet — runtime projectiles are
+ability-scoped today.
 
 Usage:
   python3 scripts/ItemGenerator.py                     # data/items.csv + data/item_effects.csv
@@ -43,6 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from generator_common import (  # noqa: E402
     ACTION_TEAMS,
     EFFECT_COLUMNS,
+    ITEM_ACTIVATION_OPTIONAL,
     TARGET_TYPES,
     EffectContext,
     EffectRow,
@@ -51,7 +54,9 @@ from generator_common import (  # noqa: E402
     check_id,
     effect_to_rust,
     f32,
+    find_registered_custom_effects,
     parse_bool,
+    parse_activation_spec,
     parse_effect_rows,
     parse_enum,
     parse_scalar,
@@ -63,6 +68,7 @@ from generator_common import (  # noqa: E402
     rustfmt,
     to_pascal_case,
     upsert_line,
+    validate_activation,
 )
 
 ITEM_COLUMNS = (
@@ -97,7 +103,7 @@ ITEM_TYPES = {
     "weapons": "Weapons",
     "artifacts": "Artifacts",
 }
-ACTIVATION_COLUMNS = ("target_type", "target_team", "cast_range", "cast_time", "channel_time", "mana_cost")
+ACTIVATION_COLUMNS = ITEM_ACTIVATION_OPTIONAL
 RUST_TARGET_TYPES = {
     "unit": "Unit",
     "point": "Point",
@@ -288,38 +294,17 @@ def parse_item(row: Row, effects: list[EffectRow], report: Report) -> Item | Non
 
 def parse_activation(row: Row, has_use: bool, report: Report) -> Activation:
     """Targeting / timing / cost of the active; blank columns keep the instant default."""
-    present = [c for c in ACTIVATION_COLUMNS if row.get(c)]
-    if not has_use:
-        for column in present:
-            report.warn(row.file, row.line, column, row.get(column), "ignored: the item has no on_use effects")
+    spec = parse_activation_spec(row, kind="item", has_active_effects=has_use, report=report, levels=False)
+    if spec is None:
         return INSTANT
-    target_type = parse_enum(row, "target_type", TARGET_TYPES, report, required=False) or "no_target"
-    default_team = "self" if target_type in ("no_target", "self") else "both"
-    target_team = parse_enum(row, "target_team", list(ACTION_TEAMS), report, required=False) or default_team
-    cast_range = parse_scalar(row, "cast_range", report, minimum=0)
-    cast_time = parse_scalar(row, "cast_time", report, minimum=0)
-    channel_time = parse_scalar(row, "channel_time", report, minimum=0)
+    validate_activation(row, spec, kind="item", ability_type=None, report=report)
     mana_cost = parse_scalar(row, "mana_cost", report, minimum=0)
-
-    def err(fld: str, message: str) -> None:
-        report.error(row.file, row.line, fld, row.get(fld), message)
-
-    if target_type == "unit" and not row.get("target_team"):
-        err("target_team", "required for unit-targeted items (enemy, ally, or both)")
-    if target_team == "self" and target_type not in ("self", "no_target"):
-        err("target_team", f"target_team self requires target_type self or no_target (got {target_type})")
-    if target_type == "self" and target_team != "self":
-        err("target_team", "target_type self requires target_team self")
-    if target_type in ("unit", "point", "direction") and not cast_range:
-        err("cast_range", f"required for {target_type}-targeted items")
-    if target_type in ("no_target", "self") and cast_range:
-        report.warn(row.file, row.line, "cast_range", row.get("cast_range"), f"ignored: {target_type} items have no range")
     return Activation(
-        target_type=target_type,
-        target_team=target_team,
-        cast_range=(cast_range or 0.0) if target_type not in ("no_target", "self") else 0.0,
-        cast_time=cast_time or 0.0,
-        channel_time=channel_time or 0.0,
+        target_type=spec.target_type,
+        target_team=spec.target_team,
+        cast_range=(spec.cast_range_scalar or 0.0) if spec.target_type not in ("no_target", "self") else 0.0,
+        cast_time=spec.cast_time,
+        channel_time=spec.channel_time or 0.0,
         mana_cost=mana_cost or 0.0,
     )
 
@@ -414,19 +399,25 @@ def patch_items_rs(items_rs: str, items: list[Item]) -> str:
     return items_rs
 
 
-def load(items_csv: Path, effects_csv: Path, existing_ids: set[str]) -> tuple[list[Item], Report]:
+def load(items_csv: Path, effects_csv: Path, existing_ids: set[str], *, repo_root: Path | None = None) -> tuple[list[Item], Report]:
     report = Report()
+    registered_custom = find_registered_custom_effects(repo_root) if repo_root else None
     item_rows = read_csv(items_csv, ITEM_COLUMNS, report, legacy_hint="Item_name")
     effect_rows = read_csv(effects_csv, ("item_id", *EFFECT_COLUMNS), report)
 
     ids: dict[str, int] = {}
     names: dict[str, int] = {}
+    variants: dict[str, str] = {}
     for row in item_rows:
         ident, name = row.get("id"), row.get("name").casefold()
         if ident in ids:
             report.error(row.file, row.line, "id", ident, f"duplicate item id (first defined on line {ids[ident]})")
         elif ident:
             ids[ident] = row.line
+            variant = to_pascal_case(ident)
+            if variant in variants:
+                report.error(row.file, row.line, "id", ident, f"maps to ItemId::{variant}, same as {variants[variant]!r}")
+            variants[variant] = ident
         if name and name in names:
             report.error(row.file, row.line, "name", row.get("name"), f"duplicate item name (first used on line {names[name]})")
         elif name:
@@ -450,6 +441,7 @@ def load(items_csv: Path, effects_csv: Path, existing_ids: set[str]) -> tuple[li
             elif comp not in known:
                 report.error(row.file, row.line, "components", comp, "no item with this id (in the CSV or already generated)")
         ctx = effect_context(item)
+        ctx.registered_custom = registered_custom
         for effect in effects:
             if effect.trigger == "passive" and effect.effect_type != "stat_modifier":
                 report.error(effect.row.file, effect.row.line, "effect_type", effect.effect_type, "passive item effects must be stat_modifier (use on_use / on_attack_hit for the rest)")
@@ -494,7 +486,7 @@ def main() -> int:
     items_path = repo / "src" / "items.rs"
 
     blocks = read_blocks(generated_path, "item")
-    items, report = load(items_csv, effects_csv, set(blocks))
+    items, report = load(items_csv, effects_csv, set(blocks), repo_root=repo)
 
     # Every ItemId variant must end up with a definition, or the match won't compile.
     items_rs = items_path.read_text(encoding="utf-8")

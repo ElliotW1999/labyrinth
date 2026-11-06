@@ -15,3 +15,4 @@ war_cry,1,on_cast,units_in_radius,heal,,100|150|200,,,,,strength,1
 war_cry,2,on_cast,caster,apply_status,debuff_immunity,,,2,,,,
 war_cry,3,on_cast,units_in_radius,movement,knockback,250,,0.4,400,,,
 war_cry,4,on_cast,units_in_radius,damage,,100|150|200,pure,,400,,,
+blink,0,on_cast,caster,movement,teleport,,,,,,,

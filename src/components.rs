@@ -495,6 +495,7 @@ impl AbilityId {
             AbilityId::Cataclysm => 4,
             AbilityId::StoneSkin => 4,
             AbilityId::Overcharge => 7,
+            AbilityId::Blink => 3,
             // </ability_generator:max_rank>
             _ if self.is_ultimate() => 4,
             _ => 7,
