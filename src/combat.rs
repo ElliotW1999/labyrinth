@@ -12,8 +12,9 @@ use crate::basic_attack::{
 use crate::components::{
     AbilityId, AttackCooldown, BoundRadius, CombatStats, DamageType, GoldBounty, Health,
     HeroProgress, Lifetime, PlayerHero, PlayerWallet, Projectile, ProjectileHome, ProjectileStyle,
-    Team, XpBounty,
+    ShieldPool, Team, XpBounty,
 };
+use crate::items::StatusEffects;
 use crate::dimensions::{area_contains, bounds_of};
 use crate::progression::add_xp;
 use crate::resources::SharedAssets;
@@ -23,7 +24,9 @@ pub struct CombatPlugin;
 
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<BasicAttackEvent>()
+        app.init_resource::<CombatRng>()
+            .init_resource::<DamageTestHooks>()
+            .add_message::<BasicAttackEvent>()
             .add_message::<BasicAttackReleaseEvent>()
             .add_message::<BasicAttackImpactEvent>()
             .add_message::<DamageEvent>()
@@ -58,27 +61,305 @@ impl Plugin for CombatPlugin {
     }
 }
 
-/// Raw (pre-mitigation) damage dealt to `target`; armor / magic resist apply on receipt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DamageKind {
+    #[default]
+    Generic,
+    BasicAttack,
+    Ability,
+    Dot,
+}
+
+/// Raw (pre-mitigation) damage dealt to `target`; resolved in [`apply_damage_events`].
 #[derive(Message, Debug, Clone, Copy, PartialEq)]
 pub struct DamageEvent {
     pub source: Option<Entity>,
     pub target: Entity,
     pub amount: f32,
     pub damage_type: DamageType,
+    pub kind: DamageKind,
+    pub can_crit: bool,
+    pub is_spell: bool,
+    pub applies_block: bool,
+    pub pierces_shields: bool,
+    pub reflects: bool,
+}
+
+impl DamageEvent {
+    pub fn new(target: Entity, amount: f32, damage_type: DamageType) -> Self {
+        Self {
+            source: None,
+            target,
+            amount,
+            damage_type,
+            kind: DamageKind::Generic,
+            can_crit: false,
+            is_spell: false,
+            applies_block: true,
+            pierces_shields: false,
+            reflects: true,
+        }
+    }
+
+    pub fn basic_attack(source: Entity, target: Entity, amount: f32) -> Self {
+        Self {
+            source: Some(source),
+            target,
+            amount,
+            damage_type: DamageType::Physical,
+            kind: DamageKind::BasicAttack,
+            can_crit: true,
+            is_spell: false,
+            applies_block: true,
+            pierces_shields: false,
+            reflects: true,
+        }
+    }
+
+    pub fn spell(source: Entity, target: Entity, amount: f32, damage_type: DamageType) -> Self {
+        Self {
+            source: Some(source),
+            target,
+            amount,
+            damage_type,
+            kind: DamageKind::Ability,
+            can_crit: false,
+            is_spell: true,
+            applies_block: true,
+            pierces_shields: false,
+            reflects: true,
+        }
+    }
+
+    pub fn dot(source: Option<Entity>, target: Entity, amount: f32, damage_type: DamageType) -> Self {
+        Self {
+            source,
+            target,
+            amount,
+            damage_type,
+            kind: DamageKind::Dot,
+            can_crit: false,
+            is_spell: false,
+            applies_block: true,
+            pierces_shields: false,
+            reflects: false,
+        }
+    }
+}
+
+/// Deterministic combat RNG (seed with [`CombatRng::seed`] in tests).
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct CombatRng {
+    state: u64,
+}
+
+impl Default for CombatRng {
+    fn default() -> Self {
+        Self { state: 0xDEAD_BEEF_CAFE_1234 }
+    }
+}
+
+impl CombatRng {
+    pub fn seed(&mut self, seed: u64) {
+        self.state = seed.max(1);
+    }
+
+    fn next_f32(&mut self) -> f32 {
+        self.state ^= self.state << 13;
+        self.state ^= self.state >> 7;
+        self.state ^= self.state << 17;
+        (self.state as f32) / u64::MAX as f32
+    }
+
+    pub fn roll_crit(&mut self, chance: f32) -> bool {
+        chance > 0.0 && self.next_f32() < chance.clamp(0.0, 1.0)
+    }
+}
+
+#[derive(Resource, Debug, Clone, Copy, Default)]
+pub struct DamageTestHooks {
+    pub force_crit: bool,
+}
+
+pub struct ResolvedDamage {
+    pub health_delta: f32,
+    pub shield_absorbed: f32,
+}
+
+pub fn resolve_outgoing_amount(
+    raw: f32,
+    event: &DamageEvent,
+    source_stats: Option<&CombatStats>,
+    rng: &mut CombatRng,
+    hooks: &DamageTestHooks,
+) -> f32 {
+    let mut amount = raw.max(0.0);
+    if let Some(stats) = source_stats {
+        if event.damage_type == DamageType::Physical {
+            amount *= 1.0 + stats.outgoing_physical_amp;
+        }
+        if event.is_spell && event.damage_type == DamageType::Magical {
+            amount *= 1.0 + stats.outgoing_spell_amp;
+        }
+        if event.can_crit && (hooks.force_crit || rng.roll_crit(stats.crit_chance)) {
+            amount *= stats.crit_multiplier.max(1.0);
+        }
+    }
+    amount
+}
+
+pub fn resolve_incoming_damage(
+    raw: f32,
+    damage_type: DamageType,
+    target_stats: &CombatStats,
+    shield: Option<&mut ShieldPool>,
+    damage_immune: bool,
+    applies_block: bool,
+    pierces_shields: bool,
+) -> ResolvedDamage {
+    if damage_immune || raw <= 0.0 {
+        return ResolvedDamage {
+            health_delta: 0.0,
+            shield_absorbed: 0.0,
+        };
+    }
+
+    let mut remaining = raw;
+    let mut shield_absorbed = 0.0;
+    if !pierces_shields {
+        if let Some(pool) = shield {
+            let absorbed = remaining.min(pool.amount);
+            pool.amount -= absorbed;
+            remaining -= absorbed;
+            shield_absorbed = absorbed;
+        }
+    }
+    if applies_block && target_stats.damage_block > 0.0 {
+        remaining = (remaining - target_stats.damage_block).max(0.0);
+    }
+    let mut mitigated = apply_damage(remaining, damage_type, target_stats);
+    if target_stats.incoming_damage_amp != 0.0 {
+        mitigated *= 1.0 + target_stats.incoming_damage_amp;
+    }
+    ResolvedDamage {
+        health_delta: mitigated.max(0.0),
+        shield_absorbed,
+    }
 }
 
 pub fn apply_damage_events(
-    mut events: MessageReader<DamageEvent>,
-    mut targets: Query<(&mut Health, &CombatStats)>,
+    mut damage: ParamSet<(
+        MessageReader<DamageEvent>,
+        MessageWriter<DamageEvent>,
+    )>,
+    mut rng: Option<ResMut<CombatRng>>,
+    hooks: Option<Res<DamageTestHooks>>,
+    sources: Query<&CombatStats>,
+    mut targets: Query<(
+        &mut Health,
+        &CombatStats,
+        Option<&mut ShieldPool>,
+        Option<&StatusEffects>,
+    )>,
 ) {
-    for event in events.read() {
-        let Ok((mut health, stats)) = targets.get_mut(event.target) else {
+    let hooks = hooks.as_deref().copied().unwrap_or_default();
+    let mut fallback_rng = CombatRng::default();
+    let rng = rng.as_deref_mut().unwrap_or(&mut fallback_rng);
+    let mut reflected = Vec::new();
+    for event in damage.p0().read() {
+        let Ok((mut health, target_stats, mut shield, statuses)) = targets.get_mut(event.target) else {
             continue;
         };
         if !health.is_alive() {
             continue;
         }
-        health.current -= apply_damage(event.amount, event.damage_type, stats);
+        let immune = statuses.is_some_and(|s| s.has_damage_immunity());
+        let damage_reflect = target_stats.damage_reflect;
+        let source_stats = event
+            .source
+            .and_then(|e| sources.get(e).ok());
+        let outgoing = resolve_outgoing_amount(
+            event.amount,
+            event,
+            source_stats,
+            rng,
+            &hooks,
+        );
+        let resolved = resolve_incoming_damage(
+            outgoing,
+            event.damage_type,
+            target_stats,
+            shield.as_deref_mut(),
+            immune,
+            event.applies_block,
+            event.pierces_shields,
+        );
+        health.current -= resolved.health_delta;
+
+        if event.reflects && resolved.health_delta > 0.0 && damage_reflect > 0.0 {
+            if let Some(source) = event.source {
+                let amount = resolved.health_delta * damage_reflect;
+                reflected.push(DamageEvent {
+                    source: Some(event.target),
+                    target: source,
+                    amount,
+                    damage_type: event.damage_type,
+                    kind: DamageKind::Generic,
+                    can_crit: false,
+                    is_spell: false,
+                    applies_block: true,
+                    pierces_shields: false,
+                    reflects: false,
+                });
+            }
+        }
+    }
+    for event in reflected {
+        damage.p1().write(event);
+    }
+}
+
+/// Chain lightning: jump to nearby enemies with falloff per hop.
+pub fn emit_chain_damage(
+    damage: &mut MessageWriter<DamageEvent>,
+    primary: Entity,
+    source: Entity,
+    amount: f32,
+    damage_type: DamageType,
+    team: Team,
+    jumps: u32,
+    radius: f32,
+    falloff: f32,
+    units: &Query<(Entity, &Transform, &Team, &Health, Option<&BoundRadius>)>,
+) {
+    let mut hit = vec![primary];
+    let mut current = primary;
+    let mut current_amount = amount;
+    for _ in 0..jumps {
+        let Ok((_, current_tf, _, _, _)) = units.get(current) else {
+            break;
+        };
+        let origin = current_tf.translation;
+        let next = units
+            .iter()
+            .filter(|(entity, tf, unit_team, health, bound)| {
+                **unit_team == team.enemy()
+                    && health.is_alive()
+                    && !hit.contains(entity)
+                    && area_contains(origin, radius, tf.translation, bounds_of(*bound))
+            })
+            .min_by(|a, b| {
+                flat_distance(origin, a.1.translation)
+                    .total_cmp(&flat_distance(origin, b.1.translation))
+            })
+            .map(|(e, ..)| e);
+        let Some(next) = next else {
+            break;
+        };
+        current_amount *= falloff;
+        damage.write(DamageEvent::spell(source, next, current_amount, damage_type));
+        hit.push(next);
+        current = next;
     }
 }
 
@@ -603,16 +884,89 @@ mod tests {
         dead_hp.current = 0.0;
         let dead = world.spawn((dead_hp, stats)).id();
         for target in [alive, dead] {
-            world.write_message(DamageEvent {
-                source: None,
+            world.write_message(DamageEvent::new(
                 target,
-                amount: 100.0,
-                damage_type: DamageType::Physical,
-            });
+                100.0,
+                DamageType::Physical,
+            ));
         }
         world.run_system_once(apply_damage_events).unwrap();
         let expected = 500.0 - apply_damage(100.0, DamageType::Physical, &stats);
         assert!((world.get::<Health>(alive).unwrap().current - expected).abs() < 1e-3);
         assert_eq!(world.get::<Health>(dead).unwrap().current, 0.0);
+    }
+
+    #[test]
+    fn shield_absorbs_before_health() {
+        let mut world = World::new();
+        world.init_resource::<Messages<DamageEvent>>();
+        world.init_resource::<CombatRng>();
+        let stats = CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 0.0);
+        let target = world
+            .spawn((Health::new(500.0), stats, ShieldPool { amount: 120.0 }))
+            .id();
+        world.write_message(DamageEvent::new(
+            target,
+            100.0,
+            DamageType::Physical,
+        ));
+        world.run_system_once(apply_damage_events).unwrap();
+        assert_eq!(world.get::<ShieldPool>(target).unwrap().amount, 20.0);
+        assert_eq!(world.get::<Health>(target).unwrap().current, 500.0);
+    }
+
+    #[test]
+    fn pure_damage_ignores_armor() {
+        let stats = CombatStats::simple(0.0, 0.0, 1.0, 50.0, 50.0, 0.0);
+        let pure = apply_damage(100.0, DamageType::Pure, &stats);
+        let physical = apply_damage(100.0, DamageType::Physical, &stats);
+        assert!((pure - 100.0).abs() < 1e-3);
+        assert!(physical < pure);
+    }
+
+    #[test]
+    fn crit_doubles_with_test_hook() {
+        let mut world = World::new();
+        world.init_resource::<Messages<DamageEvent>>();
+        world.init_resource::<CombatRng>();
+        world.insert_resource(DamageTestHooks {
+            force_crit: true,
+        });
+        let mut attacker_stats = CombatStats::simple(50.0, 0.0, 1.0, 0.0, 0.0, 0.0);
+        attacker_stats.crit_chance = 0.0;
+        let defender = CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 0.0);
+        let attacker = world.spawn(attacker_stats).id();
+        let target = world.spawn((Health::new(500.0), defender)).id();
+        world.write_message(DamageEvent {
+            source: Some(attacker),
+            target,
+            amount: 50.0,
+            damage_type: DamageType::Physical,
+            kind: DamageKind::BasicAttack,
+            can_crit: true,
+            is_spell: false,
+            applies_block: true,
+            pierces_shields: false,
+            reflects: false,
+        });
+        world.run_system_once(apply_damage_events).unwrap();
+        let expected = 500.0 - apply_damage(100.0, DamageType::Physical, &defender);
+        assert!((world.get::<Health>(target).unwrap().current - expected).abs() < 1e-3);
+    }
+
+    #[test]
+    fn spell_amp_increases_magical_spell_damage() {
+        let mut world = World::new();
+        world.init_resource::<Messages<DamageEvent>>();
+        world.init_resource::<CombatRng>();
+        let mut caster_stats = CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 0.0);
+        caster_stats.outgoing_spell_amp = 0.25;
+        let defender = CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 0.0);
+        let caster = world.spawn(caster_stats).id();
+        let target = world.spawn((Health::new(500.0), defender)).id();
+        world.write_message(DamageEvent::spell(caster, target, 100.0, DamageType::Magical));
+        world.run_system_once(apply_damage_events).unwrap();
+        let expected = 500.0 - apply_damage(125.0, DamageType::Magical, &defender);
+        assert!((world.get::<Health>(target).unwrap().current - expected).abs() < 1e-3);
     }
 }

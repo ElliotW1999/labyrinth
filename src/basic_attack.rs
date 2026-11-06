@@ -18,7 +18,7 @@
 
 use bevy::prelude::*;
 
-use crate::combat::DamageEvent;
+use crate::combat::{DamageEvent, flat_distance};
 use crate::components::{
     AttackCooldown, AttackSwing, AttackTarget, BoundRadius, CombatStats, DamageType, Health,
     Lifetime, PlayerHero, ProjectileStyle, Team,
@@ -430,6 +430,8 @@ pub fn resolve_basic_attack_impacts(
     mut impacts: MessageReader<BasicAttackImpactEvent>,
     mut damage: MessageWriter<DamageEvent>,
     targets: Query<(&Team, &Health)>,
+    attackers: Query<(&CombatStats, &Transform)>,
+    cleave_candidates: Query<(Entity, &Transform, &Team, &Health, Option<&BoundRadius>)>,
 ) {
     for impact in impacts.read() {
         let Ok((team, health)) = targets.get(impact.target) else {
@@ -438,12 +440,33 @@ pub fn resolve_basic_attack_impacts(
         if *team != impact.attacker_team.enemy() || !health.is_alive() {
             continue;
         }
-        damage.write(DamageEvent {
-            source: Some(impact.attacker),
-            target: impact.target,
-            amount: impact.damage,
-            damage_type: DamageType::Physical,
-        });
+        damage.write(DamageEvent::basic_attack(
+            impact.attacker,
+            impact.target,
+            impact.damage,
+        ));
+
+        let Ok((stats, attacker_tf)) = attackers.get(impact.attacker) else {
+            continue;
+        };
+        if stats.cleave_radius <= 0.0 || stats.cleave_damage_ratio <= 0.0 {
+            continue;
+        }
+        let origin = attacker_tf.translation;
+        let cleave_amount = impact.damage * stats.cleave_damage_ratio;
+        for (entity, tf, unit_team, hp, bound) in &cleave_candidates {
+            if entity == impact.target || *unit_team != impact.attacker_team.enemy() || !hp.is_alive()
+            {
+                continue;
+            }
+            if flat_distance(origin, tf.translation) > stats.cleave_radius {
+                continue;
+            }
+            if !area_contains(origin, stats.cleave_radius, tf.translation, bounds_of(bound)) {
+                continue;
+            }
+            damage.write(DamageEvent::basic_attack(impact.attacker, entity, cleave_amount));
+        }
     }
 }
 

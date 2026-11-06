@@ -181,7 +181,28 @@ IssueCommand (input / minimap / network host)
 | Root | Blocks movement |
 | Disarm | Blocks attacking |
 | Debuff immunity | Blocks new debuffs (Barrier) |
+| Shield | Absorbs damage before HP (`ShieldPool`; Barrier also grants bonus armor) |
+| Burn | DoT via `damage_per_sec` → `DamageEvent` each frame |
 | Phased / Forceful | Collision ignore / stronger soft-separation |
+
+### Damage mechanics (player terms → code)
+
+| Term | Code / behavior |
+| --- | --- |
+| Physical / magical / pure | `DamageType`; pure skips armor and MR in `apply_damage` |
+| Mitigation | Dota-style armor and MR in `combat::mitigate` |
+| Outgoing amp | `CombatStats::outgoing_physical_amp` / `outgoing_spell_amp` on `DamageEvent` resolution |
+| Incoming amp | `CombatStats::incoming_damage_amp` after mitigation |
+| Spell amp | Item passive `PassiveStat::SpellAmp` → `outgoing_spell_amp` |
+| Crit | `crit_chance` / `crit_multiplier`; basic attacks set `DamageEvent::can_crit` |
+| Block | Flat `CombatStats::damage_block` per hit |
+| Shield / barrier | `ShieldPool` consumed in `resolve_incoming_damage` (Barrier ability: debuff immunity + armor + shield) |
+| Cleave | `cleave_radius` / `cleave_damage_ratio` on basic attack impact |
+| Chain | Bolt `bolt_chain` custom effect → `emit_chain_damage` |
+| DoT | Status `damage_per_sec` ticks in `tick_status_effects` |
+| Reflection | `damage_reflect` fraction of dealt damage returned to attacker |
+| Health scaling | `EffectScaling::{TargetMissingHealth, TargetMaxHealth, TargetCurrentHealth}` |
+| Distance falloff | `EffectScaling::DistanceFromCaster { falloff }` vs ability cast range |
 
 ### Ability ranks
 

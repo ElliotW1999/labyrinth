@@ -89,6 +89,29 @@ pub struct CombatStats {
     pub armor: f32,
     pub magic_resist: f32,
     pub move_speed: f32,
+    /// Chance to crit on flagged hits (0..=1).
+    pub crit_chance: f32,
+    /// Multiplier applied on crit (default 2.0).
+    pub crit_multiplier: f32,
+    /// Additive bonus: physical damage × (1 + amp).
+    pub outgoing_physical_amp: f32,
+    /// Additive bonus: magical spell damage × (1 + amp).
+    pub outgoing_spell_amp: f32,
+    /// Additive bonus applied after mitigation on incoming damage.
+    pub incoming_damage_amp: f32,
+    /// Flat damage subtracted once per hit (after shields).
+    pub damage_block: f32,
+    /// Fraction of mitigated damage returned to the attacker.
+    pub damage_reflect: f32,
+    /// Enemies within this radius take cleave_damage_ratio × attack damage.
+    pub cleave_radius: f32,
+    pub cleave_damage_ratio: f32,
+}
+
+/// Unified HP shield consumed before health (all damage types unless pierced).
+#[derive(Component, Debug, Clone, Copy, Default, PartialEq)]
+pub struct ShieldPool {
+    pub amount: f32,
 }
 
 impl CombatStats {
@@ -117,6 +140,15 @@ impl CombatStats {
             armor,
             magic_resist,
             move_speed,
+            crit_chance: 0.0,
+            crit_multiplier: 2.0,
+            outgoing_physical_amp: 0.0,
+            outgoing_spell_amp: 0.0,
+            incoming_damage_amp: 0.0,
+            damage_block: 0.0,
+            damage_reflect: 0.0,
+            cleave_radius: 0.0,
+            cleave_damage_ratio: 0.0,
         };
         stats.recompute_attack_speed(0.0);
         stats
