@@ -195,7 +195,9 @@ pub enum StatusSpec {
     /// Purges existing debuffs on application.
     DebuffImmunity,
     /// Reduces the target's current move speed by `percent`.
-    Slow { percent: RankValue },
+    Slow {
+        percent: RankValue,
+    },
     Modifier {
         id: &'static str,
         kind: StatusKind,
@@ -436,7 +438,12 @@ impl AbilityDefinition {
         }
     }
 
-    pub fn targeting(mut self, target_type: TargetType, cast_range: RankValue, aoe_radius: RankValue) -> Self {
+    pub fn targeting(
+        mut self,
+        target_type: TargetType,
+        cast_range: RankValue,
+        aoe_radius: RankValue,
+    ) -> Self {
         self.target_type = target_type;
         self.cast_range = cast_range;
         self.aoe_radius = aoe_radius;
@@ -488,7 +495,12 @@ impl AbilityDefinition {
     }
 
     /// Apply `effect` to `target` whenever `trigger` fires.
-    pub fn on(mut self, trigger: AbilityTrigger, target: EffectTarget, effect: AbilityEffect) -> Self {
+    pub fn on(
+        mut self,
+        trigger: AbilityTrigger,
+        target: EffectTarget,
+        effect: AbilityEffect,
+    ) -> Self {
         self.effects.push(AbilityEffectEntry {
             trigger,
             target,
@@ -498,8 +510,13 @@ impl AbilityDefinition {
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    pub fn effects_for(&self, trigger: AbilityTrigger) -> impl Iterator<Item = &AbilityEffectEntry> {
-        self.effects.iter().filter(move |entry| entry.trigger == trigger)
+    pub fn effects_for(
+        &self,
+        trigger: AbilityTrigger,
+    ) -> impl Iterator<Item = &AbilityEffectEntry> {
+        self.effects
+            .iter()
+            .filter(move |entry| entry.trigger == trigger)
     }
 
     pub fn is_castable(&self) -> bool {

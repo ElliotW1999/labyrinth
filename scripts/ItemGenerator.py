@@ -332,7 +332,9 @@ def effect_context(item: Item) -> EffectContext:
         levels=None,
         center_for={"on_use": "Caster" if target_type in ("no_target", "self") else "Aim", "passive": "Caster"},
     )
-    for trigger in ("passive", "on_use", "on_attack", "on_attack_hit", "on_damage_taken", "on_kill", "on_death"):
+    if not item.activation.channel_time:
+        ctx.invalid_trigger["on_channel_end"] = "the item is not channelled (channel_time blank)"
+    for trigger in ("passive", "on_use", "on_attack", "on_attack_hit", "on_channel_end", "on_damage_taken", "on_kill", "on_death"):
         if trigger == "on_use" and target_type in ("unit", "self"):
             continue
         reason = (

@@ -10,9 +10,9 @@ use crate::basic_attack::{
     tick_attack_swings,
 };
 use crate::components::{
-    AbilityId, AttackCooldown, BoundRadius, CombatStats, DamageType, GoldBounty, Health, HeroProgress,
-    Lifetime, PlayerHero, PlayerWallet, Projectile, ProjectileHome, ProjectileStyle, Team,
-    XpBounty,
+    AbilityId, AttackCooldown, BoundRadius, CombatStats, DamageType, GoldBounty, Health,
+    HeroProgress, Lifetime, PlayerHero, PlayerWallet, Projectile, ProjectileHome, ProjectileStyle,
+    Team, XpBounty,
 };
 use crate::dimensions::{area_contains, bounds_of};
 use crate::progression::add_xp;
@@ -113,7 +113,9 @@ fn fly_projectiles(
                 // Target died or despawned — finish at last known location.
                 let last = home.last_pos;
                 commands.entity(entity).remove::<ProjectileHome>();
-                commands.entity(entity).insert(GroundBoltAim { position: last });
+                commands
+                    .entity(entity)
+                    .insert(GroundBoltAim { position: last });
                 destination = Vec3::new(last.x, transform.translation.y, last.z);
             }
         } else if let Some(aim) = ground_aim {
@@ -211,7 +213,12 @@ pub fn skillshot_contacts(
             if *team == projectile.team
                 || !health.is_alive()
                 || skillshot.hit.contains(&unit)
-                || !area_contains(impact, skillshot.width, unit_tf.translation, bounds_of(bound))
+                || !area_contains(
+                    impact,
+                    skillshot.width,
+                    unit_tf.translation,
+                    bounds_of(bound),
+                )
             {
                 continue;
             }
@@ -262,7 +269,12 @@ pub fn apply_projectile_hits(
                 let vertical = (impact.y - (unit_tf.translation.y + scale::body(1.0))).abs();
                 if *team != projectile.team
                     && health.is_alive()
-                    && area_contains(impact, projectile.radius, unit_tf.translation, bounds_of(radius))
+                    && area_contains(
+                        impact,
+                        projectile.radius,
+                        unit_tf.translation,
+                        bounds_of(radius),
+                    )
                     && vertical < scale::body(2.5)
                 {
                     primary_hit = Some(unit_entity);
@@ -344,10 +356,7 @@ fn despawn_dead(
         ),
         Without<PlayerHero>,
     >,
-    mut heroes: Query<
-        (&Transform, &Team, &mut PlayerWallet, &mut HeroProgress),
-        With<PlayerHero>,
-    >,
+    mut heroes: Query<(&Transform, &Team, &mut PlayerWallet, &mut HeroProgress), With<PlayerHero>>,
 ) {
     const XP_SHARE_RADIUS: f32 = scale::u(18.0);
 
@@ -414,8 +423,7 @@ fn ensure_attack_range_ring(
                 AttackRangeRing,
                 Mesh3d(assets.indicator_ring_mesh.clone()),
                 MeshMaterial3d(assets.attack_range_ring_mat.clone()),
-                Transform::from_xyz(0.0, 0.12, 0.0)
-                    .with_scale(Vec3::new(range, 1.0, range)),
+                Transform::from_xyz(0.0, 0.12, 0.0).with_scale(Vec3::new(range, 1.0, range)),
             ));
         });
     }
@@ -435,7 +443,11 @@ fn sync_attack_range_ring(
     }
 }
 
-fn spawn_spell_bolt(commands: &mut Commands, assets: &SharedAssets, request: &SpawnProjectileEvent) {
+fn spawn_spell_bolt(
+    commands: &mut Commands,
+    assets: &SharedAssets,
+    request: &SpawnProjectileEvent,
+) {
     let SpawnProjectileEvent {
         team,
         origin,

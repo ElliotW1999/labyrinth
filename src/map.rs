@@ -11,7 +11,10 @@ pub struct MapPlugin;
 
 impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_map.after(crate::resources::load_shared_assets));
+        app.add_systems(
+            Startup,
+            spawn_map.after(crate::resources::load_shared_assets),
+        );
     }
 }
 
@@ -121,7 +124,12 @@ fn spawn_map(
         Team::Radiant,
         scale::v(-48.0, 1.25, -48.0),
     );
-    spawn_ancient(&mut commands, &assets, Team::Dire, scale::v(48.0, 1.25, 48.0));
+    spawn_ancient(
+        &mut commands,
+        &assets,
+        Team::Dire,
+        scale::v(48.0, 1.25, 48.0),
+    );
     spawn_training_dummy(&mut commands, &assets);
 
     spawn_tower(

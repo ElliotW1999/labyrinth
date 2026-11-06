@@ -8,8 +8,8 @@ use crate::abilities::definition::{
 };
 use crate::abilities::effects::{AbilityTriggerEvent, EffectSource, TriggerContext};
 use crate::actions::{
-    ActionCooldown, ActionCost, ActionFiredEvent, ActionId, ActionSpec,
-    DisableRule, TargetTeam, TargetType,
+    ActionCooldown, ActionCost, ActionFiredEvent, ActionId, ActionSpec, DisableRule, TargetTeam,
+    TargetType,
 };
 use crate::basic_attack::{BasicAttackImpactEvent, BasicAttackReleaseEvent};
 use crate::combat::flat_distance;
@@ -350,15 +350,11 @@ impl StatusEffects {
     }
 
     pub fn is_silenced(&self) -> bool {
-        self.effects
-            .iter()
-            .any(|e| e.silenced && e.remaining > 0.0)
+        self.effects.iter().any(|e| e.silenced && e.remaining > 0.0)
     }
 
     pub fn is_stunned(&self) -> bool {
-        self.effects
-            .iter()
-            .any(|e| e.stunned && e.remaining > 0.0)
+        self.effects.iter().any(|e| e.stunned && e.remaining > 0.0)
     }
 
     pub fn is_rooted(&self) -> bool {
@@ -669,8 +665,13 @@ pub fn commit_item(inventory: &mut Inventory, slot: usize, spec: &ActionSpec) {
 }
 
 impl ItemDefinition {
-    pub fn effects_for(&self, trigger: AbilityTrigger) -> impl Iterator<Item = &AbilityEffectEntry> {
-        self.effects.iter().filter(move |entry| entry.trigger == trigger)
+    pub fn effects_for(
+        &self,
+        trigger: AbilityTrigger,
+    ) -> impl Iterator<Item = &AbilityEffectEntry> {
+        self.effects
+            .iter()
+            .filter(move |entry| entry.trigger == trigger)
     }
 }
 
@@ -854,7 +855,10 @@ impl ItemId {
     }
 
     pub fn has_active(self) -> bool {
-        self.definition().effects_for(AbilityTrigger::OnUse).next().is_some()
+        self.definition()
+            .effects_for(AbilityTrigger::OnUse)
+            .next()
+            .is_some()
     }
 
     pub fn inventory_hotkey(index: usize) -> Option<&'static str> {
@@ -949,7 +953,11 @@ fn describe_item_effect(entry: &AbilityEffectEntry) -> Option<String> {
         other => return Some(format!("{other:?}")),
     };
     let detail = match entry.effect {
-        AbilityEffect::Damage { amount, damage_type, scaling } => {
+        AbilityEffect::Damage {
+            amount,
+            damage_type,
+            scaling,
+        } => {
             let mut line = format!(
                 "Deal {} {} damage",
                 fmt_rank(amount),
@@ -977,7 +985,13 @@ fn describe_item_effect(entry: &AbilityEffectEntry) -> Option<String> {
             StatusSpec::Root => format!("Root for {}s", fmt_rank(duration)),
             StatusSpec::Silence => format!("Silence for {}s", fmt_rank(duration)),
             StatusSpec::Disarm => format!("Disarm for {}s", fmt_rank(duration)),
-            StatusSpec::Modifier { armor, magic_resist, move_speed, attack_damage, .. } => {
+            StatusSpec::Modifier {
+                armor,
+                magic_resist,
+                move_speed,
+                attack_damage,
+                ..
+            } => {
                 let mut parts = Vec::new();
                 if armor != RankValue::ZERO {
                     parts.push(format!("{:+.0} armor", armor.at(1)));
@@ -995,13 +1009,19 @@ fn describe_item_effect(entry: &AbilityEffectEntry) -> Option<String> {
             }
             other => format!("{other:?} for {}s", fmt_rank(duration)),
         },
-        AbilityEffect::Displace { kind, distance, duration } => {
+        AbilityEffect::Displace {
+            kind,
+            distance,
+            duration,
+        } => {
             let name = match kind {
                 DisplacementKind::Knockback => "Knockback",
                 DisplacementKind::Pull => "Pull",
             };
             match distance {
-                Some(distance) => format!("{name} {} over {}s", fmt_rank(distance), fmt_rank(duration)),
+                Some(distance) => {
+                    format!("{name} {} over {}s", fmt_rank(distance), fmt_rank(duration))
+                }
                 None => format!("{name} to the caster over {}s", fmt_rank(duration)),
             }
         }
@@ -1307,7 +1327,14 @@ pub fn resolve_item_uses(
             continue;
         };
         if slot.consume(def.max_charges) > 0 {
-            remove_passives(item.passives(), 1, &mut health, &mut mana, &mut stats, &mut attrs);
+            remove_passives(
+                item.passives(),
+                1,
+                &mut health,
+                &mut mana,
+                &mut stats,
+                &mut attrs,
+            );
         }
         if slot.stack == 0 {
             inv.slots[index] = None;
@@ -1328,8 +1355,35 @@ fn item_use_trigger(
     TriggerContext {
         aim,
         cast_target: target.unit(),
-        ..item_trigger(AbilityTrigger::OnUse, item, owner, team, position, None, position)
+        ..item_trigger(
+            AbilityTrigger::OnUse,
+            item,
+            owner,
+            team,
+            position,
+            None,
+            position,
+        )
     }
+}
+
+/// Build an item `OnChannelEnd` trigger (resolved in `abilities::casting::ability_channel_end_triggers`).
+pub fn item_channel_end_context(
+    item: ItemId,
+    owner: Entity,
+    team: Team,
+    position: Vec3,
+    aim: Vec3,
+) -> TriggerContext {
+    item_trigger(
+        AbilityTrigger::OnChannelEnd,
+        item,
+        owner,
+        team,
+        position,
+        None,
+        aim,
+    )
 }
 
 fn item_trigger(
@@ -1368,16 +1422,21 @@ fn item_attack_triggers(
     let fired = releases
         .read()
         .map(|e| (AbilityTrigger::OnAttack, e.attacker, e.target))
-        .chain(impacts.read().map(|e| (AbilityTrigger::OnAttackHit, e.attacker, e.target)));
+        .chain(
+            impacts
+                .read()
+                .map(|e| (AbilityTrigger::OnAttackHit, e.attacker, e.target)),
+        );
     for (trigger, attacker, target) in fired {
         let Ok((owner_tf, team, inventory)) = owners.get(attacker) else {
             continue;
         };
-        let point = targets.get(target).map_or(owner_tf.translation, |tf| tf.translation);
+        let point = targets
+            .get(target)
+            .map_or(owner_tf.translation, |tf| tf.translation);
         let mut seen: Vec<ItemId> = Vec::new();
         for item in inventory.slots.iter().flatten() {
-            if seen.contains(&item.id)
-                || item.id.definition().effects_for(trigger).next().is_none()
+            if seen.contains(&item.id) || item.id.definition().effects_for(trigger).next().is_none()
             {
                 continue;
             }
@@ -1431,7 +1490,8 @@ fn spawn_heal_fx(commands: &mut Commands, assets: &SharedAssets, at: Vec3) {
         Name::new("Item Heal FX"),
         Mesh3d(assets.indicator_ring_mesh.clone()),
         MeshMaterial3d(assets.nova_mat.clone()),
-        Transform::from_translation(at + Vec3::Y * scale::u(0.2)).with_scale(Vec3::splat(scale::u(1.5))),
+        Transform::from_translation(at + Vec3::Y * scale::u(0.2))
+            .with_scale(Vec3::splat(scale::u(1.5))),
         SpellFx {
             age: 0.0,
             lifetime: 0.5,
@@ -1571,9 +1631,9 @@ fn clear_shop_undo_outside_range(
     hero: Query<(&Transform, &Team), With<PlayerHero>>,
     shops: Query<(&Transform, &ItemShop)>,
 ) {
-    let in_range = hero.single().is_ok_and(|(hero_tf, team)| {
-        near_own_shop(hero_tf.translation, *team, &shops)
-    });
+    let in_range = hero
+        .single()
+        .is_ok_and(|(hero_tf, team)| near_own_shop(hero_tf.translation, *team, &shops));
     expire_shop_undo(&mut log, in_range);
 }
 
@@ -1877,7 +1937,15 @@ fn try_undo_last(
             removed,
             added,
         } => undo_purchase(
-            wallet, inv, health, mana, stats, attrs, *gold_spent, removed, added,
+            wallet,
+            inv,
+            health,
+            mana,
+            stats,
+            attrs,
+            *gold_spent,
+            removed,
+            added,
         ),
         ShopAction::Sale { refunded, item } => {
             undo_sale(wallet, inv, health, mana, stats, attrs, *refunded, item)
@@ -1947,11 +2015,11 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::abilities::catalog::{register_loadout_definitions, AbilityDefinitions};
-    use crate::abilities::effects::{apply_heal_events, resolve_ability_triggers, HealEvent};
+    use crate::abilities::catalog::{AbilityDefinitions, register_loadout_definitions};
+    use crate::abilities::effects::{HealEvent, apply_heal_events, resolve_ability_triggers};
     use crate::actions::{
-        resolve_queued_activations, tick_activations, validate_activation_requests, Activation,
-        ActivationRequest, QueuedActivation,
+        Activation, ActivationRequest, QueuedActivation, resolve_queued_activations,
+        tick_activations, validate_activation_requests,
     };
     use crate::components::{AbilityId, AbilityLoadout, MoveTarget};
     use crate::displacement::DisplacementEvent;
@@ -1972,7 +2040,11 @@ mod tests {
         );
         assert_eq!(context.aim, aim);
         assert_eq!(context.origin, Vec3::ZERO);
-        assert_eq!(context.point, Vec3::ZERO, "area effects stay centred on the owner");
+        assert_eq!(
+            context.point,
+            Vec3::ZERO,
+            "area effects stay centred on the owner"
+        );
         assert_eq!(context.cast_target, None);
         assert_eq!(context.trigger, AbilityTrigger::OnUse);
     }
@@ -2272,17 +2344,41 @@ mod tests {
         assert_eq!(ItemType::Magical.label(), "Magical");
         assert_eq!(ItemType::Weapons.label(), "Weapons");
         assert_eq!(ItemType::Artifacts.label(), "Artifacts");
-        assert_eq!(ItemId::IronBracer.definition().item_type, ItemType::Equipment);
-        assert_eq!(ItemId::SwiftBoots.definition().item_type, ItemType::Equipment);
-        assert_eq!(ItemId::VialOfLight.definition().item_type, ItemType::Miscellaneous);
-        assert_eq!(ItemId::ManaCrystal.definition().item_type, ItemType::Accessories);
+        assert_eq!(
+            ItemId::IronBracer.definition().item_type,
+            ItemType::Equipment
+        );
+        assert_eq!(
+            ItemId::SwiftBoots.definition().item_type,
+            ItemType::Equipment
+        );
+        assert_eq!(
+            ItemId::VialOfLight.definition().item_type,
+            ItemType::Miscellaneous
+        );
+        assert_eq!(
+            ItemId::ManaCrystal.definition().item_type,
+            ItemType::Accessories
+        );
         assert_eq!(ItemId::BladeOfAsh.definition().item_type, ItemType::Weapons);
         assert_eq!(ItemId::AegisCharm.definition().item_type, ItemType::Armor);
         assert_eq!(ItemId::StormRod.definition().item_type, ItemType::Magical);
-        assert_eq!(ItemId::WardstoneCloak.definition().item_type, ItemType::Support);
-        assert_eq!(ItemId::HeartwoodBand.definition().item_type, ItemType::Artifacts);
-        assert_eq!(ItemId::SparkPendant.definition().item_type, ItemType::Magical);
-        assert_eq!(ItemId::RecipeHeartwoodBand.definition().item_type, ItemType::Recipe);
+        assert_eq!(
+            ItemId::WardstoneCloak.definition().item_type,
+            ItemType::Support
+        );
+        assert_eq!(
+            ItemId::HeartwoodBand.definition().item_type,
+            ItemType::Artifacts
+        );
+        assert_eq!(
+            ItemId::SparkPendant.definition().item_type,
+            ItemType::Magical
+        );
+        assert_eq!(
+            ItemId::RecipeHeartwoodBand.definition().item_type,
+            ItemType::Recipe
+        );
     }
 
     #[test]
@@ -2324,27 +2420,50 @@ mod tests {
         let (mut wallet, mut inv, mut health, mut mana, mut stats, mut attrs) = fresh_hero();
         let mut log = ShopUndoLog::default();
         assert!(record_purchase(
-            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs,
-            ItemId::IronBracer, true,
+            &mut log,
+            &mut wallet,
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            &mut attrs,
+            ItemId::IronBracer,
+            true,
         ));
         assert_eq!(owned(&inv), vec![ItemId::IronBracer]);
         assert_eq!(health.max, 820.0);
         assert_eq!(stats.armor, 8.0);
 
         assert!(record_purchase(
-            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs,
-            ItemId::RecipeHeartwoodBand, true,
+            &mut log,
+            &mut wallet,
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            &mut attrs,
+            ItemId::RecipeHeartwoodBand,
+            true,
         ));
         assert_eq!(owned(&inv), vec![ItemId::HeartwoodBand]);
         assert!(!owned(&inv).contains(&ItemId::RecipeHeartwoodBand));
-        assert_eq!(wallet.gold, 2000 - ItemId::IronBracer.cost() - ItemId::RecipeHeartwoodBand.cost());
+        assert_eq!(
+            wallet.gold,
+            2000 - ItemId::IronBracer.cost() - ItemId::RecipeHeartwoodBand.cost()
+        );
         assert_eq!(health.max, 870.0);
         assert_eq!(stats.armor, 7.0);
         assert_eq!(mana.regen_per_sec, 14.0);
         assert_eq!(log.pending(), 2);
 
         assert!(try_undo_last(
-            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs,
+            &mut log,
+            &mut wallet,
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            &mut attrs,
         ));
         assert_eq!(owned(&inv), vec![ItemId::IronBracer]);
         assert!(!owned(&inv).contains(&ItemId::HeartwoodBand));
@@ -2356,7 +2475,13 @@ mod tests {
         assert_eq!(log.pending(), 1);
 
         assert!(try_undo_last(
-            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs,
+            &mut log,
+            &mut wallet,
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            &mut attrs,
         ));
         assert!(owned(&inv).is_empty());
         assert_eq!(wallet.gold, 2000);
@@ -2370,32 +2495,76 @@ mod tests {
         let (mut wallet, mut inv, mut health, mut mana, mut stats, mut attrs) = fresh_hero();
         let mut log = ShopUndoLog::default();
         assert!(record_purchase(
-            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs,
-            ItemId::SwiftBoots, true,
+            &mut log,
+            &mut wallet,
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            &mut attrs,
+            ItemId::SwiftBoots,
+            true,
         ));
         assert!(try_undo_last(
-            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs,
+            &mut log,
+            &mut wallet,
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            &mut attrs,
         ));
         assert!(owned(&inv).is_empty());
         assert_eq!(wallet.gold, 2000);
         assert_eq!(stats.move_speed, 12.0);
 
         assert!(record_purchase(
-            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs,
-            ItemId::IronBracer, true,
+            &mut log,
+            &mut wallet,
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            &mut attrs,
+            ItemId::IronBracer,
+            true,
         ));
         inv.slots[0].as_mut().unwrap().cooldown_remaining = 3.5;
         assert!(record_sale(
-            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs,
-            0, true,
+            &mut log,
+            &mut wallet,
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            &mut attrs,
+            0,
+            true,
         ));
         assert!(owned(&inv).is_empty());
-        assert_eq!(wallet.gold, 2000 - ItemId::IronBracer.cost() + ItemId::IronBracer.definition().sell_value);
+        assert_eq!(
+            wallet.gold,
+            2000 - ItemId::IronBracer.cost() + ItemId::IronBracer.definition().sell_value
+        );
         assert!(try_undo_last(
-            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs,
+            &mut log,
+            &mut wallet,
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            &mut attrs,
         ));
         assert_eq!(owned(&inv), vec![ItemId::IronBracer]);
-        assert_eq!(inv.slots.iter().flatten().next().unwrap().cooldown_remaining, 3.5);
+        assert_eq!(
+            inv.slots
+                .iter()
+                .flatten()
+                .next()
+                .unwrap()
+                .cooldown_remaining,
+            3.5
+        );
         assert_eq!(wallet.gold, 2000 - ItemId::IronBracer.cost());
         assert_eq!(health.max, 820.0);
     }
@@ -2405,17 +2574,37 @@ mod tests {
         let (mut wallet, mut inv, mut health, mut mana, mut stats, mut attrs) = fresh_hero();
         let mut log = ShopUndoLog::default();
         assert!(record_purchase(
-            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs,
-            ItemId::IronBracer, true,
+            &mut log,
+            &mut wallet,
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            &mut attrs,
+            ItemId::IronBracer,
+            true,
         ));
         assert!(record_purchase(
-            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs,
-            ItemId::RecipeHeartwoodBand, true,
+            &mut log,
+            &mut wallet,
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            &mut attrs,
+            ItemId::RecipeHeartwoodBand,
+            true,
         ));
         let gold = wallet.gold;
         inv.slots = [None, None, None, None, None, None];
         assert!(!try_undo_last(
-            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs,
+            &mut log,
+            &mut wallet,
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            &mut attrs,
         ));
         assert_eq!(wallet.gold, gold);
         assert_eq!(log.pending(), 2);
@@ -2591,13 +2780,27 @@ mod tests {
         request(&mut app, caster, 0, CastTarget::None);
         step(&mut app);
 
-        assert_eq!(health_of(&app, caster), 220.0, "180 heal from the catalog active");
+        assert_eq!(
+            health_of(&app, caster),
+            220.0,
+            "180 heal from the catalog active"
+        );
         assert_eq!(slot(&app, caster, 0).unwrap().cooldown_remaining, 40.0);
-        assert!(app.world().get::<Activation>(caster).is_none(), "instant items do not occupy the caster");
+        assert!(
+            app.world().get::<Activation>(caster).is_none(),
+            "instant items do not occupy the caster"
+        );
         let fired = triggers(&app);
         assert_eq!(fired.len(), 1);
-        assert_eq!(fired[0].aim, Vec3::ZERO, "no-target items aim at the caster");
-        assert_eq!(fired[0].source, crate::abilities::effects::EffectSource::Item(ItemId::VialOfLight));
+        assert_eq!(
+            fired[0].aim,
+            Vec3::ZERO,
+            "no-target items aim at the caster"
+        );
+        assert_eq!(
+            fired[0].source,
+            crate::abilities::effects::EffectSource::Item(ItemId::VialOfLight)
+        );
     }
 
     #[test]
@@ -2641,7 +2844,14 @@ mod tests {
             ),
             test_item(
                 ItemId::HeartwoodBand,
-                aimed(TargetType::SelfTarget, TargetTeam::SelfOnly, 0.0, 0.0, 0.0, 0.0),
+                aimed(
+                    TargetType::SelfTarget,
+                    TargetTeam::SelfOnly,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                ),
             ),
         ]);
         let caster = spawn_caster(&mut app, 100.0);
@@ -2677,7 +2887,10 @@ mod tests {
 
         request(&mut app, caster, 0, CastTarget::Unit(ally));
         step(&mut app);
-        assert!(triggers(&app).is_empty(), "allies are not valid enemy-item targets");
+        assert!(
+            triggers(&app).is_empty(),
+            "allies are not valid enemy-item targets"
+        );
         assert_eq!(slot(&app, caster, 0).unwrap().cooldown_remaining, 0.0);
         assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 100.0);
 
@@ -2685,10 +2898,17 @@ mod tests {
         step(&mut app);
         assert!(app.world().get::<QueuedActivation>(caster).is_some());
         assert!(app.world().get::<MoveTarget>(caster).is_some());
-        assert_eq!(slot(&app, caster, 0).unwrap().cooldown_remaining, 0.0, "walking into range is free");
+        assert_eq!(
+            slot(&app, caster, 0).unwrap().cooldown_remaining,
+            0.0,
+            "walking into range is free"
+        );
         assert_eq!(health_of(&app, caster), 50.0);
 
-        app.world_mut().get_mut::<Transform>(caster).unwrap().translation = Vec3::new(700.0, 0.0, 0.0);
+        app.world_mut()
+            .get_mut::<Transform>(caster)
+            .unwrap()
+            .translation = Vec3::new(700.0, 0.0, 0.0);
         step(&mut app);
         let fired = triggers(&app);
         assert_eq!(fired.len(), 1);
@@ -2704,28 +2924,52 @@ mod tests {
         app.world_mut().get_mut::<Mana>(caster).unwrap().current = 10.0;
         request(&mut app, caster, 0, CastTarget::Unit(enemy));
         step(&mut app);
-        assert!(triggers(&app).is_empty(), "unaffordable uses do not start the cooldown");
+        assert!(
+            triggers(&app).is_empty(),
+            "unaffordable uses do not start the cooldown"
+        );
         assert_eq!(slot(&app, caster, 0).unwrap().cooldown_remaining, 0.0);
         assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 10.0);
 
         let point = Vec3::new(400.0, 0.0, 0.0);
         request(&mut app, caster, 1, CastTarget::Point(point));
         step(&mut app);
-        assert!(app.world().get::<QueuedActivation>(caster).is_some(), "the point is out of range");
+        assert!(
+            app.world().get::<QueuedActivation>(caster).is_some(),
+            "the point is out of range"
+        );
         assert_eq!(slot(&app, caster, 1).unwrap().cooldown_remaining, 0.0);
-        app.world_mut().entity_mut(caster).remove::<QueuedActivation>();
+        app.world_mut()
+            .entity_mut(caster)
+            .remove::<QueuedActivation>();
 
-        app.world_mut().get_mut::<Transform>(caster).unwrap().translation = Vec3::ZERO;
-        request(&mut app, caster, 1, CastTarget::Point(Vec3::new(100.0, 0.0, 0.0)));
+        app.world_mut()
+            .get_mut::<Transform>(caster)
+            .unwrap()
+            .translation = Vec3::ZERO;
+        request(
+            &mut app,
+            caster,
+            1,
+            CastTarget::Point(Vec3::new(100.0, 0.0, 0.0)),
+        );
         step(&mut app);
         assert_eq!(triggers(&app)[0].aim, Vec3::new(100.0, 0.0, 0.0));
         assert_eq!(slot(&app, caster, 1).unwrap().cooldown_remaining, 5.0);
 
-        request(&mut app, caster, 2, CastTarget::Point(Vec3::new(300.0, 0.0, 0.0)));
+        request(
+            &mut app,
+            caster,
+            2,
+            CastTarget::Point(Vec3::new(300.0, 0.0, 0.0)),
+        );
         step(&mut app);
         let aim = triggers(&app)[0].aim;
         let along = Vec3::new(aim.x, 0.0, aim.z).length();
-        assert!((along - 120.0).abs() < 1.0, "direction aim is projected to cast range, got {along}");
+        assert!(
+            (along - 120.0).abs() < 1.0,
+            "direction aim is projected to cast range, got {along}"
+        );
         assert!(app.world().get::<QueuedActivation>(caster).is_none());
 
         request(&mut app, caster, 3, CastTarget::None);
@@ -2738,7 +2982,14 @@ mod tests {
     fn charges_are_per_copy_and_rejected_uses_keep_them() {
         let mut def = test_item(
             ItemId::BladeOfAsh,
-            aimed(TargetType::NoTarget, TargetTeam::SelfOnly, 0.0, 0.0, 0.0, 0.0),
+            aimed(
+                TargetType::NoTarget,
+                TargetTeam::SelfOnly,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            ),
         );
         def.consumable = true;
         def.max_charges = Some(2);
@@ -2757,14 +3008,22 @@ mod tests {
         request(&mut app, caster, 0, CastTarget::None);
         step(&mut app);
         assert!(triggers(&app).is_empty());
-        assert_eq!(slot(&app, caster, 0).unwrap().charges, Some(0), "an empty copy is not spent");
+        assert_eq!(
+            slot(&app, caster, 0).unwrap().charges,
+            Some(0),
+            "an empty copy is not spent"
+        );
         assert_eq!(slot(&app, caster, 1).unwrap().charges, Some(2));
 
         slot_set_charges(&mut app, caster, 0, Some(2));
         request(&mut app, caster, 0, CastTarget::None);
         step(&mut app);
         assert_eq!(slot(&app, caster, 0).unwrap().charges, Some(1));
-        assert_eq!(slot(&app, caster, 1).unwrap().charges, Some(2), "the other copy is untouched");
+        assert_eq!(
+            slot(&app, caster, 1).unwrap().charges,
+            Some(2),
+            "the other copy is untouched"
+        );
 
         request(&mut app, caster, 1, CastTarget::None);
         step(&mut app);
@@ -2806,7 +3065,10 @@ mod tests {
         assert!(slot(&app, caster, 0).is_none());
         let moved = slot(&app, caster, 2).unwrap();
         assert_eq!(moved.instance, instance);
-        assert_eq!(moved.cooldown_remaining, 5.0, "the cooldown lands on the copy, not the old slot");
+        assert_eq!(
+            moved.cooldown_remaining, 5.0,
+            "the cooldown lands on the copy, not the old slot"
+        );
         assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 70.0);
         assert!(
             app.world().get::<Activation>(caster).is_some(),
@@ -2819,7 +3081,14 @@ mod tests {
     fn removing_the_item_during_the_cast_point_cancels_for_free() {
         let _defs = DefinitionOverride::install([test_item(
             ItemId::ManaCrystal,
-            aimed(TargetType::NoTarget, TargetTeam::SelfOnly, 0.0, 0.4, 0.0, 15.0),
+            aimed(
+                TargetType::NoTarget,
+                TargetTeam::SelfOnly,
+                0.0,
+                0.4,
+                0.0,
+                15.0,
+            ),
         )]);
         let mut app = item_app();
         let caster = spawn_caster(&mut app, 40.0);
@@ -2861,15 +3130,24 @@ mod tests {
         app.world_mut()
             .write_message(ActivationRequest::ability(caster, 0, CastTarget::None));
         step(&mut app);
-        assert!(app.world().get::<Activation>(caster).is_none(), "silence blocks abilities");
+        assert!(
+            app.world().get::<Activation>(caster).is_none(),
+            "silence blocks abilities"
+        );
         assert_eq!(
-            app.world().get::<AbilityLoadout>(caster).unwrap().slots[0].cooldown.remaining,
+            app.world().get::<AbilityLoadout>(caster).unwrap().slots[0]
+                .cooldown
+                .remaining,
             0.0
         );
 
         request(&mut app, caster, 0, CastTarget::None);
         step(&mut app);
-        assert_eq!(health_of(&app, caster), 220.0, "silence does not block items");
+        assert_eq!(
+            health_of(&app, caster),
+            220.0,
+            "silence does not block items"
+        );
         assert!(slot(&app, caster, 0).unwrap().cooldown_remaining > 0.0);
     }
 

@@ -113,9 +113,7 @@ fn parse_net_config() -> (NetConfig, LocalHeroChoice, DebugOverlaySettings) {
             choice.hero = Some(hero);
             choice.from_cli = true;
         } else {
-            eprintln!(
-                "Unknown --hero `{name}` (use vanguard|skirmisher|arcanist); showing select"
-            );
+            eprintln!("Unknown --hero `{name}` (use vanguard|skirmisher|arcanist); showing select");
         }
     }
     (
@@ -143,16 +141,14 @@ fn main() {
         .insert_resource(net_config)
         .insert_resource(hero_choice)
         .insert_resource(debug_overlays)
-        .add_plugins(
-            DefaultPlugins.set(WindowPlugin {
-                primary_window: Some(Window {
-                    title,
-                    mode: WindowMode::BorderlessFullscreen(MonitorSelection::Primary),
-                    ..default()
-                }),
+        .add_plugins(DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(Window {
+                title,
+                mode: WindowMode::BorderlessFullscreen(MonitorSelection::Primary),
                 ..default()
             }),
-        )
+            ..default()
+        }))
         .add_plugins((
             ResourcesPlugin,
             NetPlugin,

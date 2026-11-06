@@ -9,8 +9,8 @@ use super::catalog::{nova_ring, shockwave_ring};
 #[allow(unused_imports)]
 use super::definition::{
     AbilityBehavior, AbilityDefinition, AbilityEffect, AbilityMechanic, AbilityTrigger, AreaCenter,
-    AreaRadius, Attribute, DisplacementKind, EffectScaling, EffectTarget, RankValue, StatusSpec,
-    TargetTeam, TargetType,
+    AreaRadius, Attribute, DisplacementKind, EffectScaling, EffectTarget, PassiveStat, RankValue,
+    StatusSpec, TargetTeam, TargetType,
 };
 #[allow(unused_imports)]
 use crate::components::{AbilityId, DamageType};
@@ -177,6 +177,14 @@ fn stone_skin() -> AbilityDefinition {
         .team(TargetTeam::SelfOnly)
         .costs(RankValue::ZERO, RankValue::ZERO)
         .timing(0.0, 0.25)
+        .on(
+            AbilityTrigger::Passive,
+            EffectTarget::Caster,
+            AbilityEffect::PassiveStat {
+                stat: PassiveStat::Armor,
+                amount: RankValue::from_level_1(4.0, 4.0),
+            },
+        )
 }
 // </ability:stone_skin>
 

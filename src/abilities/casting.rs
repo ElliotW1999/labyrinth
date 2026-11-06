@@ -13,6 +13,7 @@ use bevy::prelude::*;
 
 use super::definition::{AbilityBehavior, AbilityDefinition, AbilityTrigger};
 use super::effects::{AbilityTriggerEvent, EffectSource, TriggerContext};
+use crate::items::item_channel_end_context;
 use crate::actions::{
     ActionChannelEndEvent, ActionCost, ActionFiredEvent, ActionId, ActionSource, ActionSpec,
     DisableRule,
@@ -105,25 +106,32 @@ pub fn ability_channel_end_triggers(
     mut triggers: MessageWriter<AbilityTriggerEvent>,
 ) {
     for end in ends.read() {
-        let ActionId::Ability(ability) = end.action else {
-            continue;
-        };
         let Ok((transform, team)) = casters.get(end.caster) else {
             continue;
         };
-        triggers.write(AbilityTriggerEvent(TriggerContext {
-            trigger: AbilityTrigger::OnChannelEnd,
-            caster: end.caster,
-            team: *team,
-            source: EffectSource::Ability(ability),
-            rank: end.level,
-            origin: transform.translation,
-            aim: end.aim,
-            point: end.aim,
-            cast_target: end.target.unit(),
-            trigger_unit: None,
-            affected_units: Vec::new(),
-        }));
+        let ctx = match end.action {
+            ActionId::Ability(ability) => TriggerContext {
+                trigger: AbilityTrigger::OnChannelEnd,
+                caster: end.caster,
+                team: *team,
+                source: EffectSource::Ability(ability),
+                rank: end.level,
+                origin: transform.translation,
+                aim: end.aim,
+                point: end.aim,
+                cast_target: end.target.unit(),
+                trigger_unit: None,
+                affected_units: Vec::new(),
+            },
+            ActionId::Item { item, .. } => item_channel_end_context(
+                item,
+                end.caster,
+                *team,
+                transform.translation,
+                end.aim,
+            ),
+        };
+        triggers.write(AbilityTriggerEvent(ctx));
     }
 }
 
@@ -151,8 +159,14 @@ mod tests {
         statuses: Option<&StatusEffects>,
     ) -> Result<(), Unusable> {
         let spec = ability_action_spec(def, state).map_err(Unusable::Cast)?;
-        check_ready(&spec.cooldown_state, &spec.cost, spec.disable, mana, statuses)
-            .map_err(Unusable::Action)
+        check_ready(
+            &spec.cooldown_state,
+            &spec.cost,
+            spec.disable,
+            mana,
+            statuses,
+        )
+        .map_err(Unusable::Action)
     }
 
     fn learned(id: AbilityId) -> AbilityState {

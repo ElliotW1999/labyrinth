@@ -98,7 +98,11 @@ const PROJECTILE: AbilityMechanic = AbilityMechanic::Projectile {
     skillshot: false,
 };
 
-const fn damage(amount: RankValue, damage_type: DamageType, scaling: EffectScaling) -> AbilityEffect {
+const fn damage(
+    amount: RankValue,
+    damage_type: DamageType,
+    scaling: EffectScaling,
+) -> AbilityEffect {
     AbilityEffect::Damage {
         amount,
         damage_type,
@@ -167,7 +171,10 @@ fn handwritten(id: AbilityId) -> AbilityDefinition {
                 RankValue::linear(ABILITY_DASH_RANGE, 30.0)
             };
             def.targeting(TargetType::Point, distance, RankValue::fixed(48.0))
-                .costs(RankValue::linear(7.5, -0.35).at_least(4.0), RankValue::linear(35.0, 5.0))
+                .costs(
+                    RankValue::linear(7.5, -0.35).at_least(4.0),
+                    RankValue::linear(35.0, 5.0),
+                )
                 .timing(0.05, 0.15)
                 .mechanic(AbilityMechanic::Dash { distance })
         }
@@ -183,7 +190,10 @@ fn handwritten(id: AbilityId) -> AbilityDefinition {
                     RankValue::ZERO,
                     RankValue::linear(ABILITY_INSTANT_AOE, radius_per_rank),
                 )
-                .costs(RankValue::linear(9.0, -0.4).at_least(5.0), RankValue::linear(50.0, 8.0))
+                .costs(
+                    RankValue::linear(9.0, -0.4).at_least(5.0),
+                    RankValue::linear(50.0, 8.0),
+                )
                 .timing(0.25, 0.35)
                 .mechanic(shockwave_ring())
                 .on(OnCast, around_caster, magic_damage(damage));
@@ -199,8 +209,16 @@ fn handwritten(id: AbilityId) -> AbilityDefinition {
                     status(StatusSpec::Root, RankValue::fixed(1.4)),
                 ),
                 _ => def
-                    .on(OnCast, around_caster, status(StatusSpec::Silence, RankValue::fixed(1.2)))
-                    .on(OnCast, around_caster, status(StatusSpec::Disarm, RankValue::fixed(1.0))),
+                    .on(
+                        OnCast,
+                        around_caster,
+                        status(StatusSpec::Silence, RankValue::fixed(1.2)),
+                    )
+                    .on(
+                        OnCast,
+                        around_caster,
+                        status(StatusSpec::Disarm, RankValue::fixed(1.0)),
+                    ),
             }
         }
         AbilityId::Bolt => projectile_damage(
@@ -209,7 +227,10 @@ fn handwritten(id: AbilityId) -> AbilityDefinition {
                 RankValue::linear(ABILITY_UNIT_CAST_RANGE, 25.0),
                 UNIT_SPELL_RADIUS,
             )
-            .costs(RankValue::linear(6.0, -0.3).at_least(3.0), RankValue::linear(45.0, 7.0))
+            .costs(
+                RankValue::linear(6.0, -0.3).at_least(3.0),
+                RankValue::linear(45.0, 7.0),
+            )
             .timing(0.2, 0.3)
             .mechanic(PROJECTILE)
             .mechanic(AbilityMechanic::AttackUnitTarget),
@@ -223,7 +244,10 @@ fn handwritten(id: AbilityId) -> AbilityDefinition {
                 RankValue::linear(ABILITY_GROUND_CAST_RANGE, 20.0),
                 RankValue::linear(ABILITY_PROJECTILE_WIDTH, 8.0),
             )
-            .costs(RankValue::linear(6.0, -0.3).at_least(3.0), RankValue::linear(45.0, 7.0))
+            .costs(
+                RankValue::linear(6.0, -0.3).at_least(3.0),
+                RankValue::linear(45.0, 7.0),
+            )
             .timing(0.2, 0.3)
             .mechanic(PROJECTILE)
             .mechanic(AbilityMechanic::AttackUnitTarget),
@@ -239,11 +263,19 @@ fn handwritten(id: AbilityId) -> AbilityDefinition {
                     RankValue::linear(ABILITY_UNIT_CAST_RANGE, 25.0),
                     UNIT_SPELL_RADIUS,
                 )
-                .costs(RankValue::linear(50.0, -4.0).at_least(30.0), RankValue::linear(100.0, 20.0))
+                .costs(
+                    RankValue::linear(50.0, -4.0).at_least(30.0),
+                    RankValue::linear(100.0, 20.0),
+                )
                 .timing(0.3, 0.4)
                 .mechanic(PROJECTILE)
                 .mechanic(AbilityMechanic::AttackUnitTarget);
-            let def = projectile_damage(def, EXECUTE_DAMAGE, DamageType::Magical, EffectScaling::None);
+            let def = projectile_damage(
+                def,
+                EXECUTE_DAMAGE,
+                DamageType::Magical,
+                EffectScaling::None,
+            );
             projectile_damage(
                 def,
                 EXECUTE_DAMAGE.scaled(EXECUTE_MULTIPLIER - 1.0),
@@ -257,31 +289,51 @@ fn handwritten(id: AbilityId) -> AbilityDefinition {
                 RankValue::linear(ABILITY_GROUND_CAST_RANGE, 15.0),
                 RankValue::linear(ABILITY_GROUND_AOE, 15.0),
             )
-            .costs(RankValue::linear(8.0, -0.35).at_least(4.5), RankValue::linear(40.0, 6.0))
+            .costs(
+                RankValue::linear(8.0, -0.35).at_least(4.5),
+                RankValue::linear(40.0, 6.0),
+            )
             .timing(0.15, 0.25)
             .mechanic(nova_ring())
-            .on(OnCast, around_aim, magic_damage(RankValue::linear(50.0, 18.0))),
+            .on(
+                OnCast,
+                around_aim,
+                magic_damage(RankValue::linear(50.0, 18.0)),
+            ),
         AbilityId::Barrier => {
             let duration = RankValue::linear(3.5, 0.4);
-            def.costs(RankValue::linear(14.0, -0.5).at_least(8.0), RankValue::linear(55.0, 8.0))
-                .timing(0.1, 0.2)
-                .mechanic(AbilityMechanic::RingFx {
-                    center: AreaCenter::Caster,
-                    radius: AreaRadius::Fixed(RankValue::fixed(scale::u(2.5))),
-                    style: RingStyle::Nova,
-                    lifetime: 0.4,
-                })
-                .on(OnCast, EffectTarget::Caster, status(StatusSpec::DebuffImmunity, duration))
-                .on(
-                    OnCast,
-                    EffectTarget::Caster,
-                    status(StatusSpec::armor_buff("barrier", RankValue::linear(6.0, 2.5)), duration),
-                )
+            def.costs(
+                RankValue::linear(14.0, -0.5).at_least(8.0),
+                RankValue::linear(55.0, 8.0),
+            )
+            .timing(0.1, 0.2)
+            .mechanic(AbilityMechanic::RingFx {
+                center: AreaCenter::Caster,
+                radius: AreaRadius::Fixed(RankValue::fixed(scale::u(2.5))),
+                style: RingStyle::Nova,
+                lifetime: 0.4,
+            })
+            .on(
+                OnCast,
+                EffectTarget::Caster,
+                status(StatusSpec::DebuffImmunity, duration),
+            )
+            .on(
+                OnCast,
+                EffectTarget::Caster,
+                status(
+                    StatusSpec::armor_buff("barrier", RankValue::linear(6.0, 2.5)),
+                    duration,
+                ),
+            )
         }
         AbilityId::Nova | AbilityId::Meteor => {
             let ult_costs = |d: AbilityDefinition| {
-                d.costs(RankValue::linear(50.0, -4.0).at_least(30.0), RankValue::linear(100.0, 20.0))
-                    .timing(0.35, 0.45)
+                d.costs(
+                    RankValue::linear(50.0, -4.0).at_least(30.0),
+                    RankValue::linear(100.0, 20.0),
+                )
+                .timing(0.35, 0.45)
             };
             if id == AbilityId::Nova {
                 ult_costs(def.targeting(
@@ -298,7 +350,11 @@ fn handwritten(id: AbilityId) -> AbilityDefinition {
                         scaling: EffectScaling::None,
                     },
                 )
-                .on(OnCast, around_aim, magic_damage(RankValue::linear(160.0, 55.0)))
+                .on(
+                    OnCast,
+                    around_aim,
+                    magic_damage(RankValue::linear(160.0, 55.0)),
+                )
             } else {
                 ult_costs(def.targeting(
                     TargetType::Area,
@@ -306,16 +362,30 @@ fn handwritten(id: AbilityId) -> AbilityDefinition {
                     RankValue::linear(ABILITY_ULT_AOE, 25.0),
                 ))
                 .mechanic(nova_ring())
-                .on(OnCast, around_aim, magic_damage(RankValue::linear(180.0, 60.0)))
-                .on(OnCast, around_aim, status(StatusSpec::Stun, RankValue::fixed(1.1)))
+                .on(
+                    OnCast,
+                    around_aim,
+                    magic_damage(RankValue::linear(180.0, 60.0)),
+                )
+                .on(
+                    OnCast,
+                    around_aim,
+                    status(StatusSpec::Stun, RankValue::fixed(1.1)),
+                )
             }
         }
         // HeroGenerator stubs: castable, costed, no effects yet.
         _ if id.is_ultimate() => def
-            .costs(RankValue::linear(50.0, -4.0).at_least(30.0), RankValue::linear(100.0, 20.0))
+            .costs(
+                RankValue::linear(50.0, -4.0).at_least(30.0),
+                RankValue::linear(100.0, 20.0),
+            )
             .timing(0.3, 0.35),
         _ => def
-            .costs(RankValue::linear(8.0, -0.35).at_least(4.0), RankValue::linear(40.0, 6.0))
+            .costs(
+                RankValue::linear(8.0, -0.35).at_least(4.0),
+                RankValue::linear(40.0, 6.0),
+            )
             .timing(0.2, 0.25),
     }
 }
@@ -338,7 +408,10 @@ mod tests {
         assert_eq!(execute.cooldown.at(7), 30.0);
         assert_eq!(execute.target_type, TargetType::Unit);
         assert_eq!(builtin(AbilityId::Nova).target_type, TargetType::Area);
-        assert_eq!(builtin(AbilityId::ArcMissile).target_type, TargetType::Point);
+        assert_eq!(
+            builtin(AbilityId::ArcMissile).target_type,
+            TargetType::Point
+        );
     }
 
     #[test]
@@ -358,18 +431,25 @@ mod tests {
 
         let lance = builtin(AbilityId::ArcaneLance);
         assert_eq!(lance.target_type, TargetType::Unit);
-        assert!(lance.effects_for(AbilityTrigger::OnProjectileHit).any(|e| matches!(
-            e.effect,
-            AbilityEffect::Damage {
-                scaling: EffectScaling::TargetHealthBelow(_),
-                ..
-            }
-        )));
+        assert!(
+            lance
+                .effects_for(AbilityTrigger::OnProjectileHit)
+                .any(|e| matches!(
+                    e.effect,
+                    AbilityEffect::Damage {
+                        scaling: EffectScaling::TargetHealthBelow(_),
+                        ..
+                    }
+                ))
+        );
 
         let stone = builtin(AbilityId::StoneSkin);
         assert_eq!(stone.behavior, AbilityBehavior::Passive);
         assert!(!stone.is_castable());
-        assert_eq!(builtin(AbilityId::Overcharge).behavior, AbilityBehavior::Toggle);
+        assert_eq!(
+            builtin(AbilityId::Overcharge).behavior,
+            AbilityBehavior::Toggle
+        );
         let cataclysm = builtin(AbilityId::Cataclysm);
         assert_eq!(cataclysm.max_rank, 4);
         assert!(cataclysm.is_ultimate);
@@ -400,9 +480,7 @@ mod tests {
         let mut world = World::new();
         world.init_resource::<AbilityDefinitions>();
         world.spawn(AbilityLoadout::starter());
-        world
-            .run_system_once(register_loadout_definitions)
-            .unwrap();
+        world.run_system_once(register_loadout_definitions).unwrap();
         let defs = world.resource::<AbilityDefinitions>();
         assert!(defs.get(AbilityId::Bolt).is_some());
         assert!(defs.get(AbilityId::Meteor).is_none());
