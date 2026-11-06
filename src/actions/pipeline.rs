@@ -367,7 +367,8 @@ pub fn tick_activations(
             continue;
         }
         let dir = activation.aim - transform.translation;
-        if !crate::facing::turn_toward(&mut transform, dir, stats.turn_rate, dt) {
+        let turn = stats.effective_turn_rate(statuses);
+        if !crate::facing::turn_toward(&mut transform, dir, turn, dt) {
             continue;
         }
         activation.point_remaining = (activation.point_remaining - dt).max(0.0);

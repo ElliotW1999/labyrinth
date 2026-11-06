@@ -11,10 +11,10 @@ use crate::basic_attack::{
 };
 use crate::components::{
     AbilityId, AttackCooldown, BoundRadius, CombatStats, DamageType, GoldBounty, Health,
-    HeroProgress, Lifetime, PlayerHero, PlayerWallet, Projectile, ProjectileHome, ProjectileStyle,
-    ShieldPool, Team, XpBounty,
+    HeroAttributes, HeroProgress, Lifetime, PlayerHero, PlayerWallet, Projectile, ProjectileHome,
+    ProjectileStyle, ShieldPool, Team, XpBounty,
 };
-use crate::items::StatusEffects;
+use crate::items::{StatusEffects, subtract_status_stat_delta};
 use crate::dimensions::{area_contains, bounds_of};
 use crate::progression::add_xp;
 use crate::resources::SharedAssets;
@@ -254,12 +254,15 @@ pub fn apply_damage_events(
     )>,
     mut rng: Option<ResMut<CombatRng>>,
     hooks: Option<Res<DamageTestHooks>>,
-    sources: Query<&CombatStats>,
-    mut targets: Query<(
-        &mut Health,
-        &CombatStats,
-        Option<&mut ShieldPool>,
-        Option<&StatusEffects>,
+    mut unit_stats: ParamSet<(
+        Query<&CombatStats>,
+        Query<(
+            &mut Health,
+            &mut CombatStats,
+            Option<&mut ShieldPool>,
+            Option<&mut StatusEffects>,
+            Option<&HeroAttributes>,
+        )>,
     )>,
 ) {
     let hooks = hooks.as_deref().copied().unwrap_or_default();
@@ -267,30 +270,57 @@ pub fn apply_damage_events(
     let rng = rng.as_deref_mut().unwrap_or(&mut fallback_rng);
     let mut reflected = Vec::new();
     for event in damage.p0().read() {
-        let Ok((mut health, target_stats, mut shield, statuses)) = targets.get_mut(event.target) else {
+        let source_stats_snapshot = event
+            .source
+            .and_then(|e| unit_stats.p0().get(e).ok().copied());
+        let mut target_query = unit_stats.p1();
+        let Ok((mut health, mut target_stats, mut shield, mut statuses, attrs)) =
+            target_query.get_mut(event.target)
+        else {
             continue;
         };
         if !health.is_alive() {
             continue;
         }
-        let immune = statuses.is_some_and(|s| s.has_damage_immunity());
+        if statuses
+            .as_ref()
+            .is_some_and(|s| s.is_invulnerable())
+        {
+            continue;
+        }
+
+        // Sleep breaks on any damage receipt (before applying this damage).
+        if let (Some(st), Some(attrs)) = (statuses.as_deref_mut(), attrs) {
+            if st.is_asleep() {
+                let agi = attrs.agility;
+                while let Some(i) = st
+                    .effects
+                    .iter()
+                    .position(|e| e.asleep && e.remaining > 0.0)
+                {
+                    let ef = st.effects.remove(i);
+                    subtract_status_stat_delta(&ef, &mut target_stats, agi);
+                }
+            }
+        }
+
+        let damage_immune = statuses
+            .as_ref()
+            .is_some_and(|s| s.has_damage_immunity());
         let damage_reflect = target_stats.damage_reflect;
-        let source_stats = event
-            .source
-            .and_then(|e| sources.get(e).ok());
         let outgoing = resolve_outgoing_amount(
             event.amount,
             event,
-            source_stats,
+            source_stats_snapshot.as_ref(),
             rng,
             &hooks,
         );
         let resolved = resolve_incoming_damage(
             outgoing,
             event.damage_type,
-            target_stats,
+            &target_stats,
             shield.as_deref_mut(),
-            immune,
+            damage_immune,
             event.applies_block,
             event.pierces_shields,
         );

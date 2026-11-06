@@ -29,6 +29,17 @@ use crate::items::StatusEffects;
 use crate::resources::SharedAssets;
 use crate::scale;
 
+/// Deterministic "roll" for blind miss (same attacker/target pair is stable within a session).
+fn basic_attack_misses_blind(attacker: Entity, target: Entity, miss_chance: f32) -> bool {
+    if miss_chance <= 0.0 {
+        return false;
+    }
+    let mut h = attacker.to_bits().wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    h ^= target.to_bits().wrapping_mul(0x85EB_CA6B);
+    let roll = (h % 10000) as f32 / 10000.0;
+    roll < miss_chance.clamp(0.0, 1.0)
+}
+
 /// Melee hits forgive a target stepping slightly away during the windup.
 const MELEE_HIT_RANGE_LENIENCY: f32 = 1.15;
 const RANGED_ATTACK_LIFETIME: f32 = 2.5;
@@ -185,7 +196,8 @@ pub fn request_basic_attacks(
             continue;
         };
 
-        if !turn_toward(&mut transform, target_pos - origin, stats.turn_rate, dt) {
+        let turn = stats.effective_turn_rate(statuses);
+        if !turn_toward(&mut transform, target_pos - origin, turn, dt) {
             continue;
         }
 
@@ -429,15 +441,19 @@ pub fn advance_attacks_in_flight(
 pub fn resolve_basic_attack_impacts(
     mut impacts: MessageReader<BasicAttackImpactEvent>,
     mut damage: MessageWriter<DamageEvent>,
-    targets: Query<(&Team, &Health)>,
+    targets: Query<(&Team, &Health, Option<&StatusEffects>)>,
     attackers: Query<(&CombatStats, &Transform)>,
     cleave_candidates: Query<(Entity, &Transform, &Team, &Health, Option<&BoundRadius>)>,
 ) {
     for impact in impacts.read() {
-        let Ok((team, health)) = targets.get(impact.target) else {
+        let Ok((team, health, defender_status)) = targets.get(impact.target) else {
             continue;
         };
         if *team != impact.attacker_team.enemy() || !health.is_alive() {
+            continue;
+        }
+        let blind = defender_status.map(|s| s.blind_miss_chance()).unwrap_or(0.0);
+        if basic_attack_misses_blind(impact.attacker, impact.target, blind) {
             continue;
         }
         damage.write(DamageEvent::basic_attack(

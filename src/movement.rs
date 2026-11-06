@@ -6,6 +6,7 @@
 //! not the mechanism units use to find their way around things.
 
 use bevy::prelude::*;
+use std::collections::HashMap;
 
 use crate::actions::{Activation, QueuedActivation};
 use crate::components::{
@@ -129,15 +130,19 @@ pub fn apply_move_targets(
             ObstacleShape::Circle { .. } => None,
         })
         .collect();
+    let mut fear_origin: HashMap<Entity, Vec2> = HashMap::new();
     let snaps: Vec<UnitSnap> = units
         .p1()
         .iter()
         .filter(|(_, _, c, statuses, _)| c.0 > 0.0 && !statuses.is_some_and(|s| s.is_phased()))
-        .map(|(entity, tf, c, _, moving)| UnitSnap {
-            entity,
-            pos: flat(tf.translation),
-            radius: c.0,
-            stationary: !moving,
+        .map(|(entity, tf, c, _, moving)| {
+            fear_origin.insert(entity, flat(tf.translation));
+            UnitSnap {
+                entity,
+                pos: flat(tf.translation),
+                radius: c.0,
+                stationary: !moving,
+            }
         })
         .collect();
 
@@ -156,42 +161,64 @@ pub fn apply_move_targets(
         let pos = flat(transform.translation);
         let step = stats.move_speed * dt;
 
+        // Fear: each frame steer toward a point away from the source (`MoveTarget`-like order).
+        let fear_waypoint = if statuses.is_some_and(|s| s.is_feared()) {
+            let flee_dir = statuses
+                .and_then(|s| s.fear_flee_source())
+                .and_then(|src| fear_origin.get(&src).copied())
+                .map(|other| (pos - other).normalize_or_zero())
+                .filter(|d| d.length_squared() > 1e-6)
+                .unwrap_or_else(|| {
+                    let flat_fwd = flat(*transform.forward());
+                    -flat_fwd.normalize_or(Vec2::X)
+                });
+            Some(ground(pos + flee_dir.normalize() * 900.0))
+        } else {
+            None
+        };
+        let feared = fear_waypoint.is_some();
+
         // Steer at the current waypoint; without a plan yet, head straight for the order.
-        let (waypoint, is_final) = match path.as_deref_mut() {
-            Some(path) => {
-                // Skip ahead on line of sight, but never cut through standing units:
-                // a stuck replan may have routed around them on purpose.
-                if !path.is_final() {
-                    let skip_to = flat(path.waypoints[path.index + 1]);
-                    let standing: Vec<DynamicBlocker> = snaps
-                        .iter()
-                        .filter(|s| {
-                            s.stationary
-                                && s.entity != entity
-                                && s.pos.distance(pos) < pos.distance(skip_to) + s.radius
-                        })
-                        .map(|s| DynamicBlocker {
-                            center: s.pos,
-                            radius: s.radius,
-                        })
-                        .collect();
-                    if grid.segment_clear(pos, skip_to, unit_r, &standing) {
+        let (waypoint, is_final) = if let Some(wp) = fear_waypoint {
+            // Keep `is_final` false so proximity to the flee point doesn't drop `MoveTarget`.
+            (wp, false)
+        } else {
+            match path.as_deref_mut() {
+                Some(path) => {
+                    // Skip ahead on line of sight, but never cut through standing units:
+                    // a stuck replan may have routed around them on purpose.
+                    if !path.is_final() {
+                        let skip_to = flat(path.waypoints[path.index + 1]);
+                        let standing: Vec<DynamicBlocker> = snaps
+                            .iter()
+                            .filter(|s| {
+                                s.stationary
+                                    && s.entity != entity
+                                    && s.pos.distance(pos) < pos.distance(skip_to) + s.radius
+                            })
+                            .map(|s| DynamicBlocker {
+                                center: s.pos,
+                                radius: s.radius,
+                            })
+                            .collect();
+                        if grid.segment_clear(pos, skip_to, unit_r, &standing) {
+                            path.index += 1;
+                        }
+                    }
+                    while !path.is_final()
+                        && flat(path.waypoints[path.index]).distance(pos) <= step.max(16.0)
+                    {
                         path.index += 1;
                     }
+                    (path.current().unwrap_or(target.position), path.is_final())
                 }
-                while !path.is_final()
-                    && flat(path.waypoints[path.index]).distance(pos) <= step.max(16.0)
-                {
-                    path.index += 1;
-                }
-                (path.current().unwrap_or(target.position), path.is_final())
+                None => (target.position, true),
             }
-            None => (target.position, true),
         };
         let waypoint = flat(waypoint);
         let to_waypoint = waypoint - pos;
         let distance = to_waypoint.length();
-        if is_final && distance < 4.0 {
+        if !feared && is_final && distance < 4.0 {
             commands.entity(entity).remove::<MoveTarget>();
             continue;
         }
@@ -232,7 +259,8 @@ pub fn apply_move_targets(
         }
         let mut dir = (desired + avoidance.offset).normalize_or(desired);
 
-        let facing = turn_toward(&mut transform, ground(dir), stats.turn_rate, dt);
+        let turn = stats.effective_turn_rate(statuses);
+        let facing = turn_toward(&mut transform, ground(dir), turn, dt);
         if !facing {
             continue;
         }
@@ -248,7 +276,11 @@ pub fn apply_move_targets(
         next3 = separate_from_circles(next3, unit_r, &circles);
         next3 = separate_from_aabbs(next3, unit_r, &aabbs);
 
-        let goal = path.as_deref().map_or(target.position, |p| p.goal);
+        let goal = if feared {
+            target.position
+        } else {
+            path.as_deref().map_or(target.position, |p| p.goal)
+        };
         if flat_distance(goal, next3) > 0.01
             && is_blocked(Vec3::new(goal.x, next3.y, goal.z), unit_r, &circles, &aabbs)
             && flat_distance(transform.translation, next3) < 1.5
@@ -269,7 +301,7 @@ pub fn apply_move_targets(
             }
         }
 
-        if is_final && flat_distance(transform.translation, ground(waypoint)) < ARRIVE_DIST {
+        if !feared && is_final && flat_distance(transform.translation, ground(waypoint)) < ARRIVE_DIST {
             commands.entity(entity).remove::<MoveTarget>();
         }
     }

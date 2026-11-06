@@ -127,6 +127,16 @@ Any new `StatusSpec` variant must be reflected in:
 | **D — Vision suite** | Invis, reveal, blind (as miss or target rules) + `fog` integration | Full information warfare |
 | **E — Forced behavior** | Fear, taunt, leash; AI + player conflict resolution | Highest complexity; needs specs per unit control |
 
+### Implementation status (branch `cursor/status-effects-architect-6a4f`)
+
+| Phase | Status |
+|-------|--------|
+| **A** | Done: `DispelType` / `DispelStrength` on `StatusEffect` and `AbilityEffect::Dispel`, filtering in `apply_status_effect_events`; generator `dispel` rows use basic vs strong when `amount` is set (legacy rows default to basic). |
+| **B** | Done: `StatusSpec::AttackSpeedSlow`, `TurnRateSlow`; `StatusEffect` carries `attack_speed_flat` / `attack_speed_mult` / `turn_rate_slow_percent`; `CombatStats::effective_turn_rate`; movement and cast-point turning use it. |
+| **C** | Done: `Mute`, `Sleep`, `Invulnerable`, `Hex` (`StatusSpec` + effects); `DisableRule::MuteOrStun` for items; sleep wakes on damage in `apply_damage_events`; invuln blocks all `DamageEvent` receipt. |
+| **D** | Partial: **Blind** implemented as deterministic miss on basic-attack resolution (stable hash from attacker/target entity bits), not fog / invis / reveal. |
+| **E** | Partial: **Fear** applies forced flee in `apply_move_targets` using `fear_source` + cached positions; **taunt** and **leash** not implemented. |
+
 ---
 
 ## Open decisions (for product / implementer)
