@@ -1,0 +1,46 @@
+---
+description: Orchestrates substantial gameplay engineering tasks using specialist subagents.
+alwaysApply: true
+---
+
+# Engineering Workflow
+
+For substantial gameplay engineering tasks, follow this workflow.
+
+## Architecture
+
+1. Delegate investigation and design to the architect subagent.
+2. Require the architect to inspect existing implementations and identify reusable systems.
+3. Require an implementation specification under docs/plans/.
+4. Review the proposal against the original requirements before approving implementation.
+5. Update permanent architecture documentation only when the architecture meaningfully changes.
+
+## Implementation
+
+1. Delegate the approved specification to the implementer subagent.
+2. Require incremental implementation and appropriate regression tests.
+3. Require implementation documentation for new reusable mechanics or meaningful changes to existing mechanics.
+4. Ensure deviations from the approved architecture are justified.
+
+## Verification
+
+1. Delegate independent verification to the tester subagent.
+2. Require inspection of the actual code changes and execution of relevant tests.
+3. If defects are found, delegate corrections to the implementer.
+4. Require targeted re-verification.
+
+## Final acceptance
+
+The main agent owns final integration and acceptance.
+
+Check the original requirements, implementation, tests, documentation and outstanding limitations.
+
+Do not declare completion when important functionality remains unverified.
+
+## Efficiency
+
+- Do not invoke every specialist for simple tasks.
+- Avoid repeated investigation of the same files.
+- Pass specification paths and relevant findings between agents.
+- Reuse existing documentation.
+- Avoid unnecessary parallel implementation of shared files.
