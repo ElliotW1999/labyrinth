@@ -2,8 +2,11 @@
 //! per-hero state lives in [`crate::components::AbilityState`].
 
 pub use crate::actions::{TargetTeam, TargetType};
-use crate::components::{AbilityId, DamageType};
-use crate::items::{StatusEffect, StatusKind};
+use bevy::prelude::Entity;
+
+use crate::components::AbilityId;
+use crate::components::DamageType;
+use crate::items::{DispelType, StatusEffect, StatusKind};
 
 /// A value that scales with ability level: `clamp(base + per_rank × rank, min, max)`,
 /// or an explicit per-level table (`75|150|225|300` in the generator CSVs).
@@ -194,8 +197,30 @@ pub enum StatusSpec {
     Forceful,
     /// Purges existing debuffs on application.
     DebuffImmunity,
+    /// Items only; abilities use silence.
+    Mute,
+    /// Stops acting until damaged or duration ends.
+    Sleep,
+    /// No damage from any source.
+    Invulnerable,
+    /// Composite silence + disarm + mute (items).
+    Hex,
+    /// Percent chance (0–100) that basic attacks miss.
+    Blind {
+        miss_chance_percent: RankValue,
+    },
+    /// Run away from `source` (typically the caster).
+    Fear,
     /// Reduces the target's current move speed by `percent`.
     Slow {
+        percent: RankValue,
+    },
+    /// `percent` of attack speed rating removed (same scale as move slow).
+    AttackSpeedSlow {
+        percent: RankValue,
+    },
+    /// `percent` reduction applied to base turn rate.
+    TurnRateSlow {
         percent: RankValue,
     },
     Modifier {
@@ -205,7 +230,17 @@ pub enum StatusSpec {
         magic_resist: RankValue,
         move_speed: RankValue,
         attack_damage: RankValue,
+        attack_speed_flat: RankValue,
+        attack_speed_mult: RankValue,
     },
+}
+
+/// Inputs needed to construct a runtime [`StatusEffect`] from a [`StatusSpec`].
+#[derive(Debug, Clone, Copy)]
+pub struct StatusBuildContext {
+    pub move_speed: f32,
+    pub agility: f32,
+    pub fear_source: Option<Entity>,
 }
 
 impl StatusSpec {
@@ -217,11 +252,15 @@ impl StatusSpec {
             magic_resist: RankValue::ZERO,
             move_speed: RankValue::ZERO,
             attack_damage: RankValue::ZERO,
+            attack_speed_flat: RankValue::ZERO,
+            attack_speed_mult: RankValue::ZERO,
         }
     }
 
-    /// `target_move_speed` is only read by percentage modifiers such as [`StatusSpec::Slow`].
-    pub fn build(self, rank: u32, duration: f32, target_move_speed: f32) -> StatusEffect {
+    /// `ctx.move_speed` is read by percentage move and attack-speed slows.
+    pub fn build(self, rank: u32, duration: f32, ctx: StatusBuildContext) -> StatusEffect {
+        // Match `CombatStats::attack_speed_rating` defaults for unsourced targets (items, etc.).
+        let ias = (100.0 + ctx.agility).clamp(20.0, 700.0);
         match self {
             StatusSpec::Stun => StatusEffect::stunned(duration),
             StatusSpec::Root => StatusEffect::rooted(duration),
@@ -230,9 +269,35 @@ impl StatusSpec {
             StatusSpec::Phased => StatusEffect::phased(duration),
             StatusSpec::Forceful => StatusEffect::forceful(duration),
             StatusSpec::DebuffImmunity => StatusEffect::debuff_immunity(duration),
-            StatusSpec::Slow { percent } => StatusEffect {
-                move_speed: -target_move_speed * (percent.at(rank) / 100.0).clamp(0.0, 1.0),
-                ..StatusEffect::debuff("slow", duration)
+            StatusSpec::Mute => StatusEffect::mute(duration),
+            StatusSpec::Sleep => StatusEffect::sleep(duration),
+            StatusSpec::Invulnerable => StatusEffect::invulnerable(duration),
+            StatusSpec::Hex => StatusEffect::hexed(duration),
+            StatusSpec::Blind { miss_chance_percent } => StatusEffect::blind(
+                (miss_chance_percent.at(rank) / 100.0).clamp(0.0, 1.0),
+                duration,
+            ),
+            StatusSpec::Fear => StatusEffect::fear(duration, ctx.fear_source),
+            StatusSpec::Slow { percent } => {
+                let p = (percent.at(rank) / 100.0).clamp(0.0, 1.0);
+                StatusEffect {
+                    move_speed: -ctx.move_speed * p,
+                    dispel_type: DispelType::Basic,
+                    ..StatusEffect::debuff("slow", duration)
+                }
+            }
+            StatusSpec::AttackSpeedSlow { percent } => {
+                let p = (percent.at(rank) / 100.0).clamp(0.0, 1.0);
+                StatusEffect {
+                    attack_speed_flat: -ias * p,
+                    dispel_type: DispelType::Basic,
+                    ..StatusEffect::debuff("attack_speed_slow", duration)
+                }
+            }
+            StatusSpec::TurnRateSlow { percent } => StatusEffect {
+                turn_rate_slow_percent: percent.at(rank).clamp(0.0, 100.0),
+                dispel_type: DispelType::Basic,
+                ..StatusEffect::debuff("turn_rate_slow", duration)
             },
             StatusSpec::Modifier {
                 id,
@@ -241,6 +306,8 @@ impl StatusSpec {
                 magic_resist,
                 move_speed,
                 attack_damage,
+                attack_speed_flat,
+                attack_speed_mult,
             } => {
                 let base = match kind {
                     StatusKind::Buff => StatusEffect::buff(id, duration),
@@ -251,6 +318,8 @@ impl StatusSpec {
                     magic_resist: magic_resist.at(rank),
                     move_speed: move_speed.at(rank),
                     attack_damage: attack_damage.at(rank),
+                    attack_speed_flat: attack_speed_flat.at(rank),
+                    attack_speed_mult: attack_speed_mult.at(rank),
                     ..base
                 }
             }
@@ -314,6 +383,7 @@ pub enum AbilityEffect {
     /// Remove every status of `kind` (reverting their stat modifiers).
     Dispel {
         kind: StatusKind,
+        strength: crate::items::DispelStrength,
     },
     /// Remove statuses with this id (e.g. `"stun"`, `"slow"`).
     RemoveStatus {

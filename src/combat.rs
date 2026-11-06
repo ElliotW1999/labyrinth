@@ -11,9 +11,10 @@ use crate::basic_attack::{
 };
 use crate::components::{
     AbilityId, AttackCooldown, BoundRadius, CombatStats, DamageType, GoldBounty, Health,
-    HeroProgress, Lifetime, PlayerHero, PlayerWallet, Projectile, ProjectileHome, ProjectileStyle,
-    Team, XpBounty,
+    HeroAttributes, HeroProgress, Lifetime, PlayerHero, PlayerWallet, Projectile, ProjectileHome,
+    ProjectileStyle, Team, XpBounty,
 };
+use crate::items::{StatusEffects, subtract_status_stat_delta};
 use crate::dimensions::{area_contains, bounds_of};
 use crate::progression::add_xp;
 use crate::resources::SharedAssets;
@@ -69,16 +70,49 @@ pub struct DamageEvent {
 
 pub fn apply_damage_events(
     mut events: MessageReader<DamageEvent>,
-    mut targets: Query<(&mut Health, &CombatStats)>,
+    mut health_q: Query<&mut Health>,
+    mut stats_q: Query<&mut CombatStats>,
+    mut status_q: Query<&mut StatusEffects>,
+    attrs_q: Query<&HeroAttributes>,
 ) {
     for event in events.read() {
-        let Ok((mut health, stats)) = targets.get_mut(event.target) else {
+        let target = event.target;
+        let Ok(health) = health_q.get(target) else {
             continue;
         };
         if !health.is_alive() {
             continue;
         }
-        health.current -= apply_damage(event.amount, event.damage_type, stats);
+        if status_q
+            .get(target)
+            .is_ok_and(|s| s.is_invulnerable())
+        {
+            continue;
+        }
+        // Sleep breaks on any damage receipt (no nested borrows: pop then adjust stats).
+        if status_q.get(target).is_ok_and(|s| s.is_asleep()) {
+            let agi = attrs_q.get(target).map(|a| a.agility).unwrap_or(0.0);
+            if let Ok(mut st) = status_q.get_mut(target) {
+                while let Some(i) = st
+                    .effects
+                    .iter()
+                    .position(|e| e.asleep && e.remaining > 0.0)
+                {
+                    let ef = st.effects.remove(i);
+                    if let Ok(mut stats) = stats_q.get_mut(target) {
+                        subtract_status_stat_delta(&ef, &mut stats, agi);
+                    }
+                }
+            }
+        }
+        let Ok(mut health) = health_q.get_mut(target) else {
+            continue;
+        };
+        let Ok(stats) = stats_q.get(target) else {
+            continue;
+        };
+        let dmg = apply_damage(event.amount, event.damage_type, stats);
+        health.current -= dmg;
     }
 }
 

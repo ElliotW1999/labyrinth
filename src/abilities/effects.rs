@@ -16,14 +16,17 @@ use bevy::prelude::*;
 use super::catalog::AbilityDefinitions;
 use super::definition::{
     AbilityEffect, AbilityEffectEntry, AbilityTrigger, AreaCenter, AreaRadius, Attribute,
-    EffectScaling, EffectTarget,
+    EffectScaling, EffectTarget, StatusBuildContext,
 };
 use crate::actions::team_allows;
 use crate::combat::DamageEvent;
 use crate::components::{AbilityId, BoundRadius, CombatStats, Health, HeroAttributes, Mana, Team};
 use crate::dimensions::{area_contains, bounds_of};
 use crate::displacement::DisplacementEvent;
-use crate::items::{ItemId, StatusEffect, StatusEffects, StatusKind, apply_status};
+use crate::items::{
+    DispelStrength, ItemId, StatusEffect, StatusEffects, StatusKind, apply_status,
+    status_dispel_matches, subtract_status_stat_delta,
+};
 use crate::teleport::TeleportEvent;
 
 /// What owns the effect entries a trigger resolves against.
@@ -77,7 +80,10 @@ pub struct ManaRestoreEvent {
 #[derive(Debug, Clone)]
 pub enum StatusChange {
     Apply(StatusEffect),
-    Dispel(StatusKind),
+    Dispel {
+        kind: StatusKind,
+        strength: DispelStrength,
+    },
     Remove(&'static str),
 }
 
@@ -296,23 +302,36 @@ impl EffectRunner<'_, '_> {
             AbilityEffect::ApplyStatus { status, duration } => {
                 for target in targets {
                     let move_speed = self.stats.get(target).map_or(0.0, |s| s.move_speed);
+                    let agility = self
+                        .attributes
+                        .get(target)
+                        .map(|a| a.agility)
+                        .unwrap_or(0.0);
+                    let fear_source = match status {
+                        super::definition::StatusSpec::Fear => Some(ctx.caster),
+                        _ => None,
+                    };
                     self.statuses.write(StatusEffectEvent {
                         source,
                         target,
                         change: StatusChange::Apply(status.build(
                             rank,
                             duration.at(rank),
-                            move_speed,
+                            StatusBuildContext {
+                                move_speed,
+                                agility,
+                                fear_source,
+                            },
                         )),
                     });
                 }
             }
-            AbilityEffect::Dispel { kind } => {
+            AbilityEffect::Dispel { kind, strength } => {
                 for target in targets {
                     self.statuses.write(StatusEffectEvent {
                         source,
                         target,
-                        change: StatusChange::Dispel(kind),
+                        change: StatusChange::Dispel { kind, strength },
                     });
                 }
             }
@@ -422,39 +441,49 @@ pub fn apply_mana_restore_events(
 fn remove_statuses(
     statuses: &mut StatusEffects,
     stats: &mut CombatStats,
+    agility: f32,
     matches: impl Fn(&StatusEffect) -> bool,
 ) {
     statuses.effects.retain(|effect| {
         if !matches(effect) {
             return true;
         }
-        stats.attack_damage -= effect.attack_damage;
-        stats.armor -= effect.armor;
-        stats.magic_resist -= effect.magic_resist;
-        stats.move_speed -= effect.move_speed;
+        subtract_status_stat_delta(effect, stats, agility);
         false
     });
 }
 
 pub fn apply_status_effect_events(
     mut events: MessageReader<StatusEffectEvent>,
-    mut units: Query<(&mut StatusEffects, &mut CombatStats)>,
+    mut units: Query<(
+        &mut StatusEffects,
+        &mut CombatStats,
+        Option<&HeroAttributes>,
+    )>,
 ) {
     for event in events.read() {
-        let Ok((mut statuses, mut stats)) = units.get_mut(event.target) else {
+        let Ok((mut statuses, mut stats, attrs)) = units.get_mut(event.target) else {
             continue;
         };
+        let agility = attrs.map(|a| a.agility).unwrap_or(0.0);
         match &event.change {
             StatusChange::Apply(effect) => {
                 if effect.debuff_immune {
-                    remove_statuses(&mut statuses, &mut stats, |e| e.kind == StatusKind::Debuff);
+                    remove_statuses(&mut statuses, &mut stats, agility, |e| {
+                        e.kind == StatusKind::Debuff
+                            && status_dispel_matches(e, StatusKind::Debuff, DispelStrength::Strong)
+                    });
                 }
-                apply_status(&mut statuses, &mut stats, effect.clone());
+                let _ = apply_status(&mut statuses, &mut stats, effect.clone(), agility);
             }
-            StatusChange::Dispel(kind) => {
-                remove_statuses(&mut statuses, &mut stats, |e| e.kind == *kind)
+            StatusChange::Dispel { kind, strength } => {
+                remove_statuses(&mut statuses, &mut stats, agility, |e| {
+                    status_dispel_matches(e, *kind, *strength)
+                });
             }
-            StatusChange::Remove(id) => remove_statuses(&mut statuses, &mut stats, |e| e.id == *id),
+            StatusChange::Remove(id) => {
+                remove_statuses(&mut statuses, &mut stats, agility, |e| e.id == *id);
+            }
         }
     }
 }

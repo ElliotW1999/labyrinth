@@ -101,7 +101,15 @@ STATUSES = {
     "root": ("StatusSpec::Root", "root", False),
     "silence": ("StatusSpec::Silence", "silence", False),
     "disarm": ("StatusSpec::Disarm", "disarm", False),
+    "mute": ("StatusSpec::Mute", "mute", False),
+    "sleep": ("StatusSpec::Sleep", "sleep", False),
+    "invulnerable": ("StatusSpec::Invulnerable", "invulnerable", True),
+    "hex": ("StatusSpec::Hex", "hex", False),
+    "fear": ("StatusSpec::Fear", "fear", False),
     "slow": (None, "slow", False),
+    "attack_speed_slow": (None, "attack_speed_slow", False),
+    "turn_rate_slow": (None, "turn_rate_slow", False),
+    "blind": (None, "blind", False),
     "phased": ("StatusSpec::Phased", "phased", True),
     "forceful": ("StatusSpec::Forceful", "forceful", True),
     "debuff_immunity": ("StatusSpec::DebuffImmunity", "spell_immunity", True),
@@ -140,6 +148,8 @@ TIMED_STATS = {
     "magic_resist": "magic_resist",
     "move_speed": "move_speed",
     "attack_damage": "attack_damage",
+    "attack_speed_flat": "attack_speed_flat",
+    "attack_speed_mult": "attack_speed_mult",
 }
 
 # Permanent (item passive) stats map onto `PassiveStat`.
@@ -748,6 +758,39 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             spec = f"StatusSpec::Slow {{ percent: {rank_value(percent)} }}"
             if amount:
                 _unused(e, report, "value")
+        elif effect_id == "attack_speed_slow":
+            percent = amount or value
+            if not percent:
+                report.error(row.file, row.line, "amount", "", "required: attack_speed_slow percentage (e.g. 30)")
+                return None
+            if any(not 0 <= p <= 100 for p in percent):
+                report.error(row.file, row.line, "amount" if amount else "value", row.get("amount") or row.get("value"), "attack_speed_slow percentage must be within 0..100")
+                return None
+            spec = f"StatusSpec::AttackSpeedSlow {{ percent: {rank_value(percent)} }}"
+            if amount:
+                _unused(e, report, "value")
+        elif effect_id == "turn_rate_slow":
+            percent = amount or value
+            if not percent:
+                report.error(row.file, row.line, "amount", "", "required: turn_rate_slow percentage (e.g. 30)")
+                return None
+            if any(not 0 <= p <= 100 for p in percent):
+                report.error(row.file, row.line, "amount" if amount else "value", row.get("amount") or row.get("value"), "turn_rate_slow percentage must be within 0..100")
+                return None
+            spec = f"StatusSpec::TurnRateSlow {{ percent: {rank_value(percent)} }}"
+            if amount:
+                _unused(e, report, "value")
+        elif effect_id == "blind":
+            miss = amount or value
+            if not miss:
+                report.error(row.file, row.line, "amount", "", "required: blind miss chance percent (e.g. 50)")
+                return None
+            if any(not 0 <= p <= 100 for p in miss):
+                report.error(row.file, row.line, "amount" if amount else "value", row.get("amount") or row.get("value"), "blind miss percent must be within 0..100")
+                return None
+            spec = f"StatusSpec::Blind {{ miss_chance_percent: {rank_value(miss)} }}"
+            if amount:
+                _unused(e, report, "value")
         else:
             _unused(e, report, "value", "amount")
         _unused(e, report, "damage_type")
@@ -758,7 +801,11 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
         _unused(e, report, "value", "damage_type", "duration", "amount")
         if effect_id in ("buff", "debuff"):
             beneficial = effect_id == "debuff"
-            effect = f"AbilityEffect::Dispel {{ kind: StatusKind::{effect_id.capitalize()} }}"
+            strong = bool(amount and any(a >= 0.5 for a in amount))
+            strength = "DispelStrength::Strong" if strong else "DispelStrength::Basic"
+            effect = (
+                f"AbilityEffect::Dispel {{ kind: StatusKind::{effect_id.capitalize()}, strength: {strength} }}"
+            )
         elif ID_PATTERN.match(effect_id):
             status_id = STATUSES[effect_id][1] if effect_id in STATUSES else effect_id
             beneficial = effect_id in STATUSES and not STATUSES[effect_id][2]
