@@ -12,8 +12,7 @@ For substantial gameplay engineering tasks, follow this workflow.
 1. Delegate investigation and design to the architect subagent.
 2. Require the architect to inspect existing implementations and identify reusable systems.
 3. Require an implementation specification under docs/plans/.
-4. Review the proposal against the original requirements before approving implementation.
-5. Update permanent architecture documentation only when the architecture meaningfully changes.
+4. Update permanent architecture documentation only when the architecture meaningfully changes.
 
 ## Implementation
 
@@ -29,13 +28,6 @@ For substantial gameplay engineering tasks, follow this workflow.
 3. If defects are found, delegate corrections to the implementer.
 4. Require targeted re-verification.
 
-## Final acceptance
-
-The main agent owns final integration and acceptance.
-
-Check the original requirements, implementation, tests, documentation and outstanding limitations.
-
-Do not declare completion when important functionality remains unverified.
 
 ## Efficiency
 
