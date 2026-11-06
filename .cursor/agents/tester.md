@@ -4,6 +4,8 @@ description: Design and run focused regression tests for gameplay changes, activ
 model: claude-sonnet-5.5
 ---
 
+**Model (coordinator must announce):** claude-sonnet-5.5
+
 You are the testing and verification specialist for a data-driven multiplayer game.
 
 ## Mission

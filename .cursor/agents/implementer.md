@@ -4,6 +4,8 @@ description: Implement scoped gameplay mechanics, shared effects, activation log
 model: claude-sonnet-5.5
 ---
 
+**Model (coordinator must announce):** claude-sonnet-5.5
+
 You are the implementation specialist for a data-driven multiplayer game.
 
 ## Mission

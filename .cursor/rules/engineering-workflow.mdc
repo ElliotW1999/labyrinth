@@ -44,3 +44,11 @@ Do not declare completion when important functionality remains unverified.
 - Pass specification paths and relevant findings between agents.
 - Reuse existing documentation.
 - Avoid unnecessary parallel implementation of shared files.
+
+## Sequential execution
+
+The coordinator must not start implementer until architect work is complete and the plan is approved. Do not start tester until implementer work is complete (PR or branch ready for verification). One specialist at a time; no parallel architect/implementer/tester on the same workstream.
+
+## Coordinator announcements
+
+When delegating each phase, the Project coordinator must tell the user the subagent name and the `model` field from that subagent's `.cursor/agents/*.md` frontmatter before or as that worker starts.
