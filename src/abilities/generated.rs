@@ -9,8 +9,8 @@ use super::catalog::{nova_ring, shockwave_ring};
 #[allow(unused_imports)]
 use super::definition::{
     AbilityBehavior, AbilityDefinition, AbilityEffect, AbilityMechanic, AbilityTrigger, AreaCenter,
-    AreaRadius, Attribute, DisplacementKind, EffectScaling, EffectTarget, RankValue, StatusSpec,
-    TargetTeam, TargetType,
+    AreaRadius, Attribute, DisplacementKind, EffectScaling, EffectTarget, PassiveStat, RankValue,
+    StatusSpec, TargetTeam, TargetType,
 };
 #[allow(unused_imports)]
 use crate::components::{AbilityId, DamageType};
