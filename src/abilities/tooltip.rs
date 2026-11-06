@@ -298,10 +298,16 @@ fn effect_notes(trigger: AbilityTrigger, effect: &AbilityEffect) -> Vec<String> 
         AbilityEffect::Damage { scaling, .. } | AbilityEffect::Heal { scaling, .. } => {
             scaling_note(scaling).into_iter().collect()
         }
-        AbilityEffect::Dispel { kind } => match kind {
-            StatusKind::Buff => vec![format!("Dispel buffs ({tag})")],
-            StatusKind::Debuff => vec![format!("Dispel debuffs ({tag})")],
-        },
+        AbilityEffect::Dispel { kind, strength } => {
+            let tier = match strength {
+                crate::items::DispelStrength::Basic => "basic",
+                crate::items::DispelStrength::Strong => "strong",
+            };
+            match kind {
+                StatusKind::Buff => vec![format!("{tier} dispel buffs ({tag})")],
+                StatusKind::Debuff => vec![format!("{tier} dispel debuffs ({tag})")],
+            }
+        }
         AbilityEffect::RemoveStatus { id } => vec![format!("Remove {id} ({tag})")],
         AbilityEffect::Teleport => vec![format!("Teleports to the target point ({tag})")],
         AbilityEffect::Displace {
@@ -365,7 +371,15 @@ fn status_name(status: StatusSpec) -> &'static str {
         StatusSpec::DebuffImmunity => "Debuff immunity",
         StatusSpec::Shield { .. } => "Shield",
         StatusSpec::Burn { .. } => "Burn",
+        StatusSpec::Mute => "Mute",
+        StatusSpec::Sleep => "Sleep",
+        StatusSpec::Invulnerable => "Invulnerable",
+        StatusSpec::Hex => "Hex",
+        StatusSpec::Blind { .. } => "Blind",
+        StatusSpec::Fear => "Fear",
         StatusSpec::Slow { .. } => "Slow",
+        StatusSpec::AttackSpeedSlow { .. } => "Attack speed slow",
+        StatusSpec::TurnRateSlow { .. } => "Turn rate slow",
         StatusSpec::Modifier { .. } => "Modifier",
     }
 }

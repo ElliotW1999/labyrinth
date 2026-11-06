@@ -70,17 +70,17 @@ impl ActionCooldown {
 /// Which statuses stop the caster from starting (or continuing) an action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DisableRule {
-    /// Abilities: silence and stun.
+    /// Abilities: silence, stun, sleep, or mute (hex applies mute).
     SilenceOrStun,
-    /// Items: only stun.
-    Stun,
+    /// Items: stun or mute (silence does not block items).
+    MuteOrStun,
 }
 
 impl DisableRule {
     pub fn blocks(self, statuses: Option<&StatusEffects>) -> bool {
         statuses.is_some_and(|s| match self {
             DisableRule::SilenceOrStun => !s.can_cast(),
-            DisableRule::Stun => s.is_stunned(),
+            DisableRule::MuteOrStun => s.is_stunned() || s.is_muted(),
         })
     }
 }

@@ -166,6 +166,21 @@ impl CombatStats {
         let ias = self.attack_speed_rating(agility);
         self.attack_speed = (ias / 100.0) / self.base_attack_time.max(0.01);
     }
+
+    /// Turn rate after stacking status slow on top of the hero/creep base in `turn_rate`.
+    pub fn effective_turn_rate(&self, statuses: Option<&crate::items::StatusEffects>) -> f32 {
+        let base = self.turn_rate.max(0.01);
+        let slow_pct = statuses
+            .map(|s| {
+                s.effects
+                    .iter()
+                    .filter(|e| e.remaining > 0.0)
+                    .fold(0.0_f32, |acc, e| acc.max(e.turn_rate_slow_percent))
+            })
+            .unwrap_or(0.0)
+            .clamp(0.0, 100.0);
+        base * (1.0 - slow_pct / 100.0).max(0.0)
+    }
 }
 
 /// In-progress auto-attack foreswing / backswing.

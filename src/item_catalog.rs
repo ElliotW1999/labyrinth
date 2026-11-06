@@ -10,7 +10,9 @@ use crate::abilities::definition::{
 #[allow(unused_imports)]
 use crate::components::DamageType;
 #[allow(unused_imports)]
-use crate::items::{ItemActivation, ItemDefinition, ItemId, ItemRarity, ItemType, StatusKind};
+use crate::items::{
+    DispelStrength, ItemActivation, ItemDefinition, ItemId, ItemRarity, ItemType, StatusKind,
+};
 
 pub fn definition(id: ItemId) -> &'static ItemDefinition {
     match id {
@@ -410,6 +412,8 @@ static WARDSTONE_CLOAK: ItemDefinition = ItemDefinition {
                     magic_resist: RankValue::ZERO,
                     move_speed: RankValue::ZERO,
                     attack_damage: RankValue::ZERO,
+                    attack_speed_flat: RankValue::ZERO,
+                    attack_speed_mult: RankValue::ZERO,
                 },
                 duration: RankValue::fixed(5.0),
             },
