@@ -180,6 +180,14 @@ pub enum EffectScaling {
     CasterAttribute(Attribute, f32),
     /// The effect only applies to targets whose health fraction is below the threshold.
     TargetHealthBelow(f32),
+    /// Adds `ratio × (max − current)` health to the base amount.
+    TargetMissingHealth(f32),
+    /// Adds `ratio × max` health to the base amount.
+    TargetMaxHealth(f32),
+    /// Adds `ratio × current` health to the base amount.
+    TargetCurrentHealth(f32),
+    /// At max cast range, damage is multiplied by `(1 − falloff)`; linear in between.
+    DistanceFromCaster { falloff: f32 },
 }
 
 /// Status templates; durations come from the owning effect.
@@ -194,6 +202,10 @@ pub enum StatusSpec {
     Forceful,
     /// Purges existing debuffs on application.
     DebuffImmunity,
+    /// Absorbing shield pool (`amount` at rank).
+    Shield { amount: RankValue },
+    /// Periodic damage while active (`dps` at rank).
+    Burn { dps: RankValue, damage_type: DamageType },
     /// Reduces the target's current move speed by `percent`.
     Slow {
         percent: RankValue,
@@ -230,6 +242,10 @@ impl StatusSpec {
             StatusSpec::Phased => StatusEffect::phased(duration),
             StatusSpec::Forceful => StatusEffect::forceful(duration),
             StatusSpec::DebuffImmunity => StatusEffect::debuff_immunity(duration),
+            StatusSpec::Shield { amount } => StatusEffect::shield(amount.at(rank), duration),
+            StatusSpec::Burn { dps, damage_type } => {
+                StatusEffect::burn(dps.at(rank), damage_type, duration)
+            }
             StatusSpec::Slow { percent } => StatusEffect {
                 move_speed: -target_move_speed * (percent.at(rank) / 100.0).clamp(0.0, 1.0),
                 ..StatusEffect::debuff("slow", duration)
@@ -282,6 +298,11 @@ pub enum PassiveStat {
     MagicResist,
     MoveSpeed,
     Attribute(Attribute),
+    SpellAmp,
+    OutgoingPhysicalAmp,
+    IncomingDamageAmp,
+    DamageBlock,
+    DamageReflect,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -345,6 +345,15 @@ fn hero_combat(
         armor,
         magic_resist,
         move_speed,
+        crit_chance: 0.0,
+        crit_multiplier: 2.0,
+        outgoing_physical_amp: 0.0,
+        outgoing_spell_amp: 0.0,
+        incoming_damage_amp: 0.0,
+        damage_block: 0.0,
+        damage_reflect: 0.0,
+        cleave_radius: 0.0,
+        cleave_damage_ratio: 0.0,
     }
 }
 
