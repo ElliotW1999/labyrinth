@@ -104,6 +104,20 @@ STATUSES = {
 
 # Activation targeting shared by abilities and active items.
 TARGET_TYPES = ("unit", "point", "direction", "no_target", "self")
+PROJECTILE_TYPES = ("none", "targeted", "skillshot")
+
+# Optional activation columns on items.csv (not part of ITEM_COLUMNS required tuple).
+ITEM_ACTIVATION_OPTIONAL = (
+    "charge_restore_time",
+    "target_type",
+    "target_team",
+    "cast_range",
+    "cast_time",
+    "channel_time",
+    "mana_cost",
+    "projectile_type",
+    "projectile_speed",
+)
 # Effect-polarity teams (`units_in_radius` defaults); "self" areas still mean allies.
 TARGET_TEAMS = {"enemy": "Enemy", "ally": "Ally", "both": "Any", "self": "Ally"}
 # Activation team rule (`TargetTeam` of the action).
@@ -344,6 +358,175 @@ def rust_fn_name(ident: str) -> str:
     return f"r#{ident}" if ident in RUST_KEYWORDS else ident
 
 
+@dataclass
+class ActivationSpec:
+    """Shared activation / targeting fields for abilities and active items."""
+
+    target_type: str
+    target_team: str
+    cast_range: list[float] | None = None
+    cast_range_scalar: float | None = None
+    aoe_radius: list[float] | None = None
+    cast_time: float = 0.0
+    channel_time: float | None = None
+    max_charges: int | None = None
+    charge_restore_time: float | None = None
+    projectile_type: str = "none"
+    projectile_speed: float | None = None
+
+    def has_cast_range(self, kind: str) -> bool:
+        if kind == "ability":
+            return bool(self.cast_range)
+        return self.cast_range_scalar is not None
+
+
+def parse_activation_spec(
+    row: Row,
+    *,
+    kind: str,
+    has_active_effects: bool,
+    report: Report,
+    levels: bool = False,
+) -> ActivationSpec | None:
+    """Parse activation columns from an ability or item row."""
+    present = [c for c in ITEM_ACTIVATION_OPTIONAL if row.get(c)]
+    if kind == "item" and not has_active_effects:
+        for column in present:
+            report.warn(row.file, row.line, column, row.get(column), "ignored: the item has no on_use effects")
+        return None
+
+    target_type = parse_enum(row, "target_type", TARGET_TYPES, report, required=kind == "ability")
+    default_team = "self" if target_type in ("no_target", "self") else "both"
+    target_team = parse_enum(
+        row,
+        "target_team",
+        sorted(TARGET_TEAMS),
+        report,
+        required=kind == "ability" or (kind == "item" and target_type == "unit"),
+    )
+    if kind == "item" and target_type is None:
+        target_type = "no_target"
+    if kind == "item" and target_team is None:
+        target_team = default_team
+
+    cast_range = parse_number(row, "cast_range", report, levels=levels, minimum=0)
+    cast_range_scalar = parse_scalar(row, "cast_range", report, minimum=0) if kind == "item" else None
+    aoe_radius = parse_number(row, "aoe_radius", report, levels=levels, minimum=0) if kind == "ability" else None
+    cast_time = parse_scalar(row, "cast_time", report, minimum=0) or 0.0
+    channel_time = parse_scalar(row, "channel_time", report, minimum=0)
+    max_charges = parse_scalar(row, "max_charges", report, integer=True, minimum=1)
+    restore = parse_scalar(row, "charge_restore_time", report, minimum=0)
+    projectile = parse_enum(row, "projectile_type", PROJECTILE_TYPES, report, required=False) or "none"
+    speed = parse_scalar(row, "projectile_speed", report, minimum=1)
+
+    if kind == "ability" and None in (target_type, target_team):
+        return None
+    if kind == "item" and target_type is None:
+        return None
+
+    if kind == "item" and projectile != "none":
+        report.warn(
+            row.file,
+            row.line,
+            "projectile_type",
+            row.get("projectile_type"),
+            "item projectiles are not emitted by the runtime yet (ProjectilePayload is ability-scoped); reserved for a future pipeline",
+        )
+    if kind == "item" and speed is not None and projectile == "none":
+        report.error(row.file, row.line, "projectile_speed", row.get("projectile_speed"), "projectile_speed requires projectile_type targeted or skillshot")
+
+    return ActivationSpec(
+        target_type=target_type,
+        target_team=target_team,
+        cast_range=cast_range if kind == "ability" else None,
+        cast_range_scalar=cast_range_scalar if kind == "item" else None,
+        aoe_radius=aoe_radius,
+        cast_time=cast_time,
+        channel_time=channel_time,
+        max_charges=int(max_charges) if max_charges else None,
+        charge_restore_time=restore,
+        projectile_type=projectile,
+        projectile_speed=speed,
+    )
+
+
+def validate_activation(
+    row: Row,
+    spec: ActivationSpec,
+    *,
+    kind: str,
+    ability_type: str | None,
+    report: Report,
+) -> None:
+    """Cross-field activation rules shared by abilities and active items."""
+
+    def err(fld: str, message: str) -> None:
+        report.error(row.file, row.line, fld, row.get(fld), message)
+
+    if spec.charge_restore_time is not None and spec.max_charges is None:
+        err("charge_restore_time", "charge_restore_time requires max_charges")
+    if spec.max_charges is not None and spec.charge_restore_time is None and kind == "ability":
+        err("max_charges", "charge-based abilities need a charge_restore_time")
+    if spec.max_charges is not None and spec.charge_restore_time is None and kind == "item":
+        report.warn(row.file, row.line, "max_charges", row.get("max_charges"), "charge restore time is not modeled for items yet; charges refill from stack purchases")
+
+    if spec.projectile_speed is not None and spec.projectile_type == "none":
+        err("projectile_speed", "projectile_speed requires projectile_type targeted or skillshot")
+    if spec.projectile_type == "targeted" and spec.target_type != "unit":
+        err("projectile_type", f"targeted projectiles home in on a unit; target_type is {spec.target_type}")
+    if spec.projectile_type == "skillshot" and spec.target_type not in ("point", "direction"):
+        err("projectile_type", f"skillshots fly toward a point or direction; target_type is {spec.target_type}")
+
+    if spec.target_team == "self" and spec.target_type not in ("self", "no_target"):
+        err("target_team", f"target_team self requires target_type self or no_target (got {spec.target_type})")
+    if spec.target_type == "self" and spec.target_team != "self":
+        err("target_team", "target_type self requires target_team self")
+
+    needs_range = spec.target_type in ("unit", "point", "direction")
+    skip_range = kind == "ability" and ability_type == "passive"
+    if needs_range and not skip_range and not spec.has_cast_range(kind):
+        label = "abilities" if kind == "ability" else "items"
+        err("cast_range", f"required for {spec.target_type}-targeted {label}")
+    if spec.target_type in ("no_target", "self") and row.get("cast_range"):
+        report.warn(row.file, row.line, "cast_range", row.get("cast_range"), f"ignored: {spec.target_type} has no range")
+
+    if kind == "ability" and ability_type == "passive":
+        if spec.target_type not in ("no_target", "self"):
+            err("target_type", "passive abilities cannot be targeted; use no_target or self")
+        if spec.projectile_type != "none":
+            err("projectile_type", "passive abilities cannot launch projectiles")
+        for fld in ("cooldown", "mana_cost", "cast_time", "channel_time", "max_charges"):
+            if row.get(fld) and any(v != 0 for v in parse_number(row, fld, Report(), levels=True) or []):
+                report.warn(row.file, row.line, fld, row.get(fld), "ignored: passive abilities are never cast")
+    if kind == "ability" and ability_type == "toggle" and spec.target_type not in ("no_target", "self"):
+        err("target_type", "toggle abilities use no_target or self")
+
+
+def ability_rust_target_type(target_type: str, projectile: str, aoe_radius: list[float] | None) -> str:
+    if target_type == "unit":
+        return "Unit"
+    if target_type == "point" and projectile == "none" and aoe_radius and any(aoe_radius):
+        return "Area"
+    if target_type == "point":
+        return "Point"
+    if target_type == "direction":
+        return "Direction"
+    if target_type == "self":
+        return "SelfTarget"
+    return "NoTarget"
+
+
+def find_registered_custom_effects(repo_root: Path) -> set[str]:
+    registered: set[str] = set()
+    src = repo_root / "src"
+    if not src.is_dir():
+        return registered
+    pattern = re.compile(r'register_custom_effect\s*\(\s*"([a-z][a-z0-9_]*)"')
+    for path in src.rglob("*.rs"):
+        registered.update(pattern.findall(path.read_text(encoding="utf-8")))
+    return registered
+
+
 def check_id(row: Row, column: str, report: Report) -> str | None:
     raw = row.get(column)
     if not raw:
@@ -420,6 +603,8 @@ class EffectContext:
     invalid_combo: dict[tuple[str, str], str] = field(default_factory=dict)
     #: Triggers that can never fire for this owner, with the reason.
     invalid_trigger: dict[str, str] = field(default_factory=dict)
+    #: Known custom effect ids from the Rust codebase (optional warn when authoring custom rows).
+    registered_custom: set[str] | None = None
 
 
 def _levels(e: EffectRow, name: str, ctx: EffectContext, report: Report, **kwargs) -> list[float] | None:
@@ -615,6 +800,14 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
         if not ID_PATTERN.match(effect_id):
             report.error(row.file, row.line, "effect_id", row.get("effect_id"), "custom effect ids must be snake_case")
             return None
+        if ctx.registered_custom is not None and effect_id not in ctx.registered_custom:
+            report.warn(
+                row.file,
+                row.line,
+                "effect_id",
+                row.get("effect_id"),
+                "custom effect id is not registered via register_custom_effect in src/ (may fail at runtime)",
+            )
         if not no_scaling():
             return None
         _unused(e, report, "damage_type")
