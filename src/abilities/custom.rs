@@ -9,4 +9,36 @@
 
 use bevy::prelude::*;
 
-pub fn register(_app: &mut App) {}
+use super::effects::{AbilityEffectAppExt, CustomEffectInput, EffectSource};
+use crate::scale;
+use crate::combat::{emit_chain_damage, DamageEvent};
+use crate::components::{BoundRadius, Health, Team};
+
+fn bolt_chain(
+    In(input): In<CustomEffectInput>,
+    units: Query<(Entity, &Transform, &Team, &Health, Option<&BoundRadius>)>,
+    mut damage: MessageWriter<DamageEvent>,
+) {
+    let Some(primary) = input.targets.first().copied() else {
+        return;
+    };
+    if !matches!(input.ctx.source, EffectSource::Ability(_)) {
+        return;
+    }
+    emit_chain_damage(
+        &mut damage,
+        primary,
+        input.ctx.caster,
+        input.amount,
+        crate::components::DamageType::Magical,
+        input.ctx.team,
+        input.value.round() as u32,
+        scale::u(450.0),
+        0.75,
+        &units,
+    );
+}
+
+pub fn register(app: &mut App) {
+    app.register_custom_effect("bolt_chain", bolt_chain);
+}

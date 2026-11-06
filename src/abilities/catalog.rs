@@ -237,6 +237,16 @@ fn handwritten(id: AbilityId) -> AbilityDefinition {
             RankValue::linear(90.0, 30.0),
             DamageType::Magical,
             EffectScaling::None,
+        )
+        .on(
+            AbilityTrigger::OnProjectileHit,
+            EffectTarget::TriggerUnit,
+            AbilityEffect::Custom {
+                id: "bolt_chain",
+                value: RankValue::fixed(2.0),
+                amount: RankValue::linear(45.0, 12.0),
+                duration: RankValue::ZERO,
+            },
         ),
         AbilityId::ArcMissile => projectile_damage(
             def.targeting(
@@ -323,6 +333,16 @@ fn handwritten(id: AbilityId) -> AbilityDefinition {
                 EffectTarget::Caster,
                 status(
                     StatusSpec::armor_buff("barrier", RankValue::linear(6.0, 2.5)),
+                    duration,
+                ),
+            )
+            .on(
+                OnCast,
+                EffectTarget::Caster,
+                status(
+                    StatusSpec::Shield {
+                        amount: RankValue::linear(80.0, 25.0),
+                    },
                     duration,
                 ),
             )
@@ -471,7 +491,7 @@ mod tests {
         let bolt = builtin(AbilityId::Bolt);
         assert!(bolt.mechanics.contains(&PROJECTILE));
         assert_eq!(bolt.effects_for(AbilityTrigger::OnCast).count(), 0);
-        assert_eq!(bolt.effects_for(AbilityTrigger::OnProjectileHit).count(), 2);
+        assert_eq!(bolt.effects_for(AbilityTrigger::OnProjectileHit).count(), 3);
         assert_eq!(bolt.effects_for(AbilityTrigger::OnImpact).count(), 1);
     }
 

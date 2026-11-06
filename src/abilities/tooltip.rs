@@ -337,6 +337,12 @@ fn scaling_note(scaling: EffectScaling) -> Option<String> {
         EffectScaling::TargetHealthBelow(fraction) => {
             Some(format!("Only below {:.0}% health", fraction * 100.0))
         }
+        EffectScaling::TargetMissingHealth(ratio) => Some(format!("+ {ratio:.2}× missing health")),
+        EffectScaling::TargetMaxHealth(ratio) => Some(format!("+ {ratio:.2}× max health")),
+        EffectScaling::TargetCurrentHealth(ratio) => Some(format!("+ {ratio:.2}× current health")),
+        EffectScaling::DistanceFromCaster { falloff } => {
+            Some(format!("−{:.0}% at max range", falloff * 100.0))
+        }
     }
 }
 
@@ -357,6 +363,8 @@ fn status_name(status: StatusSpec) -> &'static str {
         StatusSpec::Phased => "Phased",
         StatusSpec::Forceful => "Forceful",
         StatusSpec::DebuffImmunity => "Debuff immunity",
+        StatusSpec::Shield { .. } => "Shield",
+        StatusSpec::Burn { .. } => "Burn",
         StatusSpec::Slow { .. } => "Slow",
         StatusSpec::Modifier { .. } => "Modifier",
     }
@@ -375,6 +383,11 @@ fn passive_name(stat: super::definition::PassiveStat) -> &'static str {
         PassiveStat::MagicResist => "Magic resist",
         PassiveStat::MoveSpeed => "Move speed",
         PassiveStat::Attribute(attribute) => attribute_name(attribute),
+        PassiveStat::SpellAmp => "Spell amp",
+        PassiveStat::OutgoingPhysicalAmp => "Physical amp",
+        PassiveStat::IncomingDamageAmp => "Incoming amp",
+        PassiveStat::DamageBlock => "Damage block",
+        PassiveStat::DamageReflect => "Damage reflect",
     }
 }
 

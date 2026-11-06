@@ -48,6 +48,11 @@ fn accumulate_passives(total: &mut ItemPassives, add: &ItemPassives) {
     total.armor += add.armor;
     total.magic_resist += add.magic_resist;
     total.move_speed += add.move_speed;
+    total.spell_amp += add.spell_amp;
+    total.outgoing_physical_amp += add.outgoing_physical_amp;
+    total.incoming_damage_amp += add.incoming_damage_amp;
+    total.damage_block += add.damage_block;
+    total.damage_reflect += add.damage_reflect;
 }
 
 fn passive_stat_entry(stat: PassiveStat, amount: f32) -> ItemPassives {
@@ -67,6 +72,11 @@ fn passive_stat_entry(stat: PassiveStat, amount: f32) -> ItemPassives {
             super::definition::Attribute::Agility => p.agility = amount,
             super::definition::Attribute::Intelligence => p.intelligence = amount,
         },
+        PassiveStat::SpellAmp => p.spell_amp = amount,
+        PassiveStat::OutgoingPhysicalAmp => p.outgoing_physical_amp = amount,
+        PassiveStat::IncomingDamageAmp => p.incoming_damage_amp = amount,
+        PassiveStat::DamageBlock => p.damage_block = amount,
+        PassiveStat::DamageReflect => p.damage_reflect = amount,
     }
     p
 }
