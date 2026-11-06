@@ -24,24 +24,35 @@ use std::collections::VecDeque;
 
 use bevy::prelude::*;
 
-use crate::actions::{ActionSource, ActivationRequest, Activation, QueuedActivation};
+use crate::actions::{ActionSource, Activation, ActivationRequest, QueuedActivation};
 use crate::components::{
     AttackMoveOrder, AttackTarget, CastTarget, CollisionRadius, Health, MoveTarget,
 };
 use crate::dimensions::collision_of;
-use crate::movement::{order_attack_move, order_attack_unit, order_hero_move, order_hero_stop, SimSet};
-use crate::navigation::{flat, ground, NavGrid};
+use crate::movement::{
+    SimSet, order_attack_move, order_attack_unit, order_hero_move, order_hero_stop,
+};
+use crate::navigation::{NavGrid, flat, ground};
 
 /// Frames a started command may go without any visible effect before it counts as failed.
 const EFFECT_GRACE_FRAMES: u32 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UnitCommand {
-    Move { destination: Vec3 },
-    AttackMove { destination: Vec3 },
-    Attack { target: Entity },
+    Move {
+        destination: Vec3,
+    },
+    AttackMove {
+        destination: Vec3,
+    },
+    Attack {
+        target: Entity,
+    },
     /// Use an ability or active item through the shared `actions` pipeline.
-    Activate { source: ActionSource, target: CastTarget },
+    Activate {
+        source: ActionSource,
+        target: CastTarget,
+    },
     Stop,
 }
 
@@ -49,7 +60,9 @@ impl UnitCommand {
     /// Ground point this command walks to, if any (debug drawing).
     pub fn destination(&self) -> Option<Vec3> {
         match *self {
-            UnitCommand::Move { destination } | UnitCommand::AttackMove { destination } => Some(destination),
+            UnitCommand::Move { destination } | UnitCommand::AttackMove { destination } => {
+                Some(destination)
+            }
             UnitCommand::Activate {
                 target: CastTarget::Point(p),
                 ..
@@ -95,7 +108,10 @@ pub struct CommandQueue {
 impl CommandQueue {
     /// Current command followed by the queued ones.
     pub fn iter(&self) -> impl Iterator<Item = &UnitCommand> {
-        self.current.iter().map(|a| &a.command).chain(self.queued.iter())
+        self.current
+            .iter()
+            .map(|a| &a.command)
+            .chain(self.queued.iter())
     }
 }
 
@@ -224,7 +240,13 @@ type OrderState<'a> = (
 /// Outcome of checking the current command against the unit's order components.
 fn command_finished(
     active: &mut ActiveCommand,
-    (moving, attack_moving, attack, casting, queued_cast): (bool, bool, Option<&AttackTarget>, Option<&Activation>, bool),
+    (moving, attack_moving, attack, casting, queued_cast): (
+        bool,
+        bool,
+        Option<&AttackTarget>,
+        Option<&Activation>,
+        bool,
+    ),
     target_alive: impl Fn(Entity) -> bool,
 ) -> bool {
     active.frames += 1;
@@ -299,8 +321,16 @@ mod tests {
         let mut a = ActiveCommand::new(UnitCommand::Move {
             destination: Vec3::X,
         });
-        assert!(!command_finished(&mut a, (true, false, None, None, false), |_| true));
-        assert!(command_finished(&mut a, (false, false, None, None, false), |_| true));
+        assert!(!command_finished(
+            &mut a,
+            (true, false, None, None, false),
+            |_| true
+        ));
+        assert!(command_finished(
+            &mut a,
+            (false, false, None, None, false),
+            |_| true
+        ));
     }
 
     #[test]
@@ -308,12 +338,28 @@ mod tests {
         let target = e(3);
         let mut a = ActiveCommand::new(UnitCommand::Attack { target });
         let attacking = AttackTarget(target);
-        assert!(!command_finished(&mut a, (true, false, Some(&attacking), None, false), |_| true));
-        assert!(command_finished(&mut a, (false, false, Some(&attacking), None, false), |_| false));
+        assert!(!command_finished(
+            &mut a,
+            (true, false, Some(&attacking), None, false),
+            |_| true
+        ));
+        assert!(command_finished(
+            &mut a,
+            (false, false, Some(&attacking), None, false),
+            |_| false
+        ));
         let mut b = ActiveCommand::new(UnitCommand::Attack { target });
-        assert!(!command_finished(&mut b, (false, false, Some(&attacking), None, false), |_| true));
+        assert!(!command_finished(
+            &mut b,
+            (false, false, Some(&attacking), None, false),
+            |_| true
+        ));
         let other = AttackTarget(e(4));
-        assert!(command_finished(&mut b, (false, false, Some(&other), None, false), |_| true));
+        assert!(command_finished(
+            &mut b,
+            (false, false, Some(&other), None, false),
+            |_| true
+        ));
     }
 
     #[test]
@@ -322,8 +368,16 @@ mod tests {
             source: crate::actions::ActionSource::Ability(1),
             target: CastTarget::None,
         });
-        assert!(!command_finished(&mut a, (false, false, None, Some(&casting(1, false)), false), |_| true));
-        assert!(command_finished(&mut a, (false, false, None, Some(&casting(1, true)), false), |_| true));
+        assert!(!command_finished(
+            &mut a,
+            (false, false, None, Some(&casting(1, false)), false),
+            |_| true
+        ));
+        assert!(command_finished(
+            &mut a,
+            (false, false, None, Some(&casting(1, true)), false),
+            |_| true
+        ));
 
         // Never takes effect (cooldown / mana): fails after the grace period.
         let mut b = ActiveCommand::new(UnitCommand::Activate {
@@ -341,8 +395,16 @@ mod tests {
             source: crate::actions::ActionSource::Ability(1),
             target: CastTarget::Unit(e(9)),
         });
-        assert!(!command_finished(&mut c, (true, false, None, None, true), |_| true));
-        assert!(command_finished(&mut c, (true, false, None, None, true), |_| false));
+        assert!(!command_finished(
+            &mut c,
+            (true, false, None, None, true),
+            |_| true
+        ));
+        assert!(command_finished(
+            &mut c,
+            (true, false, None, None, true),
+            |_| false
+        ));
 
         // A channelled cast keeps the command until the channel ends.
         let mut d = ActiveCommand::new(UnitCommand::Activate {
@@ -353,7 +415,15 @@ mod tests {
             channel_remaining: 2.0,
             ..casting(1, true)
         };
-        assert!(!command_finished(&mut d, (false, false, None, Some(&channelling), false), |_| true));
-        assert!(command_finished(&mut d, (false, false, None, Some(&casting(1, true)), false), |_| true));
+        assert!(!command_finished(
+            &mut d,
+            (false, false, None, Some(&channelling), false),
+            |_| true
+        ));
+        assert!(command_finished(
+            &mut d,
+            (false, false, None, Some(&casting(1, true)), false),
+            |_| true
+        ));
     }
 }

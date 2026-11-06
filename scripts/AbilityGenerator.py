@@ -14,6 +14,10 @@ validates both, and generates normal `AbilityDefinition`s:
 Re-running overwrites abilities that already exist; abilities missing from the CSV
 are kept. Blank cells mean "not applicable"; `75|150|225|300` gives one value per level.
 
+Area (ground AoE) abilities: use `target_type=point`, non-zero `aoe_radius`, and
+`projectile_type none` — the generator emits Rust `TargetType::Area` (there is no
+CSV `area` enum unless added later as an alias).
+
 Usage:
   python3 scripts/AbilityGenerator.py                       # data/abilities.csv + data/ability_effects.csv
   python3 scripts/AbilityGenerator.py my_abilities.csv my_effects.csv
@@ -227,6 +231,8 @@ def effect_context(a: Ability) -> EffectContext:
     if a.behavior == "Passive":
         for trigger in ("on_cast", "on_projectile_hit", "on_impact", "on_channel_tick", "on_channel_end"):
             ctx.invalid_trigger[trigger] = "passive abilities are never cast, so this trigger never fires"
+    else:
+        ctx.invalid_trigger["passive"] = "passive trigger is only for ability_type passive"
     if a.projectile == "none":
         for trigger in ("on_projectile_hit", "on_impact"):
             ctx.invalid_trigger[trigger] = "the ability has no projectile (projectile_type none)"

@@ -22,7 +22,7 @@ use crate::dimensions::collision_of;
 use crate::displacement::ForcedMovement;
 use crate::items::StatusEffects;
 use crate::navigation::attack_position::AttackPositionGoal;
-use crate::navigation::{flat, MobileFilter, NavGrid, NavPath, NavSteering};
+use crate::navigation::{MobileFilter, NavGrid, NavPath, NavSteering, flat};
 
 /// Request to relocate `target` to `destination` (ground plane; Y is ignored).
 /// Emitted for every resolved target of `AbilityEffect::Teleport`.
@@ -179,7 +179,7 @@ mod tests {
 
     use super::*;
     use crate::components::{Ancient, Mana, Obstacle, Team, Tower};
-    use crate::items::{apply_phased, StatusEffects};
+    use crate::items::{StatusEffects, apply_phased};
     use crate::movement::{MovementPlugin, SimSet};
     use crate::scale;
 
@@ -237,7 +237,10 @@ mod tests {
 
     fn rejections(app: &App) -> Vec<TeleportError> {
         let messages = app.world().resource::<Messages<TeleportRejectedEvent>>();
-        messages.iter_current_update_messages().map(|e| e.reason).collect()
+        messages
+            .iter_current_update_messages()
+            .map(|e| e.reason)
+            .collect()
     }
 
     #[test]
@@ -247,7 +250,11 @@ mod tests {
         let target = Vec3::new(3000.0, 0.0, -2500.0);
         teleport(&mut app, unit, target);
 
-        assert_eq!(pos(&app, unit), Vec3::new(3000.0, 5.0, -2500.0), "height is preserved");
+        assert_eq!(
+            pos(&app, unit),
+            Vec3::new(3000.0, 5.0, -2500.0),
+            "height is preserved"
+        );
         let events = completed(&app);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].from, Vec3::new(0.0, 5.0, 0.0));
@@ -258,8 +265,10 @@ mod tests {
     #[test]
     fn terrain_buildings_and_the_map_edge_reject_the_destination() {
         let mut app = sim_app();
-        app.world_mut()
-            .spawn((Transform::from_xyz(1000.0, 0.0, 0.0), Obstacle::aabb(64.0, 64.0)));
+        app.world_mut().spawn((
+            Transform::from_xyz(1000.0, 0.0, 0.0),
+            Obstacle::aabb(64.0, 64.0),
+        ));
         app.world_mut().spawn((
             Transform::from_xyz(-1000.0, 0.0, 0.0),
             Tower,
@@ -281,13 +290,23 @@ mod tests {
             (Vec3::new(1000.0, 0.0, 0.0), TeleportError::Blocked),
             (Vec3::new(-1020.0, 0.0, 30.0), TeleportError::Blocked),
             (Vec3::new(0.0, 0.0, 1480.0), TeleportError::Blocked),
-            (Vec3::new(scale::MAP_HALF + 500.0, 0.0, 0.0), TeleportError::OutsideMap),
-            (Vec3::new(0.0, 0.0, -scale::MAP_HALF - 1.0), TeleportError::OutsideMap),
+            (
+                Vec3::new(scale::MAP_HALF + 500.0, 0.0, 0.0),
+                TeleportError::OutsideMap,
+            ),
+            (
+                Vec3::new(0.0, 0.0, -scale::MAP_HALF - 1.0),
+                TeleportError::OutsideMap,
+            ),
             (Vec3::new(f32::NAN, 0.0, 0.0), TeleportError::OutsideMap),
         ];
         for (destination, expected) in cases {
             teleport(&mut app, unit, destination);
-            assert_eq!(pos(&app, unit), Vec3::ZERO, "{destination:?} must not move the unit");
+            assert_eq!(
+                pos(&app, unit),
+                Vec3::ZERO,
+                "{destination:?} must not move the unit"
+            );
             assert_eq!(rejections(&app), vec![expected], "{destination:?}");
             assert!(completed(&app).is_empty());
         }
@@ -296,8 +315,10 @@ mod tests {
     #[test]
     fn the_targets_collision_radius_decides_what_fits() {
         let mut app = sim_app();
-        app.world_mut()
-            .spawn((Transform::from_xyz(1000.0, 0.0, 0.0), Obstacle::aabb(64.0, 64.0)));
+        app.world_mut().spawn((
+            Transform::from_xyz(1000.0, 0.0, 0.0),
+            Obstacle::aabb(64.0, 64.0),
+        ));
         let small = spawn_unit(&mut app, Vec3::new(0.0, 0.0, 400.0), 20.0);
         let large = spawn_unit(&mut app, Vec3::new(0.0, 0.0, -400.0), 80.0);
         step(&mut app);
@@ -325,7 +346,10 @@ mod tests {
         let blocker = spawn_unit(&mut app, Vec3::new(2000.0, 0.0, 0.0), 40.0);
         let mover = spawn_unit(&mut app, Vec3::ZERO, 40.0);
         let phased = spawn_unit(&mut app, Vec3::new(0.0, 0.0, 500.0), 40.0);
-        apply_phased(&mut app.world_mut().get_mut::<StatusEffects>(phased).unwrap(), 5.0);
+        apply_phased(
+            &mut app.world_mut().get_mut::<StatusEffects>(phased).unwrap(),
+            5.0,
+        );
 
         teleport(&mut app, mover, Vec3::new(2060.0, 0.0, 0.0));
         assert_eq!(rejections(&app), vec![TeleportError::Occupied]);
@@ -338,13 +362,23 @@ mod tests {
         assert_eq!(pos(&app, blocker).x, 2000.0, "no one is pushed aside");
 
         teleport(&mut app, phased, Vec3::new(2010.0, 0.0, 0.0));
-        assert_eq!(pos(&app, phased).x, 2010.0, "phased units ignore unit collision");
+        assert_eq!(
+            pos(&app, phased).x,
+            2010.0,
+            "phased units ignore unit collision"
+        );
 
         let ghost = spawn_unit(&mut app, Vec3::new(0.0, 0.0, -500.0), 40.0);
-        apply_phased(&mut app.world_mut().get_mut::<StatusEffects>(ghost).unwrap(), 5.0);
+        apply_phased(
+            &mut app.world_mut().get_mut::<StatusEffects>(ghost).unwrap(),
+            5.0,
+        );
         let other = spawn_unit(&mut app, Vec3::new(0.0, 0.0, 900.0), 40.0);
         teleport(&mut app, other, Vec3::new(0.0, 0.0, -490.0));
-        assert!(rejections(&app).is_empty(), "phased units do not block others");
+        assert!(
+            rejections(&app).is_empty(),
+            "phased units do not block others"
+        );
         assert_eq!(pos(&app, other).z, -490.0);
     }
 
@@ -353,7 +387,11 @@ mod tests {
         let mut app = sim_app();
         let tower = app
             .world_mut()
-            .spawn((Transform::from_xyz(-500.0, 0.0, 0.0), Tower, CollisionRadius(100.0)))
+            .spawn((
+                Transform::from_xyz(-500.0, 0.0, 0.0),
+                Tower,
+                CollisionRadius(100.0),
+            ))
             .id();
         let dead = spawn_unit(&mut app, Vec3::new(500.0, 0.0, 0.0), 40.0);
         app.world_mut().get_mut::<Health>(dead).unwrap().current = 0.0;
@@ -371,8 +409,10 @@ mod tests {
     #[test]
     fn rejected_teleports_change_nothing() {
         let mut app = sim_app();
-        app.world_mut()
-            .spawn((Transform::from_xyz(1000.0, 0.0, 0.0), Obstacle::aabb(64.0, 64.0)));
+        app.world_mut().spawn((
+            Transform::from_xyz(1000.0, 0.0, 0.0),
+            Obstacle::aabb(64.0, 64.0),
+        ));
         let unit = spawn_unit(&mut app, Vec3::ZERO, 40.0);
         let order = Vec3::new(0.0, 0.0, 3000.0);
         app.world_mut().entity_mut(unit).insert((
@@ -382,16 +422,25 @@ mod tests {
         for _ in 0..5 {
             step(&mut app);
         }
-        let before = (pos(&app, unit), app.world().get::<Health>(unit).unwrap().current);
+        let before = (
+            pos(&app, unit),
+            app.world().get::<Health>(unit).unwrap().current,
+        );
         assert!(app.world().get::<NavPath>(unit).is_some());
 
         teleport(&mut app, unit, Vec3::new(1000.0, 0.0, 0.0));
         assert_eq!(rejections(&app), vec![TeleportError::Blocked]);
         let world = app.world();
-        assert!(world.get::<MoveTarget>(unit).is_some(), "orders survive a rejected teleport");
+        assert!(
+            world.get::<MoveTarget>(unit).is_some(),
+            "orders survive a rejected teleport"
+        );
         assert!(world.get::<AttackMoveOrder>(unit).is_some());
         assert!(world.get::<NavPath>(unit).is_some());
-        assert!(pos(&app, unit).z > before.0.z, "the unit keeps walking its original route");
+        assert!(
+            pos(&app, unit).z > before.0.z,
+            "the unit keeps walking its original route"
+        );
         assert_eq!(world.get::<Health>(unit).unwrap().current, before.1);
     }
 
@@ -426,7 +475,10 @@ mod tests {
         assert!(world.get::<NavSteering>(unit).is_none());
         assert!(world.get::<AttackMoveOrder>(unit).is_none());
         assert!(world.get::<ForcedMovement>(unit).is_none());
-        assert_eq!(pos(&app, unit), Vec3::new(destination.x, 0.0, destination.z));
+        assert_eq!(
+            pos(&app, unit),
+            Vec3::new(destination.x, 0.0, destination.z)
+        );
     }
 
     #[test]
@@ -435,7 +487,10 @@ mod tests {
         let unit = spawn_unit(&mut app, Vec3::ZERO, 40.0);
         app.world_mut().get_mut::<Health>(unit).unwrap().current = 123.0;
         app.world_mut().get_mut::<Mana>(unit).unwrap().current = 45.0;
-        apply_phased(&mut app.world_mut().get_mut::<StatusEffects>(unit).unwrap(), 5.0);
+        apply_phased(
+            &mut app.world_mut().get_mut::<StatusEffects>(unit).unwrap(),
+            5.0,
+        );
         teleport(&mut app, unit, Vec3::new(2000.0, 0.0, 2000.0));
 
         let world = app.world();
@@ -449,12 +504,18 @@ mod tests {
     fn validation_is_pure_and_deterministic() {
         let grid = NavGrid::default();
         let blockers = [(Vec2::new(100.0, 0.0), 30.0)];
-        assert_eq!(validate_destination(&grid, Vec2::ZERO, 40.0, blockers), Ok(()));
+        assert_eq!(
+            validate_destination(&grid, Vec2::ZERO, 40.0, blockers),
+            Ok(())
+        );
         assert_eq!(
             validate_destination(&grid, Vec2::new(31.0, 0.0), 40.0, blockers),
             Err(TeleportError::Occupied)
         );
-        assert_eq!(validate_destination(&grid, Vec2::new(30.0, 0.0), 40.0, blockers), Ok(()));
+        assert_eq!(
+            validate_destination(&grid, Vec2::new(30.0, 0.0), 40.0, blockers),
+            Ok(())
+        );
     }
 
     #[test]

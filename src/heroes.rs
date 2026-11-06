@@ -42,12 +42,12 @@ pub enum HeroId {
     Skirmisher,
     /// Intelligence caster — missile, frost, barrier, meteor.
     Arcanist,
-    
+
     /// Generated hero — abilities are stubs until implemented.
     Warden,
     /// Generated hero — abilities are stubs until implemented.
     Hexer,
-// </hero_generator:hero_enum>
+    // </hero_generator:hero_enum>
 }
 
 impl HeroId {
@@ -57,10 +57,9 @@ impl HeroId {
             HeroId::Vanguard,
             HeroId::Skirmisher,
             HeroId::Arcanist,
-            
             HeroId::Warden,
             HeroId::Hexer,
-// </hero_generator:hero_all>
+            // </hero_generator:hero_all>
         ]
     }
 
@@ -78,10 +77,7 @@ impl HeroId {
     }
 
     pub fn as_u8(self) -> u8 {
-        Self::all()
-            .iter()
-            .position(|&h| h == self)
-            .unwrap_or(0) as u8
+        Self::all().iter().position(|&h| h == self).unwrap_or(0) as u8
     }
 
     pub fn from_u8(value: u8) -> Self {
@@ -97,10 +93,10 @@ impl HeroId {
             HeroId::Vanguard => "Vanguard",
             HeroId::Skirmisher => "Skirmisher",
             HeroId::Arcanist => "Arcanist",
-            
+
             HeroId::Warden => "Warden",
             HeroId::Hexer => "Hexer",
-// </hero_generator:hero_name>
+            // </hero_generator:hero_name>
         }
     }
 
@@ -110,10 +106,10 @@ impl HeroId {
             HeroId::Vanguard => "Str bruiser — dash in, shockwave, bolt, nova",
             HeroId::Skirmisher => "Agi duelist — blink, flurry, caltrops, execute",
             HeroId::Arcanist => "Int caster — missile, frost, barrier, meteor",
-            
+
             HeroId::Warden => "Str tank — stub kit",
             HeroId::Hexer => "Int support — stub kit",
-// </hero_generator:hero_blurb>
+            // </hero_generator:hero_blurb>
         }
     }
 
@@ -123,10 +119,10 @@ impl HeroId {
             HeroId::Vanguard => "STR",
             HeroId::Skirmisher => "AGI",
             HeroId::Arcanist => "INT",
-            
+
             HeroId::Warden => "STR",
             HeroId::Hexer => "INT",
-// </hero_generator:hero_primary>
+            // </hero_generator:hero_primary>
         }
     }
 
@@ -232,7 +228,7 @@ impl HeroId {
                 ],
                 dimensions: UnitDimensions::HERO,
             },
-            
+
             HeroId::Warden => HeroDef {
                 id: self,
                 attributes: HeroAttributes {
@@ -299,7 +295,7 @@ impl HeroId {
                 ],
                 dimensions: UnitDimensions::HERO,
             },
-// </hero_generator:hero_def>
+            // </hero_generator:hero_def>
         }
     }
 
@@ -382,7 +378,10 @@ pub struct HeroesPlugin;
 impl Plugin for HeroesPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<LocalHeroChoice>()
-            .add_systems(Startup, spawn_hero_select_ui.after(crate::resources::load_shared_assets))
+            .add_systems(
+                Startup,
+                spawn_hero_select_ui.after(crate::resources::load_shared_assets),
+            )
             .add_systems(
                 Update,
                 (
@@ -430,7 +429,10 @@ pub(crate) fn spawn_hero_select_ui_force(commands: &mut Commands) {
             root.spawn((
                 Text::new({
                     let n = HeroId::all().len();
-                    let keys = (1..=n).map(|i| i.to_string()).collect::<Vec<_>>().join(" / ");
+                    let keys = (1..=n)
+                        .map(|i| i.to_string())
+                        .collect::<Vec<_>>()
+                        .join(" / ");
                     format!("Press {keys}  ·  or click a card  ·  Enter to confirm")
                 }),
                 TextFont::from_font_size(16.0),
@@ -576,9 +578,7 @@ fn maybe_spawn_local_hero(
 
     // Confirm: CLI auto-confirms; otherwise require Enter or a second click path —
     // for UX, selecting a card (or 1/2/3) immediately confirms.
-    let confirm = choice.from_cli
-        || !roots.is_empty()
-            && (choice.hero.is_some());
+    let confirm = choice.from_cli || !roots.is_empty() && (choice.hero.is_some());
     if !confirm {
         return;
     }

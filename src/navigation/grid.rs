@@ -31,9 +31,15 @@ const SQRT2: f32 = std::f32::consts::SQRT_2;
 /// A static blocker on the ground plane (XZ stored as `Vec2(x, z)`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NavShape {
-    Circle { center: Vec2, radius: f32 },
+    Circle {
+        center: Vec2,
+        radius: f32,
+    },
     /// Collides like the movement code: the box is expanded by the unit radius on both axes.
-    Aabb { center: Vec2, half: Vec2 },
+    Aabb {
+        center: Vec2,
+        half: Vec2,
+    },
 }
 
 impl NavShape {
@@ -68,9 +74,12 @@ impl NavShape {
             NavShape::Circle { center, radius } => {
                 segment_point_distance(a, b, center) >= radius + r
             }
-            NavShape::Aabb { center, half } => {
-                !segment_hits_box(a, b, center - half - Vec2::splat(r), center + half + Vec2::splat(r))
-            }
+            NavShape::Aabb { center, half } => !segment_hits_box(
+                a,
+                b,
+                center - half - Vec2::splat(r),
+                center + half + Vec2::splat(r),
+            ),
         }
     }
 }
@@ -313,7 +322,9 @@ impl NavGrid {
         let mut best: Option<(f32, usize)> = None;
         for ring in 0..=NEAREST_SEARCH_CELLS {
             for (x, z) in ring_cells(cx, cz, ring) {
-                let Some(idx) = self.index(x, z) else { continue };
+                let Some(idx) = self.index(x, z) else {
+                    continue;
+                };
                 if !self.cell_walkable(idx, r, &[]) {
                     continue;
                 }
@@ -352,7 +363,13 @@ impl NavGrid {
     /// cutting) runs over cells with enough clearance and the result is
     /// string-pulled with exact sweep tests.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub fn find_path(&self, start: Vec2, goal: Vec2, r: f32, blockers: &[DynamicBlocker]) -> NavRoute {
+    pub fn find_path(
+        &self,
+        start: Vec2,
+        goal: Vec2,
+        r: f32,
+        blockers: &[DynamicBlocker],
+    ) -> NavRoute {
         self.find_path_with(&mut SearchScratch::default(), start, goal, r, blockers)
     }
 
@@ -488,7 +505,9 @@ impl NavGrid {
                 if diagonal {
                     let side_a = (z * w + nx) as usize;
                     let side_b = (nz * w + x) as usize;
-                    if !self.cell_walkable(side_a, r, blockers) || !self.cell_walkable(side_b, r, blockers) {
+                    if !self.cell_walkable(side_a, r, blockers)
+                        || !self.cell_walkable(side_b, r, blockers)
+                    {
                         continue;
                     }
                 }
@@ -606,11 +625,19 @@ impl SearchScratch {
     }
 
     fn g(&self, idx: usize) -> f32 {
-        if self.seen[idx] == self.stamp { self.g[idx] } else { f32::INFINITY }
+        if self.seen[idx] == self.stamp {
+            self.g[idx]
+        } else {
+            f32::INFINITY
+        }
     }
 
     fn parent(&self, idx: usize) -> u32 {
-        if self.seen[idx] == self.stamp { self.parent[idx] } else { u32::MAX }
+        if self.seen[idx] == self.stamp {
+            self.parent[idx]
+        } else {
+            u32::MAX
+        }
     }
 
     fn relax(&mut self, idx: usize, g: f32, parent: u32) {
@@ -751,16 +778,17 @@ mod tests {
     #[test]
     fn gaps_narrower_than_the_unit_are_not_used() {
         // A wall of trees with 70-unit gaps: an 80-wide hero cannot fit, a 40-wide unit can.
-        let shapes = (-8..=8)
-            .map(|i| tree(0.0, i as f32 * 198.0))
-            .collect();
+        let shapes = (-8..=8).map(|i| tree(0.0, i as f32 * 198.0)).collect();
         let grid = grid_with(shapes);
         let (a, b) = (Vec2::new(-600.0, 99.0), Vec2::new(600.0, 99.0));
         assert!(!grid.segment_clear(a, b, HERO_R, &[]));
         let route = grid.find_path(a, b, HERO_R, &[]);
         let mut from = a;
         for &wp in &route.waypoints {
-            assert!(grid.segment_clear(from, wp, HERO_R - 0.5, &[]), "hero squeezed through a gap");
+            assert!(
+                grid.segment_clear(from, wp, HERO_R - 0.5, &[]),
+                "hero squeezed through a gap"
+            );
             from = wp;
         }
         let small = 20.0;
@@ -773,7 +801,10 @@ mod tests {
         let inside = Vec2::new(10.0, 5.0);
         let resolved = grid.nearest_walkable(inside, HERO_R).unwrap();
         assert!(grid.point_clear(resolved, HERO_R));
-        assert!(resolved.distance(inside) < 64.0 + HERO_R + 40.0, "{resolved:?}");
+        assert!(
+            resolved.distance(inside) < 64.0 + HERO_R + 40.0,
+            "{resolved:?}"
+        );
         let route = grid.find_path(Vec2::new(-600.0, 0.0), inside, HERO_R, &[]);
         assert_eq!(route.end(), Some(resolved));
     }

@@ -9,16 +9,16 @@ use bevy::prelude::*;
 
 use crate::actions::{Activation, QueuedActivation};
 use crate::components::{
-    Ancient, AttackMoveOrder, AttackSwing, AttackTarget, CollisionRadius, CombatStats,
-    MoveTarget, Obstacle, ObstacleShape, Tower,
+    Ancient, AttackMoveOrder, AttackSwing, AttackTarget, CollisionRadius, CombatStats, MoveTarget,
+    Obstacle, ObstacleShape, Tower,
 };
 use crate::dimensions::{center_distance as flat_distance, collision_of};
 use crate::facing::turn_toward;
 use crate::items::StatusEffects;
-use crate::navigation::avoidance::{avoid, Neighbor};
+use crate::navigation::avoidance::{Neighbor, avoid};
 use crate::navigation::{
-    flat, ground, plan_paths, sync_nav_grid, DynamicBlocker, MobileFilter, NavGrid, NavPath,
-    NavSteering,
+    DynamicBlocker, MobileFilter, NavGrid, NavPath, NavSteering, flat, ground, plan_paths,
+    sync_nav_grid,
 };
 
 /// Ordering of the simulation's order → AI → navigation/locomotion stages.
@@ -44,7 +44,10 @@ pub struct MovementPlugin;
 impl Plugin for MovementPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<NavGrid>()
-            .configure_sets(Update, (SimSet::Commands, SimSet::Ai, SimSet::Movement).chain())
+            .configure_sets(
+                Update,
+                (SimSet::Commands, SimSet::Ai, SimSet::Movement).chain(),
+            )
             .add_systems(
                 Update,
                 (
@@ -138,7 +141,9 @@ pub fn apply_move_targets(
         })
         .collect();
 
-    for (entity, mut transform, stats, target, radius, statuses, mut path, mut steering) in &mut units.p0() {
+    for (entity, mut transform, stats, target, radius, statuses, mut path, mut steering) in
+        &mut units.p0()
+    {
         if stats.move_speed <= 0.0 {
             continue;
         }
@@ -202,14 +207,24 @@ pub fn apply_move_targets(
         } else {
             let neighbors: Vec<Neighbor> = snaps
                 .iter()
-                .filter(|s| s.entity != entity && s.pos.distance(pos) < AVOID_LOOKAHEAD + s.radius + unit_r + 40.0)
+                .filter(|s| {
+                    s.entity != entity
+                        && s.pos.distance(pos) < AVOID_LOOKAHEAD + s.radius + unit_r + 40.0
+                })
                 .map(|s| Neighbor {
                     pos: s.pos,
                     radius: s.radius,
                     stationary: s.stationary,
                 })
                 .collect();
-            avoid(pos, unit_r, desired, AVOID_LOOKAHEAD.min(distance + 40.0), prev_side, &neighbors)
+            avoid(
+                pos,
+                unit_r,
+                desired,
+                AVOID_LOOKAHEAD.min(distance + 40.0),
+                prev_side,
+                &neighbors,
+            )
         };
         if let Some(steering) = steering.as_deref_mut() {
             steering.avoidance = ground(avoidance.offset);
@@ -372,15 +387,25 @@ fn resolve_unit_collisions(
                 (dx / dist, dz / dist)
             } else {
                 // Exactly stacked: separate along X, ordered by entity for determinism.
-                if a.entity.to_bits() < b.entity.to_bits() { (-1.0, 0.0) } else { (1.0, 0.0) }
+                if a.entity.to_bits() < b.entity.to_bits() {
+                    (-1.0, 0.0)
+                } else {
+                    (1.0, 0.0)
+                }
             };
             let overlap = min_dist - dist;
             let (a_w, b_w) = collision_shares(a, b);
             if a_w > 0.0 {
-                pushes.push((a.entity, Vec3::new(nx * overlap * a_w, 0.0, nz * overlap * a_w)));
+                pushes.push((
+                    a.entity,
+                    Vec3::new(nx * overlap * a_w, 0.0, nz * overlap * a_w),
+                ));
             }
             if b_w > 0.0 {
-                pushes.push((b.entity, Vec3::new(-nx * overlap * b_w, 0.0, -nz * overlap * b_w)));
+                pushes.push((
+                    b.entity,
+                    Vec3::new(-nx * overlap * b_w, 0.0, -nz * overlap * b_w),
+                ));
             }
         }
     }
@@ -404,7 +429,11 @@ struct CollisionSnap {
 /// Fraction of an overlap correction each unit absorbs.
 fn collision_shares(a: &CollisionSnap, b: &CollisionSnap) -> (f32, f32) {
     if a.forceful != b.forceful {
-        return if a.forceful { (0.15, 0.85) } else { (0.85, 0.15) };
+        return if a.forceful {
+            (0.15, 0.85)
+        } else {
+            (0.85, 0.15)
+        };
     }
     match (a.moving, b.moving) {
         (true, false) => (1.0, 0.0),
@@ -455,12 +484,7 @@ fn separate_from_aabbs(mut pos: Vec3, unit_r: f32, boxes: &[(Vec3, f32, f32)]) -
     pos
 }
 
-fn is_blocked(
-    pos: Vec3,
-    unit_r: f32,
-    circles: &[(Vec3, f32)],
-    aabbs: &[(Vec3, f32, f32)],
-) -> bool {
+fn is_blocked(pos: Vec3, unit_r: f32, circles: &[(Vec3, f32)], aabbs: &[(Vec3, f32, f32)]) -> bool {
     for (c_pos, c_r) in circles {
         let min_dist = unit_r + *c_r;
         let dx = pos.x - c_pos.x;
@@ -548,13 +572,25 @@ mod tests {
 
     #[test]
     fn moving_unit_cannot_push_stationary_unit() {
-        assert_eq!(collision_shares(&snap(true, false), &snap(false, false)), (1.0, 0.0));
-        assert_eq!(collision_shares(&snap(false, false), &snap(true, false)), (0.0, 1.0));
+        assert_eq!(
+            collision_shares(&snap(true, false), &snap(false, false)),
+            (1.0, 0.0)
+        );
+        assert_eq!(
+            collision_shares(&snap(false, false), &snap(true, false)),
+            (0.0, 1.0)
+        );
     }
 
     #[test]
     fn same_state_units_split_and_forceful_wins() {
-        assert_eq!(collision_shares(&snap(true, false), &snap(true, false)), (0.5, 0.5));
-        assert_eq!(collision_shares(&snap(false, true), &snap(true, false)), (0.15, 0.85));
+        assert_eq!(
+            collision_shares(&snap(true, false), &snap(true, false)),
+            (0.5, 0.5)
+        );
+        assert_eq!(
+            collision_shares(&snap(false, true), &snap(true, false)),
+            (0.15, 0.85)
+        );
     }
 }

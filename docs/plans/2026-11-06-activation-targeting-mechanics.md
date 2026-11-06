@@ -152,6 +152,23 @@ These README items map directly to this audit:
 
 ---
 
+## Implemented in this PR (2026-11-06)
+
+| Approved default | Delivered |
+|------------------|-----------|
+| **Area (A)** | README + `AbilityGenerator.py` / `generator_common.py` document CSV `point` + `aoe_radius` + no projectile → `TargetType::Area` |
+| **Autocast defer** | README mechanics table marks autocast *not implemented* |
+| **CDR / masks out** | README table notes future; Limitations updated |
+| **Ability passives** | `stone_skin` `passive` effect row; `abilities/passive.rs` `sync_ability_passives` on rank/loadout |
+| **Toggle minimal** | `tick_toggle_upkeep` — Overcharge mana drain, +20% IAS mult, +10 MS while `toggled`; README |
+| **Item OnChannelEnd** | `ability_channel_end_triggers` handles `ActionId::Item`; `on_channel_end` item CSV trigger; ItemGenerator validation |
+| **Cast interruption** | README subsection + mechanics table row |
+| **Mechanics reference** | README “Activation & targeting mechanics (reference)” table (21 rows) |
+
+Tests: `cargo test` — `abilities/passive.rs` (Stone Skin scaling), existing `casting` / activation tests.
+
+---
+
 ## Verification checklist (for tester on this branch)
 
 - [ ] Matrix row count matches requested mechanic list (21 rows).  

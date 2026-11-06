@@ -8,6 +8,10 @@ Both generators describe gameplay consequences with the same effect-row schema:
 and translate each row into one `AbilityEffectEntry { trigger, target, effect }`
 (see `src/abilities/definition.rs`). Abilities and items only differ in which
 triggers/targets are meaningful for them.
+
+Ability CSV `target_type=point` with non-zero `aoe_radius` and `projectile_type none`
+maps to Rust `TargetType::Area` (ground-placed AoE); there is no separate CSV `area`
+value unless added as an alias later.
 """
 
 from __future__ import annotations
@@ -54,6 +58,7 @@ ABILITY_TRIGGERS = {
     "on_channel_tick": "OnChannelTick",
     "on_channel_end": "OnChannelEnd",
     "on_expire": "OnExpire",
+    "passive": "Passive",
 }
 
 ITEM_TRIGGERS = {
@@ -61,6 +66,7 @@ ITEM_TRIGGERS = {
     "on_use": "OnUse",
     "on_attack": "OnAttack",
     "on_attack_hit": "OnAttackHit",
+    "on_channel_end": "OnChannelEnd",
     "on_damage_taken": "OnDamageTaken",
     "on_kill": "OnKill",
     "on_death": "OnDeath",
@@ -633,19 +639,34 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
     row = e.row
     errors_before = len(report.errors)
 
-    # --- trigger
-    if e.trigger in ABILITY_TRIGGERS:
-        if ctx.kind == "item":
-            report.error(row.file, row.line, "trigger", e.trigger, f"ability trigger; items use: {', '.join(ITEM_TRIGGERS)}")
+    # --- trigger (resolve per owner kind so shared names like `passive` work for both)
+    if ctx.kind == "ability":
+        if e.trigger in ABILITY_TRIGGERS:
+            trigger = f"AbilityTrigger::{ABILITY_TRIGGERS[e.trigger]}"
+        elif CUSTOM_TRIGGER_PATTERN.match(e.trigger):
+            trigger = f'AbilityTrigger::Custom("{e.trigger}")'
+        else:
+            report.error(
+                row.file,
+                row.line,
+                "trigger",
+                e.trigger,
+                f"item trigger; abilities use: {', '.join(ABILITY_TRIGGERS)} or a custom on_<name>",
+            )
             return None
-        trigger = f"AbilityTrigger::{ABILITY_TRIGGERS[e.trigger]}"
     elif e.trigger in ITEM_TRIGGERS:
-        if ctx.kind == "ability":
-            report.error(row.file, row.line, "trigger", e.trigger, f"item trigger; abilities use: {', '.join(ABILITY_TRIGGERS)} or a custom on_<name>")
-            return None
         trigger = f"AbilityTrigger::{ITEM_TRIGGERS[e.trigger]}"
-    else:
+    elif CUSTOM_TRIGGER_PATTERN.match(e.trigger):
         trigger = f'AbilityTrigger::Custom("{e.trigger}")'
+    else:
+        report.error(
+            row.file,
+            row.line,
+            "trigger",
+            e.trigger,
+            f"ability trigger; items use: {', '.join(ITEM_TRIGGERS)}",
+        )
+        return None
     if e.trigger in ctx.invalid_trigger:
         report.error(row.file, row.line, "trigger", e.trigger, ctx.invalid_trigger[e.trigger])
         return None

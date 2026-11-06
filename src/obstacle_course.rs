@@ -181,7 +181,7 @@ fn spawn_obstacle_course(
                 speed: scale::u(28.0),
             },
             CollisionRadius(scale::body(0.7)),
-        BoundRadius(scale::body(0.5)),
+            BoundRadius(scale::body(0.5)),
         ))
         .id();
 
@@ -343,7 +343,13 @@ fn apply_hazard_hits(
     mut commands: Commands,
     orbs: Query<(Entity, &Transform, &HazardOrb, &Lifetime)>,
     mut victims: Query<
-        (Entity, &Transform, &mut Health, &CombatStats, Option<&BoundRadius>),
+        (
+            Entity,
+            &Transform,
+            &mut Health,
+            &CombatStats,
+            Option<&BoundRadius>,
+        ),
         Or<(With<PlayerHero>, With<NetworkedHero>, With<Creep>)>,
     >,
 ) {
@@ -357,7 +363,12 @@ fn apply_hazard_hits(
             if !health.is_alive() {
                 continue;
             }
-            if area_contains(orb_tf.translation, orb.radius, victim_tf.translation, bounds_of(radius)) {
+            if area_contains(
+                orb_tf.translation,
+                orb.radius,
+                victim_tf.translation,
+                bounds_of(radius),
+            ) {
                 let amount = apply_damage(orb.damage, DamageType::Magical, stats);
                 health.current -= amount;
                 hit = true;
@@ -377,7 +388,10 @@ mod tests {
     fn course_sits_just_south_of_the_radiant_ancient() {
         let ancient = scale::ground(-48.0, -48.0);
         let (min_xz, max_xz) = course_bounds();
-        assert!(max_xz.y < ancient.z - 100.0, "near edge should be south of the ancient");
+        assert!(
+            max_xz.y < ancient.z - 100.0,
+            "near edge should be south of the ancient"
+        );
         assert!((min_xz.x + max_xz.x) * 0.5 - ancient.x < 1.0);
         assert!(ancient.z - max_xz.y < scale::map(8.0));
         assert!(max_xz.x - min_xz.x > 500.0);

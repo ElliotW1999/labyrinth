@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy::ui::FocusPolicy;
 
 use crate::abilities::catalog::AbilityDefinitions;
-use crate::abilities::tooltip::{ability_tooltip_bits, TipTone};
+use crate::abilities::tooltip::{TipTone, ability_tooltip_bits};
 use crate::camera::CameraFocus;
 use crate::components::{
     AbilityId, AbilityLoadout, Ancient, CombatStats, Creep, Health, HeroAttributes, HeroProgress,
@@ -16,9 +16,9 @@ use crate::items::{
     ShopTab, ShopUiState, ShopUndoLog, StatusEffects, StatusKind, UndoShopRequest,
 };
 use crate::menu::MainMenuState;
-use crate::unit_commands::{IssueCommand, UnitCommand};
 use crate::net::NetStatus;
 use crate::resources::MatchConfig;
+use crate::unit_commands::{IssueCommand, UnitCommand};
 
 pub struct UiPlugin;
 
@@ -318,8 +318,7 @@ const HERO_PANEL_COLUMN_GAP: f32 = 12.0;
 const HERO_PANEL_LEADING_WIDTH: f32 =
     HERO_ICON_SIZE + HERO_PANEL_COLUMN_GAP + STATS_TABLE_WIDTH + HERO_PANEL_COLUMN_GAP;
 /// Offset so the QWER ability row is horizontally centered on the full screen.
-const HERO_PANEL_QWER_CENTER_OFFSET: f32 =
-    HERO_PANEL_LEADING_WIDTH + SPELL_CLUSTER_WIDTH * 0.5;
+const HERO_PANEL_QWER_CENTER_OFFSET: f32 = HERO_PANEL_LEADING_WIDTH + SPELL_CLUSTER_WIDTH * 0.5;
 
 fn spawn_hud(mut commands: Commands) {
     commands
@@ -1543,18 +1542,9 @@ fn refresh_buffs_text(
 
 fn refresh_spell_bar(
     hero: Query<(&AbilityLoadout, &HeroProgress), With<PlayerHero>>,
-    mut ranks: Query<
-        (&SpellRankText, &mut Text),
-        (Without<SpellCdText>, Without<SpellNameLabel>),
-    >,
-    mut cds: Query<
-        (&SpellCdText, &mut Text),
-        (Without<SpellRankText>, Without<SpellNameLabel>),
-    >,
-    mut names: Query<
-        (&SpellNameLabel, &mut Text),
-        (Without<SpellRankText>, Without<SpellCdText>),
-    >,
+    mut ranks: Query<(&SpellRankText, &mut Text), (Without<SpellCdText>, Without<SpellNameLabel>)>,
+    mut cds: Query<(&SpellCdText, &mut Text), (Without<SpellRankText>, Without<SpellNameLabel>)>,
+    mut names: Query<(&SpellNameLabel, &mut Text), (Without<SpellRankText>, Without<SpellCdText>)>,
     mut buttons: Query<(&SpellLevelButton, &mut Visibility)>,
     mut icons: Query<(&SpellIcon, &mut BorderColor, &mut BackgroundColor)>,
 ) {
@@ -1639,7 +1629,12 @@ fn handle_inventory_context_menu(
         if *interaction == Interaction::None {
             continue;
         }
-        if inventory.slots.get(slot.index).and_then(|s| s.as_ref()).is_some() {
+        if inventory
+            .slots
+            .get(slot.index)
+            .and_then(|s| s.as_ref())
+            .is_some()
+        {
             menu.slot = Some(slot.index);
             *vis = Visibility::Visible;
             if let Ok(window) = windows.single() {
@@ -1709,7 +1704,11 @@ fn update_ui_pointer_state(
     main_menu: Res<MainMenuState>,
     buttons: Query<&Interaction, With<Button>>,
     block_nodes: Query<
-        (&ComputedNode, &UiGlobalTransform, Option<&InheritedVisibility>),
+        (
+            &ComputedNode,
+            &UiGlobalTransform,
+            Option<&InheritedVisibility>,
+        ),
         With<BlocksWorldRmb>,
     >,
     minimap: Query<(&ComputedNode, &UiGlobalTransform), With<MinimapRoot>>,
@@ -1907,7 +1906,11 @@ fn sync_shop_panel_visibility(
     >,
     mut items: Query<
         (&ShopBuyButton, &mut Visibility),
-        (Without<ShopPanel>, Without<ShopBackdrop>, Without<ShopDetailPanel>),
+        (
+            Without<ShopPanel>,
+            Without<ShopBackdrop>,
+            Without<ShopDetailPanel>,
+        ),
     >,
     mut tabs: Query<(&ShopTabButton, &mut BackgroundColor)>,
 ) {
@@ -2016,10 +2019,7 @@ fn sync_shop_detail_panel(
     >,
     mut labels: Query<
         (&ShopDetailComponentLabel, &mut Text),
-        (
-            Without<ShopDetailBody>,
-            Without<ShopDetailTitle>,
-        ),
+        (Without<ShopDetailBody>, Without<ShopDetailTitle>),
     >,
 ) {
     let Ok(mut panel_vis) = panel.single_mut() else {
@@ -2374,11 +2374,7 @@ fn refresh_shop_status(
     ));
 }
 
-
-fn refresh_net_status(
-    status: Res<NetStatus>,
-    mut text: Query<&mut Text, With<HudNet>>,
-) {
+fn refresh_net_status(status: Res<NetStatus>, mut text: Query<&mut Text, With<HudNet>>) {
     let Ok(mut label) = text.single_mut() else {
         return;
     };
@@ -2396,7 +2392,15 @@ fn refresh_minimap(
     creeps: Query<(&Transform, &Team, &Visibility), With<Creep>>,
     towers: Query<(&Transform, &Team), (With<Tower>, Without<Ancient>)>,
     ancients: Query<&Transform, With<Ancient>>,
-    mut dots: Query<(&mut MinimapDot, &mut Node, &mut BackgroundColor, &mut Visibility), Without<Creep>>,
+    mut dots: Query<
+        (
+            &mut MinimapDot,
+            &mut Node,
+            &mut BackgroundColor,
+            &mut Visibility,
+        ),
+        Without<Creep>,
+    >,
 ) {
     let Ok((hero_tf, hero_team)) = hero.single() else {
         return;
@@ -2520,7 +2524,10 @@ mod tests {
         }
         *world.get_mut::<Visibility>(row).unwrap() = Visibility::Visible;
         let _ = system.run((), &mut world);
-        assert_eq!(*world.get::<Visibility>(panel).unwrap(), Visibility::Visible);
+        assert_eq!(
+            *world.get::<Visibility>(panel).unwrap(),
+            Visibility::Visible
+        );
         assert_eq!(
             *world.get::<Visibility>(row).unwrap(),
             Visibility::Inherited,
@@ -2583,8 +2590,14 @@ mod tests {
         let mut system = IntoSystem::into_system(sync_shop_panel_visibility);
         system.initialize(&mut world);
         let _ = system.run((), &mut world);
-        assert_eq!(*world.get::<Visibility>(basic).unwrap(), Visibility::Inherited);
-        assert_eq!(*world.get::<Visibility>(upgrade).unwrap(), Visibility::Hidden);
+        assert_eq!(
+            *world.get::<Visibility>(basic).unwrap(),
+            Visibility::Inherited
+        );
+        assert_eq!(
+            *world.get::<Visibility>(upgrade).unwrap(),
+            Visibility::Hidden
+        );
 
         world.resource_mut::<ShopUiState>().tab = ShopTab::Upgrades;
         let _ = system.run((), &mut world);

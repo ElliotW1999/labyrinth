@@ -5,16 +5,16 @@
 
 use bevy::prelude::*;
 
-use crate::abilities::{cancel_targeting_if_any, AbilityTargeting};
+use crate::abilities::{AbilityTargeting, cancel_targeting_if_any};
 use crate::components::{AbilityLoadout, AttackTarget, Ground, HeroProgress, PlayerHero, Team};
 use crate::items::ShopUiState;
 use crate::menu::MainMenuState;
 use crate::movement::SimSet;
 use crate::net::{
-    client_send_command, should_send_orders_over_network, ClientToServer, NetConfig, NetworkId,
-    NetTransport,
+    ClientToServer, NetConfig, NetTransport, NetworkId, client_send_command,
+    should_send_orders_over_network,
 };
-use crate::picking::{cursor_ground_hit, cursor_ray, ground_hit, pick_under_ray, PickableUnits};
+use crate::picking::{PickableUnits, cursor_ground_hit, cursor_ray, ground_hit, pick_under_ray};
 use crate::ui::UiPointerState;
 use crate::unit_commands::{IssueCommand, UnitCommand};
 
@@ -163,10 +163,7 @@ fn handle_point_and_click(
         };
         if let Some((_, net_id)) = clicked_enemy {
             if let Some(id) = net_id {
-                client_send_command(
-                    &mut transport,
-                    ClientToServer::AttackNet { target: id.0 },
-                );
+                client_send_command(&mut transport, ClientToServer::AttackNet { target: id.0 });
             } else {
                 client_send_command(
                     &mut transport,

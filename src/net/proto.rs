@@ -23,8 +23,13 @@ pub enum ServerToClient {
         /// Host / opponent hero kit.
         opponent_kind: u8,
     },
-    Snapshot { tick: u32, heroes: Vec<HeroSnap> },
-    Reject { reason: String },
+    Snapshot {
+        tick: u32,
+        heroes: Vec<HeroSnap>,
+    },
+    Reject {
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -142,8 +142,9 @@ impl MechanicRunner<'_, '_> {
                 let target_pos = match unit {
                     Some((_, pos)) => pos,
                     None if *skillshot => {
-                        let dir = Vec3::new(ctx.aim.x - ctx.origin.x, 0.0, ctx.aim.z - ctx.origin.z)
-                            .normalize_or(Vec3::X);
+                        let dir =
+                            Vec3::new(ctx.aim.x - ctx.origin.x, 0.0, ctx.aim.z - ctx.origin.z)
+                                .normalize_or(Vec3::X);
                         ctx.origin + dir * ctx.cast_range
                     }
                     None => ctx.aim,
