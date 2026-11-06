@@ -472,7 +472,7 @@ pub fn apply_status_effect_events(
     mut units: Query<(Entity, &mut StatusEffects, &mut CombatStats, Option<&mut ShieldPool>)>,
 ) {
     for event in events.read() {
-        let Ok((entity, mut statuses, mut stats, shield)) = units.get_mut(event.target) else {
+        let Ok((entity, mut statuses, mut stats, mut shield)) = units.get_mut(event.target) else {
             continue;
         };
         match &event.change {
@@ -493,7 +493,7 @@ pub fn apply_status_effect_events(
                 };
                 apply_status(&mut statuses, &mut stats, effect.clone());
                 if effect.shield_amount > 0.0 {
-                    if let Some(pool) = shield {
+                    if let Some(pool) = shield.as_deref_mut() {
                         pool.amount = (pool.amount - old_shield).max(0.0) + effect.shield_amount;
                     } else {
                         commands

@@ -411,7 +411,7 @@ mod tests {
         let bolt = builtin(AbilityId::Bolt);
         assert!(bolt.mechanics.contains(&PROJECTILE));
         assert_eq!(bolt.effects_for(AbilityTrigger::OnCast).count(), 0);
-        assert_eq!(bolt.effects_for(AbilityTrigger::OnProjectileHit).count(), 2);
+        assert_eq!(bolt.effects_for(AbilityTrigger::OnProjectileHit).count(), 3);
         assert_eq!(bolt.effects_for(AbilityTrigger::OnImpact).count(), 1);
     }
 

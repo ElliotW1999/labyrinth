@@ -1045,11 +1045,11 @@ mod tests {
             .run_system_once(move |mut runner: effects::EffectRunner| {
                 let mut ctx = item_context(by_item, Vec3::new(-2000.0, 0.0, 0.0));
                 let targets = runner.targets(&ctx, EffectTarget::Caster, 0.0);
-                runner.execute(&ctx, &AbilityEffect::Teleport, targets);
+                runner.execute(&ctx, &AbilityEffect::Teleport, targets, 0.0);
                 ctx.trigger_unit = Some(ally);
                 ctx.aim = Vec3::new(0.0, 0.0, 2500.0);
                 let targets = runner.targets(&ctx, EffectTarget::TriggerUnit, 0.0);
-                runner.execute(&ctx, &AbilityEffect::Teleport, targets);
+                runner.execute(&ctx, &AbilityEffect::Teleport, targets, 0.0);
             })
             .unwrap();
         step(&mut app);

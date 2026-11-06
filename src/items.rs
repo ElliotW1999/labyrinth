@@ -1243,7 +1243,7 @@ fn tick_status_effects(
     )>,
 ) {
     let dt = time.delta_secs();
-    for (entity, mut statuses, mut stats, mut health, shield) in &mut units {
+    for (entity, mut statuses, mut stats, mut health, mut shield) in &mut units {
         let mut i = 0;
         while i < statuses.effects.len() {
             let effect = &mut statuses.effects[i];

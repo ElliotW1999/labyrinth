@@ -248,9 +248,11 @@ pub fn resolve_incoming_damage(
 }
 
 pub fn apply_damage_events(
-    mut events: MessageReader<DamageEvent>,
-    mut follow_up: MessageWriter<DamageEvent>,
-    mut rng: ResMut<CombatRng>,
+    mut damage: ParamSet<(
+        MessageReader<DamageEvent>,
+        MessageWriter<DamageEvent>,
+    )>,
+    mut rng: Option<ResMut<CombatRng>>,
     hooks: Option<Res<DamageTestHooks>>,
     sources: Query<&CombatStats>,
     mut targets: Query<(
@@ -261,8 +263,11 @@ pub fn apply_damage_events(
     )>,
 ) {
     let hooks = hooks.as_deref().copied().unwrap_or_default();
-    for event in events.read() {
-        let Ok((mut health, target_stats, shield, statuses)) = targets.get_mut(event.target) else {
+    let mut fallback_rng = CombatRng::default();
+    let rng = rng.as_deref_mut().unwrap_or(&mut fallback_rng);
+    let mut reflected = Vec::new();
+    for event in damage.p0().read() {
+        let Ok((mut health, target_stats, mut shield, statuses)) = targets.get_mut(event.target) else {
             continue;
         };
         if !health.is_alive() {
@@ -277,7 +282,7 @@ pub fn apply_damage_events(
             event.amount,
             event,
             source_stats,
-            &mut rng,
+            rng,
             &hooks,
         );
         let resolved = resolve_incoming_damage(
@@ -293,11 +298,11 @@ pub fn apply_damage_events(
 
         if event.reflects && resolved.health_delta > 0.0 && damage_reflect > 0.0 {
             if let Some(source) = event.source {
-                let reflected = resolved.health_delta * damage_reflect;
-                follow_up.write(DamageEvent {
+                let amount = resolved.health_delta * damage_reflect;
+                reflected.push(DamageEvent {
                     source: Some(event.target),
                     target: source,
-                    amount: reflected,
+                    amount,
                     damage_type: event.damage_type,
                     kind: DamageKind::Generic,
                     can_crit: false,
@@ -308,6 +313,9 @@ pub fn apply_damage_events(
                 });
             }
         }
+    }
+    for event in reflected {
+        damage.p1().write(event);
     }
 }
 
