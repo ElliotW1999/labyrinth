@@ -26,33 +26,33 @@ pub mod tooltip;
 
 use bevy::prelude::*;
 
+use crate::actions::{
+    ActionId, ActionSource, ActionSources, ActionsPlugin, ActivationRequest, DisableRule,
+    check_ready, resolve_queued_activations, team_allows, tick_activations,
+    validate_activation_requests,
+};
 use crate::combat::{flat_distance, spawn_requested_projectiles};
 use crate::components::{
     AbilityLoadout, CastTarget, Ground, Lifetime, Mana, PlayerHero, SpellFx, Team,
 };
+use crate::displacement::{DisplacementEvent, apply_displacement_events, tick_forced_movement};
 use crate::items::StatusEffects;
-use crate::picking::{cursor_ground_hit, cursor_ray, ground_hit, pick_under_ray, PickableUnits};
+use crate::picking::{PickableUnits, cursor_ground_hit, cursor_ray, ground_hit, pick_under_ray};
 use crate::resources::SharedAssets;
 use crate::scale;
-use crate::unit_commands::{IssueCommand, UnitCommand};
-use crate::actions::{
-    check_ready, resolve_queued_activations, team_allows, tick_activations,
-    validate_activation_requests, ActionId, ActionSource, ActionSources, ActionsPlugin,
-    ActivationRequest, DisableRule,
-};
-use casting::{ability_channel_end_triggers, emit_ability_casts, AbilityCastEvent};
-use catalog::{register_loadout_definitions, restore_ability_charges, AbilityDefinitions};
-use definition::{TargetTeam, TargetType};
-use crate::displacement::{apply_displacement_events, tick_forced_movement, DisplacementEvent};
-use effects::{
-    apply_heal_events, apply_mana_restore_events, apply_status_effect_events,
-    resolve_ability_triggers, AbilityTriggerEvent, CustomAbilityEffects, HealEvent,
-    ManaRestoreEvent, StatusEffectEvent,
-};
 use crate::teleport::{
-    apply_teleport_events, TeleportCompletedEvent, TeleportEvent, TeleportRejectedEvent,
+    TeleportCompletedEvent, TeleportEvent, TeleportRejectedEvent, apply_teleport_events,
 };
-use mechanics::{execute_ability_casts, projectile_hit_triggers, CustomAbilityBehaviors};
+use crate::unit_commands::{IssueCommand, UnitCommand};
+use casting::{AbilityCastEvent, action_channel_end_triggers, emit_ability_casts};
+use catalog::{AbilityDefinitions, register_loadout_definitions, restore_ability_charges};
+use definition::{TargetTeam, TargetType};
+use effects::{
+    AbilityTriggerEvent, CustomAbilityEffects, HealEvent, ManaRestoreEvent, StatusEffectEvent,
+    apply_heal_events, apply_mana_restore_events, apply_status_effect_events,
+    resolve_ability_triggers,
+};
+use mechanics::{CustomAbilityBehaviors, execute_ability_casts, projectile_hit_triggers};
 
 pub struct AbilitiesPlugin;
 
@@ -87,7 +87,7 @@ impl Plugin for AbilitiesPlugin {
                     emit_ability_casts,
                     crate::items::resolve_item_uses,
                     execute_ability_casts,
-                    ability_channel_end_triggers,
+                    action_channel_end_triggers,
                     projectile_hit_triggers,
                     resolve_ability_triggers,
                     spawn_requested_projectiles,
@@ -215,8 +215,14 @@ fn begin_or_cast_from_hotkeys(
             continue;
         }
 
-        if check_ready(&spec.cooldown_state, &spec.cost, spec.disable, mana, Some(statuses))
-            .is_err()
+        if check_ready(
+            &spec.cooldown_state,
+            &spec.cost,
+            spec.disable,
+            mana,
+            Some(statuses),
+        )
+        .is_err()
         {
             continue;
         }
@@ -241,7 +247,9 @@ fn begin_or_cast_from_hotkeys(
             continue;
         }
         let aoe_radius = match spec.action {
-            ActionId::Ability(id) => defs.get(id).map_or(0.0, |def| def.aoe_radius.at(spec.level)),
+            ActionId::Ability(id) => defs
+                .get(id)
+                .map_or(0.0, |def| def.aoe_radius.at(spec.level)),
             ActionId::Item { .. } => 0.0,
         };
         let pending = PendingTargetedCast {
@@ -561,36 +569,43 @@ fn animate_spell_fx(
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
     use super::definition::{
-        AbilityDefinition, AbilityEffect, AbilityMechanic, AbilityTrigger, AreaRadius,
-        DisplacementKind, EffectScaling, EffectTarget, RankValue, StatusSpec,
+        AbilityDefinition, AbilityEffect, AbilityEffectEntry, AbilityMechanic, AbilityTrigger,
+        AreaRadius, DisplacementKind, EffectScaling, EffectTarget, RankValue, StatusSpec,
+        TargetTeam,
     };
     use super::effects::{AbilityEffectAppExt, CustomEffectInput, EffectSource, TriggerContext};
-    use crate::displacement::ForcedMovement;
-    use crate::items::ItemId;
     use super::mechanics::{AbilityAppExt, CastContext};
     use super::*;
     use crate::actions::{
-        Activation, ActionChannelEndEvent, ActionFiredEvent, ActivationRequest, QueuedActivation,
+        ActionChannelEndEvent, ActionFiredEvent, Activation, ActivationRequest, QueuedActivation,
+    };
+    use crate::combat::{
+        DamageEvent, ProjectileHitEvent, ProjectilePayload, SpawnProjectileEvent,
+        apply_damage_events,
     };
     use crate::components::CollisionRadius;
-    use crate::teleport::TeleportError;
-    use crate::navigation::{NavGrid, NavShape};
-    use crate::combat::{
-        apply_damage_events, DamageEvent, ProjectileHitEvent, ProjectilePayload,
-        SpawnProjectileEvent,
-    };
     use crate::components::{
-        AbilityId, AbilityState, AttackTarget, BoundRadius, CombatStats, DamageType, Health, MoveTarget,
+        AbilityId, AbilityState, AttackTarget, BoundRadius, CombatStats, DamageType, Health,
+        MoveTarget,
     };
+    use crate::displacement::ForcedMovement;
+    use crate::items::{
+        Inventory, ItemActivation, ItemDefinition, ItemId, ItemRarity, ItemType,
+        install_test_item_definitions,
+    };
+    use crate::navigation::{NavGrid, NavShape};
+    use crate::teleport::TeleportError;
 
     fn test_app() -> App {
         let mut app = App::new();
+        app.edit_schedule(Update, |schedule| {
+            schedule.set_executor(bevy::ecs::schedule::SingleThreadedExecutor::new());
+        });
         app.init_resource::<Time>()
             .init_resource::<SharedAssets>()
             .init_resource::<AbilityDefinitions>()
@@ -622,7 +637,7 @@ mod tests {
                     emit_ability_casts,
                     crate::items::resolve_item_uses,
                     execute_ability_casts,
-                    ability_channel_end_triggers,
+                    action_channel_end_triggers,
                     projectile_hit_triggers,
                     resolve_ability_triggers,
                     apply_heal_events,
@@ -671,6 +686,71 @@ mod tests {
         caster
     }
 
+    fn give_item(app: &mut App, caster: Entity, id: ItemId) {
+        let mut inventory = app.world_mut().get_mut::<Inventory>(caster).unwrap();
+        assert!(inventory.try_add(id), "inventory rejected {id:?}");
+    }
+
+    fn spawn_caster_with_inventory(app: &mut App, abilities: [AbilityId; 4]) -> Entity {
+        let caster = spawn_caster(app, abilities);
+        app.world_mut().entity_mut(caster).insert((
+            Inventory::empty(),
+            crate::components::HeroAttributes::starter(),
+        ));
+        caster
+    }
+
+    fn request_item(app: &mut App, caster: Entity, slot: usize, target: CastTarget) {
+        app.world_mut()
+            .write_message(ActivationRequest::item(caster, slot, target));
+    }
+
+    fn fixed_magical_damage(amount: f32) -> AbilityEffect {
+        AbilityEffect::Damage {
+            amount: RankValue::fixed(amount),
+            damage_type: DamageType::Magical,
+            scaling: EffectScaling::None,
+        }
+    }
+
+    fn parity_damage_item(amount: f32) -> ItemDefinition {
+        static EFFECTS: std::sync::OnceLock<&'static [AbilityEffectEntry]> =
+            std::sync::OnceLock::new();
+        let effects = EFFECTS.get_or_init(|| {
+            Box::leak(Box::new([AbilityEffectEntry {
+                trigger: AbilityTrigger::OnUse,
+                target: EffectTarget::CastTarget,
+                effect: fixed_magical_damage(amount),
+            }]))
+        });
+        ItemDefinition {
+            id: ItemId::HeartwoodBand,
+            name: "Parity Damage",
+            short_label: "PD",
+            item_type: ItemType::Miscellaneous,
+            cost: 1,
+            sell_value: 0,
+            tier: 1,
+            rarity: ItemRarity::Common,
+            max_stack: 1,
+            consumable: false,
+            max_charges: None,
+            cooldown: 0.0,
+            activation: ItemActivation {
+                target_type: TargetType::Unit,
+                target_team: TargetTeam::Enemy,
+                cast_range: 500.0,
+                cast_time: 0.0,
+                channel_time: 0.0,
+                mana_cost: 0.0,
+            },
+            components: &[],
+            color: [1.0, 1.0, 1.0],
+            description: "test",
+            effects,
+        }
+    }
+
     fn request(app: &mut App, caster: Entity, slot: usize, target: CastTarget) {
         app.world_mut()
             .write_message(ActivationRequest::ability(caster, slot, target));
@@ -693,7 +773,11 @@ mod tests {
         request(&mut app, caster, 0, CastTarget::None);
         step(&mut app);
         let world = app.world();
-        assert_eq!(world.get::<Health>(near).unwrap().current, 1000.0, "cast point delays effects");
+        assert_eq!(
+            world.get::<Health>(near).unwrap().current,
+            1000.0,
+            "cast point delays effects"
+        );
         for _ in 0..8 {
             step(&mut app);
         }
@@ -701,8 +785,16 @@ mod tests {
         assert!(world.get::<Health>(near).unwrap().current < 1000.0);
         assert_eq!(world.get::<Health>(far).unwrap().current, 1000.0);
         let shockwave = catalog::builtin(AbilityId::Shockwave);
-        assert_eq!(world.get::<Mana>(caster).unwrap().current, 1000.0 - shockwave.mana_cost.at(1));
-        assert!(world.get::<AbilityLoadout>(caster).unwrap().slots[0].cooldown.remaining > 0.0);
+        assert_eq!(
+            world.get::<Mana>(caster).unwrap().current,
+            1000.0 - shockwave.mana_cost.at(1)
+        );
+        assert!(
+            world.get::<AbilityLoadout>(caster).unwrap().slots[0]
+                .cooldown
+                .remaining
+                > 0.0
+        );
         assert!(world.get::<StatusEffects>(caster).unwrap().can_push_units());
     }
 
@@ -720,13 +812,23 @@ mod tests {
         assert_eq!(world.get::<Mana>(caster).unwrap().current, 1000.0);
 
         let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(50.0, 0.0, 0.0));
-        app.world_mut().entity_mut(caster).remove::<QueuedActivation>();
+        app.world_mut()
+            .entity_mut(caster)
+            .remove::<QueuedActivation>();
         request(&mut app, caster, 1, CastTarget::Unit(ally));
         step(&mut app);
-        assert!(app.world().get::<Activation>(caster).is_none(), "allies are invalid Bolt targets");
+        assert!(
+            app.world().get::<Activation>(caster).is_none(),
+            "allies are invalid Bolt targets"
+        );
     }
 
-    fn hit(payload: ProjectilePayload, impact: Vec3, primary: Option<Entity>, splashed: Vec<Entity>) -> ProjectileHitEvent {
+    fn hit(
+        payload: ProjectilePayload,
+        impact: Vec3,
+        primary: Option<Entity>,
+        splashed: Vec<Entity>,
+    ) -> ProjectileHitEvent {
         ProjectileHitEvent {
             payload,
             team: Team::Radiant,
@@ -740,7 +842,12 @@ mod tests {
         app.world().get::<Health>(entity).unwrap().current
     }
 
-    fn cast_and_collect_projectiles(app: &mut App, caster: Entity, slot: usize, target: Entity) -> Vec<SpawnProjectileEvent> {
+    fn cast_and_collect_projectiles(
+        app: &mut App,
+        caster: Entity,
+        slot: usize,
+        target: Entity,
+    ) -> Vec<SpawnProjectileEvent> {
         request(app, caster, slot, CastTarget::Unit(target));
         let mut spawned = Vec::new();
         for _ in 0..12 {
@@ -762,15 +869,31 @@ mod tests {
         let spawned = cast_and_collect_projectiles(&mut app, caster, 2, wounded);
         assert_eq!(spawned.len(), 1);
         assert_eq!(spawned[0].target, Some(wounded));
-        assert!(app.world().get::<AttackTarget>(caster).is_some(), "mechanics still run");
-        assert_eq!(health(&app, wounded), 300.0, "the projectile itself deals nothing");
+        assert!(
+            app.world().get::<AttackTarget>(caster).is_some(),
+            "mechanics still run"
+        );
+        assert_eq!(
+            health(&app, wounded),
+            300.0,
+            "the projectile itself deals nothing"
+        );
 
-        app.world_mut()
-            .write_message(hit(spawned[0].payload, Vec3::X * 200.0, Some(wounded), vec![healthy]));
+        app.world_mut().write_message(hit(
+            spawned[0].payload,
+            Vec3::X * 200.0,
+            Some(wounded),
+            vec![healthy],
+        ));
         step(&mut app);
         let base = catalog::EXECUTE_DAMAGE.at(1);
-        assert!((health(&app, wounded) - (300.0 - base * catalog::EXECUTE_MULTIPLIER)).abs() < 1e-3);
-        assert!((health(&app, healthy) - (1000.0 - base * 0.45)).abs() < 1e-3, "splash, no bonus");
+        assert!(
+            (health(&app, wounded) - (300.0 - base * catalog::EXECUTE_MULTIPLIER)).abs() < 1e-3
+        );
+        assert!(
+            (health(&app, healthy) - (1000.0 - base * 0.45)).abs() < 1e-3,
+            "splash, no bonus"
+        );
     }
 
     #[test]
@@ -785,7 +908,8 @@ mod tests {
             cast_target: None,
             aim: Vec3::X * 200.0,
         };
-        app.world_mut().write_message(hit(payload, Vec3::X * 200.0, None, vec![enemy]));
+        app.world_mut()
+            .write_message(hit(payload, Vec3::X * 200.0, None, vec![enemy]));
         step(&mut app);
         assert!((health(&app, enemy) - (1000.0 - 120.0)).abs() < 1e-3);
     }
@@ -818,19 +942,35 @@ mod tests {
                     duration: RankValue::fixed(2.0),
                 },
             );
-        app.world_mut().resource_mut::<AbilityDefinitions>().insert(fireball);
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(fireball);
         let caster = spawn_caster(&mut app, KIT);
         let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(300.0, 0.0, 0.0));
 
         let spawned = cast_and_collect_projectiles(&mut app, caster, 3, enemy);
         assert_eq!(spawned.len(), 1);
         assert_eq!(spawned[0].payload.cast_target, Some(enemy));
-        assert!(!app.world().get::<StatusEffects>(enemy).unwrap().is_stunned());
+        assert!(
+            !app.world()
+                .get::<StatusEffects>(enemy)
+                .unwrap()
+                .is_stunned()
+        );
 
-        app.world_mut()
-            .write_message(hit(spawned[0].payload, Vec3::X * 300.0, Some(enemy), Vec::new()));
+        app.world_mut().write_message(hit(
+            spawned[0].payload,
+            Vec3::X * 300.0,
+            Some(enemy),
+            Vec::new(),
+        ));
         step(&mut app);
-        assert!(app.world().get::<StatusEffects>(enemy).unwrap().is_stunned());
+        assert!(
+            app.world()
+                .get::<StatusEffects>(enemy)
+                .unwrap()
+                .is_stunned()
+        );
         assert_eq!(health(&app, enemy), 800.0);
     }
 
@@ -883,7 +1023,9 @@ mod tests {
                     duration: RankValue::ZERO,
                 },
             );
-        app.world_mut().resource_mut::<AbilityDefinitions>().insert(skewer);
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(skewer);
         let caster = spawn_caster(&mut app, KIT);
         app.world_mut().get_mut::<Health>(caster).unwrap().current = 500.0;
         let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(4000.0, 0.0, 0.0));
@@ -892,8 +1034,156 @@ mod tests {
         for _ in 0..12 {
             step(&mut app);
         }
-        assert!(app.world().get::<StatusEffects>(enemy).unwrap().is_stunned());
+        assert!(
+            app.world()
+                .get::<StatusEffects>(enemy)
+                .unwrap()
+                .is_stunned()
+        );
         assert_eq!(health(&app, caster), 550.0);
+    }
+
+    #[test]
+    fn ability_and_item_damage_share_the_same_executor() {
+        const AMOUNT: f32 = 80.0;
+        let ability = AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::Unit, RankValue::fixed(500.0), RankValue::ZERO)
+            .costs(RankValue::ZERO, RankValue::ZERO)
+            .timing(0.0, 0.0)
+            .on(
+                AbilityTrigger::OnCast,
+                EffectTarget::CastTarget,
+                fixed_magical_damage(AMOUNT),
+            );
+
+        let mut ability_app = test_app();
+        ability_app
+            .world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(ability);
+        let ability_caster = spawn_caster(&mut ability_app, KIT);
+        let ability_target = spawn_unit(&mut ability_app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        request(
+            &mut ability_app,
+            ability_caster,
+            3,
+            CastTarget::Unit(ability_target),
+        );
+        for _ in 0..4 {
+            step(&mut ability_app);
+        }
+
+        let mut item_app = test_app();
+        let _defs = install_test_item_definitions([parity_damage_item(AMOUNT)]);
+        let item_caster = spawn_caster_with_inventory(&mut item_app, KIT);
+        give_item(&mut item_app, item_caster, ItemId::HeartwoodBand);
+        let item_target = spawn_unit(&mut item_app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        request_item(&mut item_app, item_caster, 0, CastTarget::Unit(item_target));
+        for _ in 0..4 {
+            step(&mut item_app);
+        }
+
+        let expected = 1000.0 - AMOUNT;
+        assert!((health(&ability_app, ability_target) - expected).abs() < 1e-3);
+        assert!((health(&item_app, item_target) - expected).abs() < 1e-3);
+        assert_eq!(
+            health(&ability_app, ability_target),
+            health(&item_app, item_target)
+        );
+    }
+
+    #[test]
+    fn ability_and_item_status_effects_share_the_same_executor() {
+        let status = AbilityEffect::ApplyStatus {
+            status: StatusSpec::Stun,
+            duration: RankValue::fixed(1.5),
+        };
+        let ability = AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::Unit, RankValue::fixed(500.0), RankValue::ZERO)
+            .costs(RankValue::ZERO, RankValue::ZERO)
+            .timing(0.0, 0.0)
+            .on(AbilityTrigger::OnCast, EffectTarget::CastTarget, status);
+
+        static ITEM_EFFECTS: std::sync::OnceLock<&'static [AbilityEffectEntry]> =
+            std::sync::OnceLock::new();
+        let item_effects = ITEM_EFFECTS.get_or_init(|| {
+            Box::leak(Box::new([AbilityEffectEntry {
+                trigger: AbilityTrigger::OnUse,
+                target: EffectTarget::CastTarget,
+                effect: AbilityEffect::ApplyStatus {
+                    status: StatusSpec::Stun,
+                    duration: RankValue::fixed(1.5),
+                },
+            }]))
+        });
+        let item = ItemDefinition {
+            id: ItemId::StormRod,
+            name: "Parity Stun",
+            short_label: "PS",
+            item_type: ItemType::Miscellaneous,
+            cost: 1,
+            sell_value: 0,
+            tier: 1,
+            rarity: ItemRarity::Common,
+            max_stack: 1,
+            consumable: false,
+            max_charges: None,
+            cooldown: 0.0,
+            activation: ItemActivation {
+                target_type: TargetType::Unit,
+                target_team: TargetTeam::Enemy,
+                cast_range: 500.0,
+                cast_time: 0.0,
+                channel_time: 0.0,
+                mana_cost: 0.0,
+            },
+            components: &[],
+            color: [1.0, 1.0, 1.0],
+            description: "test",
+            effects: item_effects,
+        };
+
+        let mut ability_app = test_app();
+        ability_app
+            .world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(ability);
+        let ability_caster = spawn_caster(&mut ability_app, KIT);
+        let ability_target = spawn_unit(&mut ability_app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        request(
+            &mut ability_app,
+            ability_caster,
+            3,
+            CastTarget::Unit(ability_target),
+        );
+        for _ in 0..4 {
+            step(&mut ability_app);
+        }
+
+        let mut item_app = test_app();
+        let _defs = install_test_item_definitions([item]);
+        let item_caster = spawn_caster_with_inventory(&mut item_app, KIT);
+        give_item(&mut item_app, item_caster, ItemId::StormRod);
+        let item_target = spawn_unit(&mut item_app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        request_item(&mut item_app, item_caster, 0, CastTarget::Unit(item_target));
+        for _ in 0..4 {
+            step(&mut item_app);
+        }
+
+        assert!(
+            ability_app
+                .world()
+                .get::<StatusEffects>(ability_target)
+                .unwrap()
+                .is_stunned()
+        );
+        assert!(
+            item_app
+                .world()
+                .get::<StatusEffects>(item_target)
+                .unwrap()
+                .is_stunned()
+        );
     }
 
     #[test]
@@ -903,19 +1193,20 @@ mod tests {
         app.world_mut().get_mut::<Mana>(owner).unwrap().current = 500.0;
         let near = spawn_unit(&mut app, Team::Dire, Vec3::new(60.0, 0.0, 0.0));
         let far = spawn_unit(&mut app, Team::Dire, Vec3::new(2000.0, 0.0, 0.0));
-        app.world_mut().write_message(AbilityTriggerEvent(TriggerContext {
-            trigger: AbilityTrigger::OnUse,
-            caster: owner,
-            team: Team::Radiant,
-            source: EffectSource::Item(ItemId::SparkPendant),
-            rank: 1,
-            origin: Vec3::ZERO,
-            aim: Vec3::ZERO,
-            point: Vec3::ZERO,
-            cast_target: None,
-            trigger_unit: None,
-            affected_units: Vec::new(),
-        }));
+        app.world_mut()
+            .write_message(AbilityTriggerEvent(TriggerContext {
+                trigger: AbilityTrigger::OnUse,
+                caster: owner,
+                team: Team::Radiant,
+                source: EffectSource::Item(ItemId::SparkPendant),
+                rank: 1,
+                origin: Vec3::ZERO,
+                aim: Vec3::ZERO,
+                point: Vec3::ZERO,
+                cast_target: None,
+                trigger_unit: None,
+                affected_units: Vec::new(),
+            }));
         step(&mut app);
         assert!((health(&app, near) - 910.0).abs() < 1e-3);
         assert_eq!(health(&app, far), 1000.0);
@@ -937,7 +1228,9 @@ mod tests {
                     duration: RankValue::fixed(0.3),
                 },
             );
-        app.world_mut().resource_mut::<AbilityDefinitions>().insert(hook);
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(hook);
         let caster = spawn_caster(&mut app, KIT);
         let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(400.0, 0.0, 0.0));
         for unit in [caster, enemy] {
@@ -952,7 +1245,10 @@ mod tests {
         }
         let x = app.world().get::<Transform>(enemy).unwrap().translation.x;
         assert!(was_rooted, "displaced units are rooted while moving");
-        assert!((x - 48.0).abs() < 1e-2, "pulled into contact, not onto the caster: {x}");
+        assert!(
+            (x - 48.0).abs() < 1e-2,
+            "pulled into contact, not onto the caster: {x}"
+        );
         assert!(app.world().get::<ForcedMovement>(enemy).is_none());
     }
 
@@ -960,41 +1256,74 @@ mod tests {
         AbilityDefinition::new(AbilityId::Bulwark)
             .targeting(TargetType::Point, RankValue::fixed(2000.0), RankValue::ZERO)
             .costs(RankValue::fixed(8.0), RankValue::fixed(100.0))
-            .on(AbilityTrigger::OnCast, EffectTarget::Caster, AbilityEffect::Teleport)
+            .on(
+                AbilityTrigger::OnCast,
+                EffectTarget::Caster,
+                AbilityEffect::Teleport,
+            )
     }
 
     #[test]
     fn teleport_ability_relocates_the_caster_after_paying_costs() {
         let mut app = test_app();
-        app.world_mut().resource_mut::<AbilityDefinitions>().insert(blink_ability());
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(blink_ability());
         let caster = spawn_caster(&mut app, KIT);
         app.world_mut().entity_mut(caster).insert((
             CollisionRadius(40.0),
-            MoveTarget { position: Vec3::new(-900.0, 0.0, 0.0) },
+            MoveTarget {
+                position: Vec3::new(-900.0, 0.0, 0.0),
+            },
         ));
 
-        request(&mut app, caster, 3, CastTarget::Point(Vec3::new(1500.0, 0.0, 300.0)));
+        request(
+            &mut app,
+            caster,
+            3,
+            CastTarget::Point(Vec3::new(1500.0, 0.0, 300.0)),
+        );
         for _ in 0..12 {
             step(&mut app);
         }
         let world = app.world();
-        assert_eq!(world.get::<Transform>(caster).unwrap().translation, Vec3::new(1500.0, 0.0, 300.0));
+        assert_eq!(
+            world.get::<Transform>(caster).unwrap().translation,
+            Vec3::new(1500.0, 0.0, 300.0)
+        );
         assert!(world.get::<MoveTarget>(caster).is_none());
         assert_eq!(world.get::<Mana>(caster).unwrap().current, 900.0);
-        assert!(world.get::<AbilityLoadout>(caster).unwrap().slots[3].cooldown.remaining > 0.0);
+        assert!(
+            world.get::<AbilityLoadout>(caster).unwrap().slots[3]
+                .cooldown
+                .remaining
+                > 0.0
+        );
     }
 
     #[test]
     fn teleport_ability_into_an_obstacle_leaves_the_caster_in_place() {
         let mut app = test_app();
-        app.world_mut().resource_mut::<AbilityDefinitions>().insert(blink_ability());
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(blink_ability());
         app.world_mut()
             .resource_mut::<NavGrid>()
-            .rebuild(vec![NavShape::Circle { center: Vec2::new(1500.0, 0.0), radius: 120.0 }]);
+            .rebuild(vec![NavShape::Circle {
+                center: Vec2::new(1500.0, 0.0),
+                radius: 120.0,
+            }]);
         let caster = spawn_caster(&mut app, KIT);
-        app.world_mut().entity_mut(caster).insert(CollisionRadius(40.0));
+        app.world_mut()
+            .entity_mut(caster)
+            .insert(CollisionRadius(40.0));
 
-        request(&mut app, caster, 3, CastTarget::Point(Vec3::new(1450.0, 0.0, 0.0)));
+        request(
+            &mut app,
+            caster,
+            3,
+            CastTarget::Point(Vec3::new(1450.0, 0.0, 0.0)),
+        );
         let mut rejections = Vec::new();
         for _ in 0..12 {
             step(&mut app);
@@ -1003,61 +1332,98 @@ mod tests {
         }
         let world = app.world();
         assert_eq!(rejections, vec![TeleportError::Blocked]);
-        assert_eq!(world.get::<Transform>(caster).unwrap().translation, Vec3::ZERO);
+        assert_eq!(
+            world.get::<Transform>(caster).unwrap().translation,
+            Vec3::ZERO
+        );
     }
 
-    fn item_context(owner: Entity, aim: Vec3) -> TriggerContext {
-        TriggerContext {
-            trigger: AbilityTrigger::OnUse,
-            caster: owner,
-            team: Team::Radiant,
-            source: EffectSource::Item(ItemId::SparkPendant),
-            rank: 1,
-            origin: Vec3::ZERO,
-            aim,
-            point: Vec3::ZERO,
-            cast_target: None,
-            trigger_unit: None,
-            affected_units: Vec::new(),
+    fn teleport_item() -> ItemDefinition {
+        static EFFECTS: std::sync::OnceLock<&'static [AbilityEffectEntry]> =
+            std::sync::OnceLock::new();
+        let effects = EFFECTS.get_or_init(|| {
+            Box::leak(Box::new([AbilityEffectEntry {
+                trigger: AbilityTrigger::OnUse,
+                target: EffectTarget::Caster,
+                effect: AbilityEffect::Teleport,
+            }]))
+        });
+        ItemDefinition {
+            id: ItemId::WardstoneCloak,
+            name: "Parity Blink",
+            short_label: "PB",
+            item_type: ItemType::Miscellaneous,
+            cost: 1,
+            sell_value: 0,
+            tier: 1,
+            rarity: ItemRarity::Common,
+            max_stack: 1,
+            consumable: false,
+            max_charges: None,
+            cooldown: 0.0,
+            activation: ItemActivation {
+                target_type: TargetType::Point,
+                target_team: TargetTeam::Any,
+                cast_range: 5000.0,
+                cast_time: 0.0,
+                channel_time: 0.0,
+                mana_cost: 0.0,
+            },
+            components: &[],
+            color: [1.0, 1.0, 1.0],
+            description: "test",
+            effects,
         }
     }
 
     #[test]
     fn items_and_abilities_teleport_through_the_same_effect() {
-        use bevy::ecs::system::RunSystemOnce;
         let mut app = test_app();
-        app.world_mut().resource_mut::<AbilityDefinitions>().insert(blink_ability());
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(blink_ability());
+        let _defs = install_test_item_definitions([teleport_item()]);
         let by_ability = spawn_caster(&mut app, KIT);
-        let by_item = spawn_unit(&mut app, Team::Radiant, Vec3::new(0.0, 0.0, 800.0));
-        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(0.0, 0.0, -800.0));
-        for unit in [by_ability, by_item, ally] {
-            app.world_mut().entity_mut(unit).insert(CollisionRadius(40.0));
+        let by_item = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, by_item, ItemId::WardstoneCloak);
+        app.world_mut()
+            .entity_mut(by_item)
+            .insert(Transform::from_translation(Vec3::new(0.0, 0.0, 800.0)));
+        for unit in [by_ability, by_item] {
+            app.world_mut()
+                .entity_mut(unit)
+                .insert(CollisionRadius(40.0));
         }
 
-        request(&mut app, by_ability, 3, CastTarget::Point(Vec3::new(2000.0, 0.0, 0.0)));
+        request(
+            &mut app,
+            by_ability,
+            3,
+            CastTarget::Point(Vec3::new(2000.0, 0.0, 0.0)),
+        );
         for _ in 0..12 {
             step(&mut app);
         }
 
-        // An item's `OnUse` trigger resolves its entries through this same executor, with
-        // `EffectSource::Item` in the context: once on its owner, once on another unit.
-        app.world_mut()
-            .run_system_once(move |mut runner: effects::EffectRunner| {
-                let mut ctx = item_context(by_item, Vec3::new(-2000.0, 0.0, 0.0));
-                let targets = runner.targets(&ctx, EffectTarget::Caster, 0.0);
-                runner.execute(&ctx, &AbilityEffect::Teleport, targets);
-                ctx.trigger_unit = Some(ally);
-                ctx.aim = Vec3::new(0.0, 0.0, 2500.0);
-                let targets = runner.targets(&ctx, EffectTarget::TriggerUnit, 0.0);
-                runner.execute(&ctx, &AbilityEffect::Teleport, targets);
-            })
-            .unwrap();
-        step(&mut app);
+        request_item(
+            &mut app,
+            by_item,
+            0,
+            CastTarget::Point(Vec3::new(-2000.0, 0.0, 0.0)),
+        );
+        for _ in 0..8 {
+            step(&mut app);
+        }
 
         let world = app.world();
-        assert_eq!(world.get::<Transform>(by_ability).unwrap().translation, Vec3::new(2000.0, 0.0, 0.0));
-        assert_eq!(world.get::<Transform>(by_item).unwrap().translation, Vec3::new(-2000.0, 0.0, 0.0));
-        assert_eq!(world.get::<Transform>(ally).unwrap().translation, Vec3::new(0.0, 0.0, 2500.0));
+        assert_eq!(
+            world.get::<Transform>(by_ability).unwrap().translation,
+            Vec3::new(2000.0, 0.0, 0.0)
+        );
+        assert_eq!(
+            world.get::<Transform>(by_item).unwrap().translation,
+            Vec3::new(-2000.0, 0.0, 0.0)
+        );
     }
 
     fn channelled_heal() -> AbilityDefinition {
@@ -1078,7 +1444,9 @@ mod tests {
     #[test]
     fn channelled_abilities_hold_the_activation_then_fire_on_channel_end() {
         let mut app = test_app();
-        app.world_mut().resource_mut::<AbilityDefinitions>().insert(channelled_heal());
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(channelled_heal());
         let caster = spawn_caster(&mut app, KIT);
         app.world_mut().get_mut::<Health>(caster).unwrap().current = 500.0;
 
@@ -1087,8 +1455,15 @@ mod tests {
             step(&mut app);
         }
         let activation = *app.world().get::<Activation>(caster).unwrap();
-        assert!(activation.fired && !activation.released(), "channelling after the cast point");
-        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 900.0, "paid at the cast point");
+        assert!(
+            activation.fired && !activation.released(),
+            "channelling after the cast point"
+        );
+        assert_eq!(
+            app.world().get::<Mana>(caster).unwrap().current,
+            900.0,
+            "paid at the cast point"
+        );
         assert_eq!(health(&app, caster), 500.0);
 
         for _ in 0..12 {
@@ -1101,21 +1476,32 @@ mod tests {
     #[test]
     fn stuns_interrupt_a_channel() {
         let mut app = test_app();
-        app.world_mut().resource_mut::<AbilityDefinitions>().insert(channelled_heal());
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(channelled_heal());
         let caster = spawn_caster(&mut app, KIT);
         app.world_mut().get_mut::<Health>(caster).unwrap().current = 500.0;
         request(&mut app, caster, 3, CastTarget::None);
         for _ in 0..4 {
             step(&mut app);
         }
-        app.world_mut().get_mut::<StatusEffects>(caster).unwrap().effects.push(
-            crate::items::StatusEffect::stunned(1.0),
-        );
+        app.world_mut()
+            .get_mut::<StatusEffects>(caster)
+            .unwrap()
+            .effects
+            .push(crate::items::StatusEffect::stunned(1.0));
         step(&mut app);
         let ends = app.world().resource::<Messages<ActionChannelEndEvent>>();
-        let ends: Vec<_> = ends.iter_current_update_messages().map(|e| e.completed).collect();
+        let ends: Vec<_> = ends
+            .iter_current_update_messages()
+            .map(|e| e.completed)
+            .collect();
         assert_eq!(ends, vec![false]);
-        assert!(app.world().get::<Activation>(caster).is_none_or(|a| a.released()));
+        assert!(
+            app.world()
+                .get::<Activation>(caster)
+                .is_none_or(|a| a.released())
+        );
     }
 
     #[test]
@@ -1133,7 +1519,9 @@ mod tests {
                     scaling: EffectScaling::None,
                 },
             );
-        app.world_mut().resource_mut::<AbilityDefinitions>().insert(def);
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(def);
         let caster = spawn_caster(&mut app, KIT);
         app.world_mut().get_mut::<Health>(caster).unwrap().current = 500.0;
         let ally = spawn_unit(&mut app, Team::Radiant, Vec3::X * 50.0);
@@ -1148,18 +1536,32 @@ mod tests {
     fn direction_abilities_fire_at_any_distance_along_the_direction() {
         let mut app = test_app();
         let def = AbilityDefinition::new(AbilityId::Bulwark)
-            .targeting(TargetType::Direction, RankValue::fixed(400.0), RankValue::ZERO)
+            .targeting(
+                TargetType::Direction,
+                RankValue::fixed(400.0),
+                RankValue::ZERO,
+            )
             .costs(RankValue::fixed(8.0), RankValue::fixed(100.0));
-        app.world_mut().resource_mut::<AbilityDefinitions>().insert(def);
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(def);
         let caster = spawn_caster(&mut app, KIT);
-        request(&mut app, caster, 3, CastTarget::Point(Vec3::new(0.0, 0.0, 9000.0)));
+        request(
+            &mut app,
+            caster,
+            3,
+            CastTarget::Point(Vec3::new(0.0, 0.0, 9000.0)),
+        );
         let mut aims = Vec::new();
         for _ in 0..30 {
             step(&mut app);
             let casts = app.world().resource::<Messages<AbilityCastEvent>>();
             aims.extend(casts.iter_current_update_messages().map(|c| c.aim));
         }
-        assert!(app.world().get::<QueuedActivation>(caster).is_none(), "never walks");
+        assert!(
+            app.world().get::<QueuedActivation>(caster).is_none(),
+            "never walks"
+        );
         assert_eq!(aims, vec![Vec3::new(0.0, 0.0, 400.0)]);
     }
 
@@ -1184,7 +1586,10 @@ mod tests {
         request(&mut app, caster, 0, CastTarget::None);
         step(&mut app);
         assert!(app.world().get::<Activation>(caster).is_some());
-        app.world_mut().get_mut::<AbilityLoadout>(caster).unwrap().slots[0] = AbilityState {
+        app.world_mut()
+            .get_mut::<AbilityLoadout>(caster)
+            .unwrap()
+            .slots[0] = AbilityState {
             rank: 1,
             ..AbilityState::fresh(AbilityId::Bolt)
         };
@@ -1192,6 +1597,10 @@ mod tests {
             step(&mut app);
         }
         assert!(app.world().get::<Activation>(caster).is_none());
-        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 1000.0, "nothing was paid");
+        assert_eq!(
+            app.world().get::<Mana>(caster).unwrap().current,
+            1000.0,
+            "nothing was paid"
+        );
     }
 }

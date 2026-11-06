@@ -6,7 +6,7 @@
 //!   → actions pipeline: cooldown / charges, mana, targeting, range, cast point, channel
 //!   → commit_ability: cooldown, charge, toggle state
 //!   → ActionFiredEvent → emit_ability_casts → AbilityCastEvent (consumed by `mechanics`)
-//!   → ActionChannelEndEvent → ability_channel_end_triggers → OnChannelEnd trigger
+//!   → ActionChannelEndEvent → action_channel_end_triggers → OnChannelEnd trigger
 //! ```
 
 use bevy::prelude::*;
@@ -97,16 +97,17 @@ pub fn emit_ability_casts(
     }
 }
 
-/// `OnChannelEnd` for channelled abilities, whether the channel completed or the
-/// caster was disabled.
-pub fn ability_channel_end_triggers(
+/// `OnChannelEnd` for channelled abilities and active items, whether the channel
+/// completed or the caster was disabled.
+pub fn action_channel_end_triggers(
     mut ends: MessageReader<ActionChannelEndEvent>,
     casters: Query<(&Transform, &Team)>,
     mut triggers: MessageWriter<AbilityTriggerEvent>,
 ) {
     for end in ends.read() {
-        let ActionId::Ability(ability) = end.action else {
-            continue;
+        let source = match end.action {
+            ActionId::Ability(ability) => EffectSource::Ability(ability),
+            ActionId::Item { item, .. } => EffectSource::Item(item),
         };
         let Ok((transform, team)) = casters.get(end.caster) else {
             continue;
@@ -115,7 +116,7 @@ pub fn ability_channel_end_triggers(
             trigger: AbilityTrigger::OnChannelEnd,
             caster: end.caster,
             team: *team,
-            source: EffectSource::Ability(ability),
+            source,
             rank: end.level,
             origin: transform.translation,
             aim: end.aim,
@@ -151,8 +152,14 @@ mod tests {
         statuses: Option<&StatusEffects>,
     ) -> Result<(), Unusable> {
         let spec = ability_action_spec(def, state).map_err(Unusable::Cast)?;
-        check_ready(&spec.cooldown_state, &spec.cost, spec.disable, mana, statuses)
-            .map_err(Unusable::Action)
+        check_ready(
+            &spec.cooldown_state,
+            &spec.cost,
+            spec.disable,
+            mana,
+            statuses,
+        )
+        .map_err(Unusable::Action)
     }
 
     fn learned(id: AbilityId) -> AbilityState {
