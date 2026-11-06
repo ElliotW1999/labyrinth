@@ -49,6 +49,10 @@ Do not declare completion when important functionality remains unverified.
 
 The coordinator must not start implementer until architect work is complete and the plan is approved. Do not start tester until implementer work is complete (PR or branch ready for verification). One specialist at a time; no parallel architect/implementer/tester on the same workstream.
 
+## Single pull request
+
+For one gameplay workstream, architect, implementer, and tester share the same branch and pull request. The architect may open the PR with the plan; implementer and tester commit to that branch. Do not open parallel PRs for plan vs implementation vs verification.
+
 ## Coordinator announcements
 
 When delegating each phase, the Project coordinator must tell the user the subagent name and the `model` field from that subagent's `.cursor/agents/*.md` frontmatter before or as that worker starts.
