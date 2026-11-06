@@ -531,6 +531,7 @@ impl ShopTab {
                     | ItemType::Armor
                     | ItemType::Weapons
                     | ItemType::Artifacts
+                    | ItemType::Utility
             ),
         }
     }
