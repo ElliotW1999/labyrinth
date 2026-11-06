@@ -143,7 +143,11 @@ pub struct SelectionHit {
 }
 
 /// Slab-test a ray against a unit's world-aligned selection box.
-pub fn ray_selection_hit(ray: Ray3d, unit_origin: Vec3, selection: &SelectionBounds) -> Option<SelectionHit> {
+pub fn ray_selection_hit(
+    ray: Ray3d,
+    unit_origin: Vec3,
+    selection: &SelectionBounds,
+) -> Option<SelectionHit> {
     let center = unit_origin + selection.offset;
     let half = selection.half_extents.max(Vec3::splat(1e-3));
     let min = center - half;
@@ -251,13 +255,29 @@ mod tests {
         let creep = UnitDimensions::MELEE_CREEP.bounds;
         let target = Vec3::new(150.0 + hero + creep, 0.0, 0.0);
         assert!(within_range(Vec3::ZERO, hero, target, creep, 150.0));
-        assert!(!within_range(Vec3::ZERO, hero, target + Vec3::X, creep, 150.0));
+        assert!(!within_range(
+            Vec3::ZERO,
+            hero,
+            target + Vec3::X,
+            creep,
+            150.0
+        ));
     }
 
     #[test]
     fn area_includes_target_bounds() {
-        assert!(area_contains(Vec3::ZERO, 200.0, Vec3::new(220.0, 0.0, 0.0), 24.0));
-        assert!(!area_contains(Vec3::ZERO, 200.0, Vec3::new(230.0, 0.0, 0.0), 24.0));
+        assert!(area_contains(
+            Vec3::ZERO,
+            200.0,
+            Vec3::new(220.0, 0.0, 0.0),
+            24.0
+        ));
+        assert!(!area_contains(
+            Vec3::ZERO,
+            200.0,
+            Vec3::new(230.0, 0.0, 0.0),
+            24.0
+        ));
     }
 
     #[test]
@@ -279,7 +299,10 @@ mod tests {
         let selection = UnitDimensions::HERO.selection;
         let unit = Vec3::new(0.0, 120.0, 0.0);
         // Slanted camera ray that only crosses the box near head height.
-        let ray = Ray3d::new(Vec3::new(0.0, 2_000.0, 1_000.0), Dir3::new(Vec3::new(0.0, -1.8, -1.0)).unwrap());
+        let ray = Ray3d::new(
+            Vec3::new(0.0, 2_000.0, 1_000.0),
+            Dir3::new(Vec3::new(0.0, -1.8, -1.0)).unwrap(),
+        );
         assert!(ray_selection_hit(ray, unit, &selection).is_some());
         assert!(ray_selection_hit(down_ray(200.0, 0.0), unit, &selection).is_none());
     }
@@ -290,12 +313,18 @@ mod tests {
         let a = Entity::from_raw_u32(1).unwrap();
         let b = Entity::from_raw_u32(2).unwrap();
         let ray = down_ray(10.0, 0.0);
-        let near_a = [(a, Vec3::new(0.0, 100.0, 0.0), selection), (b, Vec3::new(60.0, 100.0, 0.0), selection)];
+        let near_a = [
+            (a, Vec3::new(0.0, 100.0, 0.0), selection),
+            (b, Vec3::new(60.0, 100.0, 0.0), selection),
+        ];
         assert_eq!(pick_unit(ray, near_a), Some(a));
         let reversed = [near_a[1], near_a[0]];
         assert_eq!(pick_unit(ray, reversed), Some(a));
 
-        let stacked = [(b, Vec3::new(0.0, 100.0, 0.0), selection), (a, Vec3::new(0.0, 100.0, 0.0), selection)];
+        let stacked = [
+            (b, Vec3::new(0.0, 100.0, 0.0), selection),
+            (a, Vec3::new(0.0, 100.0, 0.0), selection),
+        ];
         assert_eq!(pick_unit(down_ray(0.0, 0.0), stacked), Some(a));
     }
 }

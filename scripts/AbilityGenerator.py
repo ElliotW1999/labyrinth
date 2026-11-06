@@ -14,6 +14,10 @@ validates both, and generates normal `AbilityDefinition`s:
 Re-running overwrites abilities that already exist; abilities missing from the CSV
 are kept. Blank cells mean "not applicable"; `75|150|225|300` gives one value per level.
 
+Area (ground AoE) abilities: use `target_type=point`, non-zero `aoe_radius`, and
+`projectile_type none` — the generator emits Rust `TargetType::Area` (there is no
+CSV `area` enum unless added later as an alias).
+
 Usage:
   python3 scripts/AbilityGenerator.py                       # data/abilities.csv + data/ability_effects.csv
   python3 scripts/AbilityGenerator.py my_abilities.csv my_effects.csv
@@ -34,14 +38,16 @@ from generator_common import (  # noqa: E402
     ACTION_TEAMS,
     EFFECT_COLUMNS,
     TARGET_TEAMS,
-    TARGET_TYPES,
     EffectContext,
     EffectRow,
     Report,
     Row,
+    ability_rust_target_type,
     check_id,
     effect_to_rust,
     f32,
+    find_registered_custom_effects,
+    parse_activation_spec,
     parse_effect_rows,
     parse_enum,
     parse_number,
@@ -56,6 +62,7 @@ from generator_common import (  # noqa: E402
     rustfmt,
     to_pascal_case,
     upsert_line,
+    validate_activation,
 )
 
 ABILITY_COLUMNS = (
@@ -81,7 +88,6 @@ ABILITY_COLUMNS = (
 
 SLOTS = ("q", "w", "e", "r", "innate")
 ABILITY_TYPES = {"active": "Active", "passive": "Passive", "toggle": "Toggle"}
-PROJECTILE_TYPES = ("none", "targeted", "skillshot")
 LEVEL_FIELDS = ("cast_range", "aoe_radius", "cooldown", "mana_cost")
 EFFECT_LEVEL_FIELDS = ("value", "duration", "amount", "radius")
 DEFAULT_BACKSWING = 0.25
@@ -148,9 +154,9 @@ def parse_ability(row: Row, effect_rows: list[EffectRow], report: Report) -> Abi
         report.error(row.file, row.line, "name", "", "required")
     slot = parse_enum(row, "slot", SLOTS, report)
     ability_type = parse_enum(row, "ability_type", list(ABILITY_TYPES), report)
-    target_type = parse_enum(row, "target_type", TARGET_TYPES, report)
-    target_team = parse_enum(row, "target_team", list(TARGET_TEAMS), report)
-    projectile = parse_enum(row, "projectile_type", PROJECTILE_TYPES, report, required=False) or "none"
+    activation = parse_activation_spec(row, kind="ability", has_active_effects=True, report=report, levels=True)
+    if activation and ability_type:
+        validate_activation(row, activation, kind="ability", ability_type=ability_type, report=report)
 
     # Level count: explicit max_rank, else the first level-dependent field, else by slot.
     counts = level_count(row, LEVEL_FIELDS) + [
@@ -162,65 +168,29 @@ def parse_ability(row: Row, effect_rows: list[EffectRow], report: Report) -> Abi
         if count != max_rank:
             report.error(row.file, row.line, where, row.get(where), f"has {count} levels; expected {max_rank} (max_rank)")
 
-    cast_range = parse_number(row, "cast_range", report, levels=True, minimum=0)
-    aoe_radius = parse_number(row, "aoe_radius", report, levels=True, minimum=0)
     cooldown = parse_number(row, "cooldown", report, levels=True, minimum=0)
     mana_cost = parse_number(row, "mana_cost", report, levels=True, minimum=0)
-    cast_time = parse_scalar(row, "cast_time", report, minimum=0) or 0.0
     backswing = parse_scalar(row, "cast_backswing", report, minimum=0)
-    channel_time = parse_scalar(row, "channel_time", report, minimum=0)
-    max_charges = parse_scalar(row, "max_charges", report, integer=True, minimum=1)
-    restore = parse_scalar(row, "charge_restore_time", report, minimum=0)
-    speed = parse_scalar(row, "projectile_speed", report, minimum=1)
     # Keep going after value errors so effect rows are still validated; only the
     # identifying enums are needed to interpret them.
-    if None in (ident, slot, ability_type, target_type, target_team) or not name:
+    if None in (ident, slot, ability_type) or activation is None or not name:
         return None
 
-    def err(fld: str, message: str) -> None:
-        report.error(row.file, row.line, fld, row.get(fld), message)
+    target_type = activation.target_type
+    target_team = activation.target_team
+    cast_range = activation.cast_range
+    aoe_radius = activation.aoe_radius
+    cast_time = activation.cast_time
+    channel_time = activation.channel_time
+    max_charges = activation.max_charges
+    restore = activation.charge_restore_time
+    projectile = activation.projectile_type
+    speed = activation.projectile_speed
 
     if cast_time > 0.5:
         report.warn(row.file, row.line, "cast_time", row.get("cast_time"), "cast point is capped at 0.5s")
-    if restore is not None and max_charges is None:
-        err("charge_restore_time", "charge_restore_time requires max_charges")
-    if max_charges is not None and restore is None:
-        err("max_charges", "charge-based abilities need a charge_restore_time")
-    if speed is not None and projectile == "none":
-        err("projectile_speed", "projectile_speed requires projectile_type targeted or skillshot")
-    if projectile == "targeted" and target_type != "unit":
-        err("projectile_type", f"targeted projectiles home in on a unit; target_type is {target_type}")
-    if projectile == "skillshot" and target_type not in ("point", "direction"):
-        err("projectile_type", f"skillshots fly toward a point or direction; target_type is {target_type}")
-    if target_team == "self" and target_type not in ("self", "no_target"):
-        err("target_team", f"target_team self requires target_type self or no_target (got {target_type})")
-    if target_type == "self" and target_team != "self":
-        err("target_team", "target_type self requires target_team self")
-    if target_type in ("unit", "point", "direction") and not cast_range and ability_type != "passive":
-        err("cast_range", f"required for {target_type}-targeted abilities")
-    if ability_type == "passive":
-        if target_type not in ("no_target", "self"):
-            err("target_type", "passive abilities cannot be targeted; use no_target or self")
-        if projectile != "none":
-            err("projectile_type", "passive abilities cannot launch projectiles")
-        for fld in ("cooldown", "mana_cost", "cast_time", "channel_time", "max_charges"):
-            if row.get(fld) and any(v != 0 for v in parse_number(row, fld, Report(), levels=True) or []):
-                report.warn(row.file, row.line, fld, row.get(fld), "ignored: passive abilities are never cast")
-    if ability_type == "toggle" and target_type not in ("no_target", "self"):
-        err("target_type", "toggle abilities use no_target or self")
 
-    if target_type == "unit":
-        rust_target = "Unit"
-    elif target_type == "point" and projectile == "none" and aoe_radius and any(aoe_radius):
-        rust_target = "Area"
-    elif target_type == "point":
-        rust_target = "Point"
-    elif target_type == "direction":
-        rust_target = "Direction"
-    elif target_type == "self":
-        rust_target = "SelfTarget"
-    else:
-        rust_target = "NoTarget"
+    rust_target = ability_rust_target_type(target_type, projectile, aoe_radius)
 
     return Ability(
         row=row,
@@ -261,6 +231,8 @@ def effect_context(a: Ability) -> EffectContext:
     if a.behavior == "Passive":
         for trigger in ("on_cast", "on_projectile_hit", "on_impact", "on_channel_tick", "on_channel_end"):
             ctx.invalid_trigger[trigger] = "passive abilities are never cast, so this trigger never fires"
+    else:
+        ctx.invalid_trigger["passive"] = "passive trigger is only for ability_type passive"
     if a.projectile == "none":
         for trigger in ("on_projectile_hit", "on_impact"):
             ctx.invalid_trigger[trigger] = "the ability has no projectile (projectile_type none)"
@@ -391,7 +363,7 @@ def main() -> int:
     abilities_csv = args.abilities or repo / "data" / "abilities.csv"
     effects_csv = args.effects or repo / "data" / "ability_effects.csv"
 
-    abilities, report = load(abilities_csv, effects_csv)
+    abilities, report = load(abilities_csv, effects_csv, repo_root=repo)
     report.fail_if_errors()
     report.print()
     print(f"Validated {len(abilities)} abilit{'y' if len(abilities) == 1 else 'ies'} "
@@ -421,8 +393,9 @@ def main() -> int:
     return 0
 
 
-def load(abilities_csv: Path, effects_csv: Path) -> tuple[list[Ability], Report]:
+def load(abilities_csv: Path, effects_csv: Path, *, repo_root: Path | None = None) -> tuple[list[Ability], Report]:
     report = Report()
+    registered_custom = find_registered_custom_effects(repo_root) if repo_root else None
     ability_rows = read_csv(abilities_csv, ABILITY_COLUMNS, report, legacy_hint="Ability_name")
     effect_rows = read_csv(effects_csv, ("ability_id", *EFFECT_COLUMNS), report)
 
@@ -455,6 +428,7 @@ def load(abilities_csv: Path, effects_csv: Path) -> tuple[list[Ability], Report]
         if ability is None:
             continue
         ctx = effect_context(ability)
+        ctx.registered_custom = registered_custom
         for effect in by_owner.get(ability.id, []):
             rendered = effect_to_rust(effect, ctx, report)
             if rendered:

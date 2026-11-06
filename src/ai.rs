@@ -43,10 +43,7 @@ pub struct LaneFollower {
 }
 
 fn follow_lane_waypoints(
-    mut creeps: Query<
-        (Entity, &Transform, &mut LaneFollower, Option<&AttackTarget>),
-        With<Creep>,
-    >,
+    mut creeps: Query<(Entity, &Transform, &mut LaneFollower, Option<&AttackTarget>), With<Creep>>,
     mut commands: Commands,
 ) {
     for (entity, transform, mut follower, attack) in &mut creeps {
@@ -104,7 +101,13 @@ fn acquire_targets(
             let still_valid = snaps.iter().any(|(e, pos, target_team, radius)| {
                 *e == *target
                     && *target_team == team.enemy()
-                    && within_range(origin, attacker_bound, *pos, *radius, stats.attack_range + 40.0)
+                    && within_range(
+                        origin,
+                        attacker_bound,
+                        *pos,
+                        *radius,
+                        stats.attack_range + 40.0,
+                    )
             });
             if still_valid {
                 continue;
@@ -117,11 +120,21 @@ fn acquire_targets(
             .iter()
             .filter(|(_, _, target_team, _)| *target_team == team.enemy())
             .filter(|(_, pos, _, radius)| {
-                within_range(origin, attacker_bound, *pos, *radius, stats.attack_range + aggro_pad)
+                within_range(
+                    origin,
+                    attacker_bound,
+                    *pos,
+                    *radius,
+                    stats.attack_range + aggro_pad,
+                )
             })
             .min_by(|a, b| {
-                edge_distance(origin, attacker_bound, a.1, a.3)
-                    .total_cmp(&edge_distance(origin, attacker_bound, b.1, b.3))
+                edge_distance(origin, attacker_bound, a.1, a.3).total_cmp(&edge_distance(
+                    origin,
+                    attacker_bound,
+                    b.1,
+                    b.3,
+                ))
             });
 
         if let Some((target, _, _, _)) = best {
@@ -147,7 +160,14 @@ fn player_attack_move(
         ),
         With<PlayerHero>,
     >,
-    enemies: Query<(Entity, &Transform, &Team, &Health, Option<&BoundRadius>, &Visibility)>,
+    enemies: Query<(
+        Entity,
+        &Transform,
+        &Team,
+        &Health,
+        Option<&BoundRadius>,
+        &Visibility,
+    )>,
     mut commands: Commands,
 ) {
     let Ok((entity, transform, stats, hero_team, self_bound, order, moving)) = hero.single() else {
@@ -170,13 +190,18 @@ fn player_attack_move(
             )
         })
         .min_by(|a, b| {
-            edge_distance(transform.translation, attacker_bound, a.1.translation, bounds_of(a.4))
-                .total_cmp(&edge_distance(
-                    transform.translation,
-                    attacker_bound,
-                    b.1.translation,
-                    bounds_of(b.4),
-                ))
+            edge_distance(
+                transform.translation,
+                attacker_bound,
+                a.1.translation,
+                bounds_of(a.4),
+            )
+            .total_cmp(&edge_distance(
+                transform.translation,
+                attacker_bound,
+                b.1.translation,
+                bounds_of(b.4),
+            ))
         });
 
     if let Some((enemy, _, _, _, _, _)) = in_range {
@@ -196,7 +221,9 @@ fn player_attack_move(
             .remove::<AttackMoveOrder>()
             .remove::<MoveTarget>();
     } else {
-        commands.entity(entity).insert(MoveTarget { position: dest });
+        commands
+            .entity(entity)
+            .insert(MoveTarget { position: dest });
     }
 }
 

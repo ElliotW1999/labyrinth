@@ -13,18 +13,18 @@ use std::collections::HashMap;
 use bevy::ecs::system::{SystemId, SystemParam};
 use bevy::prelude::*;
 
-use crate::actions::team_allows;
 use super::catalog::AbilityDefinitions;
 use super::definition::{
     AbilityEffect, AbilityEffectEntry, AbilityTrigger, AreaCenter, AreaRadius, Attribute,
     EffectScaling, EffectTarget,
 };
+use crate::actions::team_allows;
 use crate::combat::DamageEvent;
 use crate::components::{AbilityId, BoundRadius, CombatStats, Health, HeroAttributes, Mana, Team};
 use crate::dimensions::{area_contains, bounds_of};
 use crate::displacement::DisplacementEvent;
-use crate::teleport::TeleportEvent;
 use crate::items::{ItemId, StatusEffect, StatusEffects, StatusKind, apply_status};
+use crate::teleport::TeleportEvent;
 
 /// What owns the effect entries a trigger resolves against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -233,11 +233,14 @@ impl EffectRunner<'_, '_> {
                 Some(base + ratio * attack)
             }
             EffectScaling::CasterAttribute(attribute, ratio) => {
-                let value = self.attributes.get(ctx.caster).map_or(0.0, |a| match attribute {
-                    Attribute::Strength => a.strength,
-                    Attribute::Agility => a.agility,
-                    Attribute::Intelligence => a.intelligence,
-                });
+                let value = self
+                    .attributes
+                    .get(ctx.caster)
+                    .map_or(0.0, |a| match attribute {
+                        Attribute::Strength => a.strength,
+                        Attribute::Agility => a.agility,
+                        Attribute::Intelligence => a.intelligence,
+                    });
                 Some(base + ratio * value)
             }
             EffectScaling::TargetHealthBelow(threshold) => self

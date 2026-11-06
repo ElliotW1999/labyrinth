@@ -153,7 +153,9 @@ fn sync_camera_visible_x(
         return;
     };
     let aspect = (window.width() / window.height().max(1.0)).max(0.1);
-    let slant = (rig.height * rig.height + rig.back * rig.back).sqrt().max(1.0);
+    let slant = (rig.height * rig.height + rig.back * rig.back)
+        .sqrt()
+        .max(1.0);
     // W_x = 2 * R * tan(vfov/2) * aspect  →  vfov = 2 atan(W_x / (2 R aspect))
     let half = (rig.visible_x / (2.0 * slant * aspect)).atan();
     let vfov = (2.0 * half).clamp(0.15, 2.8);

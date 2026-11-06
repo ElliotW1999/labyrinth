@@ -133,8 +133,11 @@ pub(crate) fn load_shared_assets(
         scale::body(0.7),
     ));
     // Elongated dart — local forward is -Z after look_to.
-    assets.projectile_mesh =
-        meshes.add(Cuboid::new(scale::body(0.18), scale::body(0.18), scale::body(0.85)));
+    assets.projectile_mesh = meshes.add(Cuboid::new(
+        scale::body(0.18),
+        scale::body(0.18),
+        scale::body(0.85),
+    ));
     // Unit cuboid (X=thickness, Y=height, Z=length). Scaled per-slash to attack range.
     assets.melee_slash_mesh = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
     // Health bars / indicators are scaled in world units via Transform — keep mesh size = 1 on X.

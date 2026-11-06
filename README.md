@@ -190,7 +190,7 @@ IssueCommand (input / minimap / network host)
 - Ultimates: up to 4 ranks; unlocked at overall levels 6 / 12 / 18 / 24
 - Each rank scales damage, cooldown, range, and mana cost
 - **Unit-targeted** spells (Bolt, Execute) require clicking a creep or hero
-- **Seismic Slam**, **Arcane Lance**, **Cataclysm**, **Stone Skin**, **Overcharge** are generated from `data/abilities.csv` + `data/ability_effects.csv` (Stone Skin / Overcharge have no effects yet; see Limitations below)
+- **Seismic Slam**, **Arcane Lance**, **Cataclysm**, **Stone Skin**, **Overcharge** are generated from `data/abilities.csv` + `data/ability_effects.csv` (Stone Skin passive armor and Overcharge toggle upkeep are wired in `abilities/passive.rs`)
 
 ### Ability architecture
 
@@ -215,6 +215,43 @@ spell projectile → ProjectileHitEvent { primary, splashed } → OnProjectileHi
 - **Projectiles** (`combat.rs`) know their source, target / aim, speed, and collision / splash radius only
 - **Activation** (`actions/`) is shared by abilities and active items: target types (no target, self, unit, point, area, direction), team rules (enemy / ally / both / self), range, cast point, channel, mana cost, cooldown, and charges. Out-of-range activations walk into range and re-request. Mana and cooldown are paid when the action fires. `ActionSources` asks the ability layer (learned / castable, rank) or the item layer (the inventory slot holds that active, per-copy cooldown and charges). Items carry an instance id, so two copies keep separate state and an in-flight use follows its copy if it changes slots
 - **Casting** (`abilities/casting.rs`) is the ability layer on top: learned / passive gating, the `ActionSpec` at the slot's rank, toggle state, and turning fired actions into `AbilityCastEvent`s and channel ends into `OnChannelEnd` triggers. Silence and stun both block abilities; only stun blocks items
+- **Passive abilities** (`abilities/passive.rs`): `ability_type=passive` with `passive` effect rows (`stat_modifier` → `AbilityEffect::PassiveStat`) apply on loadout init and rank-up, mirroring item passives. **Toggle upkeep:** `ability_type=toggle` flips `AbilityState.toggled` on each cast (cooldown starts each flip); Overcharge drains mana per second and applies move / attack-speed bonuses while on, and turns off at 0 mana
+- **Autocast:** not implemented (no CSV column or AI heuristic yet)
+
+### Activation & targeting mechanics (reference)
+
+Shared pipeline: `ActivationRequest` → `ActionSpec` (`src/actions/`) → cast point → fire → optional channel → backswing. Abilities and actives use the same fields; items use `ItemActivation` mapped into `ActionSpec` (`items.rs`).
+
+| Mechanic (player-facing) | Code / data |
+| --- | --- |
+| Unit target | `TargetType::Unit`; CSV `target_type=unit`; pick filter `unit_only` in targeting UI |
+| Point target | `TargetType::Point`; CSV `target_type=point` (with projectile → skillshot path) |
+| Direction target | `TargetType::Direction`; CSV `target_type=direction`; `ignores_range()` for validation |
+| No target | `TargetType::NoTarget`; instant hotkey when `is_instant()` |
+| Self target | `TargetType::SelfTarget`; CSV `target_type=self` + usually `target_team=self` |
+| Area target | `TargetType::Area`; CSV **`point` + `aoe_radius` + `projectile_type none`** (no CSV `area` alias) |
+| Toggle | `AbilityBehavior::Toggle`; `AbilityState.toggled`; upkeep in `abilities/passive.rs` |
+| Autocast | *Not implemented* |
+| Passive ability | `AbilityBehavior::Passive`; `AbilityTrigger::Passive` + `PassiveStat` effects; `sync_ability_passives` |
+| Channeling | `ActionSpec.channel_time`, `Activation.channel_remaining`; abilities → `OnChannelEnd` in `casting.rs`; items → `item_channel_end_triggers` in `items.rs` (`on_channel_end` in `item_effects.csv`) |
+| Cast point | `ActionSpec.cast_time` / `point_remaining`; mana and cooldown on fire |
+| Cast backswing | `ActionSpec.backswing`; items default to **0** backswing |
+| Cast range | `ActionSpec.cast_range` (`RankValue` on abilities, flat on items); edge-to-edge via `dimensions` |
+| Target team filter | `TargetTeam` + `team_allows` / `target_allowed`; CSV `target_team` enemy/ally/both/self |
+| Hero / creep / building filter | *Not implemented* (`TargetUnitMask` planned) |
+| Cooldown | `ActionCooldown.remaining`; starts on commit |
+| Cooldown reduction / reset | *Not implemented* |
+| Charges | `ActionCooldown.charges`; abilities may regen over time (`restore_ability_charges`); item charges per stack only |
+| Resource cost | `ActionCost { mana }` only (health / gold / toggle drain hooks: Overcharge mana tick in `passive.rs`) |
+| Cast interruption | See table below |
+
+#### Cast interruption
+
+| Phase | Silence / stun | New move / stop / attack | Target dies | Source slot changes |
+| --- | --- | --- | --- | --- |
+| Cast point (before fire) | Cancel, no cost | Cancel, no cost | Queued cast may fail on re-request | Cancel |
+| After fire, channeling | End channel; abilities emit `OnChannelEnd` | Cancel channel (no item/ability trigger) | — | Cancel |
+| Backswing | Does not remove backswing by itself | Removes `Activation` | — | Cancel |
 - **Custom mechanics** (`abilities/custom.rs`): `app.register_ability_behavior(id, system)` runs a one-shot system with the `CastContext`. It reports what happened with a trigger such as `AbilityTrigger::Custom("on_skewer_end")`, and the ability's effect entries apply the consequences
 
 Adding a simple ability: add an `AbilityId` variant (or use the generators), then add an arm to `catalog::builtin`:
@@ -245,6 +282,7 @@ shockwave,Shockwave,Q,active,point,enemy,1200,,0.3,,13|12|11|10,85|90|95|100,,,s
 ```
 
 - Enums: `slot` Q/W/E/R/innate (R ⇒ ultimate), `ability_type` active/passive/toggle, `target_type` unit/point/direction/no_target/self, `target_team` enemy/ally/both/self, `projectile_type` none/targeted/skillshot
+- **Area targeting in CSV:** there is no separate `area` value. Author `target_type=point` with non-zero `aoe_radius` and `projectile_type none`; the generator emits Rust `TargetType::Area` (see `scripts/AbilityGenerator.py`). Ground-placed AoE uses the same cast / range rules as point spells.
 - Level values: a single number or `a|b|c|d` (one per rank; arithmetic lists become `RankValue::from_level_1`, others a level table). Blank = not applicable
 - Optional extra columns: `cast_backswing` (default 0.25), `max_rank` (else the level-list length, else 4 for R / 7 otherwise)
 - Mechanics are derived: `targeted` / `skillshot` → projectile (skillshots hit every enemy along `cast_range`, width = `aoe_radius`); `no_target` + AoE → shockwave ring; `point` + AoE without a projectile → area ring
@@ -297,8 +335,8 @@ frost_hammer,Frost Hammer,weapon,2800,1400,3,rare,false,,false,,A heavy weapon i
 ```
 
 - `item_type` component/weapon/armor/accessory/consumable/utility/recipe, `rarity` common/uncommon/rare/epic/legendary; optional extras `short_label`, `cooldown`, `components` (`;`-separated ids), `color_r/g/b`
-- Optional activation columns on items with `on_use` (blank = instant no-target use): `target_type` (`unit`, `point`, `direction`, `no_target`, `self`), `target_team` (`enemy`, `ally`, `both`, `self`), `cast_range`, `cast_time`, `channel_time`, `mana_cost`. Unit targets require `target_team`. Point, unit, and direction targets require `cast_range`. Teleport items must be `point` or `direction` so the destination is the cast aim
-- Effects use the ability effect schema with item triggers `passive` (must be `stat_modifier`: `max_health`, `health_regen`, `max_mana`, `mana_regen`, `attack_damage`, `attack_speed`, `armor`, `magic_resist`, `move_speed`, `strength`, `agility`, `intelligence`), `on_use`, `on_attack`, `on_attack_hit`, `on_damage_taken`, `on_kill`, `on_death` and targets `owner`, `cast_target` (unit and self actives), `trigger_unit`, `attacker`, `affected_units`, `units_in_radius`
+- Optional activation columns on items with `on_use` (blank = instant no-target use): `charge_restore_time`, `target_type` (`unit`, `point`, `direction`, `no_target`, `self`), `target_team` (`enemy`, `ally`, `both`, `self`), `cast_range`, `cast_time`, `channel_time`, `mana_cost`, `projectile_type`, `projectile_speed` (`cooldown` remains on the item row). Unit targets require `target_team`. Point, unit, and direction targets require `cast_range`. Teleport items must be `point` or `direction` so the destination is the cast aim. Item `projectile_*` fields are reserved — the runtime only emits ability projectiles today
+- Effects use the ability effect schema with item triggers `passive` (must be `stat_modifier`: `max_health`, `health_regen`, `max_mana`, `mana_regen`, `attack_damage`, `attack_speed`, `armor`, `magic_resist`, `move_speed`, `strength`, `agility`, `intelligence`), `on_use`, `on_attack`, `on_attack_hit`, `on_channel_end` (channelled actives only), `on_damage_taken`, `on_kill`, `on_death` and targets `owner`, `cast_target` (unit and self actives), `trigger_unit`, `attacker`, `affected_units`, `units_in_radius`
 - Consumables spend a charge (or one of the stack) when the use fires, and disappear when empty. A rejected activation spends nothing
 
 ### Teleport
@@ -311,7 +349,7 @@ frost_hammer,Frost Hammer,weapon,2800,1400,3,rare,false,,false,,A heavy weapon i
 
 ### Limitations
 
-Not yet expressible without engine changes: ability passives / toggle drains (Stone Skin, Overcharge), channel ticks (`on_channel_end` fires for abilities when a channel completes or is interrupted by silence / stun; item channels end the same way but do not emit an item trigger; `on_channel_tick` only fires from custom mechanics), delayed effects, cooldown floors other than explicit level lists, `%` attack speed or timed attribute buffs, and the `on_damage_taken` / `on_kill` / `on_death` item triggers (validated, not emitted yet). Item charges are spent on use and refill with the next unit of the stack; they do not regenerate over time the way ability charges do. An instant item (no cast point and no channel) fires without joining the command queue, so Shift does not queue it. Displacement ignores obstacles.
+Not yet expressible without engine changes: **autocast**; **cooldown reduction / reset**; **hero / creep / building** target masks; **channel ticks** (`on_channel_tick` is defined but the shared pipeline does not emit it — custom mechanics only); delayed effects; cooldown floors other than explicit level lists; generic **% attack speed** or timed attribute buffs on abilities (Overcharge uses hardcoded toggle upkeep); item `projectile_type` / `projectile_speed` (CSV validated, not emitted — `ProjectilePayload` is ability-scoped); and the `on_damage_taken` / `on_kill` / `on_death` item triggers (validated, not emitted yet). Item charges are spent on use and refill with the next unit of the stack; they do not regenerate over time the way ability charges do. An instant item (no cast point and no channel) fires without joining the command queue, so Shift does not queue it. Displacement ignores obstacles.
 
 ## What's included
 

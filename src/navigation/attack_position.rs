@@ -9,7 +9,7 @@
 
 use bevy::prelude::*;
 
-use super::grid::{flat, ground, NavGrid};
+use super::grid::{NavGrid, flat, ground};
 use crate::components::{
     Ancient, AttackSwing, AttackTarget, BoundRadius, CollisionRadius, CombatStats, Health,
     MoveTarget, Tower,
@@ -71,7 +71,14 @@ pub struct Occupant {
     pub stationary: bool,
 }
 
-fn crowding(point: Vec2, r: f32, me: Entity, target: Entity, occupants: &[Occupant], reserved: &[(Vec2, f32)]) -> f32 {
+fn crowding(
+    point: Vec2,
+    r: f32,
+    me: Entity,
+    target: Entity,
+    occupants: &[Occupant],
+    reserved: &[(Vec2, f32)],
+) -> f32 {
     let mut penalty = 0.0;
     for o in occupants {
         if o.entity == me || o.entity == target {
@@ -80,7 +87,11 @@ fn crowding(point: Vec2, r: f32, me: Entity, target: Entity, occupants: &[Occupa
         let min = r + o.radius;
         let d = point.distance(o.pos);
         if d < min {
-            let weight = if o.stationary { OCCUPIED_STATIONARY } else { OCCUPIED_MOVING };
+            let weight = if o.stationary {
+                OCCUPIED_STATIONARY
+            } else {
+                OCCUPIED_MOVING
+            };
             penalty += weight * (0.3 + (1.0 - d / min));
         }
     }
@@ -112,11 +123,17 @@ pub fn choose_attack_position(
     let r = geo.attacker_radius;
     let mut best: Option<(f32, Vec2)> = None;
     for (ring_index, radius) in geo.ring_radii().into_iter().enumerate() {
-        let count = ((std::f32::consts::TAU * radius) / (2.0 * r + 8.0)).ceil().clamp(8.0, 32.0) as i32;
+        let count = ((std::f32::consts::TAU * radius) / (2.0 * r + 8.0))
+            .ceil()
+            .clamp(8.0, 32.0) as i32;
         let step = std::f32::consts::TAU / count as f32;
         // Alternate around the approach angle so ties favor the near side.
         for k in 0..count {
-            let offset = if k % 2 == 0 { (k / 2) as f32 } else { -(((k + 1) / 2) as f32) };
+            let offset = if k % 2 == 0 {
+                (k / 2) as f32
+            } else {
+                -(((k + 1) / 2) as f32)
+            };
             let angle = base + offset * step;
             let point = geo.target + Vec2::new(angle.cos(), angle.sin()) * radius;
             if !grid.point_clear(point, r) {
@@ -155,7 +172,10 @@ pub fn goal_still_valid(
         return false;
     }
     let taken_by_standing = occupants.iter().any(|o| {
-        o.entity != me && o.entity != target && o.stationary && goal.distance(o.pos) < r + o.radius - 4.0
+        o.entity != me
+            && o.entity != target
+            && o.stationary
+            && goal.distance(o.pos) < r + o.radius - 4.0
     });
     let reserved_by_other = reserved
         .iter()
@@ -229,7 +249,9 @@ pub fn assign_attack_positions(
     }
     let mut pending = Vec::new();
 
-    for (entity, tf, stats, bound, collision, AttackTarget(target), goal, move_target, swinging) in &attackers {
+    for (entity, tf, stats, bound, collision, AttackTarget(target), goal, move_target, swinging) in
+        &attackers
+    {
         if stats.move_speed <= 0.0 {
             continue;
         }
@@ -240,8 +262,16 @@ pub fn assign_attack_positions(
             continue;
         };
         let (sb, tb) = (bounds_of(bound), bounds_of(target_bound));
-        if !needs_to_close(tf.translation, sb, target_tf.translation, tb, stats.attack_range) {
-            commands.entity(entity).remove::<(MoveTarget, AttackPositionGoal)>();
+        if !needs_to_close(
+            tf.translation,
+            sb,
+            target_tf.translation,
+            tb,
+            stats.attack_range,
+        ) {
+            commands
+                .entity(entity)
+                .remove::<(MoveTarget, AttackPositionGoal)>();
             continue;
         }
         if swinging {
@@ -291,8 +321,10 @@ pub fn assign_attack_positions(
         let point = match kept {
             Some(goal) => goal.point,
             None => {
-                let chosen = choose_attack_position(&grid, &p.geo, p.entity, p.target, &occupants, &reserved)
-                    .unwrap_or(p.geo.target);
+                let chosen = choose_attack_position(
+                    &grid, &p.geo, p.entity, p.target, &occupants, &reserved,
+                )
+                .unwrap_or(p.geo.target);
                 let goal = AttackPositionGoal {
                     target: p.target,
                     point: ground(chosen),
@@ -307,7 +339,9 @@ pub fn assign_attack_positions(
             .move_target
             .is_none_or(|m| flat(m).distance(flat(point)) > 1.0);
         if needs_order && p.geo.attacker.distance(flat(point)) > 6.0 {
-            commands.entity(p.entity).insert(MoveTarget { position: point });
+            commands
+                .entity(p.entity)
+                .insert(MoveTarget { position: point });
         }
     }
 }
@@ -337,7 +371,8 @@ mod tests {
         let mut reserved = Vec::new();
         let mut out = Vec::new();
         for (i, geo) in geos.iter().enumerate() {
-            let p = choose_attack_position(grid, geo, e(10 + i as u32), target, &[], &reserved).unwrap();
+            let p = choose_attack_position(grid, geo, e(10 + i as u32), target, &[], &reserved)
+                .unwrap();
             reserved.push((p, geo.attacker_radius));
             out.push(p);
         }
@@ -411,18 +446,45 @@ mod tests {
         let grid = NavGrid::new(3000.0, 64.0);
         let geo = melee(Vec2::new(-400.0, 0.0), Vec2::ZERO);
         let goal = choose_attack_position(&grid, &geo, e(10), e(1), &[], &[]).unwrap();
-        assert!(goal_still_valid(&grid, &geo, goal, Vec2::ZERO, e(10), e(1), &[], &[]));
+        assert!(goal_still_valid(
+            &grid,
+            &geo,
+            goal,
+            Vec2::ZERO,
+            e(10),
+            e(1),
+            &[],
+            &[]
+        ));
         let moved = AttackGeometry {
             target: Vec2::new(100.0, 0.0),
             ..geo
         };
-        assert!(!goal_still_valid(&grid, &moved, goal, Vec2::ZERO, e(10), e(1), &[], &[]));
+        assert!(!goal_still_valid(
+            &grid,
+            &moved,
+            goal,
+            Vec2::ZERO,
+            e(10),
+            e(1),
+            &[],
+            &[]
+        ));
         let squatter = Occupant {
             entity: e(60),
             pos: goal,
             radius: 36.0,
             stationary: true,
         };
-        assert!(!goal_still_valid(&grid, &geo, goal, Vec2::ZERO, e(10), e(1), &[squatter], &[]));
+        assert!(!goal_still_valid(
+            &grid,
+            &geo,
+            goal,
+            Vec2::ZERO,
+            e(10),
+            e(1),
+            &[squatter],
+            &[]
+        ));
     }
 }

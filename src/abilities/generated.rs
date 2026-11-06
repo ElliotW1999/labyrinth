@@ -27,6 +27,7 @@ pub fn definition(id: AbilityId) -> Option<AbilityDefinition> {
         AbilityId::Cataclysm => Some(cataclysm()),
         AbilityId::StoneSkin => Some(stone_skin()),
         AbilityId::Overcharge => Some(overcharge()),
+        AbilityId::Blink => Some(blink()),
         _ => None,
     }
 }
@@ -177,6 +178,14 @@ fn stone_skin() -> AbilityDefinition {
         .team(TargetTeam::SelfOnly)
         .costs(RankValue::ZERO, RankValue::ZERO)
         .timing(0.0, 0.25)
+        .on(
+            AbilityTrigger::Passive,
+            EffectTarget::Caster,
+            AbilityEffect::PassiveStat {
+                stat: PassiveStat::Armor,
+                amount: RankValue::from_level_1(4.0, 4.0),
+            },
+        )
 }
 // </ability:stone_skin>
 
@@ -192,3 +201,23 @@ fn overcharge() -> AbilityDefinition {
         .timing(0.0, 0.0)
 }
 // </ability:overcharge>
+
+// <ability:blink>
+fn blink() -> AbilityDefinition {
+    const DESCRIPTION: &str = "Teleport to the target point";
+    AbilityDefinition::new(AbilityId::Blink)
+        .description(DESCRIPTION)
+        .targeting(TargetType::Point, RankValue::fixed(800.0), RankValue::ZERO)
+        .team(TargetTeam::Enemy)
+        .costs(
+            RankValue::levels(&[15.0, 12.0, 10.0]),
+            RankValue::fixed(75.0),
+        )
+        .timing(0.0, 0.25)
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::Caster,
+            AbilityEffect::Teleport,
+        )
+}
+// </ability:blink>

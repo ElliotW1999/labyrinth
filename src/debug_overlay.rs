@@ -19,7 +19,7 @@ use bevy::prelude::*;
 use crate::components::{BoundRadius, CollisionRadius, MoveTarget, PlayerHero, SelectionBounds};
 use crate::dimensions::collision_of;
 use crate::navigation::attack_position::AttackPositionGoal;
-use crate::navigation::{flat, NavGrid, NavPath, NavSteering};
+use crate::navigation::{NavGrid, NavPath, NavSteering, flat};
 use crate::unit_commands::CommandQueue;
 
 /// Ground height for base rings, just above the lane / ground meshes.
@@ -81,7 +81,10 @@ impl DebugOverlaySettings {
     }
 }
 
-fn toggle_debug_overlays(keys: Res<ButtonInput<KeyCode>>, mut settings: ResMut<DebugOverlaySettings>) {
+fn toggle_debug_overlays(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut settings: ResMut<DebugOverlaySettings>,
+) {
     if keys.just_pressed(KeyCode::F5) {
         settings.collision = !settings.collision;
     }
@@ -109,8 +112,16 @@ fn at_nav_height(p: Vec3) -> Vec3 {
 
 fn cross(gizmos: &mut Gizmos, p: Vec3, size: f32, color: Color) {
     let c = at_nav_height(p);
-    gizmos.line(c + Vec3::new(-size, 0.0, -size), c + Vec3::new(size, 0.0, size), color);
-    gizmos.line(c + Vec3::new(-size, 0.0, size), c + Vec3::new(size, 0.0, -size), color);
+    gizmos.line(
+        c + Vec3::new(-size, 0.0, -size),
+        c + Vec3::new(size, 0.0, size),
+        color,
+    );
+    gizmos.line(
+        c + Vec3::new(-size, 0.0, size),
+        c + Vec3::new(size, 0.0, -size),
+        color,
+    );
 }
 
 type NavDebugUnits<'w, 's> = Query<
@@ -130,13 +141,24 @@ type NavDebugUnits<'w, 's> = Query<
 fn draw_navigation(
     grid: Res<NavGrid>,
     units: NavDebugUnits,
-    hero: Query<(&GlobalTransform, Option<&CollisionRadius>, Option<&CommandQueue>), With<PlayerHero>>,
+    hero: Query<
+        (
+            &GlobalTransform,
+            Option<&CollisionRadius>,
+            Option<&CommandQueue>,
+        ),
+        With<PlayerHero>,
+    >,
     mut gizmos: Gizmos,
 ) {
     // Non-navigable cells (for the hero's radius) near the hero; everything else is walkable.
     if let Ok((gt, radius, queue)) = hero.single() {
         let half = grid.cell_size() * 0.5 - 2.0;
-        for c in grid.blocked_cells_near(flat(gt.translation()), NAV_BLOCKED_VIEW, collision_of(radius)) {
+        for c in grid.blocked_cells_near(
+            flat(gt.translation()),
+            NAV_BLOCKED_VIEW,
+            collision_of(radius),
+        ) {
             gizmos.rect(
                 Isometry3d::new(Vec3::new(c.x, NAV_Y, c.y), Quat::from_rotation_x(FRAC_PI_2)),
                 Vec2::splat(half * 2.0),
@@ -169,7 +191,11 @@ fn draw_navigation(
                 from = to;
             }
             if let Some(wp) = path.current() {
-                gizmos.sphere(Isometry3d::from_translation(at_nav_height(wp)), 14.0, NAV_WAYPOINT_COLOR);
+                gizmos.sphere(
+                    Isometry3d::from_translation(at_nav_height(wp)),
+                    14.0,
+                    NAV_WAYPOINT_COLOR,
+                );
             }
             if !path.reached {
                 cross(&mut gizmos, path.goal, 30.0, NAV_ATTACK_GOAL_COLOR);
@@ -184,13 +210,20 @@ fn draw_navigation(
         }
         if let Some(goal) = attack_goal {
             gizmos.circle(base_ring(goal.point), 20.0, NAV_ATTACK_GOAL_COLOR);
-            gizmos.line(at_nav_height(goal.anchor), at_nav_height(goal.point), NAV_ATTACK_GOAL_COLOR);
+            gizmos.line(
+                at_nav_height(goal.anchor),
+                at_nav_height(goal.point),
+                NAV_ATTACK_GOAL_COLOR,
+            );
         }
     }
 }
 
 fn base_ring(pos: Vec3) -> Isometry3d {
-    Isometry3d::new(Vec3::new(pos.x, RING_Y, pos.z), Quat::from_rotation_x(FRAC_PI_2))
+    Isometry3d::new(
+        Vec3::new(pos.x, RING_Y, pos.z),
+        Quat::from_rotation_x(FRAC_PI_2),
+    )
 }
 
 fn shown(visibility: Option<&Visibility>) -> bool {

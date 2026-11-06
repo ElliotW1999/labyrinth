@@ -4,9 +4,9 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use super::{
-    ActionChannelEndEvent, ActionError, ActionFiredEvent, ActionId, ActionSource, ActionSpec, Activation,
-    ActivationRequest, CasterInfo, QueuedActivation, ResolvedTarget, UnitInfo, check_ready,
-    in_range, resolve_target,
+    ActionChannelEndEvent, ActionError, ActionFiredEvent, ActionId, ActionSource, ActionSpec,
+    Activation, ActivationRequest, CasterInfo, QueuedActivation, ResolvedTarget, UnitInfo,
+    check_ready, in_range, resolve_target,
 };
 use crate::abilities::casting::{ability_action_spec, commit_ability};
 use crate::abilities::catalog::AbilityDefinitions;
@@ -43,7 +43,10 @@ impl ActionSources<'_, '_> {
                 ability_action_spec(def, state).map_err(|_| ActionError::Unavailable)
             }
             ActionSource::Item(slot) => {
-                let inventory = self.inventories.get(caster).map_err(|_| ActionError::Unavailable)?;
+                let inventory = self
+                    .inventories
+                    .get(caster)
+                    .map_err(|_| ActionError::Unavailable)?;
                 item_action_spec(inventory, slot).map_err(|_| ActionError::Unavailable)
             }
         }
@@ -106,7 +109,14 @@ fn fire(
     target: CastTarget,
     aim: Vec3,
 ) -> bool {
-    if check_ready(&spec.cooldown_state, &spec.cost, spec.disable, mana, statuses).is_err()
+    if check_ready(
+        &spec.cooldown_state,
+        &spec.cost,
+        spec.disable,
+        mana,
+        statuses,
+    )
+    .is_err()
         || !spec.cost.pay(mana)
     {
         return false;
@@ -174,7 +184,15 @@ pub fn validate_activation_requests(
         let Ok(spec) = sources.spec(request.caster, request.source) else {
             continue;
         };
-        if check_ready(&spec.cooldown_state, &spec.cost, spec.disable, &mana, statuses).is_err() {
+        if check_ready(
+            &spec.cooldown_state,
+            &spec.cost,
+            spec.disable,
+            &mana,
+            statuses,
+        )
+        .is_err()
+        {
             continue;
         }
         let caster = CasterInfo {
