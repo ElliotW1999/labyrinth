@@ -20,7 +20,11 @@ impl Plugin for PickingPlugin {
             .init_resource::<SelectedUnit>()
             .add_systems(
                 Update,
-                (update_hovered_unit, select_on_left_click, draw_pick_highlights)
+                (
+                    update_hovered_unit,
+                    select_on_left_click,
+                    draw_pick_highlights,
+                )
                     .chain()
                     .before(crate::abilities::confirm_or_cancel_targeted_cast),
             );
@@ -116,7 +120,10 @@ fn select_on_left_click(
     alive: Query<&Health>,
     mut selected: ResMut<SelectedUnit>,
 ) {
-    if selected.0.is_some_and(|e| alive.get(e).map_or(true, |hp| !hp.is_alive())) {
+    if selected
+        .0
+        .is_some_and(|e| alive.get(e).map_or(true, |hp| !hp.is_alive()))
+    {
         selected.0 = None;
     }
     if !mouse.just_pressed(MouseButton::Left)
@@ -147,7 +154,10 @@ fn draw_pick_highlights(
             return;
         };
         let pos = gt.translation();
-        let iso = Isometry3d::new(Vec3::new(pos.x, 4.0, pos.z), Quat::from_rotation_x(FRAC_PI_2));
+        let iso = Isometry3d::new(
+            Vec3::new(pos.x, 4.0, pos.z),
+            Quat::from_rotation_x(FRAC_PI_2),
+        );
         gizmos.circle(iso, selection.half_extents.x * scale, color);
     };
 

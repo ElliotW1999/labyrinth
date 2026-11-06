@@ -1373,6 +1373,25 @@ fn item_use_trigger(
     }
 }
 
+/// Build an item `OnChannelEnd` trigger (resolved in `abilities::casting::ability_channel_end_triggers`).
+pub fn item_channel_end_context(
+    item: ItemId,
+    owner: Entity,
+    team: Team,
+    position: Vec3,
+    aim: Vec3,
+) -> TriggerContext {
+    item_trigger(
+        AbilityTrigger::OnChannelEnd,
+        item,
+        owner,
+        team,
+        position,
+        None,
+        aim,
+    )
+}
+
 fn item_trigger(
     trigger: AbilityTrigger,
     item: ItemId,

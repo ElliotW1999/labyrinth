@@ -3,8 +3,8 @@
 //! Per-rank numbers are separate spans so the HUD can paint learned ranks yellow.
 
 use super::definition::{
-    AbilityBehavior, AbilityDefinition, AbilityEffect, AbilityMechanic, AbilityTrigger,
-    Attribute, DisplacementKind, EffectScaling, RankValue, StatusSpec, TargetTeam, TargetType,
+    AbilityBehavior, AbilityDefinition, AbilityEffect, AbilityMechanic, AbilityTrigger, Attribute,
+    DisplacementKind, EffectScaling, RankValue, StatusSpec, TargetTeam, TargetType,
 };
 use crate::components::DamageType;
 use crate::items::StatusKind;
@@ -40,7 +40,13 @@ pub fn ability_tooltip_bits(def: &AbilityDefinition, learned_rank: u32) -> Vec<T
     let levels: Vec<f32> = (1..=max_rank).map(|rank| rank as f32).collect();
     push_series(&mut bits, "Level", &levels, learned_rank);
 
-    push_value(&mut bits, "Cast range", def.cast_range, max_rank, learned_rank);
+    push_value(
+        &mut bits,
+        "Cast range",
+        def.cast_range,
+        max_rank,
+        learned_rank,
+    );
     push_value(&mut bits, "Radius", def.aoe_radius, max_rank, learned_rank);
     push_value(&mut bits, "Cooldown", def.cooldown, max_rank, learned_rank);
     push_value(&mut bits, "Mana", def.mana_cost, max_rank, learned_rank);
@@ -96,7 +102,9 @@ fn kind_line(def: &AbilityDefinition) -> String {
     for mechanic in &def.mechanics {
         let tag = match mechanic {
             AbilityMechanic::Dash { .. } => "Dash",
-            AbilityMechanic::Projectile { skillshot: true, .. } => "Skillshot",
+            AbilityMechanic::Projectile {
+                skillshot: true, ..
+            } => "Skillshot",
             AbilityMechanic::Projectile { .. } => "Projectile",
             AbilityMechanic::AttackUnitTarget => "Attack",
             AbilityMechanic::RingFx { .. } => continue,
@@ -108,7 +116,13 @@ fn kind_line(def: &AbilityDefinition) -> String {
     parts.join(" · ")
 }
 
-fn push_value(bits: &mut Vec<TipBit>, label: &str, value: RankValue, max_rank: u32, learned_rank: u32) {
+fn push_value(
+    bits: &mut Vec<TipBit>,
+    label: &str,
+    value: RankValue,
+    max_rank: u32,
+    learned_rank: u32,
+) {
     let series = series_of(value, max_rank);
     if series.iter().all(|v| v.abs() < 0.05) {
         return;
@@ -187,13 +201,24 @@ fn trigger_tag(trigger: AbilityTrigger) -> &'static str {
 fn effect_rows(trigger: AbilityTrigger, effect: &AbilityEffect) -> Vec<(String, RankValue)> {
     let tag = trigger_tag(trigger);
     match *effect {
-        AbilityEffect::Damage { amount, damage_type, .. } => {
-            vec![(format!("{} damage ({tag})", damage_name(damage_type)), amount)]
+        AbilityEffect::Damage {
+            amount,
+            damage_type,
+            ..
+        } => {
+            vec![(
+                format!("{} damage ({tag})", damage_name(damage_type)),
+                amount,
+            )]
         }
         AbilityEffect::Heal { amount, .. } => vec![(format!("Heal ({tag})"), amount)],
         AbilityEffect::RestoreMana { amount } => vec![(format!("Mana restore ({tag})"), amount)],
         AbilityEffect::ApplyStatus { status, duration } => status_rows(tag, status, duration),
-        AbilityEffect::Displace { kind, distance, duration } => {
+        AbilityEffect::Displace {
+            kind,
+            distance,
+            duration,
+        } => {
             let name = match kind {
                 DisplacementKind::Knockback => "Knockback",
                 DisplacementKind::Pull => "Pull",
@@ -210,7 +235,12 @@ fn effect_rows(trigger: AbilityTrigger, effect: &AbilityEffect) -> Vec<(String, 
         AbilityEffect::PassiveStat { stat, amount } => {
             vec![(format!("{} ({tag})", passive_name(stat)), amount)]
         }
-        AbilityEffect::Custom { id, value, amount, duration } => {
+        AbilityEffect::Custom {
+            id,
+            value,
+            amount,
+            duration,
+        } => {
             let mut rows = Vec::new();
             if value != RankValue::ZERO {
                 rows.push((format!("{id} ({tag})"), value));
@@ -274,12 +304,22 @@ fn effect_notes(trigger: AbilityTrigger, effect: &AbilityEffect) -> Vec<String> 
         },
         AbilityEffect::RemoveStatus { id } => vec![format!("Remove {id} ({tag})")],
         AbilityEffect::Teleport => vec![format!("Teleports to the target point ({tag})")],
-        AbilityEffect::Displace { distance: None, kind, .. } => match kind {
+        AbilityEffect::Displace {
+            distance: None,
+            kind,
+            ..
+        } => match kind {
             DisplacementKind::Pull => vec![format!("Pulls to the caster ({tag})")],
             DisplacementKind::Knockback => Vec::new(),
         },
-        AbilityEffect::Custom { id, value, amount, duration }
-            if value == RankValue::ZERO && amount == RankValue::ZERO && duration == RankValue::ZERO =>
+        AbilityEffect::Custom {
+            id,
+            value,
+            amount,
+            duration,
+        } if value == RankValue::ZERO
+            && amount == RankValue::ZERO
+            && duration == RankValue::ZERO =>
         {
             vec![format!("{id} ({tag})")]
         }
@@ -290,9 +330,7 @@ fn effect_notes(trigger: AbilityTrigger, effect: &AbilityEffect) -> Vec<String> 
 fn scaling_note(scaling: EffectScaling) -> Option<String> {
     match scaling {
         EffectScaling::None => None,
-        EffectScaling::CasterAttackDamage(ratio) => {
-            Some(format!("+ {ratio:.2}× attack damage"))
-        }
+        EffectScaling::CasterAttackDamage(ratio) => Some(format!("+ {ratio:.2}× attack damage")),
         EffectScaling::CasterAttribute(attribute, ratio) => {
             Some(format!("+ {ratio:.2}× {}", attribute_name(attribute)))
         }

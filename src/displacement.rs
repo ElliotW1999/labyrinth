@@ -60,10 +60,12 @@ pub fn apply_displacement_events(
             DisplacementKind::Pull => {
                 let (caster_pos, caster_bound) = units
                     .get(event.caster)
-                    .map_or((event.origin, None), |(tf, bound, _)| (tf.translation, bound));
+                    .map_or((event.origin, None), |(tf, bound, _)| {
+                        (tf.translation, bound)
+                    });
                 let toward = flat(caster_pos - from);
-                let contact = (toward.length() - bounds_of(caster_bound) - bounds_of(target_bound))
-                    .max(0.0);
+                let contact =
+                    (toward.length() - bounds_of(caster_bound) - bounds_of(target_bound)).max(0.0);
                 let distance = event.distance.map_or(contact, |d| d.min(contact));
                 toward.normalize_or_zero() * distance
             }

@@ -6,3 +6,4 @@ arcane_lance,1,on_projectile_hit,trigger_unit,damage,,23.75|31.75|39.75|47.75|55
 cataclysm,0,on_cast,units_in_radius,damage,,200|270|340|410,magical,,,,,
 cataclysm,1,on_cast,units_in_radius,apply_status,stun,,,1.2,,,,
 blink,0,on_cast,caster,movement,teleport,,,,,,,
+stone_skin,0,passive,caster,stat_modifier,armor,4|8|12|16,,,,,,

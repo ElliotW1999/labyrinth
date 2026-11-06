@@ -178,6 +178,14 @@ fn stone_skin() -> AbilityDefinition {
         .team(TargetTeam::SelfOnly)
         .costs(RankValue::ZERO, RankValue::ZERO)
         .timing(0.0, 0.25)
+        .on(
+            AbilityTrigger::Passive,
+            EffectTarget::Caster,
+            AbilityEffect::PassiveStat {
+                stat: PassiveStat::Armor,
+                amount: RankValue::from_level_1(4.0, 4.0),
+            },
+        )
 }
 // </ability:stone_skin>
 

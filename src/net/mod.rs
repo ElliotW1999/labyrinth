@@ -5,8 +5,8 @@ mod session;
 
 pub use proto::{ClientToServer, HeroSnap, ServerToClient};
 pub use session::{
-    is_sim_authority, NetConfig, NetMode, NetSession, NetStatus, NetTransport, NetworkId,
-    NetworkedHero,
+    NetConfig, NetMode, NetSession, NetStatus, NetTransport, NetworkId, NetworkedHero,
+    is_sim_authority,
 };
 
 use bevy::prelude::*;
@@ -14,8 +14,8 @@ use bevy::prelude::*;
 use crate::components::{Health, Team};
 use crate::heroes::{HeroId, HeroKind, LocalHeroChoice};
 use crate::scale;
-use crate::units::spawn_hero_entity;
 use crate::unit_commands::{IssueCommand, UnitCommand};
+use crate::units::spawn_hero_entity;
 
 use proto::{decode, encode};
 use session::next_network_id;
@@ -55,10 +55,7 @@ impl Plugin for NetPlugin {
             NetMode::Client => match NetTransport::connect_client(config.socket_addr()) {
                 Ok(transport) => {
                     app.insert_resource(transport);
-                    app.add_systems(
-                        Update,
-                        (client_send_hello, client_recv_and_apply).chain(),
-                    );
+                    app.add_systems(Update, (client_send_hello, client_recv_and_apply).chain());
                 }
                 Err(err) => {
                     bevy::log::error!(

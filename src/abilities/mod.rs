@@ -22,6 +22,7 @@ pub mod definition;
 pub mod effects;
 pub mod generated;
 pub mod mechanics;
+pub mod passive;
 pub mod tooltip;
 
 use bevy::prelude::*;
@@ -53,6 +54,7 @@ use effects::{
     resolve_ability_triggers,
 };
 use mechanics::{CustomAbilityBehaviors, execute_ability_casts, projectile_hit_triggers};
+use passive::{sync_ability_passives, tick_toggle_upkeep};
 
 pub struct AbilitiesPlugin;
 
@@ -74,8 +76,13 @@ impl Plugin for AbilitiesPlugin {
             .add_systems(
                 Update,
                 (
-                    tick_ability_cooldowns,
-                    regen_mana,
+                    (
+                        tick_ability_cooldowns,
+                        regen_mana,
+                        tick_toggle_upkeep,
+                        sync_ability_passives,
+                    )
+                        .chain(),
                     register_loadout_definitions,
                     restore_ability_charges,
                     begin_or_cast_from_hotkeys,

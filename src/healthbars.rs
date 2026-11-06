@@ -157,7 +157,12 @@ fn sync_health_bars(
 fn sync_world_hero_names(
     camera: Query<(&Camera, &GlobalTransform), With<GameCamera>>,
     owners: Query<
-        (&GlobalTransform, &HeroKind, Option<&SelectionBounds>, &Visibility),
+        (
+            &GlobalTransform,
+            &HeroKind,
+            Option<&SelectionBounds>,
+            &Visibility,
+        ),
         Without<WorldHeroNameLabel>,
     >,
     mut labels: Query<(&WorldHeroNameLabel, &mut Node, &mut Visibility, &mut Text)>,
@@ -176,8 +181,8 @@ fn sync_world_hero_names(
             continue;
         }
 
-        let world_pos =
-            owner_gt.translation() + Vec3::Y * (bar_height(selection) + scale::HEALTH_BAR_BG_THICKNESS);
+        let world_pos = owner_gt.translation()
+            + Vec3::Y * (bar_height(selection) + scale::HEALTH_BAR_BG_THICKNESS);
         let Ok(screen) = camera.world_to_viewport(cam_gt, world_pos) else {
             *vis = Visibility::Hidden;
             continue;
@@ -218,7 +223,10 @@ fn cull_orphan_world_names(
 /// Bar width tracks the unit's selection footprint.
 fn bar_width(selection: Option<&SelectionBounds>) -> f32 {
     let half = selection.map_or(scale::HERO_MODEL_WIDTH * 0.5, |s| s.half_extents.x);
-    (half * 2.2).clamp(scale::CREEP_MODEL_WIDTH * 0.8, scale::TOWER_MODEL_WIDTH * 1.6)
+    (half * 2.2).clamp(
+        scale::CREEP_MODEL_WIDTH * 0.8,
+        scale::TOWER_MODEL_WIDTH * 1.6,
+    )
 }
 
 /// Offset from unit origin to just above the selection volume's top.
@@ -226,7 +234,6 @@ fn bar_height(selection: Option<&SelectionBounds>) -> f32 {
     let top = selection.map_or(scale::HERO_MODEL_HEIGHT * 0.5, SelectionBounds::top);
     top + scale::HEALTH_BAR_BG_THICKNESS * 0.75
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -259,10 +266,7 @@ mod tests {
     fn health_bars_stay_orthogonal_to_the_camera() {
         let mut world = World::new();
         let rotation = Quat::from_rotation_x(-0.9);
-        world.spawn((
-            GameCamera,
-            GlobalTransform::from_rotation(rotation),
-        ));
+        world.spawn((GameCamera, GlobalTransform::from_rotation(rotation)));
         let owner = world
             .spawn((
                 Health::new(100.0),
@@ -270,10 +274,7 @@ mod tests {
             ))
             .id();
         let bar = world
-            .spawn((
-                HealthBar { owner },
-                Transform::default(),
-            ))
+            .spawn((HealthBar { owner }, Transform::default()))
             .id();
 
         let mut system = IntoSystem::into_system(sync_health_bars);
@@ -282,7 +283,10 @@ mod tests {
 
         let transform = world.get::<Transform>(bar).unwrap();
         let delta = transform.rotation.dot(rotation).abs();
-        assert!((delta - 1.0).abs() < 1e-4, "bar should match the camera orientation");
+        assert!(
+            (delta - 1.0).abs() < 1e-4,
+            "bar should match the camera orientation"
+        );
         assert!(transform.translation.y > 0.0);
     }
 }

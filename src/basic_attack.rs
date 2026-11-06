@@ -110,7 +110,13 @@ pub fn request_basic_attacks(
         Has<PlayerHero>,
     )>,
     // GlobalTransform (not Transform) so this stays disjoint from attackers' &mut Transform.
-    targets: Query<(Entity, &GlobalTransform, &Team, &Health, Option<&BoundRadius>)>,
+    targets: Query<(
+        Entity,
+        &GlobalTransform,
+        &Team,
+        &Health,
+        Option<&BoundRadius>,
+    )>,
 ) {
     let dt = time.delta_secs();
     let target_snapshots: Vec<_> = targets
@@ -203,11 +209,13 @@ pub fn start_basic_attack_windups(
         if swinging {
             continue;
         }
-        commands.entity(request.attacker).insert(AttackSwing::Windup {
-            remaining: stats.attack_point.clamp(0.0, 0.5),
-            target: request.target,
-            damage: stats.attack_damage,
-        });
+        commands
+            .entity(request.attacker)
+            .insert(AttackSwing::Windup {
+                remaining: stats.attack_point.clamp(0.0, 0.5),
+                target: request.target,
+                damage: stats.attack_damage,
+            });
     }
 }
 
@@ -289,7 +297,9 @@ pub fn resolve_attack_releases(
         let target = targets
             .get(release.target)
             .ok()
-            .filter(|(_, target_team, health, _)| **target_team == team.enemy() && health.is_alive());
+            .filter(|(_, target_team, health, _)| {
+                **target_team == team.enemy() && health.is_alive()
+            });
 
         if scale::is_melee_attack_range(stats.attack_range) {
             spawn_melee_slash(&mut commands, &assets, *team, transform, stats.attack_range);
@@ -360,7 +370,11 @@ pub fn advance_attacks_in_flight(
             }
         }
         let destination = if attack.target_lost {
-            Vec3::new(attack.last_target_pos.x, attack.position.y, attack.last_target_pos.z)
+            Vec3::new(
+                attack.last_target_pos.x,
+                attack.position.y,
+                attack.last_target_pos.z,
+            )
         } else {
             attack.last_target_pos
         };
@@ -385,15 +399,18 @@ pub fn advance_attacks_in_flight(
             continue;
         }
 
-        let contact = targets
-            .get(attack.target)
-            .is_ok_and(|(tf, health, bound)| {
-                let target_origin = tf.translation();
-                let vertical = (attack.position.y - aim_point(target_origin).y).abs();
-                health.is_alive()
-                    && vertical < scale::body(2.5)
-                    && area_contains(attack.position, attack.radius, target_origin, bounds_of(bound))
-            });
+        let contact = targets.get(attack.target).is_ok_and(|(tf, health, bound)| {
+            let target_origin = tf.translation();
+            let vertical = (attack.position.y - aim_point(target_origin).y).abs();
+            health.is_alive()
+                && vertical < scale::body(2.5)
+                && area_contains(
+                    attack.position,
+                    attack.radius,
+                    target_origin,
+                    bounds_of(bound),
+                )
+        });
         if contact {
             impacts.write(BasicAttackImpactEvent {
                 attacker: attack.attacker,
@@ -607,9 +624,10 @@ mod tests {
     fn spawn_attacker(world: &mut World, range: f32, target: Entity, target_pos: Vec3) -> Entity {
         let stats = CombatStats::simple(50.0, range, 1.0, 0.0, 0.0, 300.0);
         let attacker = spawn_unit(world, Team::Radiant, Vec3::ZERO, stats);
-        world
-            .entity_mut(attacker)
-            .insert((Transform::default().looking_at(target_pos, Vec3::Y), AttackTarget(target)));
+        world.entity_mut(attacker).insert((
+            Transform::default().looking_at(target_pos, Vec3::Y),
+            AttackTarget(target),
+        ));
         attacker
     }
 
@@ -646,7 +664,12 @@ mod tests {
         let (mut world, mut schedule) = world_with_pipeline();
         let target_pos = Vec3::new(450.0, 0.0, 0.0);
         let target = spawn_unit(&mut world, Team::Dire, target_pos, passive_stats());
-        let blocker = spawn_unit(&mut world, Team::Dire, Vec3::new(200.0, 0.0, 0.0), passive_stats());
+        let blocker = spawn_unit(
+            &mut world,
+            Team::Dire,
+            Vec3::new(200.0, 0.0, 0.0),
+            passive_stats(),
+        );
         world.entity_mut(blocker).insert(BoundRadius(60.0));
         spawn_attacker(&mut world, 500.0, target, target_pos);
 
@@ -656,7 +679,11 @@ mod tests {
             let in_flight = world.query::<&BasicAttackInFlight>().iter(&world).count();
             if in_flight > 0 && released_at.is_none() {
                 released_at = Some(frame);
-                assert_eq!(hp(&world, target), 1000.0, "ranged damage waits for arrival");
+                assert_eq!(
+                    hp(&world, target),
+                    1000.0,
+                    "ranged damage waits for arrival"
+                );
             }
             if hp(&world, target) < 1000.0 {
                 break;
@@ -664,7 +691,11 @@ mod tests {
         }
         assert!(released_at.is_some());
         assert!((hp(&world, target) - expected_hit()).abs() < 1e-3);
-        assert_eq!(hp(&world, blocker), 1000.0, "units in the path never absorb the attack");
+        assert_eq!(
+            hp(&world, blocker),
+            1000.0,
+            "units in the path never absorb the attack"
+        );
     }
 
     #[test]
@@ -681,9 +712,15 @@ mod tests {
         for _ in 0..20 {
             step(&mut world, &mut schedule);
         }
-        assert_eq!(world.query::<&BasicAttackInFlight>().iter(&world).count(), 0);
         assert_eq!(
-            world.query::<&BasicAttackProjectileVisual>().iter(&world).count(),
+            world.query::<&BasicAttackInFlight>().iter(&world).count(),
+            0
+        );
+        assert_eq!(
+            world
+                .query::<&BasicAttackProjectileVisual>()
+                .iter(&world)
+                .count(),
             0
         );
         assert!(world.resource::<Messages<DamageEvent>>().is_empty());

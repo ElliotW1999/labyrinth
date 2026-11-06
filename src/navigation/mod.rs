@@ -19,7 +19,7 @@ use bevy::prelude::*;
 
 use crate::components::{Ancient, CollisionRadius, MoveTarget, Obstacle, ObstacleShape, Tower};
 use crate::dimensions::collision_of;
-pub use grid::{flat, ground, DynamicBlocker, NavGrid, NavShape};
+pub use grid::{DynamicBlocker, NavGrid, NavShape, flat, ground};
 
 /// Requested-goal drift that triggers a full replan.
 pub const GOAL_REPLAN_DIST: f32 = 48.0;
@@ -66,7 +66,12 @@ impl NavPath {
         self.replan_requested = true;
     }
 
-    fn from_route(route: grid::NavRoute, requested: Vec3, version: u32, stuck: StuckTracker) -> Self {
+    fn from_route(
+        route: grid::NavRoute,
+        requested: Vec3,
+        version: u32,
+        stuck: StuckTracker,
+    ) -> Self {
         let waypoints: Vec<Vec3> = route.waypoints.iter().map(|p| ground(*p)).collect();
         let goal = waypoints.last().copied().unwrap_or(requested);
         Self {
@@ -139,7 +144,10 @@ pub struct NavSteering {
 pub fn sync_nav_grid(
     mut grid: ResMut<NavGrid>,
     obstacles: Query<(&Transform, &Obstacle)>,
-    buildings: Query<(&Transform, &CollisionRadius), (Or<(With<Tower>, With<Ancient>)>, Without<Obstacle>)>,
+    buildings: Query<
+        (&Transform, &CollisionRadius),
+        (Or<(With<Tower>, With<Ancient>)>, Without<Obstacle>),
+    >,
 ) {
     let mut shapes: Vec<NavShape> = obstacles
         .iter()
@@ -153,10 +161,15 @@ pub fn sync_nav_grid(
                 half: Vec2::new(half_x, half_z),
             },
         })
-        .chain(buildings.iter().filter(|(_, r)| r.0 > 0.0).map(|(tf, r)| NavShape::Circle {
-            center: flat(tf.translation),
-            radius: r.0,
-        }))
+        .chain(
+            buildings
+                .iter()
+                .filter(|(_, r)| r.0 > 0.0)
+                .map(|(tf, r)| NavShape::Circle {
+                    center: flat(tf.translation),
+                    radius: r.0,
+                }),
+        )
         .collect();
     grid::sort_shapes(&mut shapes);
     if shapes.as_slice() != grid.shapes() {
@@ -172,7 +185,13 @@ pub fn plan_paths(
     grid: Res<NavGrid>,
     mut scratch: Local<grid::SearchScratch>,
     mut movers: Query<
-        (Entity, &Transform, &MoveTarget, Option<&CollisionRadius>, Option<&mut NavPath>),
+        (
+            Entity,
+            &Transform,
+            &MoveTarget,
+            Option<&CollisionRadius>,
+            Option<&mut NavPath>,
+        ),
         MobileFilter,
     >,
     standing: Query<(&Transform, &CollisionRadius), (Without<MoveTarget>, MobileFilter)>,

@@ -39,7 +39,14 @@ pub fn perp(d: Vec2) -> Vec2 {
 /// `lookahead` is how far ahead stationary units are considered; moving units only
 /// matter when they are close. `prev_side` keeps the previous frame's choice while
 /// the obstruction is still roughly centered.
-pub fn avoid(pos: Vec2, r: f32, desired: Vec2, lookahead: f32, prev_side: f32, neighbors: &[Neighbor]) -> Avoidance {
+pub fn avoid(
+    pos: Vec2,
+    r: f32,
+    desired: Vec2,
+    lookahead: f32,
+    prev_side: f32,
+    neighbors: &[Neighbor],
+) -> Avoidance {
     let side_axis = perp(desired);
     let mut strongest: Option<(f32, f32)> = None;
     let mut total = 0.0;
@@ -50,7 +57,11 @@ pub fn avoid(pos: Vec2, r: f32, desired: Vec2, lookahead: f32, prev_side: f32, n
         if along <= 0.0 {
             continue;
         }
-        let reach = if n.stationary { lookahead } else { lookahead * 0.4 };
+        let reach = if n.stationary {
+            lookahead
+        } else {
+            lookahead * 0.4
+        };
         if along > reach + n.radius + r {
             continue;
         }
@@ -104,32 +115,84 @@ mod tests {
     fn no_neighbors_no_offset() {
         let a = avoid(Vec2::ZERO, 36.0, Vec2::X, 200.0, 0.0, &[]);
         assert_eq!(a, Avoidance::default());
-        let behind = avoid(Vec2::ZERO, 36.0, Vec2::X, 200.0, 0.0, &[unit(-80.0, 0.0, true)]);
+        let behind = avoid(
+            Vec2::ZERO,
+            36.0,
+            Vec2::X,
+            200.0,
+            0.0,
+            &[unit(-80.0, 0.0, true)],
+        );
         assert_eq!(behind.side, 0.0);
     }
 
     #[test]
     fn sidesteps_away_from_unit_ahead() {
         // Blocker slightly to the +perp side → pass on the −perp side.
-        let a = avoid(Vec2::ZERO, 36.0, Vec2::X, 200.0, 0.0, &[unit(100.0, 20.0, true)]);
+        let a = avoid(
+            Vec2::ZERO,
+            36.0,
+            Vec2::X,
+            200.0,
+            0.0,
+            &[unit(100.0, 20.0, true)],
+        );
         assert_eq!(a.side, -1.0);
         assert!(a.offset.y < 0.0);
-        let b = avoid(Vec2::ZERO, 36.0, Vec2::X, 200.0, 0.0, &[unit(100.0, -20.0, true)]);
+        let b = avoid(
+            Vec2::ZERO,
+            36.0,
+            Vec2::X,
+            200.0,
+            0.0,
+            &[unit(100.0, -20.0, true)],
+        );
         assert_eq!(b.side, 1.0);
     }
 
     #[test]
     fn stationary_units_push_harder_and_side_is_sticky() {
-        let still = avoid(Vec2::ZERO, 36.0, Vec2::X, 200.0, 0.0, &[unit(60.0, 5.0, true)]);
-        let moving = avoid(Vec2::ZERO, 36.0, Vec2::X, 200.0, 0.0, &[unit(60.0, 5.0, false)]);
+        let still = avoid(
+            Vec2::ZERO,
+            36.0,
+            Vec2::X,
+            200.0,
+            0.0,
+            &[unit(60.0, 5.0, true)],
+        );
+        let moving = avoid(
+            Vec2::ZERO,
+            36.0,
+            Vec2::X,
+            200.0,
+            0.0,
+            &[unit(60.0, 5.0, false)],
+        );
         assert!(still.offset.length() > moving.offset.length());
-        let sticky = avoid(Vec2::ZERO, 36.0, Vec2::X, 200.0, 1.0, &[unit(60.0, 5.0, true)]);
-        assert_eq!(sticky.side, 1.0, "keeps the committed side while nearly centered");
+        let sticky = avoid(
+            Vec2::ZERO,
+            36.0,
+            Vec2::X,
+            200.0,
+            1.0,
+            &[unit(60.0, 5.0, true)],
+        );
+        assert_eq!(
+            sticky.side, 1.0,
+            "keeps the committed side while nearly centered"
+        );
     }
 
     #[test]
     fn units_already_beside_the_path_are_ignored() {
-        let a = avoid(Vec2::ZERO, 36.0, Vec2::X, 200.0, 0.0, &[unit(80.0, 90.0, true)]);
+        let a = avoid(
+            Vec2::ZERO,
+            36.0,
+            Vec2::X,
+            200.0,
+            0.0,
+            &[unit(80.0, 90.0, true)],
+        );
         assert_eq!(a.side, 0.0);
     }
 }

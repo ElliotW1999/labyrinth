@@ -2,10 +2,10 @@
 
 use bevy::prelude::*;
 
-use crate::dimensions::{bounds_of, center_distance as flat_distance};
 use crate::components::{
     BoundRadius, Creep, Health, Obstacle, ObstacleShape, PlayerHero, Team, Tower,
 };
+use crate::dimensions::{bounds_of, center_distance as flat_distance};
 use crate::net::NetworkedHero;
 use crate::resources::MatchConfig;
 use crate::scale;
@@ -137,7 +137,12 @@ fn collect_vision(
             Has<NetworkedHero>,
             Has<PlayerHero>,
         ),
-        Or<(With<PlayerHero>, With<NetworkedHero>, With<Creep>, With<Tower>)>,
+        Or<(
+            With<PlayerHero>,
+            With<NetworkedHero>,
+            With<Creep>,
+            With<Tower>,
+        )>,
     >,
 ) -> Vec<VisionSource> {
     let mut vision = Vec::new();
@@ -194,7 +199,12 @@ fn update_unit_fog_visibility(
             Has<NetworkedHero>,
             Has<PlayerHero>,
         ),
-        Or<(With<PlayerHero>, With<NetworkedHero>, With<Creep>, With<Tower>)>,
+        Or<(
+            With<PlayerHero>,
+            With<NetworkedHero>,
+            With<Creep>,
+            With<Tower>,
+        )>,
     >,
     trees: Query<(&Transform, &Obstacle)>,
     mut units: Query<
@@ -254,7 +264,12 @@ fn update_fog_overlay_tiles(
             Has<NetworkedHero>,
             Has<PlayerHero>,
         ),
-        Or<(With<PlayerHero>, With<NetworkedHero>, With<Creep>, With<Tower>)>,
+        Or<(
+            With<PlayerHero>,
+            With<NetworkedHero>,
+            With<Creep>,
+            With<Tower>,
+        )>,
     >,
     trees: Query<(&Transform, &Obstacle)>,
     mut tiles: Query<(&FogTile, &mut MeshMaterial3d<StandardMaterial>)>,
@@ -273,8 +288,7 @@ fn update_fog_overlay_tiles(
     let force_clear = vision.is_empty();
 
     for (tile, mut mat) in &mut tiles {
-        let revealed =
-            force_clear || point_revealed(tile.center, &vision, &fog_free, &tree_snaps);
+        let revealed = force_clear || point_revealed(tile.center, &vision, &fog_free, &tree_snaps);
         mat.0 = if revealed {
             fog_assets.clear_mat.clone()
         } else {

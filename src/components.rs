@@ -420,7 +420,7 @@ pub enum AbilityId {
     FrostNova,
     Barrier,
     Meteor,
-    
+
     // Warden (generated stubs)
     Bulwark,
     ShieldBash,
@@ -460,7 +460,7 @@ impl AbilityId {
             AbilityId::FrostNova => "Frost",
             AbilityId::Barrier => "Barrier",
             AbilityId::Meteor => "Meteor",
-            
+
             AbilityId::Bulwark => "Bulwark",
             AbilityId::ShieldBash => "ShieldBash",
             AbilityId::Taunt => "Taunt",
@@ -483,7 +483,7 @@ impl AbilityId {
             self,
             // <hero_generator:ability_ultimates>
             AbilityId::Nova | AbilityId::Execute | AbilityId::Meteor | AbilityId::Aegis | AbilityId::Ritual | AbilityId::Cataclysm
-            // </hero_generator:ability_ultimates>
+ // </hero_generator:ability_ultimates>
         )
     }
 

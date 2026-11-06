@@ -146,7 +146,13 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            check_ready(&cooling, &cost, DisableRule::SilenceOrStun, &Mana::new(0.0, 0.0), None),
+            check_ready(
+                &cooling,
+                &cost,
+                DisableRule::SilenceOrStun,
+                &Mana::new(0.0, 0.0),
+                None
+            ),
             Err(ActionError::OnCooldown)
         );
         assert_eq!(
@@ -160,7 +166,13 @@ mod tests {
             Err(ActionError::NotEnoughMana)
         );
         assert_eq!(
-            check_ready(&ActionCooldown::default(), &cost, DisableRule::SilenceOrStun, &mana, None),
+            check_ready(
+                &ActionCooldown::default(),
+                &cost,
+                DisableRule::SilenceOrStun,
+                &mana,
+                None
+            ),
             Ok(())
         );
     }

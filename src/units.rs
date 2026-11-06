@@ -73,6 +73,9 @@ pub fn spawn_hero_entity(
         Inventory::empty(),
         StatusEffects::default(),
         crate::unit_commands::CommandQueue::default(),
+        crate::abilities::passive::AbilityPassiveSync::default(),
+        crate::abilities::passive::AppliedAbilityPassives::default(),
+        crate::abilities::passive::ToggleStatBonuses::default(),
     ));
     if local {
         entity.insert(PlayerHero);
@@ -219,12 +222,7 @@ pub fn spawn_tower(
         });
 }
 
-pub fn spawn_ancient(
-    commands: &mut Commands,
-    assets: &SharedAssets,
-    team: Team,
-    position: Vec3,
-) {
+pub fn spawn_ancient(commands: &mut Commands, assets: &SharedAssets, team: Team, position: Vec3) {
     let mat = match team {
         Team::Radiant => assets.tower_radiant_mat.clone(),
         Team::Dire => assets.tower_dire_mat.clone(),
