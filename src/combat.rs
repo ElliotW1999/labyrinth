@@ -14,7 +14,7 @@ use crate::components::{
     HeroAttributes, HeroProgress, Lifetime, PlayerHero, PlayerWallet, Projectile, ProjectileHome,
     ProjectileStyle, ShieldPool, Team, XpBounty,
 };
-use crate::status::{StatusEffects, subtract_status_stat_delta};
+use crate::status::{StatusEffects, is_untargetable, subtract_status_stat_delta};
 use crate::dimensions::{area_contains, bounds_of};
 use crate::progression::add_xp;
 use crate::resources::SharedAssets;
@@ -523,12 +523,14 @@ pub fn skillshot_contacts(
     mut hits: MessageWriter<ProjectileHitEvent>,
     mut projectiles: Query<(&Transform, &Projectile, &ProjectilePayload, &mut Skillshot)>,
     units: Query<(Entity, &Transform, &Team, &Health, Option<&BoundRadius>)>,
+    statuses_of: Query<&StatusEffects>,
 ) {
     for (proj_tf, projectile, payload, mut skillshot) in &mut projectiles {
         let impact = proj_tf.translation;
         for (unit, unit_tf, team, health, bound) in &units {
             if *team == projectile.team
                 || !health.is_alive()
+                || is_untargetable(&statuses_of, unit)
                 || skillshot.hit.contains(&unit)
                 || !area_contains(
                     impact,
@@ -574,6 +576,7 @@ pub fn apply_projectile_hits(
         Option<&ProjectileReachedTarget>,
     )>,
     units: Query<(Entity, &Transform, &Team, &Health, Option<&BoundRadius>)>,
+    statuses_of: Query<&StatusEffects>,
 ) {
     for (proj_entity, proj_tf, projectile, payload, home, ground_impact, reached) in &projectiles {
         let impact = proj_tf.translation;
@@ -581,7 +584,10 @@ pub fn apply_projectile_hits(
         let mut primary_hit: Option<Entity> = None;
 
         if let Some(home) = home {
-            if let Ok((unit_entity, unit_tf, team, health, radius)) = units.get(home.target) {
+            // A target that is lifted out of play makes the projectile miss where it is.
+            if is_untargetable(&statuses_of, home.target) {
+                despawn = true;
+            } else if let Ok((unit_entity, unit_tf, team, health, radius)) = units.get(home.target) {
                 // Aim point is unit.y + body(1); keep the vertical pad in world units.
                 let vertical = (impact.y - (unit_tf.translation.y + scale::body(1.0))).abs();
                 if *team != projectile.team
@@ -615,6 +621,7 @@ pub fn apply_projectile_hits(
                 .filter(|(unit_entity, unit_tf, team, health, radius)| {
                     **team != projectile.team
                         && health.is_alive()
+                        && !is_untargetable(&statuses_of, *unit_entity)
                         && primary_hit != Some(*unit_entity)
                         && area_contains(
                             impact,
@@ -1004,5 +1011,82 @@ mod tests {
         world.run_system_once(apply_damage_events).unwrap();
         let expected = 500.0 - apply_damage(125.0, DamageType::Magical, &defender);
         assert!((world.get::<Health>(target).unwrap().current - expected).abs() < 1e-3);
+    }
+
+    #[test]
+    fn in_flight_projectile_at_cycloned_unit_does_not_hit() {
+        let mut world = World::new();
+        world.init_resource::<Messages<ProjectileHitEvent>>();
+        let mut cycloned = StatusEffects::default();
+        cycloned
+            .effects
+            .push(crate::status::StatusEffect::cyclone(2.0, true));
+        let target = world
+            .spawn((
+                Transform::from_xyz(0.0, 0.0, 0.0),
+                Team::Dire,
+                Health::new(500.0),
+                cycloned,
+            ))
+            .id();
+        let splashed = world
+            .spawn((
+                Transform::from_xyz(30.0, 0.0, 0.0),
+                Team::Dire,
+                Health::new(500.0),
+                {
+                    let mut s = StatusEffects::default();
+                    s.effects
+                        .push(crate::status::StatusEffect::cyclone(2.0, true));
+                    s
+                },
+            ))
+            .id();
+        let bystander = world
+            .spawn((
+                Transform::from_xyz(-30.0, 0.0, 0.0),
+                Team::Dire,
+                Health::new(500.0),
+            ))
+            .id();
+        let caster = world
+            .spawn((Transform::from_xyz(-500.0, 0.0, 0.0), Team::Radiant, Health::new(500.0)))
+            .id();
+        let payload = ProjectilePayload {
+            caster,
+            ability: AbilityId::Bolt,
+            rank: 1,
+            cast_target: Some(target),
+            aim: Vec3::ZERO,
+        };
+        world.spawn((
+            Transform::from_xyz(0.0, scale::body(1.0), 0.0),
+            Projectile {
+                speed: 1.0,
+                team: Team::Radiant,
+                radius: scale::body(0.85),
+                lifetime: 1.0,
+                splash_radius: 60.0,
+            },
+            payload,
+            ProjectileHome {
+                target,
+                last_pos: Vec3::ZERO,
+            },
+        ));
+        world.run_system_once(apply_projectile_hits).unwrap();
+
+        let hits: Vec<_> = world
+            .resource::<Messages<ProjectileHitEvent>>()
+            .iter_current_update_messages()
+            .cloned()
+            .collect();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].primary, None, "the projectile misses the cycloned unit");
+        assert_eq!(
+            hits[0].splashed,
+            vec![bystander],
+            "splash skips cycloned units too"
+        );
     }
 }

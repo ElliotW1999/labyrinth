@@ -46,6 +46,10 @@ pub const HERO_VISION_RANGE: f32 = 1800.0;
 pub const TOWER_VISION_RANGE: f32 = 1900.0;
 pub const CREEP_VISION_RANGE: f32 = 800.0;
 
+/// How far a cycloned unit is lifted above the ground.
+pub const CYCLONE_HEIGHT: f32 = 140.0;
+/// Seconds a cyclone takes to lift the unit, and to set it down again at the end.
+pub const CYCLONE_RISE_TIME: f32 = 0.25;
 /// Speed of a dash (units / second), independent of the dasher's move speed.
 pub const DASH_SPEED: f32 = 1200.0;
 

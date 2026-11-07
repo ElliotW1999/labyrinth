@@ -19,7 +19,7 @@ use bevy::prelude::*;
 
 use crate::components::{AttackMoveOrder, CollisionRadius, CombatStats, Health, MoveTarget};
 use crate::dimensions::collision_of;
-use crate::displacement::ForcedMovement;
+use crate::displacement::{ForcedMovement, MotionPriority};
 use crate::navigation::attack_position::AttackPositionGoal;
 use crate::navigation::{MobileFilter, NavGrid, NavPath, NavSteering, flat};
 use crate::status::StatusEffects;
@@ -63,6 +63,8 @@ pub enum TeleportError {
     Blocked,
     /// Another unit occupies the spot and unit collision would have to separate them.
     Occupied,
+    /// The target is held out of play (cyclone) and cannot be moved by anything else.
+    Suspended,
 }
 
 /// Checks a collision circle of `radius` at `destination` against the map, static
@@ -98,7 +100,7 @@ type TeleportQuery<'w, 's> = Query<
         Option<&'static StatusEffects>,
         Option<&'static Health>,
         Has<CombatStats>,
-        Has<ForcedMovement>,
+        Option<&'static ForcedMovement>,
     ),
     MobileFilter,
 >;
@@ -122,12 +124,16 @@ pub fn apply_teleport_events(
             });
         };
 
-        let Ok((_, _, radius, statuses, health, ..)) = units.get(event.target) else {
+        let Ok((_, _, radius, statuses, health, _, motion)) = units.get(event.target) else {
             reject(&mut rejected, TeleportError::InvalidTarget);
             continue;
         };
         if health.is_some_and(|h| !h.is_alive()) {
             reject(&mut rejected, TeleportError::InvalidTarget);
+            continue;
+        }
+        if motion.is_some_and(|m| m.priority == MotionPriority::Suspend) {
+            reject(&mut rejected, TeleportError::Suspended);
             continue;
         }
         let radius = collision_of(radius);
@@ -141,7 +147,7 @@ pub fn apply_teleport_events(
                     !phased
                         && *entity != event.target
                         && *combatant
-                        && !*forced
+                        && forced.is_none()
                         && collision_of(*other_radius) > 0.0
                         && !other_statuses.is_some_and(|s| s.is_phased())
                 },
@@ -538,5 +544,24 @@ mod tests {
         app.world_mut()
             .schedule_scope(Update, |world, schedule| schedule.initialize(world))
             .expect("the update schedule has no ordering cycle");
+    }
+
+    #[test]
+    fn suspended_units_cannot_be_teleported() {
+        let mut app = sim_app();
+        let unit = spawn_unit(&mut app, Vec3::ZERO, 40.0);
+        let mut hold = ForcedMovement::new(
+            crate::displacement::MotionPath::Hold {
+                at: Vec3::ZERO,
+                height: 100.0,
+            },
+            3.0,
+        );
+        hold.priority = MotionPriority::Suspend;
+        app.world_mut().entity_mut(unit).insert(hold);
+        teleport(&mut app, unit, Vec3::new(2000.0, 0.0, 2000.0));
+        assert_eq!(rejections(&app), vec![TeleportError::Suspended]);
+        assert_eq!(pos(&app, unit), Vec3::ZERO);
+        assert!(app.world().get::<ForcedMovement>(unit).is_some());
     }
 }

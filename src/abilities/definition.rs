@@ -382,6 +382,9 @@ pub enum DisplacementKind {
     /// The target rides along with the caster's own forced movement (a dash or charge),
     /// keeping its offset, until that movement ends or `duration` (when above zero) runs out.
     Drag,
+    /// The target is lifted and held in place for `duration`: stunned, invulnerable,
+    /// untargetable, and immune to other displacement and teleports.
+    Cyclone,
 }
 
 /// Permanent stat bonus granted by an item's `Passive` entries.

@@ -231,6 +231,24 @@ impl StatusEffect {
         }
     }
 
+    /// Lifted out of play: stunned, invulnerable, and untargetable. `hostile` picks the
+    /// debuff kind (blocked by debuff immunity) over the buff kind (self / ally cast).
+    /// Not purgeable; only expiry or an explicit `remove_status cyclone` ends it.
+    pub fn cyclone(duration: f32, hostile: bool) -> Self {
+        Self {
+            stunned: true,
+            invulnerable: true,
+            kind: if hostile {
+                StatusKind::Debuff
+            } else {
+                StatusKind::Buff
+            },
+            dispel_type: DispelType::None,
+            undispellable: true,
+            ..Self::buff("cyclone", duration)
+        }
+    }
+
     pub fn blind(miss_chance: f32, duration: f32) -> Self {
         Self {
             blind_miss_chance: miss_chance.clamp(0.0, 1.0),
@@ -339,6 +357,17 @@ impl StatusEffects {
             .any(|e| e.invulnerable && e.remaining > 0.0)
     }
 
+    /// Whether a status with this id is active.
+    pub fn has_status(&self, id: &str) -> bool {
+        self.effects.iter().any(|e| e.id == id && e.remaining > 0.0)
+    }
+
+    /// In a cyclone: no other unit can pick it as a unit target (basic attacks, unit
+    /// casts, auto-acquire, homing projectiles) and area effects skip it.
+    pub fn is_untargetable(&self) -> bool {
+        self.has_status("cyclone")
+    }
+
     pub fn can_move(&self) -> bool {
         !self.is_rooted()
     }
@@ -350,6 +379,14 @@ impl StatusEffects {
     pub fn can_cast(&self) -> bool {
         !self.is_silenced() && !self.is_stunned() && !self.is_asleep()
     }
+}
+
+/// Whether `entity` is held out of play (cyclone) and so cannot be picked as a target.
+/// The one check behind every "can this unit be targeted" filter.
+pub fn is_untargetable(statuses: &Query<&StatusEffects>, entity: Entity) -> bool {
+    statuses
+        .get(entity)
+        .is_ok_and(|statuses| statuses.is_untargetable())
 }
 
 /// Whether `effect` is removed by a dispel of `strength` on `kind`.

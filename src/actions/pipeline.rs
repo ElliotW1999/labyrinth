@@ -154,6 +154,7 @@ type UnitQuery<'w, 's> = Query<
         &'static Team,
         &'static Health,
         Option<&'static BoundRadius>,
+        Option<&'static StatusEffects>,
     ),
 >;
 
@@ -161,10 +162,11 @@ fn unit_info(units: &UnitQuery, entity: Entity) -> Option<UnitInfo> {
     units
         .get(entity)
         .ok()
-        .map(|(tf, team, health, bound)| UnitInfo {
+        .map(|(tf, team, health, bound, statuses)| UnitInfo {
             position: tf.translation,
             team: *team,
             alive: health.is_alive(),
+            untargetable: statuses.is_some_and(|s| s.is_untargetable()),
             bounds: bounds_of(bound),
         })
 }

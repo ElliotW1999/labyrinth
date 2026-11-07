@@ -27,7 +27,7 @@ use crate::dimensions::{area_contains, bounds_of, edge_distance, within_range};
 use crate::facing::turn_toward;
 use crate::resources::SharedAssets;
 use crate::scale;
-use crate::status::StatusEffects;
+use crate::status::{StatusEffects, is_untargetable};
 
 /// Deterministic "roll" for blind miss (same attacker/target pair is stable within a session).
 fn basic_attack_misses_blind(attacker: Entity, target: Entity, miss_chance: f32) -> bool {
@@ -128,11 +128,12 @@ pub fn request_basic_attacks(
         &Health,
         Option<&BoundRadius>,
     )>,
+    statuses_of: Query<&StatusEffects>,
 ) {
     let dt = time.delta_secs();
     let target_snapshots: Vec<_> = targets
         .iter()
-        .filter(|(_, _, _, hp, _)| hp.is_alive())
+        .filter(|(e, _, _, hp, _)| hp.is_alive() && !is_untargetable(&statuses_of, *e))
         .map(|(e, t, team, _, radius)| (e, t.translation(), *team, bounds_of(radius)))
         .collect();
 
@@ -300,6 +301,7 @@ pub fn resolve_attack_releases(
     mut impacts: MessageWriter<BasicAttackImpactEvent>,
     attackers: Query<(&Transform, &Team, &CombatStats, Option<&BoundRadius>)>,
     targets: Query<(&GlobalTransform, &Team, &Health, Option<&BoundRadius>)>,
+    statuses_of: Query<&StatusEffects>,
 ) {
     for release in releases.read() {
         let Ok((transform, team, stats, attacker_bound)) = attackers.get(release.attacker) else {
@@ -310,7 +312,9 @@ pub fn resolve_attack_releases(
             .get(release.target)
             .ok()
             .filter(|(_, target_team, health, _)| {
-                **target_team == team.enemy() && health.is_alive()
+                **target_team == team.enemy()
+                    && health.is_alive()
+                    && !is_untargetable(&statuses_of, release.target)
             });
 
         if scale::is_melee_attack_range(stats.attack_range) {
@@ -366,6 +370,7 @@ pub fn advance_attacks_in_flight(
     mut impacts: MessageWriter<BasicAttackImpactEvent>,
     mut attacks: Query<(Entity, &mut BasicAttackInFlight)>,
     targets: Query<(&GlobalTransform, &Health, Option<&BoundRadius>)>,
+    statuses_of: Query<&StatusEffects>,
 ) {
     let dt = time.delta_secs();
     for (entity, mut attack) in &mut attacks {
@@ -415,6 +420,7 @@ pub fn advance_attacks_in_flight(
             let target_origin = tf.translation();
             let vertical = (attack.position.y - aim_point(target_origin).y).abs();
             health.is_alive()
+                && !is_untargetable(&statuses_of, attack.target)
                 && vertical < scale::body(2.5)
                 && area_contains(
                     attack.position,
@@ -444,12 +450,16 @@ pub fn resolve_basic_attack_impacts(
     targets: Query<(&Team, &Health, Option<&StatusEffects>)>,
     attackers: Query<(&CombatStats, &Transform)>,
     cleave_candidates: Query<(Entity, &Transform, &Team, &Health, Option<&BoundRadius>)>,
+    statuses_of: Query<&StatusEffects>,
 ) {
     for impact in impacts.read() {
         let Ok((team, health, defender_status)) = targets.get(impact.target) else {
             continue;
         };
-        if *team != impact.attacker_team.enemy() || !health.is_alive() {
+        if *team != impact.attacker_team.enemy()
+            || !health.is_alive()
+            || defender_status.is_some_and(|s| s.is_untargetable())
+        {
             continue;
         }
         let blind = defender_status
@@ -476,6 +486,7 @@ pub fn resolve_basic_attack_impacts(
             if entity == impact.target
                 || *unit_team != impact.attacker_team.enemy()
                 || !hp.is_alive()
+                || is_untargetable(&statuses_of, entity)
             {
                 continue;
             }
@@ -777,5 +788,41 @@ mod tests {
             0
         );
         assert!(world.resource::<Messages<DamageEvent>>().is_empty());
+    }
+
+    #[test]
+    fn cycloned_unit_cannot_be_targeted_or_attacked() {
+        let (mut world, mut schedule) = world_with_pipeline();
+        let target_pos = Vec3::new(100.0, 0.0, 0.0);
+        let target = spawn_unit(&mut world, Team::Dire, target_pos, passive_stats());
+        let mut statuses = StatusEffects::default();
+        statuses.effects.push(crate::status::StatusEffect {
+            // Isolate untargetability from the damage block.
+            invulnerable: false,
+            ..crate::status::StatusEffect::cyclone(5.0, true)
+        });
+        world.entity_mut(target).insert(statuses);
+
+        // An ordered attack and an AI attacker that would auto-acquire the nearest enemy.
+        let ordered = spawn_attacker(&mut world, scale::MELEE_ATTACK_RANGE, target, target_pos);
+        let seeker = spawn_unit(
+            &mut world,
+            Team::Radiant,
+            Vec3::new(0.0, 0.0, 40.0),
+            CombatStats::simple(50.0, scale::MELEE_ATTACK_RANGE, 1.0, 0.0, 0.0, 300.0),
+        );
+        for _ in 0..20 {
+            step(&mut world, &mut schedule);
+        }
+        assert_eq!(hp(&world, target), 1000.0, "nothing can hit a cycloned unit");
+        assert!(world.get::<AttackSwing>(ordered).is_none());
+        assert!(world.get::<AttackSwing>(seeker).is_none());
+
+        // Once the cyclone ends the same attackers connect again.
+        world.get_mut::<StatusEffects>(target).unwrap().effects.clear();
+        for _ in 0..20 {
+            step(&mut world, &mut schedule);
+        }
+        assert!(hp(&world, target) < 1000.0);
     }
 }

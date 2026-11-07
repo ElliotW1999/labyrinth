@@ -24,7 +24,7 @@ use crate::components::{AbilityId, BoundRadius, CombatStats, Health, HeroAttribu
 use crate::dimensions::{area_contains, bounds_of};
 use crate::displacement::DisplacementEvent;
 use crate::items::ItemId;
-use crate::status::{StatusChange, StatusEffectEvent};
+use crate::status::{StatusChange, StatusEffectEvent, StatusEffects, is_untargetable};
 use crate::teleport::TeleportEvent;
 
 /// What owns the effect entries a trigger resolves against.
@@ -183,6 +183,7 @@ pub struct EffectRunner<'w, 's> {
     commands: Commands<'w, 's>,
     custom: Res<'w, CustomAbilityEffects>,
     units: UnitQuery<'w, 's>,
+    statuses_of: Query<'w, 's, &'static StatusEffects>,
     stats: Query<'w, 's, &'static CombatStats>,
     attributes: Query<'w, 's, &'static HeroAttributes>,
     damage: MessageWriter<'w, DamageEvent>,
@@ -194,10 +195,12 @@ pub struct EffectRunner<'w, 's> {
 }
 
 impl EffectRunner<'_, '_> {
-    fn living(&self, entity: Entity) -> bool {
+    /// Alive, and not lifted out of play unless it is the caster itself.
+    fn valid_target(&self, ctx: &TriggerContext, entity: Entity) -> bool {
         self.units
             .get(entity)
             .is_ok_and(|(_, _, _, health, _)| health.is_alive())
+            && (entity == ctx.caster || !is_untargetable(&self.statuses_of, entity))
     }
 
     pub fn targets(
@@ -210,19 +213,19 @@ impl EffectRunner<'_, '_> {
             EffectTarget::Caster => vec![ctx.caster],
             EffectTarget::CastTarget => ctx
                 .cast_target
-                .filter(|&e| self.living(e))
+                .filter(|&e| self.valid_target(ctx, e))
                 .into_iter()
                 .collect(),
             EffectTarget::TriggerUnit => ctx
                 .trigger_unit
-                .filter(|&e| self.living(e))
+                .filter(|&e| self.valid_target(ctx, e))
                 .into_iter()
                 .collect(),
             EffectTarget::AffectedUnits => ctx
                 .affected_units
                 .iter()
                 .copied()
-                .filter(|&e| self.living(e))
+                .filter(|&e| self.valid_target(ctx, e))
                 .collect(),
             EffectTarget::UnitsInRadius {
                 center,
@@ -240,8 +243,9 @@ impl EffectRunner<'_, '_> {
                 };
                 self.units
                     .iter()
-                    .filter(|(_, tf, unit_team, health, bound)| {
+                    .filter(|(e, tf, unit_team, health, bound)| {
                         health.is_alive()
+                            && (*e == ctx.caster || !is_untargetable(&self.statuses_of, *e))
                             && team_allows(team, ctx.team, **unit_team)
                             && area_contains(center, radius, tf.translation, bounds_of(*bound))
                     })

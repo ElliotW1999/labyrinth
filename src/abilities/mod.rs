@@ -1997,6 +1997,37 @@ mod tests {
         assert_eq!(caster_x(&app, ally), 350.0, "allies are not contacted");
     }
 
+    #[test]
+    fn unit_cast_on_a_cycloned_target_is_rejected_and_area_effects_skip_it() {
+        let mut app = test_app();
+        let caster = spawn_caster(&mut app, KIT);
+        let hidden = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        let visible = spawn_unit(&mut app, Team::Dire, Vec3::new(-100.0, 0.0, 0.0));
+        app.world_mut()
+            .get_mut::<StatusEffects>(hidden)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect {
+                // Isolate untargetability from the damage block.
+                invulnerable: false,
+                ..crate::status::StatusEffect::cyclone(5.0, true)
+            });
+
+        // Bolt is a unit-targeted spell.
+        request(&mut app, caster, 1, CastTarget::Unit(hidden));
+        step(&mut app);
+        assert!(app.world().get::<Activation>(caster).is_none());
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 1000.0);
+
+        // Shockwave hits everything in its radius except the cycloned unit.
+        request(&mut app, caster, 0, CastTarget::None);
+        for _ in 0..9 {
+            step(&mut app);
+        }
+        assert!(health(&app, visible) < 1000.0, "the visible enemy was hit");
+        assert_eq!(health(&app, hidden), 1000.0);
+    }
+
     fn dash_item() -> ItemDefinition {
         static EFFECTS: std::sync::OnceLock<&'static [AbilityEffectEntry]> =
             std::sync::OnceLock::new();

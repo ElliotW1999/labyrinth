@@ -296,6 +296,7 @@ fn effect_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
                 DisplacementKind::Dash => "Dash",
                 DisplacementKind::Charge => "Charge",
                 DisplacementKind::Drag => "Drag",
+                DisplacementKind::Cyclone => "Cyclone",
             };
             let mut rows = Vec::new();
             if let Some(distance) = distance {

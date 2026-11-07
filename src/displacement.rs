@@ -22,7 +22,8 @@ use crate::abilities::effects::{AbilityTriggerEvent, EffectSource, TriggerContex
 use crate::components::{BoundRadius, CollisionRadius, Health, Team};
 use crate::dimensions::{bounds_of, center_distance, collision_of};
 use crate::navigation::{NavGrid, NavPath, NavSteering, flat};
-use crate::status::StatusEffects;
+use crate::scale::{CYCLONE_HEIGHT, CYCLONE_RISE_TIME};
+use crate::status::{StatusChange, StatusEffect, StatusEffectEvent, StatusEffects};
 
 #[derive(Message, Debug, Clone, Copy, PartialEq)]
 pub struct DisplacementEvent {
@@ -99,6 +100,8 @@ pub enum MotionPath {
     /// Keep `offset` (XZ) from `anchor` for as long as the anchor itself is in forced
     /// motion (drag).
     Attached { anchor: Entity, offset: Vec2 },
+    /// Stay at `at` (`at.y` = ground height), lifted by `height` (cyclone).
+    Hold { at: Vec3, height: f32 },
 }
 
 /// Who wins when two motions compete for one unit. A new motion replaces the current
@@ -109,6 +112,8 @@ pub enum MotionPriority {
     Own,
     /// Someone else moves the unit (knockback, pull).
     External,
+    /// The unit is held out of play (cyclone); it rejects every other motion.
+    Suspend,
 }
 
 /// Copy-able trigger identity carried by self-propelled motion so it can report
@@ -153,7 +158,12 @@ pub struct ForcedMovement {
     pub source: Option<MotionSource>,
     /// Units already contacted by this motion.
     pub hit: Vec<Entity>,
+    /// End early once this status id is gone from the unit (`"cyclone"`).
+    pub bound_status: Option<&'static str>,
 }
+
+/// Id of the status that mirrors a cyclone motion.
+const CYCLONE_STATUS: &str = "cyclone";
 
 impl ForcedMovement {
     pub fn new(path: MotionPath, duration: f32) -> Self {
@@ -165,6 +175,7 @@ impl ForcedMovement {
             ignore_terrain: false,
             source: None,
             hit: Vec::new(),
+            bound_status: None,
         }
     }
 
@@ -209,6 +220,7 @@ type DisplaceTargets<'w, 's> = Query<
 pub fn apply_displacement_events(
     mut commands: Commands,
     mut events: MessageReader<DisplacementEvent>,
+    mut statuses: MessageWriter<StatusEffectEvent>,
     units: DisplaceTargets,
 ) {
     // Motions inserted earlier this frame are not visible to the query yet.
@@ -228,15 +240,18 @@ pub fn apply_displacement_events(
         if hostile && target_statuses.is_some_and(|s| s.has_debuff_immunity()) {
             continue;
         }
-        // Self-propelled motion needs a unit that can move.
-        if own && target_statuses.is_some_and(|s| !s.can_move()) {
-            continue;
-        }
-        let priority = if own {
+        let cyclone = event.kind == DisplacementKind::Cyclone;
+        let priority = if cyclone {
+            MotionPriority::Suspend
+        } else if own {
             MotionPriority::Own
         } else {
             MotionPriority::External
         };
+        // Self-propelled motion needs a unit that can move.
+        if priority == MotionPriority::Own && target_statuses.is_some_and(|s| !s.can_move()) {
+            continue;
+        }
         let current_priority = pending
             .get(&event.target)
             .copied()
@@ -252,8 +267,17 @@ pub fn apply_displacement_events(
         };
         let mut motion = ForcedMovement::new(path, duration);
         motion.priority = priority;
-        if own {
+        if priority == MotionPriority::Own {
             motion.source = event.source;
+        }
+        if cyclone {
+            motion.ignore_terrain = true;
+            motion.bound_status = Some(CYCLONE_STATUS);
+            statuses.write(StatusEffectEvent {
+                source: Some(event.caster),
+                target: event.target,
+                change: StatusChange::Apply(StatusEffect::cyclone(duration, hostile)),
+            });
         }
         pending.insert(event.target, priority);
         commands.entity(event.target).insert(motion);
@@ -306,6 +330,23 @@ fn plan_motion(
                 1.0
             };
             Some((path, (duration * share).max(0.05)))
+        }
+        DisplacementKind::Cyclone => {
+            // A refreshed cyclone keeps the original ground height.
+            let at = match units.get(event.target).ok().and_then(|u| u.5) {
+                Some(ForcedMovement {
+                    path: MotionPath::Hold { at, .. },
+                    ..
+                }) => *at,
+                _ => from,
+            };
+            Some((
+                MotionPath::Hold {
+                    at,
+                    height: CYCLONE_HEIGHT,
+                },
+                duration,
+            ))
         }
         DisplacementKind::Drag => {
             // Rides along with the caster's own motion; nothing to ride without one.
@@ -382,6 +423,8 @@ struct UnitSnap {
     pos: Vec3,
     team: Option<Team>,
     alive: bool,
+    /// Held out of play (cyclone): cannot be contacted or chased.
+    untargetable: bool,
     bound: f32,
 }
 
@@ -394,6 +437,7 @@ type SnapQuery<'w, 's> = Query<
         Option<&'static Team>,
         Option<&'static Health>,
         Option<&'static BoundRadius>,
+        Option<&'static StatusEffects>,
     ),
 >;
 
@@ -422,11 +466,12 @@ pub fn tick_forced_movement(
     let snaps: Vec<UnitSnap> = units
         .p1()
         .iter()
-        .map(|(entity, tf, team, health, bound)| UnitSnap {
+        .map(|(entity, tf, team, health, bound, statuses)| UnitSnap {
             entity,
             pos: tf.translation,
             team: team.copied(),
             alive: health.is_none_or(|h| h.is_alive()),
+            untargetable: statuses.is_some_and(|s| s.is_untargetable()),
             bound: bounds_of(bound),
         })
         .collect();
@@ -450,6 +495,8 @@ pub fn tick_forced_movement(
                 forced.priority == MotionPriority::Own && statuses.is_some_and(|s| !s.can_move());
 
             forced.elapsed += dt;
+            let (elapsed, duration, bound_status) =
+                (forced.elapsed, forced.duration, forced.bound_status);
             let mut finished = dead || interrupted || forced.elapsed >= forced.duration;
             let mut reached: Option<Entity> = None;
             let here3 = transform.translation;
@@ -462,6 +509,15 @@ pub fn tick_forced_movement(
                         next = from.lerp(*to, elapsed_t);
                         next.y = here3.y;
                         finished = elapsed_t >= 1.0;
+                    }
+                    MotionPath::Hold { at, height } => {
+                        let ramp = (elapsed / CYCLONE_RISE_TIME)
+                            .min((duration - elapsed) / CYCLONE_RISE_TIME)
+                            .clamp(0.0, 1.0);
+                        next = Vec3::new(at.x, at.y + *height * ramp, at.z);
+                        let status_gone = bound_status
+                            .is_some_and(|id| !statuses.is_some_and(|s| s.has_status(id)));
+                        finished = elapsed >= duration || status_gone;
                     }
                     MotionPath::Attached { anchor, offset } => {
                         // Follows the anchor for as long as the anchor itself is in motion.
@@ -485,7 +541,7 @@ pub fn tick_forced_movement(
                         travelled,
                         last_anchor,
                     } => {
-                        let live_anchor = snap_of(*anchor).filter(|s| s.alive);
+                        let live_anchor = snap_of(*anchor).filter(|s| s.alive && !s.untargetable);
                         if let Some(a) = live_anchor {
                             *last_anchor = a.pos;
                         }
@@ -531,6 +587,9 @@ pub fn tick_forced_movement(
                 }
                 transform.translation.x = next.x;
                 transform.translation.z = next.z;
+                if matches!(forced.path, MotionPath::Hold { .. }) {
+                    transform.translation.y = next.y;
+                }
                 // Self-propelled movers face where they are going.
                 let moved = flat3(next - here3);
                 if forced.priority == MotionPriority::Own && moved.length_squared() > 1e-6 {
@@ -544,6 +603,7 @@ pub fn tick_forced_movement(
                 for other in &snaps {
                     if other.entity == entity
                         || !other.alive
+                        || other.untargetable
                         || other.team.is_none_or(|t| t == src.team)
                         || forced.hit.contains(&other.entity)
                         || center_distance(pos, other.pos) > own_bound + other.bound
@@ -563,6 +623,10 @@ pub fn tick_forced_movement(
                 ended.insert(entity);
             }
             if finished {
+                // A cyclone sets the unit back down, however it ended.
+                if let MotionPath::Hold { at, .. } = forced.path {
+                    transform.translation.y = at.y;
+                }
                 transform.translation =
                     reposition_to_valid_terrain(&grid, transform.translation, r);
                 if !dead && let Some(src) = forced.source {
@@ -619,6 +683,7 @@ mod tests {
                     apply_status_effect_events,
                     tick_status_effects,
                     apply_teleport_events,
+                    crate::combat::apply_damage_events,
                 )
                     .chain()
                     .before(SimSet::Ai),
@@ -1286,5 +1351,126 @@ mod tests {
         run(&mut app, 5);
         assert_eq!(pos(&app, anchor).x, stopped, "the anchor stays put");
         assert!(app.world().get::<ForcedMovement>(victim).is_none());
+    }
+
+    fn cyclone(app: &mut App, target: Entity, caster: Entity, duration: f32) {
+        let origin = pos(app, caster);
+        app.world_mut().write_message(DisplacementEvent {
+            target,
+            kind: DisplacementKind::Cyclone,
+            caster,
+            origin,
+            point: origin,
+            aim: origin,
+            cast_target: Some(target),
+            distance: None,
+            duration,
+            speed: None,
+            source: None,
+        });
+    }
+
+    fn statuses(app: &App, e: Entity) -> &StatusEffects {
+        app.world().get::<StatusEffects>(e).unwrap()
+    }
+
+    #[test]
+    fn cyclone_stuns_lifts_and_restores_height() {
+        let mut app = sim_app();
+        let caster = spawn_unit(&mut app, Team::Radiant, Vec3::new(-300.0, 0.0, 0.0), 30.0);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 4.0, 0.0), 30.0);
+        step(&mut app);
+        cyclone(&mut app, enemy, caster, 1.0);
+        run(&mut app, 2);
+        let s = statuses(&app, enemy);
+        assert!(s.is_stunned() && s.is_invulnerable() && s.is_untargetable());
+        let mut peak = 0.0_f32;
+        for _ in 0..12 {
+            step(&mut app);
+            let p = pos(&app, enemy);
+            peak = peak.max(p.y);
+            assert_eq!((p.x, p.z), (0.0, 0.0), "held in place");
+        }
+        assert!(
+            (peak - (4.0 + scale::CYCLONE_HEIGHT)).abs() < 1e-2,
+            "lifted by the cyclone height: {peak}"
+        );
+        run(&mut app, 25);
+        assert!(app.world().get::<ForcedMovement>(enemy).is_none());
+        assert_eq!(pos(&app, enemy), Vec3::new(0.0, 4.0, 0.0), "set back down");
+        assert!(!statuses(&app, enemy).is_untargetable());
+    }
+
+    #[test]
+    fn cyclone_blocks_damage_displacement_and_teleport() {
+        let mut app = sim_app();
+        let caster = spawn_unit(&mut app, Team::Radiant, Vec3::new(-300.0, 0.0, 0.0), 30.0);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::ZERO, 30.0);
+        step(&mut app);
+        cyclone(&mut app, enemy, caster, 2.0);
+        run(&mut app, 3);
+
+        app.world_mut().write_message(DamageEvent::new(
+            enemy,
+            100.0,
+            crate::components::DamageType::Physical,
+        ));
+        knock(&mut app, enemy, caster, 400.0);
+        app.world_mut().write_message(TeleportEvent {
+            target: enemy,
+            caster,
+            destination: Vec3::new(2000.0, 0.0, 2000.0),
+        });
+        run(&mut app, 3);
+        let motion = app.world().get::<ForcedMovement>(enemy).unwrap();
+        assert!(matches!(motion.path, MotionPath::Hold { .. }));
+        assert_eq!(motion.priority, MotionPriority::Suspend);
+        assert_eq!(app.world().get::<Health>(enemy).unwrap().current, 500.0);
+        let p = pos(&app, enemy);
+        assert_eq!((p.x, p.z), (0.0, 0.0), "neither pushed nor teleported");
+
+        // Another cyclone refreshes it instead of being rejected.
+        cyclone(&mut app, enemy, caster, 3.0);
+        step(&mut app);
+        let motion = app.world().get::<ForcedMovement>(enemy).unwrap();
+        assert_eq!(motion.duration, 3.0);
+        assert!(matches!(motion.path, MotionPath::Hold { at, .. } if at.y == 0.0));
+    }
+
+    #[test]
+    fn cyclone_survives_strong_dispel_and_ends_on_remove() {
+        use crate::status::{DispelStrength, StatusChange, StatusKind};
+        let mut app = sim_app();
+        let caster = spawn_unit(&mut app, Team::Radiant, Vec3::new(-300.0, 0.0, 0.0), 30.0);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::ZERO, 30.0);
+        step(&mut app);
+        cyclone(&mut app, enemy, caster, 5.0);
+        run(&mut app, 8);
+        assert!(pos(&app, enemy).y > 0.0);
+
+        app.world_mut().write_message(StatusEffectEvent {
+            source: Some(caster),
+            target: enemy,
+            change: StatusChange::Dispel {
+                kind: StatusKind::Debuff,
+                strength: DispelStrength::Strong,
+            },
+        });
+        run(&mut app, 3);
+        assert!(
+            statuses(&app, enemy).is_untargetable(),
+            "a dispel cannot end it"
+        );
+        assert!(app.world().get::<ForcedMovement>(enemy).is_some());
+
+        app.world_mut().write_message(StatusEffectEvent {
+            source: Some(caster),
+            target: enemy,
+            change: StatusChange::Remove("cyclone"),
+        });
+        run(&mut app, 2);
+        assert!(app.world().get::<ForcedMovement>(enemy).is_none());
+        assert_eq!(pos(&app, enemy).y, 0.0, "set back down at once");
+        assert!(!statuses(&app, enemy).is_stunned());
     }
 }
