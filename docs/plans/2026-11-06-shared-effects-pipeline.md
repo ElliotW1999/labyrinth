@@ -148,6 +148,8 @@ All implemented on `AbilityEffect` and executed only via event emission in `Effe
 
 ## Gap analysis
 
+> Superseded by `2026-11-07-item-ability-architecture-cleanup.md` (2026-11-07): several gaps below are closed there. Where this table and the cleanup plan disagree, the cleanup plan and the code win.
+
 ### P0 — Document / clarify (no behavior change)
 
 1. **Naming** — Shared concepts live under `abilities::*` (`AbilityTriggerEvent`, `AbilityEffect`, `resolve_ability_triggers`). README already describes cross-item use; code readers may assume ability-only.

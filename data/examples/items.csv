@@ -3,3 +3,4 @@ frost_hammer,Frost Hammer,weapon,2800,1400,3,rare,false,,false,,A heavy weapon i
 blink_item,Blink Dagger,utility,2250,1125,2,epic,false,,false,,Teleport a short distance,15,,point,,800,,,
 healing_salve,Healing Salve,consumable,100,50,1,common,true,5,true,,Restores health over a short time,0.5,,,,,,
 battle_horn,Battle Horn,accessory,1500,750,2,uncommon,false,,true,3,Three rallying blasts,20,,,,,,
+channel_charm,Channel Charm,utility,1000,500,1,common,false,,false,,Channel to heal; an interrupted channel heals less,30,,no_target,self,,0.1,2,

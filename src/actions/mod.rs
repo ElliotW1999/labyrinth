@@ -31,7 +31,8 @@ use crate::components::{AbilityId, CastTarget};
 use crate::items::{ItemId, ItemInstanceId};
 
 pub use pipeline::{
-    ActionSources, resolve_queued_activations, tick_activations, validate_activation_requests,
+    ActionSources, refresh_activation_aims, resolve_queued_activations, tick_activations,
+    validate_activation_requests,
 };
 pub use resources::{ActionCooldown, ActionCost, DisableRule, check_ready};
 pub use targeting::{

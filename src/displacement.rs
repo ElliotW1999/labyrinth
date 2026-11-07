@@ -4,10 +4,9 @@
 use bevy::prelude::*;
 
 use crate::abilities::definition::DisplacementKind;
-use crate::abilities::effects::{StatusChange, StatusEffectEvent};
 use crate::components::BoundRadius;
 use crate::dimensions::bounds_of;
-use crate::items::{StatusEffect, StatusEffects};
+use crate::status::{StatusChange, StatusEffect, StatusEffectEvent, StatusEffects};
 
 #[derive(Message, Debug, Clone, Copy, PartialEq)]
 pub struct DisplacementEvent {

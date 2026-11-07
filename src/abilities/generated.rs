@@ -15,9 +15,9 @@ use super::definition::{
 #[allow(unused_imports)]
 use crate::components::{AbilityId, DamageType};
 #[allow(unused_imports)]
-use crate::items::{DispelStrength, StatusKind};
-#[allow(unused_imports)]
 use crate::scale;
+#[allow(unused_imports)]
+use crate::status::{DispelStrength, StatusKind};
 
 /// CSV-authored definition for `id`, if any.
 pub fn definition(id: AbilityId) -> Option<AbilityDefinition> {
@@ -199,6 +199,41 @@ fn overcharge() -> AbilityDefinition {
         .team(TargetTeam::SelfOnly)
         .costs(RankValue::fixed(1.0), RankValue::from_level_1(15.0, 3.0))
         .timing(0.0, 0.0)
+        .toggle_upkeep(RankValue::fixed(8.0))
+        .on(
+            AbilityTrigger::WhileToggled,
+            EffectTarget::Caster,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Modifier {
+                    id: "overcharge_attack_speed_mult",
+                    kind: StatusKind::Buff,
+                    armor: RankValue::ZERO,
+                    magic_resist: RankValue::ZERO,
+                    move_speed: RankValue::ZERO,
+                    attack_damage: RankValue::ZERO,
+                    attack_speed_flat: RankValue::ZERO,
+                    attack_speed_mult: RankValue::fixed(0.2),
+                },
+                duration: RankValue::fixed(0.0),
+            },
+        )
+        .on(
+            AbilityTrigger::WhileToggled,
+            EffectTarget::Caster,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Modifier {
+                    id: "overcharge_move_speed",
+                    kind: StatusKind::Buff,
+                    armor: RankValue::ZERO,
+                    magic_resist: RankValue::ZERO,
+                    move_speed: RankValue::fixed(10.0),
+                    attack_damage: RankValue::ZERO,
+                    attack_speed_flat: RankValue::ZERO,
+                    attack_speed_mult: RankValue::ZERO,
+                },
+                duration: RankValue::fixed(0.0),
+            },
+        )
 }
 // </ability:overcharge>
 

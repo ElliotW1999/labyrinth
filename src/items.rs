@@ -3,19 +3,20 @@
 use bevy::prelude::*;
 
 use crate::abilities::definition::{
-    AbilityEffect, AbilityEffectEntry, AbilityTrigger, AreaRadius, Attribute, DisplacementKind,
-    EffectScaling, EffectTarget, PassiveStat, RankValue, StatusSpec,
+    AbilityEffect, AbilityEffectEntry, AbilityTrigger, AreaRadius, Attribute, EffectTarget,
+    PassiveStat,
 };
 use crate::abilities::effects::{AbilityTriggerEvent, EffectSource, TriggerContext};
+use crate::abilities::tooltip;
 use crate::actions::{
     ActionCooldown, ActionCost, ActionFiredEvent, ActionId, ActionSpec, DisableRule, TargetTeam,
     TargetType,
 };
 use crate::basic_attack::{BasicAttackImpactEvent, BasicAttackReleaseEvent};
-use crate::combat::{DamageEvent, flat_distance};
+use crate::combat::flat_distance;
 use crate::components::{
-    CastTarget, CombatStats, DamageType, Health, HeroAttributes, Lifetime, Mana, PlayerHero,
-    PlayerWallet, ShieldPool, SpellFx, Team,
+    CastTarget, CombatStats, Health, HeroAttributes, Lifetime, Mana, PlayerHero, PlayerWallet,
+    SpellFx, Team,
 };
 use crate::resources::SharedAssets;
 use crate::scale;
@@ -37,9 +38,6 @@ impl Plugin for ItemsPlugin {
             .add_systems(
                 Update,
                 (
-                    tick_item_cooldowns,
-                    tick_status_effects.before(crate::combat::apply_damage_events),
-                    item_attack_triggers,
                     try_purchase_from_ui,
                     try_sell_from_ui,
                     try_undo_from_ui,
@@ -189,388 +187,28 @@ impl ItemInstanceId {
 pub struct ItemInstance {
     pub id: ItemId,
     pub instance: ItemInstanceId,
-    pub cooldown_remaining: f32,
+    /// Cooldown and, for consumables with `max_charges`, the charges left on the
+    /// current unit. Item charges never regenerate; the next unit starts full.
+    pub cooldown: ActionCooldown,
     /// Units in this slot (stackable items).
     pub stack: u32,
-    /// Charges left on the current unit (items with `max_charges`).
-    pub charges: Option<u32>,
+    /// Units used up at commit whose passives `resolve_item_uses` has not removed yet.
+    pub spent_units: u32,
 }
 
 impl ItemInstance {
     pub fn new(id: ItemId) -> Self {
+        let def = id.definition();
         Self {
             id,
             instance: ItemInstanceId::next(),
-            cooldown_remaining: 0.0,
+            cooldown: ActionCooldown {
+                charges: def.max_charges.filter(|_| def.consumable),
+                ..ActionCooldown::default()
+            },
             stack: 1,
-            charges: id.definition().max_charges,
+            spent_units: 0,
         }
-    }
-
-    /// Spend one use of a consumable with `max_charges` per unit. Returns how many
-    /// units were used up (0 or 1).
-    pub fn consume(&mut self, max_charges: Option<u32>) -> u32 {
-        if let Some(charges) = self.charges.as_mut() {
-            *charges = charges.saturating_sub(1);
-            if *charges > 0 {
-                return 0;
-            }
-            self.charges = max_charges;
-        }
-        self.stack = self.stack.saturating_sub(1);
-        1
-    }
-}
-
-/// Generic buff / debuff container on heroes (and potentially other units later).
-#[derive(Component, Debug, Clone, Default)]
-pub struct StatusEffects {
-    pub effects: Vec<StatusEffect>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-pub enum StatusKind {
-    Buff,
-    Debuff,
-}
-
-/// How hard this unit’s dispel is when purging matching [`StatusKind`] stacks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum DispelStrength {
-    /// Removes [`DispelType::Basic`] and [`DispelType::Strong`] stacks.
-    #[default]
-    Basic,
-    /// Removes only [`DispelType::Strong`] (and Basic) stacks; Strong dispels act as full purge on dispellable effects.
-    Strong,
-}
-
-/// Per-effect resistance to [`AbilityEffect::Dispel`] (basic vs strong purge).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum DispelType {
-    /// Purgable by basic or strong dispel.
-    #[default]
-    Basic,
-    /// Only strong dispel removes this (and basic debuff immunity purge).
-    Strong,
-    /// Never removed by dispel (still removed by explicit id / expiry / special rules).
-    None,
-}
-
-#[derive(Debug, Clone)]
-pub struct StatusEffect {
-    pub id: &'static str,
-    pub kind: StatusKind,
-    pub remaining: f32,
-    pub dispel_type: DispelType,
-    /// When true, no dispel removes this (same as [`DispelType::None`] but skips strong purge too).
-    pub undispellable: bool,
-    /// Flat combat modifiers applied for the duration (removed on expire).
-    pub attack_damage: f32,
-    pub armor: f32,
-    pub magic_resist: f32,
-    pub move_speed: f32,
-    /// Flat IAS change from this effect (negative values slow attack speed).
-    pub attack_speed_flat: f32,
-    /// Multiplicative AS modifier × (1 + `attack_speed_mult`) — negative slows.
-    pub attack_speed_mult: f32,
-    /// Percent slow applied to turn rate (0..100), see [`CombatStats::turn_rate`].
-    pub turn_rate_slow_percent: f32,
-    /// 0..1 miss chance on basic attack damage resolution (`0` = no blind).
-    pub blind_miss_chance: f32,
-    pub heal_per_sec: f32,
-    pub damage_per_sec: f32,
-    pub dot_damage_type: DamageType,
-    pub dot_source: Option<Entity>,
-    /// Added to [`ShieldPool`] on apply; removed on expire.
-    pub shield_amount: f32,
-    pub damage_immune: bool,
-    /// When true, skip collision with creeps and heroes (buildings/trees still block).
-    pub ignore_unit_collision: bool,
-    /// When true, this unit claims more separation against overlapping creeps/heroes.
-    pub force_unit_push: bool,
-    pub silenced: bool,
-    pub stunned: bool,
-    pub rooted: bool,
-    pub disarmed: bool,
-    pub muted: bool,
-    pub asleep: bool,
-    pub invulnerable: bool,
-    pub debuff_immune: bool,
-    /// Forced retreat from this entity while feared (`None` if source despawned).
-    pub fear_source: Option<Entity>,
-}
-
-impl StatusEffect {
-    pub fn buff(id: &'static str, duration: f32) -> Self {
-        Self {
-            id,
-            kind: StatusKind::Buff,
-            remaining: duration,
-            dispel_type: DispelType::Basic,
-            undispellable: false,
-            attack_damage: 0.0,
-            armor: 0.0,
-            magic_resist: 0.0,
-            move_speed: 0.0,
-            attack_speed_flat: 0.0,
-            attack_speed_mult: 0.0,
-            turn_rate_slow_percent: 0.0,
-            blind_miss_chance: 0.0,
-            heal_per_sec: 0.0,
-            damage_per_sec: 0.0,
-            dot_damage_type: DamageType::Magical,
-            dot_source: None,
-            shield_amount: 0.0,
-            damage_immune: false,
-            ignore_unit_collision: false,
-            force_unit_push: false,
-            silenced: false,
-            stunned: false,
-            rooted: false,
-            disarmed: false,
-            muted: false,
-            asleep: false,
-            invulnerable: false,
-            debuff_immune: false,
-            fear_source: None,
-        }
-    }
-
-    pub fn shield(amount: f32, duration: f32) -> Self {
-        Self {
-            shield_amount: amount,
-            ..Self::buff("shield", duration)
-        }
-    }
-
-    pub fn burn(dps: f32, damage_type: DamageType, duration: f32) -> Self {
-        Self {
-            damage_per_sec: dps,
-            dot_damage_type: damage_type,
-            ..Self::debuff("burn", duration)
-        }
-    }
-
-    pub fn debuff(id: &'static str, duration: f32) -> Self {
-        Self {
-            kind: StatusKind::Debuff,
-            ..Self::buff(id, duration)
-        }
-    }
-
-    pub fn phased(duration: f32) -> Self {
-        Self {
-            ignore_unit_collision: true,
-            ..Self::buff("phased", duration)
-        }
-    }
-
-    /// Temporary soft-separation against other units.
-    pub fn forceful(duration: f32) -> Self {
-        Self {
-            force_unit_push: true,
-            ..Self::buff("forceful", duration)
-        }
-    }
-
-    pub fn silenced(duration: f32) -> Self {
-        Self {
-            silenced: true,
-            ..Self::debuff("silence", duration)
-        }
-    }
-
-    pub fn stunned(duration: f32) -> Self {
-        Self {
-            stunned: true,
-            ..Self::debuff("stun", duration)
-        }
-    }
-
-    pub fn rooted(duration: f32) -> Self {
-        Self {
-            rooted: true,
-            ..Self::debuff("root", duration)
-        }
-    }
-
-    pub fn disarmed(duration: f32) -> Self {
-        Self {
-            disarmed: true,
-            ..Self::debuff("disarm", duration)
-        }
-    }
-
-    pub fn debuff_immunity(duration: f32) -> Self {
-        Self {
-            debuff_immune: true,
-            dispel_type: DispelType::None,
-            undispellable: true,
-            ..Self::buff("spell_immunity", duration)
-        }
-    }
-
-    pub fn mute(duration: f32) -> Self {
-        Self {
-            muted: true,
-            ..Self::debuff("mute", duration)
-        }
-    }
-
-    pub fn sleep(duration: f32) -> Self {
-        Self {
-            asleep: true,
-            ..Self::debuff("sleep", duration)
-        }
-    }
-
-    pub fn invulnerable(duration: f32) -> Self {
-        Self {
-            invulnerable: true,
-            kind: StatusKind::Buff,
-            dispel_type: DispelType::Strong,
-            ..Self::buff("invulnerable", duration)
-        }
-    }
-
-    pub fn blind(miss_chance: f32, duration: f32) -> Self {
-        Self {
-            blind_miss_chance: miss_chance.clamp(0.0, 1.0),
-            ..Self::debuff("blind", duration)
-        }
-    }
-
-    pub fn fear(duration: f32, source: Option<Entity>) -> Self {
-        Self {
-            fear_source: source,
-            dispel_type: DispelType::Basic,
-            ..Self::debuff("fear", duration)
-        }
-    }
-
-    /// Full disable: silence + disarm + mute (items only), per catalog “composite hex”.
-    pub fn hexed(duration: f32) -> Self {
-        Self {
-            id: "hex",
-            silenced: true,
-            disarmed: true,
-            muted: true,
-            dispel_type: DispelType::Strong,
-            ..Self::debuff("hex", duration)
-        }
-    }
-}
-
-impl StatusEffects {
-    pub fn is_phased(&self) -> bool {
-        self.effects
-            .iter()
-            .any(|e| e.ignore_unit_collision && e.remaining > 0.0)
-    }
-
-    pub fn can_push_units(&self) -> bool {
-        self.effects
-            .iter()
-            .any(|e| e.force_unit_push && e.remaining > 0.0)
-    }
-
-    pub fn is_silenced(&self) -> bool {
-        self.effects.iter().any(|e| e.silenced && e.remaining > 0.0)
-    }
-
-    pub fn is_stunned(&self) -> bool {
-        self.effects.iter().any(|e| e.stunned && e.remaining > 0.0)
-    }
-
-    pub fn is_asleep(&self) -> bool {
-        self.effects.iter().any(|e| e.asleep && e.remaining > 0.0)
-    }
-
-    pub fn is_rooted(&self) -> bool {
-        self.effects
-            .iter()
-            .any(|e| (e.rooted || e.stunned || e.asleep) && e.remaining > 0.0)
-    }
-
-    pub fn is_disarmed(&self) -> bool {
-        self.effects
-            .iter()
-            .any(|e| (e.disarmed || e.stunned || e.asleep) && e.remaining > 0.0)
-    }
-
-    pub fn is_muted(&self) -> bool {
-        self.effects.iter().any(|e| e.muted && e.remaining > 0.0)
-    }
-
-    pub fn is_feared(&self) -> bool {
-        self.effects
-            .iter()
-            .any(|e| e.id == "fear" && e.remaining > 0.0)
-    }
-
-    pub fn fear_flee_source(&self) -> Option<Entity> {
-        self.effects
-            .iter()
-            .filter(|e| e.id == "fear" && e.remaining > 0.0)
-            .find_map(|e| e.fear_source)
-    }
-
-    pub fn blind_miss_chance(&self) -> f32 {
-        self.effects
-            .iter()
-            .filter(|e| e.remaining > 0.0)
-            .fold(0.0_f32, |acc, e| acc.max(e.blind_miss_chance))
-            .clamp(0.0, 1.0)
-    }
-
-    pub fn has_debuff_immunity(&self) -> bool {
-        self.effects
-            .iter()
-            .any(|e| e.debuff_immune && e.remaining > 0.0)
-    }
-
-    pub fn has_damage_immunity(&self) -> bool {
-        self.effects
-            .iter()
-            .any(|e| e.damage_immune && e.remaining > 0.0)
-    }
-
-    pub fn is_invulnerable(&self) -> bool {
-        self.effects
-            .iter()
-            .any(|e| e.invulnerable && e.remaining > 0.0)
-    }
-
-    pub fn can_move(&self) -> bool {
-        !self.is_rooted()
-    }
-
-    pub fn can_attack(&self) -> bool {
-        !self.is_disarmed()
-    }
-
-    pub fn can_cast(&self) -> bool {
-        !self.is_silenced() && !self.is_stunned() && !self.is_asleep()
-    }
-}
-
-/// Whether `effect` is removed by a dispel of `strength` on `kind`.
-pub fn status_dispel_matches(
-    effect: &StatusEffect,
-    kind: StatusKind,
-    strength: DispelStrength,
-) -> bool {
-    if effect.kind != kind {
-        return false;
-    }
-    if effect.undispellable {
-        return false;
-    }
-    match effect.dispel_type {
-        DispelType::None => false,
-        DispelType::Basic => true,
-        DispelType::Strong => matches!(strength, DispelStrength::Strong),
     }
 }
 
@@ -834,25 +472,55 @@ pub fn item_action_spec(inventory: &Inventory, slot: usize) -> Result<ActionSpec
             mana: activation.mana_cost,
         },
         cooldown: def.cooldown,
-        cooldown_state: ActionCooldown {
-            remaining: item.cooldown_remaining,
-            charges: item.charges,
-            charge_restore_remaining: 0.0,
-        },
+        cooldown_state: item.cooldown,
         disable: DisableRule::MuteOrStun,
         occupies_caster: activation.cast_time > 0.0 || activation.channel_time > 0.0,
     })
 }
 
-/// Start the item's cooldown. Charges and stacks are spent by `resolve_item_uses`,
-/// which also removes the passives of a used-up unit.
+/// Start the item's cooldown and spend its charge, and for a consumable whose last charge
+/// went, one unit of the stack. Spending at commit means a second request in the same
+/// frame already sees the emptied slot. `resolve_item_uses` removes the passives of the
+/// spent units (`spent_units`) and clears an emptied slot.
 pub fn commit_item(inventory: &mut Inventory, slot: usize, spec: &ActionSpec) {
-    if let Some(item) = inventory.slots.get_mut(slot).and_then(|s| s.as_mut()) {
-        item.cooldown_remaining = spec.cooldown;
+    let Some(item) = inventory.slots.get_mut(slot).and_then(|s| s.as_mut()) else {
+        return;
+    };
+    item.cooldown.start(spec.cooldown);
+    let def = item.id.definition();
+    if def.consumable && item.cooldown.charges.is_none_or(|charges| charges == 0) {
+        item.stack = item.stack.saturating_sub(1);
+        item.spent_units += 1;
+        item.cooldown.charges = def.max_charges;
     }
 }
 
 impl ItemDefinition {
+    /// Radius of the item's fixed-size areas: the largest `AreaRadius::Fixed` among its
+    /// `UnitsInRadius` entries that fire from the active (`OnUse` / `OnChannelEnd` / `OnChannelInterrupted`).
+    /// `0.0` when it has none. Used for the targeting indicator and as the
+    /// `AreaRadius::Ability` fallback.
+    pub fn aoe_radius(&self) -> f32 {
+        self.effects
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry.trigger,
+                    AbilityTrigger::OnUse
+                        | AbilityTrigger::OnChannelEnd
+                        | AbilityTrigger::OnChannelInterrupted
+                )
+            })
+            .filter_map(|entry| match entry.target {
+                EffectTarget::UnitsInRadius {
+                    radius: AreaRadius::Fixed(radius),
+                    ..
+                } => Some(radius.at(1)),
+                _ => None,
+            })
+            .fold(0.0, f32::max)
+    }
+
     pub fn effects_for(
         &self,
         trigger: AbilityTrigger,
@@ -1003,15 +671,7 @@ impl ItemId {
                 body.push_str(&format!("\n{line}"));
             }
         }
-        let mut effects = Vec::new();
-        for entry in def.effects {
-            if entry.trigger == AbilityTrigger::Passive {
-                continue;
-            }
-            if let Some(line) = describe_item_effect(entry) {
-                effects.push(line);
-            }
-        }
+        let effects: Vec<String> = def.effects.iter().flat_map(item_effect_lines).collect();
         if !effects.is_empty() {
             body.push_str("\n\nEffects:");
             for line in effects {
@@ -1047,10 +707,14 @@ impl ItemId {
         let def = self.definition();
         def.effects_for(AbilityTrigger::OnUse).next().is_some()
             || (def.activation.channel_time > 0.0
-                && def
+                && (def
                     .effects_for(AbilityTrigger::OnChannelEnd)
                     .next()
-                    .is_some())
+                    .is_some()
+                    || def
+                        .effects_for(AbilityTrigger::OnChannelInterrupted)
+                        .next()
+                        .is_some()))
     }
 
     pub fn inventory_hotkey(index: usize) -> Option<&'static str> {
@@ -1088,35 +752,83 @@ pub struct ItemPassives {
     pub damage_reflect: f32,
 }
 
+impl ItemPassives {
+    /// Add `amount` to the field `stat` maps to. This is the one place that maps a
+    /// [`PassiveStat`] to a bonus field; items and passive abilities both use it.
+    pub fn add_stat(&mut self, stat: PassiveStat, amount: f32) {
+        let field = match stat {
+            PassiveStat::MaxHealth => &mut self.max_health,
+            PassiveStat::HealthRegen => &mut self.health_regen,
+            PassiveStat::MaxMana => &mut self.max_mana,
+            PassiveStat::ManaRegen => &mut self.mana_regen,
+            PassiveStat::AttackDamage => &mut self.attack_damage,
+            PassiveStat::AttackSpeed => &mut self.attack_speed_flat,
+            PassiveStat::Armor => &mut self.armor,
+            PassiveStat::MagicResist => &mut self.magic_resist,
+            PassiveStat::MoveSpeed => &mut self.move_speed,
+            PassiveStat::Attribute(Attribute::Strength) => &mut self.strength,
+            PassiveStat::Attribute(Attribute::Agility) => &mut self.agility,
+            PassiveStat::Attribute(Attribute::Intelligence) => &mut self.intelligence,
+            PassiveStat::SpellAmp => &mut self.spell_amp,
+            PassiveStat::OutgoingPhysicalAmp => &mut self.outgoing_physical_amp,
+            PassiveStat::IncomingDamageAmp => &mut self.incoming_damage_amp,
+            PassiveStat::DamageBlock => &mut self.damage_block,
+            PassiveStat::DamageReflect => &mut self.damage_reflect,
+        };
+        *field += amount;
+    }
+}
+
+impl std::ops::AddAssign for ItemPassives {
+    fn add_assign(&mut self, rhs: Self) {
+        // Destructured so a new field is a compile error here until it is summed.
+        let Self {
+            max_health,
+            health_regen,
+            max_mana,
+            mana_regen,
+            attack_damage,
+            armor,
+            magic_resist,
+            move_speed,
+            attack_speed_flat,
+            strength,
+            agility,
+            intelligence,
+            spell_amp,
+            outgoing_physical_amp,
+            incoming_damage_amp,
+            damage_block,
+            damage_reflect,
+        } = rhs;
+        self.max_health += max_health;
+        self.health_regen += health_regen;
+        self.max_mana += max_mana;
+        self.mana_regen += mana_regen;
+        self.attack_damage += attack_damage;
+        self.armor += armor;
+        self.magic_resist += magic_resist;
+        self.move_speed += move_speed;
+        self.attack_speed_flat += attack_speed_flat;
+        self.strength += strength;
+        self.agility += agility;
+        self.intelligence += intelligence;
+        self.spell_amp += spell_amp;
+        self.outgoing_physical_amp += outgoing_physical_amp;
+        self.incoming_damage_amp += incoming_damage_amp;
+        self.damage_block += damage_block;
+        self.damage_reflect += damage_reflect;
+    }
+}
+
 impl ItemId {
     /// Sum of the item's `Passive` stat entries.
     pub fn passives(self) -> ItemPassives {
         let mut p = ItemPassives::default();
         for entry in self.definition().effects_for(AbilityTrigger::Passive) {
-            let AbilityEffect::PassiveStat { stat, amount } = entry.effect else {
-                continue;
-            };
-            let value = amount.at(1);
-            let field = match stat {
-                PassiveStat::MaxHealth => &mut p.max_health,
-                PassiveStat::HealthRegen => &mut p.health_regen,
-                PassiveStat::MaxMana => &mut p.max_mana,
-                PassiveStat::ManaRegen => &mut p.mana_regen,
-                PassiveStat::AttackDamage => &mut p.attack_damage,
-                PassiveStat::AttackSpeed => &mut p.attack_speed_flat,
-                PassiveStat::Armor => &mut p.armor,
-                PassiveStat::MagicResist => &mut p.magic_resist,
-                PassiveStat::MoveSpeed => &mut p.move_speed,
-                PassiveStat::Attribute(Attribute::Strength) => &mut p.strength,
-                PassiveStat::Attribute(Attribute::Agility) => &mut p.agility,
-                PassiveStat::Attribute(Attribute::Intelligence) => &mut p.intelligence,
-                PassiveStat::SpellAmp => &mut p.spell_amp,
-                PassiveStat::OutgoingPhysicalAmp => &mut p.outgoing_physical_amp,
-                PassiveStat::IncomingDamageAmp => &mut p.incoming_damage_amp,
-                PassiveStat::DamageBlock => &mut p.damage_block,
-                PassiveStat::DamageReflect => &mut p.damage_reflect,
-            };
-            *field += value;
+            if let AbilityEffect::PassiveStat { stat, amount } = entry.effect {
+                p.add_stat(stat, amount.at(1));
+            }
         }
         p
     }
@@ -1124,170 +836,71 @@ impl ItemId {
 
 fn passive_stat_lines(passives: &ItemPassives) -> Vec<String> {
     let rows = [
-        (passives.max_health, "Health"),
-        (passives.health_regen, "Health regen"),
-        (passives.max_mana, "Mana"),
-        (passives.mana_regen, "Mana regen"),
-        (passives.attack_damage, "Attack damage"),
-        (passives.attack_speed_flat, "Attack speed"),
-        (passives.armor, "Armor"),
-        (passives.magic_resist, "Magic resist"),
-        (passives.move_speed, "Move speed"),
-        (passives.strength, "Strength"),
-        (passives.agility, "Agility"),
-        (passives.intelligence, "Intelligence"),
+        (passives.max_health, PassiveStat::MaxHealth),
+        (passives.health_regen, PassiveStat::HealthRegen),
+        (passives.max_mana, PassiveStat::MaxMana),
+        (passives.mana_regen, PassiveStat::ManaRegen),
+        (passives.attack_damage, PassiveStat::AttackDamage),
+        (passives.attack_speed_flat, PassiveStat::AttackSpeed),
+        (passives.armor, PassiveStat::Armor),
+        (passives.magic_resist, PassiveStat::MagicResist),
+        (passives.move_speed, PassiveStat::MoveSpeed),
+        (
+            passives.strength,
+            PassiveStat::Attribute(Attribute::Strength),
+        ),
+        (passives.agility, PassiveStat::Attribute(Attribute::Agility)),
+        (
+            passives.intelligence,
+            PassiveStat::Attribute(Attribute::Intelligence),
+        ),
     ];
     rows.into_iter()
         .filter(|(value, _)| value.abs() >= 0.05)
-        .map(|(value, label)| format!("{:+.0} {label}", value))
+        .map(|(value, stat)| format!("{:+.0} {}", value, tooltip::passive_name(stat)))
         .collect()
 }
 
-fn describe_item_effect(entry: &AbilityEffectEntry) -> Option<String> {
-    let tag = match entry.trigger {
-        AbilityTrigger::OnUse => "Use",
-        AbilityTrigger::OnAttack => "On attack",
-        AbilityTrigger::OnAttackHit => "On attack hit",
-        AbilityTrigger::OnDamageTaken => "When damaged",
-        AbilityTrigger::OnKill => "On kill",
-        AbilityTrigger::OnDeath => "On death",
-        AbilityTrigger::Passive => return None,
-        other => return Some(format!("{other:?}")),
-    };
-    let detail = match entry.effect {
-        AbilityEffect::Damage {
-            amount,
-            damage_type,
-            scaling,
-        } => {
-            let mut line = format!(
-                "Deal {} {} damage",
-                fmt_rank(amount),
-                damage_label(damage_type)
-            );
-            if let Some(note) = scaling_label(scaling) {
-                line.push_str(&format!(" ({note})"));
-            }
-            line.push_str(&target_suffix(&entry.target));
-            line
-        }
-        AbilityEffect::Heal { amount, scaling } => {
-            let mut line = format!("Heal {}", fmt_rank(amount));
-            if let Some(note) = scaling_label(scaling) {
-                line.push_str(&format!(" ({note})"));
+/// Tooltip lines for one non-passive effect entry, from the same describer abilities
+/// use: `"{Tag}: {label} {value}"` per row, then the notes.
+fn item_effect_lines(entry: &AbilityEffectEntry) -> Vec<String> {
+    if entry.trigger == AbilityTrigger::Passive {
+        return Vec::new();
+    }
+    let tag = capitalized(tooltip::trigger_tag(entry.trigger));
+    let (rows, notes) = tooltip::describe_effect(entry);
+    let area = tooltip::area_note(&entry.target);
+    let mut lines: Vec<String> = rows
+        .into_iter()
+        .enumerate()
+        .map(|(index, row)| {
+            let mut line = match row.value {
+                Some(value) => {
+                    let unit = if row.seconds { "s" } else { "" };
+                    format!(
+                        "{tag}: {} {}{unit}",
+                        row.label,
+                        tooltip::fmt_num(value.at(1))
+                    )
+                }
+                None => format!("{tag}: {}", row.label),
+            };
+            // The area belongs to the effect, so it rides on the effect's first line.
+            if let (0, Some(area)) = (index, &area) {
+                line.push_str(&format!(" ({area})"));
             }
             line
-        }
-        AbilityEffect::RestoreMana { amount } => format!("Restore {} mana", fmt_rank(amount)),
-        AbilityEffect::ApplyStatus { status, duration } => match status {
-            StatusSpec::Slow { percent } => {
-                format!("Slow {}% for {}s", fmt_rank(percent), fmt_rank(duration))
-            }
-            StatusSpec::Stun => format!("Stun for {}s", fmt_rank(duration)),
-            StatusSpec::Root => format!("Root for {}s", fmt_rank(duration)),
-            StatusSpec::Silence => format!("Silence for {}s", fmt_rank(duration)),
-            StatusSpec::Disarm => format!("Disarm for {}s", fmt_rank(duration)),
-            StatusSpec::Modifier {
-                armor,
-                magic_resist,
-                move_speed,
-                attack_damage,
-                ..
-            } => {
-                let mut parts = Vec::new();
-                if armor != RankValue::ZERO {
-                    parts.push(format!("{:+.0} armor", armor.at(1)));
-                }
-                if magic_resist != RankValue::ZERO {
-                    parts.push(format!("{:+.0} magic resist", magic_resist.at(1)));
-                }
-                if move_speed != RankValue::ZERO {
-                    parts.push(format!("{:+.0} move speed", move_speed.at(1)));
-                }
-                if attack_damage != RankValue::ZERO {
-                    parts.push(format!("{:+.0} attack damage", attack_damage.at(1)));
-                }
-                format!("{} for {}s", parts.join(", "), fmt_rank(duration))
-            }
-            other => format!("{other:?} for {}s", fmt_rank(duration)),
-        },
-        AbilityEffect::Displace {
-            kind,
-            distance,
-            duration,
-        } => {
-            let name = match kind {
-                DisplacementKind::Knockback => "Knockback",
-                DisplacementKind::Pull => "Pull",
-            };
-            match distance {
-                Some(distance) => {
-                    format!("{name} {} over {}s", fmt_rank(distance), fmt_rank(duration))
-                }
-                None => format!("{name} to the caster over {}s", fmt_rank(duration)),
-            }
-        }
-        AbilityEffect::Dispel { kind, strength } => {
-            let tier = match strength {
-                DispelStrength::Basic => "Basic",
-                DispelStrength::Strong => "Strong",
-            };
-            format!("{tier} dispel {kind:?}s")
-        }
-        AbilityEffect::RemoveStatus { id } => format!("Remove {id}"),
-        AbilityEffect::Teleport => "Teleport to the target point".to_string(),
-        AbilityEffect::Custom { id, .. } => format!("Custom: {id}"),
-        AbilityEffect::PassiveStat { .. } => return None,
-    };
-    Some(format!("{tag}: {detail}"))
+        })
+        .collect();
+    lines.extend(notes.into_iter().map(|note| format!("{tag}: {note}")));
+    lines
 }
 
-fn target_suffix(target: &EffectTarget) -> String {
-    match target {
-        EffectTarget::UnitsInRadius { radius, team, .. } => {
-            let reach = match radius {
-                AreaRadius::Ability => "the area".into(),
-                AreaRadius::Fixed(value) => format!("{}", fmt_rank(*value)),
-            };
-            format!(" to {team:?} in {reach}")
-        }
-        _ => String::new(),
-    }
-}
-
-fn scaling_label(scaling: EffectScaling) -> Option<String> {
-    match scaling {
-        EffectScaling::None => None,
-        EffectScaling::CasterAttackDamage(ratio) => Some(format!("+ {ratio:.2}× attack damage")),
-        EffectScaling::CasterAttribute(attribute, ratio) => {
-            Some(format!("+ {ratio:.2}× {attribute:?}"))
-        }
-        EffectScaling::TargetHealthBelow(fraction) => {
-            Some(format!("below {:.0}% health", fraction * 100.0))
-        }
-        EffectScaling::TargetMissingHealth(ratio) => Some(format!("+ {ratio:.2}× missing health")),
-        EffectScaling::TargetMaxHealth(ratio) => Some(format!("+ {ratio:.2}× max health")),
-        EffectScaling::TargetCurrentHealth(ratio) => Some(format!("+ {ratio:.2}× current health")),
-        EffectScaling::DistanceFromCaster { falloff } => {
-            Some(format!("−{:.0}% at max range", falloff * 100.0))
-        }
-    }
-}
-
-fn damage_label(damage_type: DamageType) -> &'static str {
-    match damage_type {
-        DamageType::Physical => "physical",
-        DamageType::Magical => "magical",
-        DamageType::Pure => "pure",
-    }
-}
-
-fn fmt_rank(value: RankValue) -> String {
-    let number = value.at(1);
-    if (number - number.round()).abs() < 0.05 {
-        format!("{}", number.round() as i32)
-    } else {
-        format!("{number:.1}")
+fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
     }
 }
 
@@ -1406,149 +1019,15 @@ fn spawn_shops(
     ));
 }
 
-fn tick_item_cooldowns(time: Res<Time>, mut inventories: Query<&mut Inventory>) {
+/// Ticks in the `AbilitiesPlugin` chain next to the ability cooldowns, so both sources
+/// share the authority gate. Charges do not regenerate.
+pub(crate) fn tick_item_cooldowns(time: Res<Time>, mut inventories: Query<&mut Inventory>) {
     let dt = time.delta_secs();
     for mut inv in &mut inventories {
-        for slot in &mut inv.slots {
-            if let Some(item) = slot.as_mut() {
-                item.cooldown_remaining = (item.cooldown_remaining - dt).max(0.0);
-            }
+        for item in inv.slots.iter_mut().flatten() {
+            item.cooldown.tick(dt);
         }
     }
-}
-
-fn tick_status_effects(
-    time: Res<Time>,
-    mut damage: MessageWriter<DamageEvent>,
-    mut units: Query<(
-        Entity,
-        &mut StatusEffects,
-        &mut CombatStats,
-        &mut Health,
-        Option<&mut ShieldPool>,
-        Option<&HeroAttributes>,
-    )>,
-) {
-    let dt = time.delta_secs();
-    for (entity, mut statuses, mut stats, mut health, mut shield, attrs) in &mut units {
-        let agi = attrs.map(|a| a.agility).unwrap_or(0.0);
-        let mut i = 0;
-        while i < statuses.effects.len() {
-            let effect = &mut statuses.effects[i];
-            if effect.heal_per_sec > 0.0 {
-                health.current = (health.current + effect.heal_per_sec * dt).min(health.max);
-            }
-            if effect.damage_per_sec > 0.0 {
-                damage.write(DamageEvent::dot(
-                    effect.dot_source,
-                    entity,
-                    effect.damage_per_sec * dt,
-                    effect.dot_damage_type,
-                ));
-            }
-            effect.remaining -= dt;
-            if effect.remaining <= 0.0 {
-                let expired = statuses.effects.remove(i);
-                subtract_status_stat_delta(&expired, &mut stats, agi);
-                if expired.shield_amount > 0.0 {
-                    if let Some(pool) = shield.as_deref_mut() {
-                        pool.amount = (pool.amount - expired.shield_amount).max(0.0);
-                    }
-                }
-            } else {
-                i += 1;
-            }
-        }
-    }
-}
-
-/// Apply a phased buff (no combat-stat mutation).
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn apply_phased(statuses: &mut StatusEffects, duration: f32) {
-    statuses.effects.retain(|e| e.id != "phased");
-    statuses.effects.push(StatusEffect::phased(duration));
-}
-
-/// Apply a forceful buff so this unit claims more separation against overlaps.
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn apply_forceful(statuses: &mut StatusEffects, duration: f32) {
-    statuses.effects.retain(|e| e.id != "forceful");
-    statuses.effects.push(StatusEffect::forceful(duration));
-}
-
-pub(crate) fn subtract_status_stat_delta(effect: &StatusEffect, stats: &mut CombatStats, agility: f32) {
-    stats.attack_damage -= effect.attack_damage;
-    stats.armor -= effect.armor;
-    stats.magic_resist -= effect.magic_resist;
-    stats.move_speed -= effect.move_speed;
-    stats.attack_speed_flat -= effect.attack_speed_flat;
-    stats.attack_speed_mult -= effect.attack_speed_mult;
-    stats.recompute_attack_speed(agility);
-}
-
-pub(crate) fn add_status_stat_delta(effect: &StatusEffect, stats: &mut CombatStats, agility: f32) {
-    stats.attack_damage += effect.attack_damage;
-    stats.armor += effect.armor;
-    stats.magic_resist += effect.magic_resist;
-    stats.move_speed += effect.move_speed;
-    stats.attack_speed_flat += effect.attack_speed_flat;
-    stats.attack_speed_mult += effect.attack_speed_mult;
-    stats.recompute_attack_speed(agility);
-}
-
-/// Apply a timed buff/debuff and immediately add its flat modifiers to combat stats.
-/// Debuffs are ignored while the unit has debuff immunity.
-pub fn apply_status(
-    statuses: &mut StatusEffects,
-    stats: &mut CombatStats,
-    effect: StatusEffect,
-    agility: f32,
-) -> bool {
-    if effect.kind == StatusKind::Debuff && statuses.has_debuff_immunity() {
-        return false;
-    }
-    // Refresh same-id effects by replacing.
-    if let Some(existing) = statuses.effects.iter().position(|e| e.id == effect.id) {
-        let old = statuses.effects.remove(existing);
-        subtract_status_stat_delta(&old, stats, agility);
-    }
-    add_status_stat_delta(&effect, stats, agility);
-    statuses.effects.push(effect);
-    true
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn apply_stun(statuses: &mut StatusEffects, stats: &mut CombatStats, duration: f32) -> bool {
-    apply_status(
-        statuses,
-        stats,
-        StatusEffect::stunned(duration),
-        0.0,
-    )
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn apply_debuff_immunity(
-    statuses: &mut StatusEffects,
-    stats: &mut CombatStats,
-    duration: f32,
-    agility: f32,
-) -> bool {
-    // Purge existing debuffs when gaining immunity — strong dispel.
-    statuses.effects.retain_mut(|e| {
-        let purge = e.kind == StatusKind::Debuff
-            && status_dispel_matches(e, StatusKind::Debuff, DispelStrength::Strong);
-        if purge {
-            subtract_status_stat_delta(e, stats, agility);
-        }
-        !purge
-    });
-    apply_status(
-        statuses,
-        stats,
-        StatusEffect::debuff_immunity(duration),
-        agility,
-    )
 }
 
 /// Item layer of the shared `actions` pipeline: once an item activation fires (cooldown
@@ -1597,10 +1076,11 @@ pub fn resolve_item_uses(
         let Some(slot) = inv.slots[index].as_mut() else {
             continue;
         };
-        if slot.consume(def.max_charges) > 0 {
+        let spent = std::mem::take(&mut slot.spent_units);
+        if spent > 0 {
             remove_passives(
                 item.passives(),
-                1,
+                spent,
                 &mut health,
                 &mut mana,
                 &mut stats,
@@ -1623,67 +1103,22 @@ fn item_use_trigger(
     aim: Vec3,
     target: CastTarget,
 ) -> TriggerContext {
-    TriggerContext {
-        aim,
-        cast_target: target.unit(),
-        ..item_trigger(
-            AbilityTrigger::OnUse,
-            item,
-            owner,
-            team,
-            position,
-            None,
-            position,
-        )
-    }
-}
-
-/// Build an item `OnChannelEnd` trigger (resolved in `abilities::casting::ability_channel_end_triggers`).
-pub fn item_channel_end_context(
-    item: ItemId,
-    owner: Entity,
-    team: Team,
-    position: Vec3,
-    aim: Vec3,
-) -> TriggerContext {
-    item_trigger(
-        AbilityTrigger::OnChannelEnd,
-        item,
+    TriggerContext::new(
+        AbilityTrigger::OnUse,
+        EffectSource::Item(item),
         owner,
         team,
+        1,
         position,
-        None,
         aim,
     )
-}
-
-fn item_trigger(
-    trigger: AbilityTrigger,
-    item: ItemId,
-    owner: Entity,
-    team: Team,
-    origin: Vec3,
-    trigger_unit: Option<Entity>,
-    point: Vec3,
-) -> TriggerContext {
-    TriggerContext {
-        trigger,
-        caster: owner,
-        team,
-        source: EffectSource::Item(item),
-        rank: 1,
-        origin,
-        aim: point,
-        point,
-        cast_target: None,
-        trigger_unit,
-        affected_units: Vec::new(),
-    }
+    .at(position)
+    .cast_target(target.unit())
 }
 
 /// `OnAttack` (release) and `OnAttackHit` (impact) for every distinct item the
 /// attacker owns that has entries for the trigger.
-fn item_attack_triggers(
+pub(crate) fn item_attack_triggers(
     mut releases: MessageReader<BasicAttackReleaseEvent>,
     mut impacts: MessageReader<BasicAttackImpactEvent>,
     owners: Query<(&Transform, &Team, &Inventory)>,
@@ -1712,15 +1147,18 @@ fn item_attack_triggers(
                 continue;
             }
             seen.push(item.id);
-            triggers.write(AbilityTriggerEvent(item_trigger(
-                trigger,
-                item.id,
-                attacker,
-                *team,
-                owner_tf.translation,
-                Some(target),
-                point,
-            )));
+            triggers.write(AbilityTriggerEvent(
+                TriggerContext::new(
+                    trigger,
+                    EffectSource::Item(item.id),
+                    attacker,
+                    *team,
+                    1,
+                    owner_tf.translation,
+                    point,
+                )
+                .trigger_unit(Some(target)),
+            ));
         }
     }
 }
@@ -1730,7 +1168,9 @@ fn item_attack_triggers(
 fn spawn_item_use_fx(commands: &mut Commands, assets: &SharedAssets, item: ItemId, at: Vec3) {
     for entry in item.definition().effects_for(AbilityTrigger::OnUse) {
         match entry.target {
-            EffectTarget::Caster => spawn_heal_fx(commands, assets, at),
+            EffectTarget::Caster if matches!(entry.effect, AbilityEffect::Heal { .. }) => {
+                spawn_heal_fx(commands, assets, at)
+            }
             EffectTarget::UnitsInRadius {
                 radius: AreaRadius::Fixed(radius),
                 ..
@@ -1950,7 +1390,14 @@ pub fn try_sell_item(
     let Some(item) = inv.slots.get_mut(slot).and_then(|s| s.take()) else {
         return false;
     };
-    remove_passives(item.id.passives(), item.stack, health, mana, stats, attrs);
+    remove_passives(
+        item.id.passives(),
+        item.stack + item.spent_units,
+        health,
+        mana,
+        stats,
+        attrs,
+    );
     wallet.gold += item.id.definition().sell_value * item.stack;
     true
 }
@@ -2112,10 +1559,18 @@ fn record_sale(
     if !try_sell_item(wallet, inv, health, mana, stats, attrs, slot, in_range) {
         return false;
     }
-    log.actions.push(ShopAction::Sale {
-        refunded: wallet.gold.saturating_sub(before_gold),
-        item,
-    });
+    // Units already spent at commit are gone for good: `try_sell_item` removed their
+    // passives and paid nothing for them. Only the units actually sold can be undone, so
+    // a sale of an emptied slot leaves nothing to undo.
+    if item.stack > 0 {
+        log.actions.push(ShopAction::Sale {
+            refunded: wallet.gold.saturating_sub(before_gold),
+            item: ItemInstance {
+                spent_units: 0,
+                ..item
+            },
+        });
+    }
     log.notice.clear();
     true
 }
@@ -2185,7 +1640,10 @@ fn undo_sale(
     for _ in 0..item.stack {
         apply_passives(item.id.passives(), health, mana, stats, attrs);
     }
-    inv.slots[slot] = Some(*item);
+    inv.slots[slot] = Some(ItemInstance {
+        spent_units: 0,
+        ..*item
+    });
     true
 }
 
@@ -2295,16 +1753,16 @@ mod tests {
 
     use super::*;
     use crate::abilities::catalog::{AbilityDefinitions, register_loadout_definitions};
-    use crate::abilities::effects::{
-        HealEvent, StatusChange, StatusEffectEvent, apply_heal_events, resolve_ability_triggers,
-    };
+    use crate::abilities::definition::{EffectScaling, RankValue};
+    use crate::abilities::effects::{HealEvent, apply_heal_events, resolve_ability_triggers};
     use crate::actions::{
-        Activation, ActivationRequest, QueuedActivation, resolve_queued_activations,
-        tick_activations, validate_activation_requests,
+        Activation, ActivationRequest, QueuedActivation, refresh_activation_aims,
+        resolve_queued_activations, tick_activations, validate_activation_requests,
     };
     use crate::components::{AbilityId, AbilityLoadout, MoveTarget};
     use crate::displacement::DisplacementEvent;
     use crate::resources::SharedAssets;
+    use crate::status::{StatusEffect, StatusEffects};
     use crate::teleport::TeleportEvent;
 
     #[test]
@@ -2395,50 +1853,6 @@ mod tests {
     }
 
     #[test]
-    fn status_buff_applies_and_expires_modifiers() {
-        let mut statuses = StatusEffects::default();
-        let mut stats = CombatStats::simple(10.0, 8.0, 1.0, 2.0, 1.0, 10.0);
-        apply_status(
-            &mut statuses,
-            &mut stats,
-            StatusEffect {
-                armor: 8.0,
-                ..StatusEffect::buff("test", 1.0)
-            },
-            0.0,
-        );
-        assert_eq!(stats.armor, 10.0);
-        assert_eq!(statuses.effects.len(), 1);
-        statuses.effects[0].remaining = 0.0;
-        // Simulate expire path
-        let expired = statuses.effects.remove(0);
-        stats.armor -= expired.armor;
-        assert_eq!(stats.armor, 2.0);
-    }
-
-    #[test]
-    fn phased_buff_flags_ignore_unit_collision() {
-        let mut statuses = StatusEffects::default();
-        assert!(!statuses.is_phased());
-        apply_phased(&mut statuses, 1.0);
-        assert!(statuses.is_phased());
-        assert!(statuses.effects.iter().any(|e| e.ignore_unit_collision));
-        statuses.effects[0].remaining = 0.0;
-        assert!(!statuses.is_phased());
-    }
-
-    #[test]
-    fn forceful_buff_enables_unit_push() {
-        let mut statuses = StatusEffects::default();
-        assert!(!statuses.can_push_units());
-        apply_forceful(&mut statuses, 2.0);
-        assert!(statuses.can_push_units());
-        assert!(!statuses.is_phased());
-        statuses.effects[0].remaining = 0.0;
-        assert!(!statuses.can_push_units());
-    }
-
-    #[test]
     fn sell_refunds_half_and_removes_passives() {
         let mut wallet = PlayerWallet { gold: 600 };
         let mut inv = Inventory::empty();
@@ -2470,69 +1884,6 @@ mod tests {
         assert!(inv.slots[0].is_none());
         assert_eq!(health.max, 720.0);
         assert_eq!(stats.armor, 4.0);
-    }
-
-    #[test]
-    fn debuff_immunity_blocks_stun() {
-        let mut statuses = StatusEffects::default();
-        let mut stats = CombatStats::simple(10.0, 8.0, 1.0, 2.0, 1.0, 10.0);
-        assert!(apply_debuff_immunity(&mut statuses, &mut stats, 5.0, 0.0));
-        assert!(!apply_stun(&mut statuses, &mut stats, 2.0));
-        assert!(!statuses.is_stunned());
-    }
-
-    #[test]
-    fn dispel_tiers_remove_basic_but_not_strong_debuffs() {
-        let mut app = App::new();
-        app.add_message::<StatusEffectEvent>().add_systems(
-            Update,
-            crate::abilities::effects::apply_status_effect_events,
-        );
-        let victim = app
-            .world_mut()
-            .spawn((
-                StatusEffects::default(),
-                CombatStats::simple(10.0, 8.0, 1.0, 0.0, 0.0, 10.0),
-                HeroAttributes::starter(),
-            ))
-            .id();
-        app.world_mut().write_message(StatusEffectEvent {
-            source: None,
-            target: victim,
-            change: StatusChange::Apply(StatusEffect::stunned(2.0)),
-        });
-        app.world_mut().write_message(StatusEffectEvent {
-            source: None,
-            target: victim,
-            change: StatusChange::Apply(StatusEffect::hexed(2.0)),
-        });
-        app.update();
-        let st = app.world().get::<StatusEffects>(victim).unwrap();
-        assert!(st.is_stunned());
-        assert!(st.effects.iter().any(|e| e.id == "hex"));
-        app.world_mut().write_message(StatusEffectEvent {
-            source: None,
-            target: victim,
-            change: StatusChange::Dispel {
-                kind: StatusKind::Debuff,
-                strength: super::DispelStrength::Basic,
-            },
-        });
-        app.update();
-        let st = app.world().get::<StatusEffects>(victim).unwrap();
-        assert!(!st.is_stunned());
-        assert!(st.effects.iter().any(|e| e.id == "hex"));
-        app.world_mut().write_message(StatusEffectEvent {
-            source: None,
-            target: victim,
-            change: StatusChange::Dispel {
-                kind: StatusKind::Debuff,
-                strength: super::DispelStrength::Strong,
-            },
-        });
-        app.update();
-        let st = app.world().get::<StatusEffects>(victim).unwrap();
-        assert!(!st.effects.iter().any(|e| e.id == "hex"));
     }
 
     #[test]
@@ -2605,19 +1956,451 @@ mod tests {
         assert_eq!(stats.attack_speed_flat, 0.0);
     }
 
+    fn commit(inv: &mut Inventory, slot: usize) {
+        let spec = item_action_spec(inv, slot).expect("usable");
+        commit_item(inv, slot, &spec);
+    }
+
     #[test]
-    fn consumables_spend_charges_then_units() {
-        let mut item = ItemInstance {
-            stack: 2,
-            charges: Some(2),
-            ..ItemInstance::new(ItemId::VialOfLight)
+    fn consumable_charges_spend_at_commit_and_refill_from_the_next_unit() {
+        let mut consumable = test_item(
+            ItemId::BladeOfAsh,
+            aimed(
+                TargetType::NoTarget,
+                TargetTeam::SelfOnly,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            ),
+        );
+        consumable.consumable = true;
+        consumable.max_charges = Some(2);
+        let _defs = DefinitionOverride::install([consumable]);
+        let mut item = ItemInstance::new(ItemId::BladeOfAsh);
+        assert_eq!(item.cooldown.charges, Some(2));
+        item.stack = 2;
+        let mut inv = Inventory::empty();
+        inv.slots[0] = Some(item);
+
+        commit(&mut inv, 0);
+        let first = inv.slots[0].unwrap();
+        assert_eq!(first.cooldown.charges, Some(1));
+        assert_eq!((first.stack, first.spent_units), (2, 0));
+
+        commit(&mut inv, 0);
+        let second = inv.slots[0].unwrap();
+        assert_eq!((second.stack, second.spent_units), (1, 1));
+        assert_eq!(
+            second.cooldown.charges,
+            Some(2),
+            "the next unit starts full"
+        );
+
+        let mut plain = Inventory::empty();
+        let mut single = ItemInstance::new(ItemId::BladeOfAsh);
+        single.cooldown.charges = None;
+        plain.slots[0] = Some(single);
+        commit(&mut plain, 0);
+        let used = plain.slots[0].unwrap();
+        assert_eq!((used.stack, used.spent_units), (0, 1));
+        assert!(
+            item_action_spec(&plain, 0).is_err(),
+            "an emptied slot cannot be requested again"
+        );
+    }
+
+    #[test]
+    fn non_consumable_items_never_lose_charges() {
+        let _defs = DefinitionOverride::install([ItemDefinition {
+            max_charges: Some(3),
+            consumable: false,
+            cooldown: 5.0,
+            ..test_item(
+                ItemId::AegisCharm,
+                aimed(
+                    TargetType::NoTarget,
+                    TargetTeam::SelfOnly,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                ),
+            )
+        }]);
+        let mut item = ItemInstance::new(ItemId::AegisCharm);
+        assert_eq!(item.cooldown.charges, None);
+        let mut inv = Inventory::empty();
+        item.stack = 1;
+        inv.slots[0] = Some(item);
+        for _ in 0..3 {
+            commit(&mut inv, 0);
+        }
+        let item = inv.slots[0].unwrap();
+        assert_eq!(item.cooldown.charges, None);
+        assert_eq!((item.stack, item.spent_units), (1, 0));
+    }
+
+    #[test]
+    fn last_consumable_unit_cannot_fire_twice_in_one_frame() {
+        let mut def = test_item(
+            ItemId::BladeOfAsh,
+            aimed(
+                TargetType::NoTarget,
+                TargetTeam::SelfOnly,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            ),
+        );
+        def.consumable = true;
+        def.max_charges = None;
+        def.cooldown = 0.0;
+        let _defs = DefinitionOverride::install([def]);
+        let mut app = item_app();
+        let caster = spawn_caster(&mut app, 50.0);
+        give(&mut app, caster, ItemId::BladeOfAsh);
+
+        request(&mut app, caster, 0, CastTarget::None);
+        request(&mut app, caster, 0, CastTarget::None);
+        step(&mut app);
+
+        assert_eq!(triggers(&app).len(), 1, "exactly one OnUse");
+        assert!(slot(&app, caster, 0).is_none());
+    }
+
+    #[test]
+    fn undoing_a_sale_restores_the_cooldown_and_leaves_no_spent_units() {
+        let (mut wallet, mut inv, mut health, mut mana, mut stats, mut attrs) = fresh_hero();
+        let mut log = ShopUndoLog::default();
+        assert!(record_purchase(
+            &mut log,
+            &mut wallet,
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            &mut attrs,
+            ItemId::IronBracer,
+            true,
+        ));
+        inv.slots[0].as_mut().unwrap().cooldown.remaining = 4.0;
+        assert!(record_sale(
+            &mut log,
+            &mut wallet,
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            &mut attrs,
+            0,
+            true,
+        ));
+        assert!(try_undo_last(
+            &mut log,
+            &mut wallet,
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            &mut attrs,
+        ));
+        let restored = inv.slots.iter().flatten().next().unwrap();
+        assert_eq!(restored.cooldown.remaining, 4.0);
+        assert_eq!(restored.spent_units, 0);
+        assert_eq!(restored.stack, 1);
+    }
+
+    #[test]
+    fn undoing_a_sale_made_between_commit_and_resolve_leaves_no_dangling_spent_units() {
+        let (mut wallet, mut inv, mut health, mut mana, mut stats, mut attrs) = fresh_hero();
+        let mut log = ShopUndoLog::default();
+        assert!(record_purchase(
+            &mut log,
+            &mut wallet,
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            &mut attrs,
+            ItemId::IronBracer,
+            true,
+        ));
+        let with_item = health.max;
+        // As if committed (unit spent) but not yet resolved.
+        let item = inv.slots[0].as_mut().unwrap();
+        item.stack = 0;
+        item.spent_units = 1;
+        assert!(record_sale(
+            &mut log,
+            &mut wallet,
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            &mut attrs,
+            0,
+            true,
+        ));
+        assert_eq!(
+            health.max, 720.0,
+            "the spent unit's passives left with the sale"
+        );
+        let _ = try_undo_last(
+            &mut log,
+            &mut wallet,
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            &mut attrs,
+        );
+        // Whatever undo decides, the slot must not carry a unit that is already spent.
+        for item in inv.slots.iter().flatten() {
+            assert_eq!(item.spent_units, 0, "dangling spent_units after undo");
+            assert!(item.stack > 0, "a ghost slot with no units");
+        }
+        assert!(
+            inv.slots.iter().all(Option::is_none),
+            "nothing was left to restore"
+        );
+        assert_eq!(
+            health.max, 720.0,
+            "passives are not applied for a spent unit"
+        );
+        assert!(health.max <= with_item);
+    }
+
+    fn two_unit_consumable(cooldown: f32) -> ItemDefinition {
+        let mut def = test_item(
+            ItemId::BladeOfAsh,
+            aimed(
+                TargetType::NoTarget,
+                TargetTeam::SelfOnly,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            ),
+        );
+        def.consumable = true;
+        def.max_charges = None;
+        def.max_stack = 2;
+        def.cooldown = cooldown;
+        def
+    }
+
+    #[test]
+    fn same_frame_requests_never_use_more_units_than_the_stack_spends() {
+        for cooldown in [0.0, 5.0] {
+            let _defs = DefinitionOverride::install([two_unit_consumable(cooldown)]);
+            let mut app = item_app();
+            let caster = spawn_caster(&mut app, 50.0);
+            give(&mut app, caster, ItemId::BladeOfAsh);
+            give(&mut app, caster, ItemId::BladeOfAsh);
+            assert_eq!(slot(&app, caster, 0).unwrap().stack, 2);
+
+            request(&mut app, caster, 0, CastTarget::None);
+            request(&mut app, caster, 0, CastTarget::None);
+            let mut uses = 0;
+            for _ in 0..4 {
+                step(&mut app);
+                uses += triggers(&app).len();
+            }
+            let left = slot(&app, caster, 0).map_or(0, |item| item.stack);
+            assert_eq!(
+                uses as u32,
+                2 - left,
+                "cooldown {cooldown}: uses == units spent"
+            );
+            assert!(uses >= 1);
+            if cooldown > 0.0 {
+                assert_eq!(uses, 1, "the cooldown blocks the second use");
+            }
+            assert!(slot(&app, caster, 0).is_none_or(|item| item.spent_units == 0));
+        }
+    }
+
+    #[test]
+    fn selling_between_commit_and_resolve_removes_the_spent_unit_passives() {
+        let (mut wallet, mut inv, mut health, mut mana, mut stats, mut attrs) = fresh_hero();
+        assert!(try_buy_item(
+            &mut wallet,
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            &mut attrs,
+            ItemId::IronBracer,
+            true,
+        ));
+        let max_health = health.max;
+        assert!(max_health > 720.0);
+        // As if committed (unit spent) but not yet resolved.
+        let item = inv.slots[0].as_mut().unwrap();
+        item.stack = 0;
+        item.spent_units = 1;
+        assert!(try_sell_item(
+            &mut wallet,
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            &mut attrs,
+            0,
+            true,
+        ));
+        assert_eq!(health.max, 720.0);
+    }
+
+    fn passive_fields(p: &ItemPassives) -> [f32; 17] {
+        let ItemPassives {
+            max_health,
+            health_regen,
+            max_mana,
+            mana_regen,
+            attack_damage,
+            armor,
+            magic_resist,
+            move_speed,
+            attack_speed_flat,
+            strength,
+            agility,
+            intelligence,
+            spell_amp,
+            outgoing_physical_amp,
+            incoming_damage_amp,
+            damage_block,
+            damage_reflect,
+        } = *p;
+        [
+            max_health,
+            health_regen,
+            max_mana,
+            mana_regen,
+            attack_damage,
+            armor,
+            magic_resist,
+            move_speed,
+            attack_speed_flat,
+            strength,
+            agility,
+            intelligence,
+            spell_amp,
+            outgoing_physical_amp,
+            incoming_damage_amp,
+            damage_block,
+            damage_reflect,
+        ]
+    }
+
+    #[test]
+    fn every_passive_stat_maps_to_a_distinct_field() {
+        let stats = [
+            PassiveStat::MaxHealth,
+            PassiveStat::HealthRegen,
+            PassiveStat::MaxMana,
+            PassiveStat::ManaRegen,
+            PassiveStat::AttackDamage,
+            PassiveStat::AttackSpeed,
+            PassiveStat::Armor,
+            PassiveStat::MagicResist,
+            PassiveStat::MoveSpeed,
+            PassiveStat::Attribute(Attribute::Strength),
+            PassiveStat::Attribute(Attribute::Agility),
+            PassiveStat::Attribute(Attribute::Intelligence),
+            PassiveStat::SpellAmp,
+            PassiveStat::OutgoingPhysicalAmp,
+            PassiveStat::IncomingDamageAmp,
+            PassiveStat::DamageBlock,
+            PassiveStat::DamageReflect,
+        ];
+        let mut seen = Vec::new();
+        for stat in stats {
+            let mut p = ItemPassives::default();
+            p.add_stat(stat, 1.0);
+            let changed: Vec<usize> = passive_fields(&p)
+                .iter()
+                .enumerate()
+                .filter(|(_, v)| **v != 0.0)
+                .map(|(i, _)| i)
+                .collect();
+            assert_eq!(changed.len(), 1, "{stat:?} must change exactly one field");
+            assert!(!seen.contains(&changed[0]), "{stat:?} shares a field");
+            seen.push(changed[0]);
+        }
+        assert_eq!(seen.len(), 17, "every field is reachable");
+    }
+
+    #[test]
+    fn passives_add_assign_sums_every_field() {
+        let mut a = ItemPassives::default();
+        let mut b = ItemPassives::default();
+        a.add_stat(PassiveStat::Armor, 2.0);
+        b.add_stat(PassiveStat::Armor, 3.0);
+        b.add_stat(PassiveStat::DamageReflect, 0.1);
+        a += b;
+        assert_eq!(a.armor, 5.0);
+        assert_eq!(a.damage_reflect, 0.1);
+    }
+
+    #[test]
+    fn item_and_ability_describe_the_same_effect_with_the_same_label() {
+        use crate::abilities::definition::AbilityDefinition;
+        use crate::components::DamageType;
+
+        let damage = AbilityEffect::Damage {
+            amount: RankValue::fixed(50.0),
+            damage_type: DamageType::Magical,
+            scaling: EffectScaling::None,
         };
-        assert_eq!(item.consume(Some(2)), 0);
-        assert_eq!(item.consume(Some(2)), 1);
-        assert_eq!((item.stack, item.charges), (1, Some(2)));
-        let mut plain = ItemInstance::new(ItemId::VialOfLight);
-        assert_eq!(plain.consume(None), 1);
-        assert_eq!(plain.stack, 0);
+        let on_cast = AbilityEffectEntry {
+            trigger: AbilityTrigger::OnCast,
+            target: EffectTarget::Caster,
+            effect: damage,
+        };
+        let on_use = AbilityEffectEntry {
+            trigger: AbilityTrigger::OnUse,
+            ..on_cast
+        };
+        let (ability_rows, _) = tooltip::describe_effect(&on_cast);
+        let (item_rows, _) = tooltip::describe_effect(&on_use);
+        assert_eq!(
+            ability_rows, item_rows,
+            "the label does not depend on the trigger"
+        );
+        assert_eq!(ability_rows[0].label, "Magical damage");
+
+        let mut def = AbilityDefinition::new(AbilityId::Bolt);
+        def.effects.push(on_cast);
+        let ability_text: String = tooltip::ability_tooltip_bits(&def, 1)
+            .iter()
+            .map(|bit| bit.text.as_str())
+            .collect();
+        assert!(
+            ability_text.contains("Magical damage (on cast): 50"),
+            "{ability_text}"
+        );
+        assert_eq!(item_effect_lines(&on_use), vec!["Use: Magical damage 50"]);
+    }
+
+    #[test]
+    fn item_tooltip_duration_rows_carry_a_seconds_unit() {
+        let cloak = ItemId::WardstoneCloak.tooltip_body();
+        assert!(cloak.contains("Use: Armor 8"), "{cloak}");
+        assert!(cloak.contains("Use: Duration 5s"), "{cloak}");
+    }
+
+    #[test]
+    fn item_tooltip_area_note_rides_on_the_effect_line() {
+        let rod = ItemId::StormRod.tooltip_body();
+        assert!(rod.contains("damage 140 (enemies within 143)"), "{rod}");
+        assert!(
+            !rod.lines()
+                .any(|line| line.trim_start().starts_with("Use: enemies")),
+            "no standalone area line: {rod}"
+        );
     }
 
     #[test]
@@ -2865,7 +2648,7 @@ mod tests {
             ItemId::IronBracer,
             true,
         ));
-        inv.slots[0].as_mut().unwrap().cooldown_remaining = 3.5;
+        inv.slots[0].as_mut().unwrap().cooldown.remaining = 3.5;
         assert!(record_sale(
             &mut log,
             &mut wallet,
@@ -2898,7 +2681,8 @@ mod tests {
                 .flatten()
                 .next()
                 .unwrap()
-                .cooldown_remaining,
+                .cooldown
+                .remaining,
             3.5
         );
         assert_eq!(wallet.gold, 2000 - ItemId::IronBracer.cost());
@@ -2969,7 +2753,7 @@ mod tests {
             .add_message::<AbilityTriggerEvent>()
             .add_message::<HealEvent>()
             .add_message::<crate::abilities::effects::ManaRestoreEvent>()
-            .add_message::<crate::abilities::effects::StatusEffectEvent>()
+            .add_message::<crate::status::StatusEffectEvent>()
             .add_message::<crate::combat::DamageEvent>()
             .add_message::<DisplacementEvent>()
             .add_message::<TeleportEvent>()
@@ -2977,8 +2761,10 @@ mod tests {
                 Update,
                 (
                     register_loadout_definitions,
+                    tick_item_cooldowns,
                     resolve_queued_activations,
                     validate_activation_requests,
+                    refresh_activation_aims,
                     tick_activations,
                     resolve_item_uses,
                     crate::abilities::casting::action_channel_end_triggers,
@@ -3162,7 +2948,7 @@ mod tests {
             220.0,
             "180 heal from the catalog active"
         );
-        assert_eq!(slot(&app, caster, 0).unwrap().cooldown_remaining, 40.0);
+        assert_eq!(slot(&app, caster, 0).unwrap().cooldown.remaining, 40.0);
         assert!(
             app.world().get::<Activation>(caster).is_none(),
             "instant items do not occupy the caster"
@@ -3178,6 +2964,60 @@ mod tests {
             fired[0].source,
             crate::abilities::effects::EffectSource::Item(ItemId::VialOfLight)
         );
+    }
+
+    fn heal_fx_count(app: &mut App) -> usize {
+        let mut query = app.world_mut().query::<&Name>();
+        query
+            .iter(app.world())
+            .filter(|name| name.as_str() == "Item Heal FX")
+            .count()
+    }
+
+    #[test]
+    fn vial_use_spawns_heal_flash() {
+        let mut app = item_app();
+        let caster = spawn_caster(&mut app, 200.0);
+        give(&mut app, caster, ItemId::VialOfLight);
+
+        request(&mut app, caster, 0, CastTarget::None);
+        step(&mut app);
+
+        assert_eq!(heal_fx_count(&mut app), 1);
+    }
+
+    #[test]
+    fn blink_dagger_use_spawns_no_heal_flash() {
+        let mut app = item_app();
+        let caster = spawn_caster(&mut app, 200.0);
+        give(&mut app, caster, ItemId::BlinkDagger);
+
+        request(
+            &mut app,
+            caster,
+            0,
+            CastTarget::Point(Vec3::new(200.0, 0.0, 0.0)),
+        );
+        let mut teleports = Vec::new();
+        for _ in 0..10 {
+            step(&mut app);
+            teleports.extend(
+                app.world()
+                    .resource::<Messages<TeleportEvent>>()
+                    .iter_current_update_messages()
+                    .copied(),
+            );
+        }
+
+        assert_eq!(teleports.len(), 1, "the blink must actually have been used");
+        assert_eq!(teleports[0].target, caster);
+        assert_eq!(teleports[0].caster, caster);
+        assert!((teleports[0].destination - Vec3::new(200.0, 0.0, 0.0)).length() < 1.0);
+        assert!(
+            slot(&app, caster, 0).unwrap().cooldown.remaining > 0.0,
+            "the use also paid its cooldown"
+        );
+        assert_eq!(heal_fx_count(&mut app), 0);
     }
 
     #[test]
@@ -3198,8 +3038,8 @@ mod tests {
         step(&mut app);
 
         assert_eq!(health_of(&app, caster), 40.0);
-        assert_eq!(slot(&app, caster, 0).unwrap().cooldown_remaining, 0.0);
-        assert_eq!(slot(&app, caster, 1).unwrap().cooldown_remaining, 0.0);
+        assert_eq!(slot(&app, caster, 0).unwrap().cooldown.remaining, 0.0);
+        assert_eq!(slot(&app, caster, 1).unwrap().cooldown.remaining, 0.0);
         assert!(triggers(&app).is_empty());
     }
 
@@ -3268,7 +3108,7 @@ mod tests {
             triggers(&app).is_empty(),
             "allies are not valid enemy-item targets"
         );
-        assert_eq!(slot(&app, caster, 0).unwrap().cooldown_remaining, 0.0);
+        assert_eq!(slot(&app, caster, 0).unwrap().cooldown.remaining, 0.0);
         assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 100.0);
 
         request(&mut app, caster, 0, CastTarget::Unit(far));
@@ -3276,7 +3116,7 @@ mod tests {
         assert!(app.world().get::<QueuedActivation>(caster).is_some());
         assert!(app.world().get::<MoveTarget>(caster).is_some());
         assert_eq!(
-            slot(&app, caster, 0).unwrap().cooldown_remaining,
+            slot(&app, caster, 0).unwrap().cooldown.remaining,
             0.0,
             "walking into range is free"
         );
@@ -3290,14 +3130,15 @@ mod tests {
         let fired = triggers(&app);
         assert_eq!(fired.len(), 1);
         assert_eq!(fired[0].cast_target, Some(far));
-        assert_eq!(slot(&app, caster, 0).unwrap().cooldown_remaining, 5.0);
+        assert_eq!(slot(&app, caster, 0).unwrap().cooldown.remaining, 5.0);
         assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 75.0);
         assert_eq!(health_of(&app, caster), 60.0);
 
         app.world_mut().get_mut::<Inventory>(caster).unwrap().slots[0]
             .as_mut()
             .unwrap()
-            .cooldown_remaining = 0.0;
+            .cooldown
+            .remaining = 0.0;
         app.world_mut().get_mut::<Mana>(caster).unwrap().current = 10.0;
         request(&mut app, caster, 0, CastTarget::Unit(enemy));
         step(&mut app);
@@ -3305,7 +3146,7 @@ mod tests {
             triggers(&app).is_empty(),
             "unaffordable uses do not start the cooldown"
         );
-        assert_eq!(slot(&app, caster, 0).unwrap().cooldown_remaining, 0.0);
+        assert_eq!(slot(&app, caster, 0).unwrap().cooldown.remaining, 0.0);
         assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 10.0);
 
         let point = Vec3::new(400.0, 0.0, 0.0);
@@ -3315,7 +3156,7 @@ mod tests {
             app.world().get::<QueuedActivation>(caster).is_some(),
             "the point is out of range"
         );
-        assert_eq!(slot(&app, caster, 1).unwrap().cooldown_remaining, 0.0);
+        assert_eq!(slot(&app, caster, 1).unwrap().cooldown.remaining, 0.0);
         app.world_mut()
             .entity_mut(caster)
             .remove::<QueuedActivation>();
@@ -3332,7 +3173,7 @@ mod tests {
         );
         step(&mut app);
         assert_eq!(triggers(&app)[0].aim, Vec3::new(100.0, 0.0, 0.0));
-        assert_eq!(slot(&app, caster, 1).unwrap().cooldown_remaining, 5.0);
+        assert_eq!(slot(&app, caster, 1).unwrap().cooldown.remaining, 5.0);
 
         request(
             &mut app,
@@ -3378,39 +3219,40 @@ mod tests {
         let first = give(&mut app, caster, ItemId::BladeOfAsh);
         let second = give(&mut app, caster, ItemId::BladeOfAsh);
         assert_ne!(first, second, "each copy has its own instance");
-        assert_eq!(slot(&app, caster, 0).unwrap().charges, Some(2));
-        assert_eq!(slot(&app, caster, 1).unwrap().charges, Some(2));
+        assert_eq!(slot(&app, caster, 0).unwrap().cooldown.charges, Some(2));
+        assert_eq!(slot(&app, caster, 1).unwrap().cooldown.charges, Some(2));
 
         slot_set_charges(&mut app, caster, 0, Some(0));
         request(&mut app, caster, 0, CastTarget::None);
         step(&mut app);
         assert!(triggers(&app).is_empty());
         assert_eq!(
-            slot(&app, caster, 0).unwrap().charges,
+            slot(&app, caster, 0).unwrap().cooldown.charges,
             Some(0),
             "an empty copy is not spent"
         );
-        assert_eq!(slot(&app, caster, 1).unwrap().charges, Some(2));
+        assert_eq!(slot(&app, caster, 1).unwrap().cooldown.charges, Some(2));
 
         slot_set_charges(&mut app, caster, 0, Some(2));
         request(&mut app, caster, 0, CastTarget::None);
         step(&mut app);
-        assert_eq!(slot(&app, caster, 0).unwrap().charges, Some(1));
+        assert_eq!(slot(&app, caster, 0).unwrap().cooldown.charges, Some(1));
         assert_eq!(
-            slot(&app, caster, 1).unwrap().charges,
+            slot(&app, caster, 1).unwrap().cooldown.charges,
             Some(2),
             "the other copy is untouched"
         );
 
         request(&mut app, caster, 1, CastTarget::None);
         step(&mut app);
-        assert_eq!(slot(&app, caster, 1).unwrap().charges, Some(1));
+        assert_eq!(slot(&app, caster, 1).unwrap().cooldown.charges, Some(1));
     }
 
     fn slot_set_charges(app: &mut App, caster: Entity, index: usize, charges: Option<u32>) {
         app.world_mut().get_mut::<Inventory>(caster).unwrap().slots[index]
             .as_mut()
             .unwrap()
+            .cooldown
             .charges = charges;
     }
 
@@ -3431,7 +3273,7 @@ mod tests {
         assert!(app.world().get::<Activation>(caster).is_some());
         assert!(triggers(&app).is_empty());
         assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 100.0);
-        assert_eq!(slot(&app, caster, 0).unwrap().cooldown_remaining, 0.0);
+        assert_eq!(slot(&app, caster, 0).unwrap().cooldown.remaining, 0.0);
 
         {
             let mut inventory = app.world_mut().get_mut::<Inventory>(caster).unwrap();
@@ -3443,7 +3285,7 @@ mod tests {
         let moved = slot(&app, caster, 2).unwrap();
         assert_eq!(moved.instance, instance);
         assert_eq!(
-            moved.cooldown_remaining, 5.0,
+            moved.cooldown.remaining, 5.0,
             "the cooldown lands on the copy, not the old slot"
         );
         assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 70.0);
@@ -3525,7 +3367,7 @@ mod tests {
             220.0,
             "silence does not block items"
         );
-        assert!(slot(&app, caster, 0).unwrap().cooldown_remaining > 0.0);
+        assert!(slot(&app, caster, 0).unwrap().cooldown.remaining > 0.0);
     }
 
     #[test]
@@ -3565,6 +3407,258 @@ mod tests {
         );
     }
 
+    fn channel_both_effects() -> &'static [AbilityEffectEntry] {
+        Box::leak(Box::new([
+            AbilityEffectEntry {
+                trigger: AbilityTrigger::OnChannelEnd,
+                target: EffectTarget::Caster,
+                effect: AbilityEffect::Heal {
+                    amount: RankValue::fixed(200.0),
+                    scaling: EffectScaling::None,
+                },
+            },
+            AbilityEffectEntry {
+                trigger: AbilityTrigger::OnChannelInterrupted,
+                target: EffectTarget::Caster,
+                effect: AbilityEffect::Heal {
+                    amount: RankValue::fixed(50.0),
+                    scaling: EffectScaling::None,
+                },
+            },
+        ]))
+    }
+
+    /// Run a channelled item for a few frames, then apply `status`, and report the
+    /// channel triggers that fired plus the caster's final health (started at 500).
+    fn channel_with_status(status: Option<StatusEffect>) -> (Vec<AbilityTrigger>, f32) {
+        let mut app = item_app();
+        let def = ItemDefinition {
+            effects: channel_both_effects(),
+            ..channeled_test_item(ItemId::HeartwoodBand)
+        };
+        let _defs = DefinitionOverride::install([def]);
+        let caster = spawn_caster(&mut app, 200.0);
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 500.0;
+        give(&mut app, caster, ItemId::HeartwoodBand);
+        request(&mut app, caster, 0, CastTarget::None);
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        assert!(app.world().get::<Activation>(caster).unwrap().fired);
+        if let Some(status) = status {
+            app.world_mut()
+                .get_mut::<StatusEffects>(caster)
+                .unwrap()
+                .effects
+                .push(status);
+        }
+        let mut fired = Vec::new();
+        for _ in 0..14 {
+            step(&mut app);
+            fired.extend(
+                triggers(&app)
+                    .into_iter()
+                    .map(|ctx| ctx.trigger)
+                    .filter(|t| {
+                        matches!(
+                            t,
+                            AbilityTrigger::OnChannelEnd | AbilityTrigger::OnChannelInterrupted
+                        )
+                    }),
+            );
+        }
+        (fired, health_of(&app, caster))
+    }
+
+    #[test]
+    fn silenced_item_channel_does_not_interrupt_but_mute_does() {
+        let (fired, health) = channel_with_status(Some(StatusEffect::silenced(5.0)));
+        assert_eq!(fired, vec![AbilityTrigger::OnChannelEnd]);
+        assert_eq!(health, 700.0, "silence does not stop item channels");
+
+        let (fired, health) = channel_with_status(Some(StatusEffect::mute(5.0)));
+        assert_eq!(fired, vec![AbilityTrigger::OnChannelInterrupted]);
+        assert_eq!(
+            health, 550.0,
+            "mute interrupts and heals the smaller amount"
+        );
+
+        let (fired, health) = channel_with_status(None);
+        assert_eq!(fired, vec![AbilityTrigger::OnChannelEnd]);
+        assert_eq!(health, 700.0);
+    }
+
+    #[test]
+    fn stunned_item_channel_fires_only_on_channel_interrupted() {
+        let (fired, health) = channel_with_status(Some(StatusEffect::stunned(5.0)));
+        assert_eq!(fired, vec![AbilityTrigger::OnChannelInterrupted]);
+        assert_eq!(health, 550.0);
+    }
+
+    fn radius_entry(trigger: AbilityTrigger, radius: AreaRadius) -> AbilityEffectEntry {
+        AbilityEffectEntry {
+            trigger,
+            target: EffectTarget::UnitsInRadius {
+                center: crate::abilities::definition::AreaCenter::Caster,
+                radius,
+                team: TargetTeam::Enemy,
+            },
+            effect: AbilityEffect::Heal {
+                amount: RankValue::fixed(1.0),
+                scaling: EffectScaling::None,
+            },
+        }
+    }
+
+    fn with_effects(entries: Vec<AbilityEffectEntry>) -> ItemDefinition {
+        ItemDefinition {
+            effects: Box::leak(entries.into_boxed_slice()),
+            ..channeled_test_item(ItemId::HeartwoodBand)
+        }
+    }
+
+    #[test]
+    fn item_aoe_radius_counts_only_active_fixed_areas() {
+        let fixed = |r: f32| AreaRadius::Fixed(RankValue::fixed(r));
+        assert_eq!(with_effects(vec![]).aoe_radius(), 0.0);
+        assert_eq!(
+            with_effects(vec![radius_entry(AbilityTrigger::OnUse, fixed(200.0))]).aoe_radius(),
+            200.0,
+            "a no-target item's area counts"
+        );
+        assert_eq!(
+            with_effects(vec![
+                radius_entry(AbilityTrigger::OnUse, fixed(120.0)),
+                radius_entry(AbilityTrigger::OnChannelEnd, fixed(300.0)),
+                radius_entry(AbilityTrigger::OnChannelInterrupted, fixed(250.0)),
+            ])
+            .aoe_radius(),
+            300.0,
+            "the largest wins"
+        );
+        assert_eq!(
+            with_effects(vec![radius_entry(
+                AbilityTrigger::OnChannelInterrupted,
+                fixed(250.0)
+            )])
+            .aoe_radius(),
+            250.0
+        );
+        assert_eq!(
+            with_effects(vec![
+                radius_entry(AbilityTrigger::OnAttack, fixed(500.0)),
+                radius_entry(AbilityTrigger::Passive, fixed(500.0)),
+            ])
+            .aoe_radius(),
+            0.0,
+            "attack and passive areas are not the active's indicator"
+        );
+        assert_eq!(
+            with_effects(vec![radius_entry(
+                AbilityTrigger::OnUse,
+                AreaRadius::Ability
+            )])
+            .aoe_radius(),
+            0.0,
+            "an AreaRadius::Ability area has no radius of its own to borrow"
+        );
+    }
+
+    #[test]
+    fn unit_item_fires_after_target_dies_during_cast_point() {
+        let mut app = item_app();
+        let def = ItemDefinition {
+            activation: aimed(TargetType::Unit, TargetTeam::Enemy, 500.0, 0.3, 0.0, 20.0),
+            effects: heal_effect(),
+            cooldown: 12.0,
+            ..channeled_test_item(ItemId::HeartwoodBand)
+        };
+        let _defs = DefinitionOverride::install([def]);
+        let caster = spawn_caster(&mut app, 200.0);
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 500.0;
+        let target = app
+            .world_mut()
+            .spawn((
+                Transform::from_translation(Vec3::new(100.0, 0.0, 0.0)),
+                Team::Dire,
+                Health::new(1000.0),
+            ))
+            .id();
+        give(&mut app, caster, ItemId::HeartwoodBand);
+
+        request(&mut app, caster, 0, CastTarget::Unit(target));
+        step(&mut app);
+        assert!(
+            !app.world().get::<Activation>(caster).unwrap().fired,
+            "still in the cast point"
+        );
+        app.world_mut().despawn(target);
+
+        let mut fired_targets = Vec::new();
+        let mut contexts = Vec::new();
+        for _ in 0..10 {
+            step(&mut app);
+            fired_targets.extend(
+                app.world()
+                    .resource::<Messages<crate::actions::ActionFiredEvent>>()
+                    .iter_current_update_messages()
+                    .map(|event| (event.target, event.aim)),
+            );
+            contexts.extend(triggers(&app));
+        }
+
+        assert_eq!(
+            fired_targets,
+            vec![(
+                CastTarget::Point(Vec3::new(100.0, 0.0, 0.0)),
+                Vec3::new(100.0, 0.0, 0.0)
+            )],
+            "fires once, at the target's last position"
+        );
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 180.0);
+        let remaining = slot(&app, caster, 0).unwrap().cooldown.remaining;
+        assert!(
+            (11.0..=12.0).contains(&remaining),
+            "cooldown started at fire and has ticked since, got {remaining}"
+        );
+        assert_eq!(health_of(&app, caster), 510.0);
+        assert_eq!(contexts.len(), 1);
+        assert_eq!(contexts[0].cast_target, None);
+    }
+
+    #[test]
+    fn item_channel_end_carries_the_cast_target() {
+        let mut app = item_app();
+        let def = ItemDefinition {
+            activation: aimed(TargetType::Unit, TargetTeam::Enemy, 500.0, 0.1, 0.5, 0.0),
+            ..channeled_test_item(ItemId::HeartwoodBand)
+        };
+        let _defs = DefinitionOverride::install([def]);
+        let caster = spawn_caster(&mut app, 200.0);
+        let target = app
+            .world_mut()
+            .spawn((
+                Transform::from_translation(Vec3::new(100.0, 0.0, 0.0)),
+                Team::Dire,
+                Health::new(1000.0),
+            ))
+            .id();
+        give(&mut app, caster, ItemId::HeartwoodBand);
+
+        request(&mut app, caster, 0, CastTarget::Unit(target));
+        let mut channel_end = None;
+        for _ in 0..20 {
+            step(&mut app);
+            for ctx in triggers(&app) {
+                if ctx.trigger == AbilityTrigger::OnChannelEnd {
+                    channel_end = Some(ctx);
+                }
+            }
+        }
+        let ctx = channel_end.expect("OnChannelEnd trigger fired");
+        assert_eq!(ctx.cast_target, Some(target));
+    }
+
     #[test]
     fn distinct_instances_keep_distinct_cooldowns() {
         let mut app = item_app();
@@ -3573,15 +3667,15 @@ mod tests {
         give(&mut app, caster, ItemId::VialOfLight);
         request(&mut app, caster, 0, CastTarget::None);
         step(&mut app);
-        assert!(slot(&app, caster, 0).unwrap().cooldown_remaining > 0.0);
-        assert_eq!(slot(&app, caster, 1).unwrap().cooldown_remaining, 0.0);
+        assert!(slot(&app, caster, 0).unwrap().cooldown.remaining > 0.0);
+        assert_eq!(slot(&app, caster, 1).unwrap().cooldown.remaining, 0.0);
         request(&mut app, caster, 0, CastTarget::None);
         step(&mut app);
-        assert_eq!(
-            slot(&app, caster, 0).unwrap().cooldown_remaining,
-            40.0,
-            "the rejected second use does not refresh or clear the cooldown"
+        let remaining = slot(&app, caster, 0).unwrap().cooldown.remaining;
+        assert!(
+            (39.0..=40.0).contains(&remaining),
+            "the rejected second use does not refresh or clear the cooldown, got {remaining}"
         );
-        assert_eq!(slot(&app, caster, 1).unwrap().cooldown_remaining, 0.0);
+        assert_eq!(slot(&app, caster, 1).unwrap().cooldown.remaining, 0.0);
     }
 }

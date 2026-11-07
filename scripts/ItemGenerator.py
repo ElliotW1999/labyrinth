@@ -149,9 +149,9 @@ use crate::abilities::definition::{
 #[allow(unused_imports)]
 use crate::components::DamageType;
 #[allow(unused_imports)]
-use crate::items::{
-    DispelStrength, ItemActivation, ItemDefinition, ItemId, ItemRarity, ItemType, StatusKind,
-};
+use crate::items::{ItemActivation, ItemDefinition, ItemId, ItemRarity, ItemType};
+#[allow(unused_imports)]
+use crate::status::{DispelStrength, StatusKind};
 """
 
 
@@ -242,7 +242,7 @@ def parse_item(row: Row, effects: list[EffectRow], report: Report) -> Item | Non
     def err(fld: str, message: str) -> None:
         report.error(row.file, row.line, fld, row.get(fld), message)
 
-    has_use = any(e.trigger == "on_use" for e in effects)
+    has_use = any(e.trigger in ("on_use", "on_channel_end", "on_channel_interrupted") for e in effects)
     if stackable and max_stack is None:
         err("max_stack", "required for stackable items")
     if stackable and max_stack is not None and max_stack < 2:
@@ -320,8 +320,9 @@ def effect_context(item: Item) -> EffectContext:
         center_for={"on_use": "Caster" if target_type in ("no_target", "self") else "Aim", "passive": "Caster"},
     )
     if not item.activation.channel_time:
-        ctx.invalid_trigger["on_channel_end"] = "the item is not channelled (channel_time blank)"
-    for trigger in ("passive", "on_use", "on_attack", "on_attack_hit", "on_channel_end", "on_damage_taken", "on_kill", "on_death"):
+        for trigger in ("on_channel_end", "on_channel_interrupted"):
+            ctx.invalid_trigger[trigger] = "the item is not channelled (channel_time blank)"
+    for trigger in ("passive", "on_use", "on_attack", "on_attack_hit", "on_channel_end", "on_channel_interrupted", "on_damage_taken", "on_kill", "on_death"):
         if trigger == "on_use" and target_type in ("unit", "self"):
             continue
         reason = (

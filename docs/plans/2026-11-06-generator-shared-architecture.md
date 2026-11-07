@@ -105,6 +105,8 @@ Today: `custom` requires snake_case `effect_id`; **no** check against `register_
 
 ## Current state vs target (gap analysis)
 
+> Superseded by `2026-11-07-item-ability-architecture-cleanup.md` (2026-11-07): several gaps below are closed there. Where this table and the cleanup plan disagree, the cleanup plan and the code win.
+
 ### Already aligned
 
 | Area | Evidence |

@@ -14,7 +14,7 @@ use crate::components::{
     HeroAttributes, HeroProgress, Lifetime, PlayerHero, PlayerWallet, Projectile, ProjectileHome,
     ProjectileStyle, ShieldPool, Team, XpBounty,
 };
-use crate::items::{StatusEffects, subtract_status_stat_delta};
+use crate::status::{StatusEffects, subtract_status_stat_delta};
 use crate::dimensions::{area_contains, bounds_of};
 use crate::progression::add_xp;
 use crate::resources::SharedAssets;
@@ -86,6 +86,7 @@ pub struct DamageEvent {
 }
 
 impl DamageEvent {
+    #[cfg(test)]
     pub fn new(target: Entity, amount: f32, damage_type: DamageType) -> Self {
         Self {
             source: None,
@@ -324,6 +325,11 @@ pub fn apply_damage_events(
             event.applies_block,
             event.pierces_shields,
         );
+        if resolved.shield_absorbed > 0.0 {
+            if let Some(st) = statuses.as_deref_mut() {
+                crate::status::consume_shields(st, resolved.shield_absorbed);
+            }
+        }
         health.current -= resolved.health_delta;
 
         if event.reflects && resolved.health_delta > 0.0 && damage_reflect > 0.0 {

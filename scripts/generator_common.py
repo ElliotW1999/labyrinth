@@ -57,7 +57,9 @@ ABILITY_TRIGGERS = {
     "on_impact": "OnImpact",
     "on_channel_tick": "OnChannelTick",
     "on_channel_end": "OnChannelEnd",
+    "on_channel_interrupted": "OnChannelInterrupted",
     "on_expire": "OnExpire",
+    "while_toggled": "WhileToggled",
     "passive": "Passive",
 }
 
@@ -67,6 +69,7 @@ ITEM_TRIGGERS = {
     "on_attack": "OnAttack",
     "on_attack_hit": "OnAttackHit",
     "on_channel_end": "OnChannelEnd",
+    "on_channel_interrupted": "OnChannelInterrupted",
     "on_damage_taken": "OnDamageTaken",
     "on_kill": "OnKill",
     "on_death": "OnDeath",
@@ -490,12 +493,12 @@ def validate_activation(
     def err(fld: str, message: str) -> None:
         report.error(row.file, row.line, fld, row.get(fld), message)
 
-    if spec.charge_restore_time is not None and spec.max_charges is None:
+    if kind == "item" and spec.charge_restore_time is not None:
+        err("charge_restore_time", "item charges do not regenerate; leave charge_restore_time blank")
+    elif spec.charge_restore_time is not None and spec.max_charges is None:
         err("charge_restore_time", "charge_restore_time requires max_charges")
     if spec.max_charges is not None and spec.charge_restore_time is None and kind == "ability":
         err("max_charges", "charge-based abilities need a charge_restore_time")
-    if spec.max_charges is not None and spec.charge_restore_time is None and kind == "item":
-        report.warn(row.file, row.line, "max_charges", row.get("max_charges"), "charge restore time is not modeled for items yet; charges refill from stack purchases")
 
     if spec.projectile_speed is not None and spec.projectile_type == "none":
         err("projectile_speed", "projectile_speed requires projectile_type targeted or skillshot")
@@ -691,6 +694,13 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
     if e.trigger in ctx.invalid_trigger:
         report.error(row.file, row.line, "trigger", e.trigger, ctx.invalid_trigger[e.trigger])
         return None
+    if e.trigger == "while_toggled":
+        if e.effect_type != "stat_modifier":
+            report.error(row.file, row.line, "effect_type", e.effect_type, "while_toggled only supports stat_modifier effects")
+            return None
+        if e.target != "caster":
+            report.error(row.file, row.line, "effect_target", e.target, "while_toggled bonuses apply to the caster")
+            return None
 
     combo = ctx.invalid_combo.get((e.trigger, e.target))
     if combo:
@@ -710,6 +720,15 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
         return None
     if scaling_value is not None and not scaling_type:
         report.error(row.file, row.line, "scaling_type", "", "required when scaling_value is set")
+        return None
+    if ctx.kind == "item" and scaling_type == "distance":
+        report.error(
+            row.file,
+            row.line,
+            "scaling_type",
+            scaling_type,
+            "distance scaling is ability-only (items have no rank-scaled cast range)",
+        )
         return None
     scaling = "EffectScaling::None"
     if scaling_type:
@@ -885,7 +904,13 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             if effect_id not in TIMED_STATS:
                 report.error(row.file, row.line, "effect_id", row.get("effect_id"), f"timed stat modifiers support: {', '.join(TIMED_STATS)}")
                 return None
-            if not _require(e, "duration", report, "timed stat modifiers need a duration (only item passives are permanent)"):
+            toggled = e.trigger == "while_toggled"
+            if toggled:
+                if duration:
+                    report.error(row.file, row.line, "duration", row.get("duration"), "while_toggled bonuses last while toggled; leave blank")
+                    return None
+                duration = [0.0]
+            elif not _require(e, "duration", report, "timed stat modifiers need a duration (only item passives are permanent)"):
                 return None
             beneficial = all(v >= 0 for v in value)
             kind = "Buff" if beneficial else "Debuff"
