@@ -530,6 +530,7 @@ mod tests {
                 crate::movement::MovementPlugin,
                 crate::unit_commands::UnitCommandsPlugin,
                 crate::combat::CombatPlugin,
+                crate::status::StatusPlugin,
                 crate::items::ItemsPlugin,
                 crate::abilities::AbilitiesPlugin,
                 crate::ai::AiPlugin,

@@ -33,6 +33,7 @@ mod picking;
 mod progression;
 mod resources;
 mod scale;
+mod status;
 mod teleport;
 mod ui;
 mod unit_commands;
@@ -55,6 +56,7 @@ use healthbars::HealthBarPlugin;
 use heroes::{HeroId, HeroesPlugin, LocalHeroChoice};
 use input::InputPlugin;
 use items::ItemsPlugin;
+use status::StatusPlugin;
 use map::MapPlugin;
 use menu::MenuPlugin;
 use movement::MovementPlugin;
@@ -161,6 +163,7 @@ fn main() {
             ProgressionPlugin,
         ))
         .add_plugins((
+            StatusPlugin,
             ItemsPlugin,
             InputPlugin,
             PickingPlugin,
