@@ -12,7 +12,7 @@ For substantial gameplay engineering tasks, follow this workflow.
 
 1. Delegate investigation and design to the architect subagent.
 2. Require the architect to inspect existing implementations and identify reusable systems.
-3. Require an implementation specification under docs/plans/. The architect agent is read-only, so it returns the plan and the coordinator saves it as `docs/plans/YYYY-MM-DD-<topic>.md`.
+3. Require an implementation specification under docs/plans/. The architect writes it as `docs/plans/YYYY-MM-DD-<topic>.md`. It can write only Markdown under `docs/`, enforced by `.claude/hooks/docs-only-writes.py`.
 4. Update permanent architecture documentation only when the architecture meaningfully changes.
 
 ### Implementation

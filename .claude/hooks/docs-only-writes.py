@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PreToolUse hook for the reviewer subagent: allow Write/Edit only on Markdown under docs/."""
+"""PreToolUse hook for documentation-only subagents (architect, reviewer): allow Write/Edit only on Markdown under docs/."""
 import json
 import os
 import sys
@@ -12,5 +12,5 @@ docs = os.path.join(root, "docs") + os.sep
 
 if target.startswith(docs) and target.endswith(".md"):
     sys.exit(0)
-print(f"reviewer may only write Markdown under docs/ (blocked: {path})", file=sys.stderr)
+print(f"this agent may only write Markdown under docs/ (blocked: {path})", file=sys.stderr)
 sys.exit(2)
