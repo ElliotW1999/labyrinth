@@ -229,7 +229,7 @@ def effect_context(a: Ability) -> EffectContext:
         has_aoe=bool(a.aoe_radius and any(a.aoe_radius)) or a.projectile == "skillshot",
     )
     if a.behavior == "Passive":
-        for trigger in ("on_cast", "on_projectile_hit", "on_impact", "on_channel_tick", "on_channel_end"):
+        for trigger in ("on_cast", "on_projectile_hit", "on_impact", "on_channel_tick", "on_channel_end", "on_channel_interrupted"):
             ctx.invalid_trigger[trigger] = "passive abilities are never cast, so this trigger never fires"
     else:
         ctx.invalid_trigger["passive"] = "passive trigger is only for ability_type passive"
@@ -237,15 +237,15 @@ def effect_context(a: Ability) -> EffectContext:
         for trigger in ("on_projectile_hit", "on_impact"):
             ctx.invalid_trigger[trigger] = "the ability has no projectile (projectile_type none)"
     if not a.channel_time:
-        for trigger in ("on_channel_tick", "on_channel_end"):
+        for trigger in ("on_channel_tick", "on_channel_end", "on_channel_interrupted"):
             ctx.invalid_trigger[trigger] = "the ability is not channelled (channel_time blank)"
     if a.target_type != "unit":
-        for trigger in ("on_cast", "on_projectile_hit", "on_unit_contact", "on_impact", "on_channel_tick", "on_channel_end", "on_expire"):
+        for trigger in ("on_cast", "on_projectile_hit", "on_unit_contact", "on_impact", "on_channel_tick", "on_channel_end", "on_channel_interrupted", "on_expire"):
             ctx.invalid_combo[(trigger, "cast_target")] = f"cast_target requires target_type unit (got {a.target_type})"
         ctx.invalid_combo[("on_cast", "trigger_unit")] = f"on_cast only has a trigger unit for unit-targeted abilities (got {a.target_type})"
     ctx.invalid_combo[("on_cast", "affected_units")] = "on_cast has no affected units; use units_in_radius"
     ctx.invalid_combo[("on_impact", "trigger_unit")] = "on_impact fires when the projectile hit no unit; use affected_units or units_in_radius"
-    for trigger in ("on_channel_tick", "on_channel_end"):
+    for trigger in ("on_channel_tick", "on_channel_end", "on_channel_interrupted"):
         ctx.invalid_combo[(trigger, "trigger_unit")] = f"{trigger} has no trigger unit"
         ctx.invalid_combo[(trigger, "affected_units")] = f"{trigger} has no affected units"
     if a.projectile == "skillshot":

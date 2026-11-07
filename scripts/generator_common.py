@@ -57,6 +57,7 @@ ABILITY_TRIGGERS = {
     "on_impact": "OnImpact",
     "on_channel_tick": "OnChannelTick",
     "on_channel_end": "OnChannelEnd",
+    "on_channel_interrupted": "OnChannelInterrupted",
     "on_expire": "OnExpire",
     "passive": "Passive",
 }
@@ -67,6 +68,7 @@ ITEM_TRIGGERS = {
     "on_attack": "OnAttack",
     "on_attack_hit": "OnAttackHit",
     "on_channel_end": "OnChannelEnd",
+    "on_channel_interrupted": "OnChannelInterrupted",
     "on_damage_taken": "OnDamageTaken",
     "on_kill": "OnKill",
     "on_death": "OnDeath",

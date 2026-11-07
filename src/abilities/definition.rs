@@ -116,7 +116,11 @@ pub enum AbilityTrigger {
     /// A projectile ended without striking a unit (ground impact or lost target).
     OnImpact,
     OnChannelTick,
+    /// A channel ran its full time. A channel cut short by a disable fires
+    /// [`Self::OnChannelInterrupted`] instead; a new order cancels silently.
     OnChannelEnd,
+    /// A channel ended early because the caster was disabled.
+    OnChannelInterrupted,
     OnExpire,
     /// Item stat bonuses held while the item is owned (applied on purchase, not resolved).
     Passive,

@@ -14,6 +14,8 @@ from generator_common import (  # noqa: E402
     EffectRow,
     Report,
     Row,
+    ABILITY_TRIGGERS,
+    ITEM_TRIGGERS,
     effect_to_rust,
     parse_activation_spec,
     validate_activation,
@@ -106,6 +108,13 @@ class ItemEffectScalingTests(unittest.TestCase):
         effect, ctx = self._damage_row("item", "strength")
         self.assertIsNotNone(effect_to_rust(effect, ctx, report))
         self.assertFalse(report.errors)
+
+
+class TriggerTableTests(unittest.TestCase):
+    def test_both_trigger_tables_accept_on_channel_interrupted(self) -> None:
+        self.assertEqual(ABILITY_TRIGGERS["on_channel_interrupted"], "OnChannelInterrupted")
+        self.assertEqual(ITEM_TRIGGERS["on_channel_interrupted"], "OnChannelInterrupted")
+        self.assertEqual(ABILITY_TRIGGERS["on_channel_end"], "OnChannelEnd")
 
 
 class ParseActivationSpecTests(unittest.TestCase):

@@ -254,7 +254,7 @@ Shared pipeline: `ActivationRequest` → `ActionSpec` (`src/actions/`) → cast 
 | Toggle | `AbilityBehavior::Toggle`; `AbilityState.toggled`; upkeep in `abilities/passive.rs` |
 | Autocast | *Not implemented* |
 | Passive ability | `AbilityBehavior::Passive`; `AbilityTrigger::Passive` + `PassiveStat` effects; `sync_ability_passives` |
-| Channeling | `ActionSpec.channel_time`, `Activation.channel_remaining`; `OnChannelEnd` for abilities and items is produced by `action_channel_end_triggers` in `abilities/casting.rs` (`on_channel_end` in `item_effects.csv`) |
+| Channeling | `ActionSpec.channel_time`, `Activation.channel_remaining`; `OnChannelEnd` (completed) and `OnChannelInterrupted` (ended by a disable) for abilities and items are produced by `action_channel_end_triggers` in `abilities/casting.rs` (`on_channel_end` / `on_channel_interrupted` in the effect CSVs) |
 | Cast point | `ActionSpec.cast_time` / `point_remaining`; mana and cooldown on fire |
 | Cast backswing | `ActionSpec.backswing`; items default to **0** backswing |
 | Cast range | `ActionSpec.cast_range` (`RankValue` on abilities, flat on items); edge-to-edge via `dimensions` |
@@ -271,7 +271,7 @@ Shared pipeline: `ActivationRequest` → `ActionSpec` (`src/actions/`) → cast 
 | Phase | Silence / stun | New move / stop / attack | Target dies | Source slot changes |
 | --- | --- | --- | --- | --- |
 | Cast point (before fire) | Cancel, no cost | Cancel, no cost | Queued cast may fail on re-request | Cancel |
-| After fire, channeling | End channel; abilities emit `OnChannelEnd` | Cancel channel (no item/ability trigger) | — | Cancel |
+| After fire, channeling | End channel early and fire `OnChannelInterrupted` (abilities: silence / stun; items: mute / stun). A channel that runs its full time fires `OnChannelEnd` | Cancel channel (no item/ability trigger) | — | Cancel |
 | Backswing | Does not remove backswing by itself | Removes `Activation` | — | Cancel |
 - **Custom mechanics** (`abilities/custom.rs`): `app.register_ability_behavior(id, system)` runs a one-shot system with the `CastContext`. It reports what happened with a trigger such as `AbilityTrigger::Custom("on_skewer_end")`, and the ability's effect entries apply the consequences
 
@@ -315,7 +315,7 @@ shockwave,1,on_projectile_hit,trigger_unit,movement,pull,,,,,,,
 skewer,1,on_unit_contact,trigger_unit,custom,skewer_drag,,,,,,,
 ```
 
-- `trigger`: `on_cast`, `on_projectile_hit`, `on_unit_contact`, `on_impact`, `on_channel_tick`, `on_channel_end`, `on_expire`, or any other `on_…` name raised by a custom mechanic
+- `trigger`: `on_cast`, `on_projectile_hit`, `on_unit_contact`, `on_impact`, `on_channel_tick`, `on_channel_end` (channel completed), `on_channel_interrupted` (channel cut short by silence/stun/mute; a new order fires neither), `on_expire`, or any other `on_…` name raised by a custom mechanic
 - `effect_target`: `caster`, `cast_target`, `trigger_unit`, `affected_units`, `units_in_radius` (around the trigger point; `radius` or the ability AoE; team from the ability / effect polarity)
 - `effect_type` (+ `effect_id`): `damage` (`value` or `amount`, `damage_type` physical/magical/pure), `heal` (`effect_id=mana` restores mana), `apply_status` (`stun`, `root`, `silence`, `disarm`, `slow` (% from `amount`/`value`), `phased`, `forceful`, `debuff_immunity`, or any id as a timed `stat_modifier`), `remove_status` (`buff`/`debuff` dispel, otherwise a status id), `movement` (`knockback` / `pull`; `value` = distance, `duration`; `teleport` sends `caster` / `owner` / `cast_target` / `trigger_unit` to the cast's aim point — see Teleport below), `stat_modifier` (`effect_id` = stat, `amount`, `duration`), `custom` (registered id; receives `value`, `amount`, `duration`)
 - `scaling_type`: `strength` / `agility` / `intelligence` / `attack_damage` × `scaling_value` (damage and heal)
@@ -357,7 +357,7 @@ frost_hammer,Frost Hammer,weapon,2800,1400,3,rare,false,,false,,A heavy weapon i
 
 - `item_type` component/weapon/armor/accessory/consumable/utility/recipe, `rarity` common/uncommon/rare/epic/legendary; optional extras `short_label`, `cooldown`, `components` (`;`-separated ids), `color_r/g/b`
 - Optional activation columns on items with `on_use` (blank = instant no-target use): `charge_restore_time`, `target_type` (`unit`, `point`, `direction`, `no_target`, `self`), `target_team` (`enemy`, `ally`, `both`, `self`), `cast_range`, `cast_time`, `channel_time`, `mana_cost`, `projectile_type`, `projectile_speed` (`cooldown` remains on the item row). Unit targets require `target_team`. Point, unit, and direction targets require `cast_range`. Teleport items must be `point` or `direction` so the destination is the cast aim. Item `projectile_*` fields are reserved — the runtime only emits ability projectiles today
-- Effects use the ability effect schema with item triggers `passive` (must be `stat_modifier`: `max_health`, `health_regen`, `max_mana`, `mana_regen`, `attack_damage`, `attack_speed`, `armor`, `magic_resist`, `move_speed`, `strength`, `agility`, `intelligence`, `spell_amp`, `outgoing_physical_amp`, `incoming_damage_amp`, `damage_block`, `damage_reflect`; `health` and `mana` are aliases of `max_health` and `max_mana`), `on_use`, `on_attack`, `on_attack_hit`, `on_channel_end` (channelled actives only), `on_damage_taken`, `on_kill`, `on_death` and targets `owner`, `cast_target` (unit and self actives), `trigger_unit`, `attacker`, `affected_units`, `units_in_radius`
+- Effects use the ability effect schema with item triggers `passive` (must be `stat_modifier`: `max_health`, `health_regen`, `max_mana`, `mana_regen`, `attack_damage`, `attack_speed`, `armor`, `magic_resist`, `move_speed`, `strength`, `agility`, `intelligence`, `spell_amp`, `outgoing_physical_amp`, `incoming_damage_amp`, `damage_block`, `damage_reflect`; `health` and `mana` are aliases of `max_health` and `max_mana`), `on_use`, `on_attack`, `on_attack_hit`, `on_channel_end` / `on_channel_interrupted` (channelled actives only), `on_damage_taken`, `on_kill`, `on_death` and targets `owner`, `cast_target` (unit and self actives), `trigger_unit`, `attacker`, `affected_units`, `units_in_radius`
 - Consumables spend a charge (or one of the stack) when the use fires, and disappear when empty. A rejected activation spends nothing
 
 ### Teleport

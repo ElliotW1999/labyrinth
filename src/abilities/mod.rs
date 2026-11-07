@@ -1610,6 +1610,70 @@ mod tests {
                     scaling: EffectScaling::None,
                 },
             )
+            .on(
+                AbilityTrigger::OnChannelInterrupted,
+                EffectTarget::Caster,
+                AbilityEffect::Heal {
+                    amount: RankValue::fixed(50.0),
+                    scaling: EffectScaling::None,
+                },
+            )
+    }
+
+    /// Start `channelled_heal` on a caster at 500 health and run it into its channel.
+    fn channelling_caster(app: &mut App) -> Entity {
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(channelled_heal());
+        let caster = spawn_caster(app, KIT);
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 500.0;
+        request(app, caster, 3, CastTarget::None);
+        for _ in 0..4 {
+            step(app);
+        }
+        caster
+    }
+
+    #[test]
+    fn completed_ability_channel_fires_only_on_channel_end() {
+        let mut app = test_app();
+        let caster = channelling_caster(&mut app);
+        let mut fired = Vec::new();
+        for _ in 0..12 {
+            step(&mut app);
+            fired.extend(
+                app.world()
+                    .resource::<Messages<AbilityTriggerEvent>>()
+                    .iter_current_update_messages()
+                    .map(|event| event.0.trigger),
+            );
+        }
+        assert_eq!(fired, vec![AbilityTrigger::OnChannelEnd]);
+        assert_eq!(health(&app, caster), 700.0, "only the 200 heal");
+    }
+
+    #[test]
+    fn order_cancelled_channel_fires_neither_trigger() {
+        let mut app = test_app();
+        let caster = channelling_caster(&mut app);
+        // A new order removes the activation (see `unit_commands`) without an end event.
+        app.world_mut().entity_mut(caster).remove::<Activation>();
+        for _ in 0..12 {
+            step(&mut app);
+            let triggers = app
+                .world()
+                .resource::<Messages<AbilityTriggerEvent>>()
+                .iter_current_update_messages()
+                .filter(|event| {
+                    matches!(
+                        event.0.trigger,
+                        AbilityTrigger::OnChannelEnd | AbilityTrigger::OnChannelInterrupted
+                    )
+                })
+                .count();
+            assert_eq!(triggers, 0);
+        }
+        assert_eq!(health(&app, caster), 500.0);
     }
 
     #[test]
@@ -1645,7 +1709,7 @@ mod tests {
     }
 
     #[test]
-    fn stuns_interrupt_a_channel() {
+    fn stunned_ability_channel_fires_only_on_channel_interrupted() {
         let mut app = test_app();
         app.world_mut()
             .resource_mut::<AbilityDefinitions>()
@@ -1672,6 +1736,11 @@ mod tests {
             app.world()
                 .get::<Activation>(caster)
                 .is_none_or(|a| a.released())
+        );
+        assert_eq!(
+            health(&app, caster),
+            550.0,
+            "the 50 interrupted heal, not the 200 end heal and not both"
         );
     }
 

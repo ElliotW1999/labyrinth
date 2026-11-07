@@ -6,7 +6,7 @@
 //!   → actions pipeline: cooldown / charges, mana, targeting, range, cast point, channel
 //!   → commit_ability: cooldown, charge, toggle state
 //!   → ActionFiredEvent → emit_ability_casts → AbilityCastEvent (consumed by `mechanics`)
-//!   → ActionChannelEndEvent → action_channel_end_triggers → OnChannelEnd trigger
+//!   → ActionChannelEndEvent → action_channel_end_triggers → OnChannelEnd / OnChannelInterrupted trigger
 //! ```
 
 use bevy::prelude::*;
@@ -97,8 +97,9 @@ pub fn emit_ability_casts(
     }
 }
 
-/// `OnChannelEnd` for channelled abilities and active items, whether the channel
-/// completed or the caster was disabled.
+/// Channel triggers for channelled abilities and active items: `OnChannelEnd` when the
+/// channel completed, `OnChannelInterrupted` when the caster was disabled. Cancelling
+/// with a new order emits no end event, so neither trigger fires.
 pub fn action_channel_end_triggers(
     mut ends: MessageReader<ActionChannelEndEvent>,
     casters: Query<(&Transform, &Team)>,
@@ -108,8 +109,13 @@ pub fn action_channel_end_triggers(
         let Ok((transform, team)) = casters.get(end.caster) else {
             continue;
         };
+        let trigger = if end.completed {
+            AbilityTrigger::OnChannelEnd
+        } else {
+            AbilityTrigger::OnChannelInterrupted
+        };
         let ctx = TriggerContext::new(
-            AbilityTrigger::OnChannelEnd,
+            trigger,
             end.action.into(),
             end.caster,
             *team,

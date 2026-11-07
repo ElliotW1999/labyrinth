@@ -501,7 +501,7 @@ pub fn commit_item(inventory: &mut Inventory, slot: usize, spec: &ActionSpec) {
 
 impl ItemDefinition {
     /// Radius of the item's fixed-size areas: the largest `AreaRadius::Fixed` among its
-    /// `UnitsInRadius` entries that fire from the active (`OnUse` / `OnChannelEnd`).
+    /// `UnitsInRadius` entries that fire from the active (`OnUse` / `OnChannelEnd` / `OnChannelInterrupted`).
     /// `0.0` when it has none. Used for the targeting indicator and as the
     /// `AreaRadius::Ability` fallback.
     pub fn aoe_radius(&self) -> f32 {
@@ -510,7 +510,9 @@ impl ItemDefinition {
             .filter(|entry| {
                 matches!(
                     entry.trigger,
-                    AbilityTrigger::OnUse | AbilityTrigger::OnChannelEnd
+                    AbilityTrigger::OnUse
+                        | AbilityTrigger::OnChannelEnd
+                        | AbilityTrigger::OnChannelInterrupted
                 )
             })
             .filter_map(|entry| match entry.target {
@@ -717,10 +719,14 @@ impl ItemId {
         let def = self.definition();
         def.effects_for(AbilityTrigger::OnUse).next().is_some()
             || (def.activation.channel_time > 0.0
-                && def
+                && (def
                     .effects_for(AbilityTrigger::OnChannelEnd)
                     .next()
-                    .is_some())
+                    .is_some()
+                    || def
+                        .effects_for(AbilityTrigger::OnChannelInterrupted)
+                        .next()
+                        .is_some()))
     }
 
     pub fn inventory_hotkey(index: usize) -> Option<&'static str> {
@@ -816,6 +822,8 @@ fn passive_stat_lines(passives: &ItemPassives) -> Vec<String> {
 fn describe_item_effect(entry: &AbilityEffectEntry) -> Option<String> {
     let tag = match entry.trigger {
         AbilityTrigger::OnUse => "Use",
+        AbilityTrigger::OnChannelEnd => "Channel end",
+        AbilityTrigger::OnChannelInterrupted => "Channel interrupted",
         AbilityTrigger::OnAttack => "On attack",
         AbilityTrigger::OnAttackHit => "On attack hit",
         AbilityTrigger::OnDamageTaken => "When damaged",
@@ -3007,6 +3015,84 @@ mod tests {
             ctx.source,
             crate::abilities::effects::EffectSource::Item(ItemId::HeartwoodBand)
         );
+    }
+
+    fn channel_both_effects() -> &'static [AbilityEffectEntry] {
+        Box::leak(Box::new([
+            AbilityEffectEntry {
+                trigger: AbilityTrigger::OnChannelEnd,
+                target: EffectTarget::Caster,
+                effect: AbilityEffect::Heal {
+                    amount: RankValue::fixed(200.0),
+                    scaling: EffectScaling::None,
+                },
+            },
+            AbilityEffectEntry {
+                trigger: AbilityTrigger::OnChannelInterrupted,
+                target: EffectTarget::Caster,
+                effect: AbilityEffect::Heal {
+                    amount: RankValue::fixed(50.0),
+                    scaling: EffectScaling::None,
+                },
+            },
+        ]))
+    }
+
+    /// Run a channelled item for a few frames, then apply `status`, and report the
+    /// channel triggers that fired plus the caster's final health (started at 500).
+    fn channel_with_status(status: Option<StatusEffect>) -> (Vec<AbilityTrigger>, f32) {
+        let mut app = item_app();
+        let def = ItemDefinition {
+            effects: channel_both_effects(),
+            ..channeled_test_item(ItemId::HeartwoodBand)
+        };
+        let _defs = DefinitionOverride::install([def]);
+        let caster = spawn_caster(&mut app, 200.0);
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 500.0;
+        give(&mut app, caster, ItemId::HeartwoodBand);
+        request(&mut app, caster, 0, CastTarget::None);
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        assert!(app.world().get::<Activation>(caster).unwrap().fired);
+        if let Some(status) = status {
+            app.world_mut()
+                .get_mut::<StatusEffects>(caster)
+                .unwrap()
+                .effects
+                .push(status);
+        }
+        let mut fired = Vec::new();
+        for _ in 0..14 {
+            step(&mut app);
+            fired.extend(
+                triggers(&app)
+                    .into_iter()
+                    .map(|ctx| ctx.trigger)
+                    .filter(|t| {
+                        matches!(
+                            t,
+                            AbilityTrigger::OnChannelEnd | AbilityTrigger::OnChannelInterrupted
+                        )
+                    }),
+            );
+        }
+        (fired, health_of(&app, caster))
+    }
+
+    #[test]
+    fn silenced_item_channel_does_not_interrupt_but_mute_does() {
+        let (fired, health) = channel_with_status(Some(StatusEffect::silenced(5.0)));
+        assert_eq!(fired, vec![AbilityTrigger::OnChannelEnd]);
+        assert_eq!(health, 700.0, "silence does not stop item channels");
+
+        let (fired, health) = channel_with_status(Some(StatusEffect::mute(5.0)));
+        assert_eq!(fired, vec![AbilityTrigger::OnChannelInterrupted]);
+        assert_eq!(health, 550.0, "mute interrupts and heals the smaller amount");
+
+        let (fired, health) = channel_with_status(None);
+        assert_eq!(fired, vec![AbilityTrigger::OnChannelEnd]);
+        assert_eq!(health, 700.0);
     }
 
     #[test]
