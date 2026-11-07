@@ -1955,6 +1955,48 @@ mod tests {
         assert_eq!(health(&app, caster), after, "fires once");
     }
 
+    #[test]
+    fn drag_carries_contacted_units_with_the_dash() {
+        let mut app = test_app();
+        let skewer = dash_ability(600.0).on(
+            AbilityTrigger::OnUnitContact,
+            EffectTarget::TriggerUnit,
+            AbilityEffect::Displace {
+                kind: DisplacementKind::Drag,
+                distance: None,
+                duration: RankValue::ZERO,
+                speed: None,
+            },
+        );
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(skewer);
+        let caster = spawn_caster(&mut app, KIT);
+        let victim = spawn_unit(&mut app, Team::Dire, Vec3::new(200.0, 0.0, 0.0));
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(350.0, 0.0, 0.0));
+        for unit in [caster, victim, ally] {
+            app.world_mut().entity_mut(unit).insert(BoundRadius(30.0));
+        }
+        request(
+            &mut app,
+            caster,
+            3,
+            CastTarget::Point(Vec3::new(1000.0, 0.0, 0.0)),
+        );
+        for _ in 0..30 {
+            step(&mut app);
+        }
+        let dasher = caster_x(&app, caster);
+        assert!((dasher - 600.0).abs() < 1e-2);
+        let lead = caster_x(&app, victim) - dasher;
+        assert!(
+            lead > 0.0 && lead <= 60.0 + 1e-2,
+            "dragged along at the front of the dash: {lead}"
+        );
+        assert!(app.world().get::<ForcedMovement>(victim).is_none());
+        assert_eq!(caster_x(&app, ally), 350.0, "allies are not contacted");
+    }
+
     fn dash_item() -> ItemDefinition {
         static EFFECTS: std::sync::OnceLock<&'static [AbilityEffectEntry]> =
             std::sync::OnceLock::new();

@@ -12,7 +12,7 @@
 //! A unit in forced motion keeps its orders (`MoveTarget`); `movement.rs` simply does
 //! not steer it until the motion ends. It also ignores unit collision while moving.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 
@@ -96,6 +96,9 @@ pub enum MotionPath {
         travelled: f32,
         last_anchor: Vec3,
     },
+    /// Keep `offset` (XZ) from `anchor` for as long as the anchor itself is in forced
+    /// motion (drag).
+    Attached { anchor: Entity, offset: Vec2 },
 }
 
 /// Who wins when two motions compete for one unit. A new motion replaces the current
@@ -243,7 +246,8 @@ pub fn apply_displacement_events(
         }
 
         let from = target_tf.translation;
-        let Some((path, duration)) = plan_motion(event, from, target_bound, &units) else {
+        let Some((path, duration)) = plan_motion(event, from, target_bound, &units, &pending)
+        else {
             continue;
         };
         let mut motion = ForcedMovement::new(path, duration);
@@ -263,6 +267,7 @@ fn plan_motion(
     from: Vec3,
     target_bound: Option<&BoundRadius>,
     units: &DisplaceTargets,
+    pending: &HashMap<Entity, MotionPriority>,
 ) -> Option<(MotionPath, f32)> {
     const MIN_TRAVEL: f32 = 1e-3;
     let duration = event.duration.max(0.05);
@@ -301,6 +306,31 @@ fn plan_motion(
                 1.0
             };
             Some((path, (duration * share).max(0.05)))
+        }
+        DisplacementKind::Drag => {
+            // Rides along with the caster's own motion; nothing to ride without one.
+            if event.target == event.caster {
+                return None;
+            }
+            let (anchor_pos, anchor_bound, _, _, _, anchor_motion) =
+                units.get(event.caster).ok()?;
+            if anchor_motion.is_none() && !pending.contains_key(&event.caster) {
+                return None;
+            }
+            let reach = bounds_of(anchor_bound) + bounds_of(target_bound);
+            let offset = flat3(from - anchor_pos.translation).clamp_length_max(reach);
+            let cap = if event.duration > 0.0 {
+                event.duration
+            } else {
+                f32::INFINITY
+            };
+            Some((
+                MotionPath::Attached {
+                    anchor: event.caster,
+                    offset: Vec2::new(offset.x, offset.z),
+                },
+                cap,
+            ))
         }
         DisplacementKind::Pull | DisplacementKind::Charge => {
             let charge = event.kind == DisplacementKind::Charge;
@@ -402,121 +432,150 @@ pub fn tick_forced_movement(
         .collect();
     let snap_of = |entity: Entity| snaps.iter().find(|s| s.entity == entity);
 
-    for (entity, mut transform, mut forced, radius, bound, statuses, health) in &mut units.p0() {
-        let r = collision_of(radius);
-        let own_bound = bounds_of(bound);
-        // A dead unit's motion ends silently; the owner's disabling ends it loudly.
-        let dead = health.is_some_and(|h| !h.is_alive());
-        let interrupted =
-            forced.priority == MotionPriority::Own && statuses.is_some_and(|s| !s.can_move());
-
-        forced.elapsed += dt;
-        let mut finished = dead || interrupted || forced.elapsed >= forced.duration;
-        let mut reached: Option<Entity> = None;
-        let here3 = transform.translation;
-        let mut next = here3;
-
-        if !dead && !interrupted {
-            let elapsed_t = (forced.elapsed / forced.duration).min(1.0);
-            match &mut forced.path {
-                MotionPath::Line { from, to } => {
-                    next = from.lerp(*to, elapsed_t);
-                    next.y = here3.y;
-                    finished = elapsed_t >= 1.0;
-                }
-                MotionPath::Toward {
-                    anchor,
-                    speed,
-                    stop_distance,
-                    max_travel,
-                    travelled,
-                    last_anchor,
-                } => {
-                    let live_anchor = snap_of(*anchor).filter(|s| s.alive);
-                    if let Some(a) = live_anchor {
-                        *last_anchor = a.pos;
-                    }
-                    let gap = center_distance(*last_anchor, here3) - *stop_distance;
-                    let step = (*speed * dt)
-                        .min(gap.max(0.0))
-                        .min(*max_travel - *travelled);
-                    if step > 0.0 {
-                        let dir = flat3(*last_anchor - here3).normalize_or_zero();
-                        next = here3 + dir * step;
-                        *travelled += step;
-                    }
-                    if gap - step <= 1e-3 {
-                        finished = true;
-                        reached = live_anchor.map(|a| a.entity);
-                    }
-                    if *travelled >= *max_travel - 1e-3 {
-                        finished = true;
-                    }
-                }
+    // Pass 1 moves everything that travels on its own; pass 2 moves the units attached
+    // to those travellers, which need the anchors' new positions.
+    let mut moved: HashMap<Entity, Vec3> = HashMap::new();
+    let mut ended: HashSet<Entity> = HashSet::new();
+    for attached_pass in [false, true] {
+        for (entity, mut transform, mut forced, radius, bound, statuses, health) in &mut units.p0()
+        {
+            if matches!(forced.path, MotionPath::Attached { .. }) != attached_pass {
+                continue;
             }
+            let r = collision_of(radius);
+            let own_bound = bounds_of(bound);
+            // A dead unit's motion ends silently; the owner's disabling ends it loudly.
+            let dead = health.is_some_and(|h| !h.is_alive());
+            let interrupted =
+                forced.priority == MotionPriority::Own && statuses.is_some_and(|s| !s.can_move());
 
-            // Stop at the last clear spot instead of passing through geometry. A unit
-            // that already stands inside geometry moves freely so it can get out.
-            let here = flat(here3);
-            if !forced.ignore_terrain && grid.point_clear(here, r) {
-                let there = flat(next);
-                if !grid.segment_clear(here, there, r, &[]) {
-                    let (mut lo, mut hi) = (0.0_f32, 1.0_f32);
-                    for _ in 0..10 {
-                        let mid = (lo + hi) * 0.5;
-                        if grid.segment_clear(here, here.lerp(there, mid), r, &[]) {
-                            lo = mid;
-                        } else {
-                            hi = mid;
+            forced.elapsed += dt;
+            let mut finished = dead || interrupted || forced.elapsed >= forced.duration;
+            let mut reached: Option<Entity> = None;
+            let here3 = transform.translation;
+            let mut next = here3;
+
+            if !dead && !interrupted {
+                let elapsed_t = (forced.elapsed / forced.duration).min(1.0);
+                match &mut forced.path {
+                    MotionPath::Line { from, to } => {
+                        next = from.lerp(*to, elapsed_t);
+                        next.y = here3.y;
+                        finished = elapsed_t >= 1.0;
+                    }
+                    MotionPath::Attached { anchor, offset } => {
+                        // Follows the anchor for as long as the anchor itself is in motion.
+                        match moved.get(anchor) {
+                            Some(anchor_pos) => {
+                                next = Vec3::new(
+                                    anchor_pos.x + offset.x,
+                                    here3.y,
+                                    anchor_pos.z + offset.y,
+                                );
+                                finished = ended.contains(anchor);
+                            }
+                            None => finished = true,
                         }
                     }
-                    let stop = here.lerp(there, lo);
-                    next = Vec3::new(stop.x, next.y, stop.y);
-                    finished = true;
-                    reached = None;
+                    MotionPath::Toward {
+                        anchor,
+                        speed,
+                        stop_distance,
+                        max_travel,
+                        travelled,
+                        last_anchor,
+                    } => {
+                        let live_anchor = snap_of(*anchor).filter(|s| s.alive);
+                        if let Some(a) = live_anchor {
+                            *last_anchor = a.pos;
+                        }
+                        let gap = center_distance(*last_anchor, here3) - *stop_distance;
+                        let step = (*speed * dt)
+                            .min(gap.max(0.0))
+                            .min(*max_travel - *travelled);
+                        if step > 0.0 {
+                            let dir = flat3(*last_anchor - here3).normalize_or_zero();
+                            next = here3 + dir * step;
+                            *travelled += step;
+                        }
+                        if gap - step <= 1e-3 {
+                            finished = true;
+                            reached = live_anchor.map(|a| a.entity);
+                        }
+                        if *travelled >= *max_travel - 1e-3 {
+                            finished = true;
+                        }
+                    }
+                }
+
+                // Stop at the last clear spot instead of passing through geometry. A unit
+                // that already stands inside geometry moves freely so it can get out.
+                let here = flat(here3);
+                if !forced.ignore_terrain && grid.point_clear(here, r) {
+                    let there = flat(next);
+                    if !grid.segment_clear(here, there, r, &[]) {
+                        let (mut lo, mut hi) = (0.0_f32, 1.0_f32);
+                        for _ in 0..10 {
+                            let mid = (lo + hi) * 0.5;
+                            if grid.segment_clear(here, here.lerp(there, mid), r, &[]) {
+                                lo = mid;
+                            } else {
+                                hi = mid;
+                            }
+                        }
+                        let stop = here.lerp(there, lo);
+                        next = Vec3::new(stop.x, next.y, stop.y);
+                        finished = true;
+                        reached = None;
+                    }
+                }
+                transform.translation.x = next.x;
+                transform.translation.z = next.z;
+                // Self-propelled movers face where they are going.
+                let moved = flat3(next - here3);
+                if forced.priority == MotionPriority::Own && moved.length_squared() > 1e-6 {
+                    transform.rotation = Quat::from_rotation_y(moved.x.atan2(moved.z));
                 }
             }
-            transform.translation.x = next.x;
-            transform.translation.z = next.z;
-            // Self-propelled movers face where they are going.
-            let moved = flat3(next - here3);
-            if forced.priority == MotionPriority::Own && moved.length_squared() > 1e-6 {
-                transform.rotation = Quat::from_rotation_y(moved.x.atan2(moved.z));
-            }
-        }
 
-        // Self-propelled motion reports each newly touched enemy once.
-        if !dead && let Some(src) = forced.source {
-            let pos = transform.translation;
-            for other in &snaps {
-                if other.entity == entity
-                    || !other.alive
-                    || other.team.is_none_or(|t| t == src.team)
-                    || forced.hit.contains(&other.entity)
-                    || center_distance(pos, other.pos) > own_bound + other.bound
-                {
-                    continue;
-                }
-                forced.hit.push(other.entity);
-                triggers.write(AbilityTriggerEvent(
-                    src.context(AbilityTrigger::OnUnitContact, pos)
-                        .trigger_unit(Some(other.entity)),
-                ));
-            }
-        }
-
-        if finished {
-            transform.translation = reposition_to_valid_terrain(&grid, transform.translation, r);
+            // Self-propelled motion reports each newly touched enemy once.
             if !dead && let Some(src) = forced.source {
-                triggers.write(AbilityTriggerEvent(
-                    src.context(AbilityTrigger::OnMovementEnd, transform.translation)
-                        .trigger_unit(reached)
-                        .affected(forced.hit.clone()),
-                ));
+                let pos = transform.translation;
+                for other in &snaps {
+                    if other.entity == entity
+                        || !other.alive
+                        || other.team.is_none_or(|t| t == src.team)
+                        || forced.hit.contains(&other.entity)
+                        || center_distance(pos, other.pos) > own_bound + other.bound
+                    {
+                        continue;
+                    }
+                    forced.hit.push(other.entity);
+                    triggers.write(AbilityTriggerEvent(
+                        src.context(AbilityTrigger::OnUnitContact, pos)
+                            .trigger_unit(Some(other.entity)),
+                    ));
+                }
             }
-            commands
-                .entity(entity)
-                .remove::<(ForcedMovement, NavPath, NavSteering)>();
+
+            moved.insert(entity, transform.translation);
+            if finished {
+                ended.insert(entity);
+            }
+            if finished {
+                transform.translation =
+                    reposition_to_valid_terrain(&grid, transform.translation, r);
+                if !dead && let Some(src) = forced.source {
+                    triggers.write(AbilityTriggerEvent(
+                        src.context(AbilityTrigger::OnMovementEnd, transform.translation)
+                            .trigger_unit(reached)
+                            .affected(forced.hit.clone()),
+                    ));
+                }
+                commands
+                    .entity(entity)
+                    .remove::<(ForcedMovement, NavPath, NavSteering)>();
+            }
         }
     }
 }
@@ -1171,5 +1230,61 @@ mod tests {
             .write_message(charge(Some(live), Some(900.0)));
         step(&mut app);
         assert!(app.world().get::<ForcedMovement>(charger).is_some());
+    }
+
+    #[test]
+    fn drag_ends_when_the_source_stops() {
+        let mut app = sim_app();
+        let anchor = spawn_unit(&mut app, Team::Radiant, Vec3::ZERO, 30.0);
+        let victim = spawn_unit(&mut app, Team::Dire, Vec3::new(50.0, 0.0, 0.0), 30.0);
+        let loner = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, 800.0), 30.0);
+        let idle = spawn_unit(&mut app, Team::Radiant, Vec3::new(0.0, 0.0, 700.0), 30.0);
+        step(&mut app);
+        start_own_motion(&mut app, anchor, Vec3::new(900.0, 0.0, 0.0), 1.0);
+        push(
+            &mut app,
+            victim,
+            anchor,
+            DisplacementKind::Drag,
+            Vec3::ZERO,
+            None,
+            0.0,
+        );
+        // Nothing to ride along with: the request is ignored.
+        push(
+            &mut app,
+            loner,
+            idle,
+            DisplacementKind::Drag,
+            Vec3::ZERO,
+            None,
+            0.0,
+        );
+        run(&mut app, 2);
+        let offset = pos(&app, victim).x - pos(&app, anchor).x;
+        run(&mut app, 6);
+        assert!(app.world().get::<ForcedMovement>(victim).is_some());
+        assert!(app.world().get::<ForcedMovement>(loner).is_none());
+        let kept = pos(&app, victim).x - pos(&app, anchor).x;
+        assert!(
+            (kept - offset).abs() < 1e-2,
+            "keeps its offset: {offset} vs {kept}"
+        );
+
+        app.world_mut()
+            .get_mut::<StatusEffects>(anchor)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::stunned(3.0));
+        run(&mut app, 2);
+        assert!(app.world().get::<ForcedMovement>(anchor).is_none());
+        assert!(
+            app.world().get::<ForcedMovement>(victim).is_none(),
+            "the drag ends with the anchor's motion"
+        );
+        let stopped = pos(&app, anchor).x;
+        run(&mut app, 5);
+        assert_eq!(pos(&app, anchor).x, stopped, "the anchor stays put");
+        assert!(app.world().get::<ForcedMovement>(victim).is_none());
     }
 }

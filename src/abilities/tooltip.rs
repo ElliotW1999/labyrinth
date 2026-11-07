@@ -295,6 +295,7 @@ fn effect_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
                 DisplacementKind::Pull | DisplacementKind::PullToPoint => "Pull",
                 DisplacementKind::Dash => "Dash",
                 DisplacementKind::Charge => "Charge",
+                DisplacementKind::Drag => "Drag",
             };
             let mut rows = Vec::new();
             if let Some(distance) = distance {
