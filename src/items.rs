@@ -3095,6 +3095,82 @@ mod tests {
     }
 
     #[test]
+    fn stunned_item_channel_fires_only_on_channel_interrupted() {
+        let (fired, health) = channel_with_status(Some(StatusEffect::stunned(5.0)));
+        assert_eq!(fired, vec![AbilityTrigger::OnChannelInterrupted]);
+        assert_eq!(health, 550.0);
+    }
+
+    fn radius_entry(trigger: AbilityTrigger, radius: AreaRadius) -> AbilityEffectEntry {
+        AbilityEffectEntry {
+            trigger,
+            target: EffectTarget::UnitsInRadius {
+                center: crate::abilities::definition::AreaCenter::Caster,
+                radius,
+                team: TargetTeam::Enemy,
+            },
+            effect: AbilityEffect::Heal {
+                amount: RankValue::fixed(1.0),
+                scaling: EffectScaling::None,
+            },
+        }
+    }
+
+    fn with_effects(entries: Vec<AbilityEffectEntry>) -> ItemDefinition {
+        ItemDefinition {
+            effects: Box::leak(entries.into_boxed_slice()),
+            ..channeled_test_item(ItemId::HeartwoodBand)
+        }
+    }
+
+    #[test]
+    fn item_aoe_radius_counts_only_active_fixed_areas() {
+        let fixed = |r: f32| AreaRadius::Fixed(RankValue::fixed(r));
+        assert_eq!(with_effects(vec![]).aoe_radius(), 0.0);
+        assert_eq!(
+            with_effects(vec![radius_entry(AbilityTrigger::OnUse, fixed(200.0))]).aoe_radius(),
+            200.0,
+            "a no-target item's area counts"
+        );
+        assert_eq!(
+            with_effects(vec![
+                radius_entry(AbilityTrigger::OnUse, fixed(120.0)),
+                radius_entry(AbilityTrigger::OnChannelEnd, fixed(300.0)),
+                radius_entry(AbilityTrigger::OnChannelInterrupted, fixed(250.0)),
+            ])
+            .aoe_radius(),
+            300.0,
+            "the largest wins"
+        );
+        assert_eq!(
+            with_effects(vec![radius_entry(
+                AbilityTrigger::OnChannelInterrupted,
+                fixed(250.0)
+            )])
+            .aoe_radius(),
+            250.0
+        );
+        assert_eq!(
+            with_effects(vec![
+                radius_entry(AbilityTrigger::OnAttack, fixed(500.0)),
+                radius_entry(AbilityTrigger::Passive, fixed(500.0)),
+            ])
+            .aoe_radius(),
+            0.0,
+            "attack and passive areas are not the active's indicator"
+        );
+        assert_eq!(
+            with_effects(vec![radius_entry(
+                AbilityTrigger::OnUse,
+                AreaRadius::Ability
+            )])
+            .aoe_radius(),
+            0.0,
+            "an AreaRadius::Ability area has no radius of its own to borrow"
+        );
+    }
+
+    #[test]
     fn unit_item_fires_after_target_dies_during_cast_point() {
         let mut app = item_app();
         let def = ItemDefinition {

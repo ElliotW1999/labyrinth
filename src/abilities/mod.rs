@@ -1024,6 +1024,93 @@ mod tests {
         assert_eq!(health(&app, caster), 550.0, "one trigger, not one per copy");
     }
 
+    #[test]
+    fn item_attack_trigger_keeps_the_attack_point_aim_and_origin() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([attack_hit_heal_item()]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        app.world_mut()
+            .get_mut::<Transform>(caster)
+            .unwrap()
+            .translation = Vec3::new(10.0, 0.0, 5.0);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let target_at = Vec3::new(80.0, 0.0, 40.0);
+        let target = spawn_unit(&mut app, Team::Dire, target_at);
+
+        write_attack_hit(&mut app, caster, target);
+        step(&mut app);
+
+        let contexts: Vec<_> = app
+            .world()
+            .resource::<Messages<AbilityTriggerEvent>>()
+            .iter_current_update_messages()
+            .map(|event| event.0.clone())
+            .collect();
+        assert_eq!(contexts.len(), 1);
+        let ctx = &contexts[0];
+        assert_eq!(ctx.trigger, AbilityTrigger::OnAttackHit);
+        assert_eq!(ctx.source, EffectSource::Item(ItemId::HeartwoodBand));
+        assert_eq!(ctx.rank, 1);
+        assert_eq!(ctx.origin, Vec3::new(10.0, 0.0, 5.0));
+        assert_eq!(ctx.aim, target_at);
+        assert_eq!(ctx.point, target_at);
+        assert_eq!(ctx.trigger_unit, Some(target));
+        assert_eq!(ctx.cast_target, None);
+        assert!(ctx.affected_units.is_empty());
+    }
+
+    #[test]
+    fn cast_point_target_leaving_range_still_fires_and_aim_follows() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(cast_point_projectile());
+        let caster = spawn_caster(&mut app, KIT);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(200.0, 0.0, 0.0));
+
+        request(&mut app, caster, 3, CastTarget::Unit(target));
+        step(&mut app);
+        let far = Vec3::new(5000.0, 0.0, 0.0);
+        app.world_mut().get_mut::<Transform>(target).unwrap().translation = far;
+        let mut fired = Vec::new();
+        for _ in 0..12 {
+            step(&mut app);
+            fired.extend(fired_events(&app));
+        }
+        // Range is only checked when the request is accepted, not again at the cast point.
+        assert_eq!(fired, vec![(CastTarget::Unit(target), far)]);
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 900.0);
+    }
+
+    #[test]
+    fn queued_unit_cast_is_dropped_when_the_target_dies_before_it_is_in_range() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(cast_point_projectile());
+        let caster = spawn_caster(&mut app, KIT);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(3000.0, 0.0, 0.0));
+
+        request(&mut app, caster, 3, CastTarget::Unit(target));
+        step(&mut app);
+        assert!(
+            app.world()
+                .get::<crate::actions::QueuedActivation>(caster)
+                .is_some(),
+            "out of range: the cast walks first"
+        );
+        app.world_mut().entity_mut(target).despawn();
+        let mut fired = Vec::new();
+        for _ in 0..6 {
+            step(&mut app);
+            fired.extend(fired_events(&app));
+        }
+        assert!(fired.is_empty());
+        assert!(app.world().get::<crate::actions::QueuedActivation>(caster).is_none());
+        assert!(app.world().get::<Activation>(caster).is_none());
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 1000.0);
+    }
+
     fn request(app: &mut App, caster: Entity, slot: usize, target: CastTarget) {
         app.world_mut()
             .write_message(ActivationRequest::ability(caster, slot, target));
@@ -1808,6 +1895,77 @@ mod tests {
         }
         assert!(app.world().get::<Activation>(caster).is_none());
         assert_eq!(health(&app, caster), 700.0, "OnChannelEnd effects ran once");
+    }
+
+    #[test]
+    fn slept_ability_channel_fires_only_on_channel_interrupted() {
+        let mut app = test_app();
+        let caster = channelling_caster(&mut app);
+        app.world_mut()
+            .get_mut::<StatusEffects>(caster)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::sleep(5.0));
+        let mut fired = Vec::new();
+        for _ in 0..12 {
+            step(&mut app);
+            fired.extend(
+                app.world()
+                    .resource::<Messages<AbilityTriggerEvent>>()
+                    .iter_current_update_messages()
+                    .map(|event| event.0.trigger),
+            );
+        }
+        assert_eq!(fired, vec![AbilityTrigger::OnChannelInterrupted]);
+        assert_eq!(health(&app, caster), 550.0);
+    }
+
+    #[test]
+    fn unit_channel_end_after_the_target_despawned_still_fires_once() {
+        let mut app = test_app();
+        let def = AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::Unit, RankValue::fixed(600.0), RankValue::ZERO)
+            .costs(RankValue::fixed(8.0), RankValue::fixed(100.0))
+            .timing(0.1, 0.0)
+            .channel(0.5)
+            .on(
+                AbilityTrigger::OnChannelEnd,
+                EffectTarget::CastTarget,
+                fixed_magical_damage(10.0),
+            )
+            .on(
+                AbilityTrigger::OnChannelEnd,
+                EffectTarget::Caster,
+                AbilityEffect::Heal {
+                    amount: RankValue::fixed(200.0),
+                    scaling: EffectScaling::None,
+                },
+            );
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(def);
+        let caster = spawn_caster(&mut app, KIT);
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 500.0;
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(200.0, 0.0, 0.0));
+
+        request(&mut app, caster, 3, CastTarget::Unit(target));
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        assert!(app.world().get::<Activation>(caster).unwrap().fired);
+        app.world_mut().entity_mut(target).despawn();
+        let mut ends = 0;
+        for _ in 0..12 {
+            step(&mut app);
+            ends += app
+                .world()
+                .resource::<Messages<AbilityTriggerEvent>>()
+                .iter_current_update_messages()
+                .filter(|event| event.0.trigger == AbilityTrigger::OnChannelEnd)
+                .count();
+        }
+        assert_eq!(ends, 1);
+        assert_eq!(health(&app, caster), 700.0, "the caster effect still lands");
     }
 
     #[test]
