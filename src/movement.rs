@@ -21,7 +21,7 @@ use crate::navigation::{
     DynamicBlocker, MobileFilter, NavGrid, NavPath, NavSteering, flat, ground, plan_paths,
     sync_nav_grid,
 };
-use crate::status::StatusEffects;
+use crate::status::{LeashAnchor, StatusEffects};
 
 /// Ordering of the simulation's order → AI → navigation/locomotion stages.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
@@ -56,6 +56,7 @@ impl Plugin for MovementPlugin {
                     sync_nav_grid,
                     plan_paths,
                     apply_move_targets,
+                    enforce_leashes,
                     resolve_obstacle_collisions,
                     resolve_building_collisions,
                     resolve_unit_collisions,
@@ -322,6 +323,54 @@ pub fn apply_move_targets(
             && flat_distance(transform.translation, ground(waypoint)) < ARRIVE_DIST
         {
             commands.entity(entity).remove::<MoveTarget>();
+        }
+    }
+}
+
+/// Clamp leashed units into their circles. Runs after walking and after forced motion
+/// (which ticks earlier in the frame), so a knockback stops at the edge too. A leash
+/// whose anchor unit is gone does nothing.
+pub fn enforce_leashes(
+    mut units: ParamSet<(
+        Query<(Entity, &Transform, Option<&StatusEffects>)>,
+        Query<&mut Transform>,
+    )>,
+) {
+    let mut corrections: Vec<(Entity, Vec3)> = Vec::new();
+    {
+        let all = units.p0();
+        for (entity, transform, statuses) in &all {
+            let Some(statuses) = statuses else {
+                continue;
+            };
+            let mut pos = transform.translation;
+            let mut moved = false;
+            for leash in statuses.leashes() {
+                let center = match leash.anchor {
+                    LeashAnchor::Point(p) => p,
+                    LeashAnchor::Unit(anchor) if anchor == entity => continue,
+                    LeashAnchor::Unit(anchor) => match all.get(anchor) {
+                        Ok((_, tf, _)) => flat(tf.translation),
+                        Err(_) => continue,
+                    },
+                };
+                let offset = flat(pos) - center;
+                if offset.length() > leash.radius {
+                    let edge = center + offset.normalize_or_zero() * leash.radius;
+                    pos.x = edge.x;
+                    pos.z = edge.y;
+                    moved = true;
+                }
+            }
+            if moved {
+                corrections.push((entity, pos));
+            }
+        }
+    }
+    let mut writable = units.p1();
+    for (entity, pos) in corrections {
+        if let Ok(mut tf) = writable.get_mut(entity) {
+            tf.translation = pos;
         }
     }
 }
@@ -649,5 +698,143 @@ mod tests {
             collision_shares(&snap(false, true), &snap(true, false)),
             (0.15, 0.85)
         );
+    }
+
+    mod leashes {
+        use std::time::Duration;
+
+        use super::*;
+        use crate::abilities::definition::DisplacementKind;
+        use crate::abilities::effects::AbilityTriggerEvent;
+        use crate::components::Health;
+        use crate::displacement::{
+            DisplacementEvent, apply_displacement_events, tick_forced_movement,
+        };
+        use crate::status::{Leash, StatusEffect, StatusEffectEvent};
+
+        fn app() -> App {
+            let mut app = App::new();
+            app.init_resource::<Time>()
+                .add_message::<DisplacementEvent>()
+                .add_message::<StatusEffectEvent>()
+                .add_message::<AbilityTriggerEvent>()
+                .add_plugins(MovementPlugin)
+                .add_systems(
+                    Update,
+                    (tick_forced_movement, apply_displacement_events)
+                        .chain()
+                        .before(SimSet::Ai),
+                );
+            app
+        }
+
+        fn step(app: &mut App, frames: usize) {
+            for _ in 0..frames {
+                app.world_mut()
+                    .resource_mut::<Time>()
+                    .advance_by(Duration::from_secs_f32(1.0 / 30.0));
+                app.update();
+            }
+        }
+
+        fn unit(app: &mut App, pos: Vec3, effects: Vec<StatusEffect>) -> Entity {
+            app.world_mut()
+                .spawn((
+                    Transform::from_translation(pos),
+                    crate::components::Team::Radiant,
+                    Health::new(100.0),
+                    CombatStats::simple(0.0, 100.0, 1.0, 0.0, 0.0, 300.0),
+                    CollisionRadius(20.0),
+                    StatusEffects { effects },
+                ))
+                .id()
+        }
+
+        fn x_z(app: &App, e: Entity) -> Vec2 {
+            flat(app.world().get::<Transform>(e).unwrap().translation)
+        }
+
+        #[test]
+        fn leash_clamps_walking_and_knockback_to_the_region() {
+            let mut app = app();
+            let region = Leash {
+                anchor: LeashAnchor::Point(Vec2::ZERO),
+                radius: 200.0,
+            };
+            let walker = unit(
+                &mut app,
+                Vec3::new(100.0, 0.0, 0.0),
+                vec![StatusEffect::leashed(region, 30.0)],
+            );
+            app.world_mut().entity_mut(walker).insert(MoveTarget {
+                position: Vec3::new(1000.0, 0.0, 0.0),
+            });
+            step(&mut app, 60);
+            let p = x_z(&app, walker);
+            assert!(p.length() <= 200.0 + 1e-2, "stays in the region: {p}");
+            assert!(p.x > 190.0, "walked up to the edge: {p}");
+
+            let pushed = unit(
+                &mut app,
+                Vec3::new(0.0, 0.0, 100.0),
+                vec![StatusEffect::leashed(region, 30.0)],
+            );
+            let pusher = unit(&mut app, Vec3::new(0.0, 0.0, -500.0), vec![]);
+            app.world_mut().write_message(DisplacementEvent {
+                target: pushed,
+                kind: DisplacementKind::Knockback,
+                caster: pusher,
+                origin: Vec3::new(0.0, 0.0, -500.0),
+                point: Vec3::new(0.0, 0.0, -500.0),
+                aim: Vec3::ZERO,
+                cast_target: None,
+                distance: Some(800.0),
+                duration: 0.4,
+                speed: None,
+                source: None,
+            });
+            step(&mut app, 30);
+            let p = x_z(&app, pushed);
+            assert!(
+                p.length() <= 200.0 + 1e-2,
+                "knockback stops at the edge: {p}"
+            );
+            assert!(p.y > 190.0, "it was pushed to the edge: {p}");
+        }
+
+        #[test]
+        fn tether_follows_a_moving_anchor() {
+            let mut app = app();
+            let anchor = unit(&mut app, Vec3::ZERO, vec![]);
+            let tether = Leash {
+                anchor: LeashAnchor::Unit(anchor),
+                radius: 150.0,
+            };
+            let tethered = unit(
+                &mut app,
+                Vec3::new(100.0, 0.0, 0.0),
+                vec![StatusEffect::leashed(tether, 30.0)],
+            );
+            app.world_mut().entity_mut(anchor).insert(MoveTarget {
+                position: Vec3::new(0.0, 0.0, 1500.0),
+            });
+            step(&mut app, 90);
+            let (a, t) = (x_z(&app, anchor), x_z(&app, tethered));
+            assert!(a.y > 500.0, "the anchor walked away: {a}");
+            assert!(
+                a.distance(t) <= 150.0 + 1e-2,
+                "dragged along by the tether: {a} {t}"
+            );
+            assert!(t.y > 300.0);
+
+            // A gone anchor releases the unit.
+            app.world_mut().despawn(anchor);
+            let before = x_z(&app, tethered);
+            app.world_mut().entity_mut(tethered).insert(MoveTarget {
+                position: Vec3::new(0.0, 0.0, -1500.0),
+            });
+            step(&mut app, 30);
+            assert!(x_z(&app, tethered).distance(before) > 100.0);
+        }
     }
 }

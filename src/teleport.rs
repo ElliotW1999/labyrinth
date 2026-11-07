@@ -22,7 +22,7 @@ use crate::dimensions::collision_of;
 use crate::displacement::{ForcedMovement, MotionPriority};
 use crate::navigation::attack_position::AttackPositionGoal;
 use crate::navigation::{MobileFilter, NavGrid, NavPath, NavSteering, flat};
-use crate::status::StatusEffects;
+use crate::status::{LeashAnchor, StatusEffects};
 
 /// Request to relocate `target` to `destination` (ground plane; Y is ignored).
 /// Emitted for every resolved target of `AbilityEffect::Teleport`.
@@ -65,6 +65,8 @@ pub enum TeleportError {
     Occupied,
     /// The target is held out of play (cyclone) and cannot be moved by anything else.
     Suspended,
+    /// The destination lies outside a leash or tether on the target.
+    Leashed,
 }
 
 /// Checks a collision circle of `radius` at `destination` against the map, static
@@ -135,6 +137,22 @@ pub fn apply_teleport_events(
         if motion.is_some_and(|m| m.priority == MotionPriority::Suspend) {
             reject(&mut rejected, TeleportError::Suspended);
             continue;
+        }
+        if let Some(statuses) = statuses {
+            let outside = statuses.leashes().any(|leash| {
+                let center = match leash.anchor {
+                    LeashAnchor::Point(p) => Some(p),
+                    LeashAnchor::Unit(anchor) => units
+                        .get(anchor)
+                        .ok()
+                        .map(|(_, tf, ..)| flat(tf.translation)),
+                };
+                center.is_some_and(|c| c.distance(flat(destination)) > leash.radius)
+            });
+            if outside {
+                reject(&mut rejected, TeleportError::Leashed);
+                continue;
+            }
         }
         let radius = collision_of(radius);
         let phased = statuses.is_some_and(|s| s.is_phased());
@@ -563,5 +581,42 @@ mod tests {
         assert_eq!(rejections(&app), vec![TeleportError::Suspended]);
         assert_eq!(pos(&app, unit), Vec3::ZERO);
         assert!(app.world().get::<ForcedMovement>(unit).is_some());
+    }
+
+    #[test]
+    fn leashed_unit_cannot_teleport_outside() {
+        let mut app = sim_app();
+        let unit = spawn_unit(&mut app, Vec3::ZERO, 40.0);
+        let anchor = spawn_unit(&mut app, Vec3::new(600.0, 0.0, 0.0), 40.0);
+        let mut statuses = StatusEffects::default();
+        statuses.effects.push(crate::status::StatusEffect::leashed(
+            crate::status::Leash {
+                anchor: LeashAnchor::Point(Vec2::ZERO),
+                radius: 500.0,
+            },
+            10.0,
+        ));
+        statuses.effects.push(crate::status::StatusEffect::leashed(
+            crate::status::Leash {
+                anchor: LeashAnchor::Unit(anchor),
+                radius: 700.0,
+            },
+            10.0,
+        ));
+        app.world_mut().entity_mut(unit).insert(statuses);
+
+        // Outside the region around the origin.
+        teleport(&mut app, unit, Vec3::new(1500.0, 0.0, 0.0));
+        assert_eq!(rejections(&app), vec![TeleportError::Leashed]);
+        assert_eq!(pos(&app, unit), Vec3::ZERO);
+
+        // Inside the region but too far from the tethered unit.
+        teleport(&mut app, unit, Vec3::new(-450.0, 0.0, 0.0));
+        assert_eq!(rejections(&app), vec![TeleportError::Leashed]);
+        assert_eq!(pos(&app, unit), Vec3::ZERO);
+
+        // Inside both circles.
+        teleport(&mut app, unit, Vec3::new(400.0, 0.0, 0.0));
+        assert_eq!(pos(&app, unit), Vec3::new(400.0, 0.0, 0.0));
     }
 }

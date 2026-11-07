@@ -384,6 +384,8 @@ impl EffectRunner<'_, '_> {
                             move_speed,
                             agility,
                             fear_source,
+                            source,
+                            point: ctx.point,
                         },
                     );
                     built.dot_source = source;

@@ -2,11 +2,11 @@
 //! per-hero state lives in [`crate::components::AbilityState`].
 
 pub use crate::actions::{TargetTeam, TargetType};
-use bevy::prelude::Entity;
+use bevy::prelude::{Entity, Vec2, Vec3};
 
 use crate::components::AbilityId;
 use crate::components::DamageType;
-use crate::status::{DispelType, StatusEffect, StatusKind};
+use crate::status::{DispelType, Leash, LeashAnchor, StatusEffect, StatusKind};
 
 /// A value that scales with ability level: `clamp(base + per_rank × rank, min, max)`,
 /// or an explicit per-level table (`75|150|225|300` in the generator CSVs).
@@ -218,6 +218,12 @@ pub enum StatusSpec {
     Forceful,
     /// Flies: trees and other ground obstacles stop blocking (buildings still do).
     Flying,
+    /// Confines the target to `radius` around an anchor: the trigger point or the caster
+    /// (a tether). It clamps and never breaks.
+    Leash {
+        radius: RankValue,
+        anchor: LeashAnchorKind,
+    },
     /// Purges existing debuffs on application.
     DebuffImmunity,
     /// Absorbing shield pool (`amount` at rank).
@@ -267,12 +273,25 @@ pub enum StatusSpec {
     },
 }
 
+/// Where a [`StatusSpec::Leash`] is anchored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeashAnchorKind {
+    /// The trigger point (a region around where the effect landed).
+    TriggerPoint,
+    /// The caster (a tether that follows it).
+    Caster,
+}
+
 /// Inputs needed to construct a runtime [`StatusEffect`] from a [`StatusSpec`].
 #[derive(Debug, Clone, Copy)]
 pub struct StatusBuildContext {
     pub move_speed: f32,
     pub agility: f32,
     pub fear_source: Option<Entity>,
+    /// The unit that caused the status (the caster).
+    pub source: Option<Entity>,
+    /// Where the trigger happened.
+    pub point: Vec3,
 }
 
 impl StatusSpec {
@@ -301,6 +320,21 @@ impl StatusSpec {
             StatusSpec::Phased => StatusEffect::phased(duration),
             StatusSpec::Forceful => StatusEffect::forceful(duration),
             StatusSpec::Flying => StatusEffect::flying(duration),
+            StatusSpec::Leash { radius, anchor } => {
+                let at_point = LeashAnchor::Point(Vec2::new(ctx.point.x, ctx.point.z));
+                let anchor = match (anchor, ctx.source) {
+                    (LeashAnchorKind::Caster, Some(source)) => LeashAnchor::Unit(source),
+                    // No caster to follow: fall back to the spot where it landed.
+                    _ => at_point,
+                };
+                StatusEffect::leashed(
+                    Leash {
+                        anchor,
+                        radius: radius.at(rank).max(0.0),
+                    },
+                    duration,
+                )
+            }
             StatusSpec::DebuffImmunity => StatusEffect::debuff_immunity(duration),
             StatusSpec::Shield { amount } => StatusEffect::shield(amount.at(rank), duration),
             StatusSpec::Burn { dps, damage_type } => {

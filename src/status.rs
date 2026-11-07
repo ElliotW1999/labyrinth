@@ -54,6 +54,22 @@ pub enum DispelType {
     None,
 }
 
+/// What a [`Leash`] is measured from.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LeashAnchor {
+    /// A fixed spot on the ground (x, z).
+    Point(Vec2),
+    /// A unit; the leash does nothing once that unit is gone.
+    Unit(Entity),
+}
+
+/// Keeps the unit inside a circle of `radius` around `anchor` (see `movement::enforce_leashes`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Leash {
+    pub anchor: LeashAnchor,
+    pub radius: f32,
+}
+
 #[derive(Debug, Clone)]
 pub struct StatusEffect {
     pub id: &'static str,
@@ -96,6 +112,8 @@ pub struct StatusEffect {
     pub debuff_immune: bool,
     /// Ignores trees and other ground obstacles while moving (buildings still block).
     pub flying: bool,
+    /// Confines the unit to a circle (region restriction or tether).
+    pub leash: Option<Leash>,
     /// Forced retreat from this entity while feared (`None` if source despawned).
     pub fear_source: Option<Entity>,
 }
@@ -133,6 +151,7 @@ impl StatusEffect {
             invulnerable: false,
             debuff_immune: false,
             flying: false,
+            leash: None,
             fear_source: None,
         }
     }
@@ -173,6 +192,19 @@ impl StatusEffect {
         Self {
             flying: true,
             ..Self::buff("flying", duration)
+        }
+    }
+
+    /// Confinement to a circle around `leash.anchor`. `id` is `"leash"` for a fixed
+    /// region and `"tether"` for a unit anchor.
+    pub fn leashed(leash: Leash, duration: f32) -> Self {
+        let id = match leash.anchor {
+            LeashAnchor::Point(_) => "leash",
+            LeashAnchor::Unit(_) => "tether",
+        };
+        Self {
+            leash: Some(leash),
+            ..Self::debuff(id, duration)
         }
     }
 
@@ -294,6 +326,14 @@ impl StatusEffects {
         self.effects
             .iter()
             .any(|e| e.ignore_unit_collision && e.remaining > 0.0)
+    }
+
+    /// Active leashes and tethers.
+    pub fn leashes(&self) -> impl Iterator<Item = &Leash> {
+        self.effects
+            .iter()
+            .filter(|e| e.remaining > 0.0)
+            .filter_map(|e| e.leash.as_ref())
     }
 
     pub fn is_flying(&self) -> bool {
@@ -1292,5 +1332,48 @@ mod tests {
             assert!(remaining(&app, u).is_empty());
             assert_eq!(pool(&app, u), 0.0);
         }
+    }
+
+    #[test]
+    fn leash_is_dispellable_and_blocked_by_debuff_immunity() {
+        let leash = StatusEffect::leashed(
+            Leash {
+                anchor: LeashAnchor::Point(Vec2::ZERO),
+                radius: 300.0,
+            },
+            5.0,
+        );
+        assert_eq!(leash.id, "leash");
+        assert!(status_dispel_matches(
+            &leash,
+            StatusKind::Debuff,
+            DispelStrength::Basic
+        ));
+        let tether = StatusEffect::leashed(
+            Leash {
+                anchor: LeashAnchor::Unit(Entity::PLACEHOLDER),
+                radius: 300.0,
+            },
+            5.0,
+        );
+        assert_eq!(tether.id, "tether");
+
+        let mut stats = CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 300.0);
+        let mut statuses = StatusEffects::default();
+        assert!(apply_status(&mut statuses, &mut stats, leash.clone(), 0.0));
+        assert_eq!(statuses.leashes().count(), 1);
+        remove_statuses(&mut statuses, &mut stats, 0.0, None, |e| {
+            status_dispel_matches(e, StatusKind::Debuff, DispelStrength::Basic)
+        });
+        assert_eq!(
+            statuses.leashes().count(),
+            0,
+            "a basic dispel frees the unit"
+        );
+
+        let mut immune = StatusEffects::default();
+        assert!(apply_debuff_immunity(&mut immune, &mut stats, 5.0, 0.0));
+        assert!(!apply_status(&mut immune, &mut stats, leash, 0.0));
+        assert_eq!(immune.leashes().count(), 0);
     }
 }
