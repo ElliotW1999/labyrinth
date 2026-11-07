@@ -3,7 +3,7 @@
 use bevy::prelude::*;
 
 use super::catalog::AbilityDefinitions;
-use super::definition::{AbilityBehavior, AbilityEffect, AbilityTrigger, PassiveStat};
+use super::definition::{AbilityBehavior, AbilityEffect, AbilityTrigger};
 use crate::components::{AbilityId, AbilityLoadout, CombatStats, Health, HeroAttributes, Mana};
 use crate::items::{ItemPassives, apply_passives, remove_passives};
 
@@ -35,52 +35,6 @@ const OVERCHARGE_MANA_DRAIN_PER_SEC: f32 = 8.0;
 const OVERCHARGE_ATTACK_SPEED_MULT: f32 = 0.2;
 const OVERCHARGE_MOVE_SPEED: f32 = 10.0;
 
-fn accumulate_passives(total: &mut ItemPassives, add: &ItemPassives) {
-    total.strength += add.strength;
-    total.agility += add.agility;
-    total.intelligence += add.intelligence;
-    total.max_health += add.max_health;
-    total.health_regen += add.health_regen;
-    total.max_mana += add.max_mana;
-    total.mana_regen += add.mana_regen;
-    total.attack_damage += add.attack_damage;
-    total.attack_speed_flat += add.attack_speed_flat;
-    total.armor += add.armor;
-    total.magic_resist += add.magic_resist;
-    total.move_speed += add.move_speed;
-    total.spell_amp += add.spell_amp;
-    total.outgoing_physical_amp += add.outgoing_physical_amp;
-    total.incoming_damage_amp += add.incoming_damage_amp;
-    total.damage_block += add.damage_block;
-    total.damage_reflect += add.damage_reflect;
-}
-
-fn passive_stat_entry(stat: PassiveStat, amount: f32) -> ItemPassives {
-    let mut p = ItemPassives::default();
-    match stat {
-        PassiveStat::MaxHealth => p.max_health = amount,
-        PassiveStat::HealthRegen => p.health_regen = amount,
-        PassiveStat::MaxMana => p.max_mana = amount,
-        PassiveStat::ManaRegen => p.mana_regen = amount,
-        PassiveStat::AttackDamage => p.attack_damage = amount,
-        PassiveStat::AttackSpeed => p.attack_speed_flat = amount,
-        PassiveStat::Armor => p.armor = amount,
-        PassiveStat::MagicResist => p.magic_resist = amount,
-        PassiveStat::MoveSpeed => p.move_speed = amount,
-        PassiveStat::Attribute(attr) => match attr {
-            super::definition::Attribute::Strength => p.strength = amount,
-            super::definition::Attribute::Agility => p.agility = amount,
-            super::definition::Attribute::Intelligence => p.intelligence = amount,
-        },
-        PassiveStat::SpellAmp => p.spell_amp = amount,
-        PassiveStat::OutgoingPhysicalAmp => p.outgoing_physical_amp = amount,
-        PassiveStat::IncomingDamageAmp => p.incoming_damage_amp = amount,
-        PassiveStat::DamageBlock => p.damage_block = amount,
-        PassiveStat::DamageReflect => p.damage_reflect = amount,
-    }
-    p
-}
-
 /// Sum `Passive` trigger stat entries for one learned ability rank.
 pub fn passives_at_rank(def: &super::definition::AbilityDefinition, rank: u32) -> ItemPassives {
     if rank == 0 {
@@ -91,8 +45,7 @@ pub fn passives_at_rank(def: &super::definition::AbilityDefinition, rank: u32) -
         let AbilityEffect::PassiveStat { stat, amount } = entry.effect else {
             continue;
         };
-        let slice = passive_stat_entry(stat, amount.at(rank));
-        accumulate_passives(&mut total, &slice);
+        total.add_stat(stat, amount.at(rank));
     }
     total
 }
@@ -106,8 +59,7 @@ pub fn loadout_passives(loadout: &AbilityLoadout, defs: &AbilityDefinitions) -> 
         if def.behavior != AbilityBehavior::Passive {
             continue;
         }
-        let slice = passives_at_rank(def, slot.rank);
-        accumulate_passives(&mut total, &slice);
+        total += passives_at_rank(def, slot.rank);
     }
     total
 }

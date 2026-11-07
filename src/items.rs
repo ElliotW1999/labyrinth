@@ -760,35 +760,83 @@ pub struct ItemPassives {
     pub damage_reflect: f32,
 }
 
+impl ItemPassives {
+    /// Add `amount` to the field `stat` maps to. This is the one place that maps a
+    /// [`PassiveStat`] to a bonus field; items and passive abilities both use it.
+    pub fn add_stat(&mut self, stat: PassiveStat, amount: f32) {
+        let field = match stat {
+            PassiveStat::MaxHealth => &mut self.max_health,
+            PassiveStat::HealthRegen => &mut self.health_regen,
+            PassiveStat::MaxMana => &mut self.max_mana,
+            PassiveStat::ManaRegen => &mut self.mana_regen,
+            PassiveStat::AttackDamage => &mut self.attack_damage,
+            PassiveStat::AttackSpeed => &mut self.attack_speed_flat,
+            PassiveStat::Armor => &mut self.armor,
+            PassiveStat::MagicResist => &mut self.magic_resist,
+            PassiveStat::MoveSpeed => &mut self.move_speed,
+            PassiveStat::Attribute(Attribute::Strength) => &mut self.strength,
+            PassiveStat::Attribute(Attribute::Agility) => &mut self.agility,
+            PassiveStat::Attribute(Attribute::Intelligence) => &mut self.intelligence,
+            PassiveStat::SpellAmp => &mut self.spell_amp,
+            PassiveStat::OutgoingPhysicalAmp => &mut self.outgoing_physical_amp,
+            PassiveStat::IncomingDamageAmp => &mut self.incoming_damage_amp,
+            PassiveStat::DamageBlock => &mut self.damage_block,
+            PassiveStat::DamageReflect => &mut self.damage_reflect,
+        };
+        *field += amount;
+    }
+}
+
+impl std::ops::AddAssign for ItemPassives {
+    fn add_assign(&mut self, rhs: Self) {
+        // Destructured so a new field is a compile error here until it is summed.
+        let Self {
+            max_health,
+            health_regen,
+            max_mana,
+            mana_regen,
+            attack_damage,
+            armor,
+            magic_resist,
+            move_speed,
+            attack_speed_flat,
+            strength,
+            agility,
+            intelligence,
+            spell_amp,
+            outgoing_physical_amp,
+            incoming_damage_amp,
+            damage_block,
+            damage_reflect,
+        } = rhs;
+        self.max_health += max_health;
+        self.health_regen += health_regen;
+        self.max_mana += max_mana;
+        self.mana_regen += mana_regen;
+        self.attack_damage += attack_damage;
+        self.armor += armor;
+        self.magic_resist += magic_resist;
+        self.move_speed += move_speed;
+        self.attack_speed_flat += attack_speed_flat;
+        self.strength += strength;
+        self.agility += agility;
+        self.intelligence += intelligence;
+        self.spell_amp += spell_amp;
+        self.outgoing_physical_amp += outgoing_physical_amp;
+        self.incoming_damage_amp += incoming_damage_amp;
+        self.damage_block += damage_block;
+        self.damage_reflect += damage_reflect;
+    }
+}
+
 impl ItemId {
     /// Sum of the item's `Passive` stat entries.
     pub fn passives(self) -> ItemPassives {
         let mut p = ItemPassives::default();
         for entry in self.definition().effects_for(AbilityTrigger::Passive) {
-            let AbilityEffect::PassiveStat { stat, amount } = entry.effect else {
-                continue;
-            };
-            let value = amount.at(1);
-            let field = match stat {
-                PassiveStat::MaxHealth => &mut p.max_health,
-                PassiveStat::HealthRegen => &mut p.health_regen,
-                PassiveStat::MaxMana => &mut p.max_mana,
-                PassiveStat::ManaRegen => &mut p.mana_regen,
-                PassiveStat::AttackDamage => &mut p.attack_damage,
-                PassiveStat::AttackSpeed => &mut p.attack_speed_flat,
-                PassiveStat::Armor => &mut p.armor,
-                PassiveStat::MagicResist => &mut p.magic_resist,
-                PassiveStat::MoveSpeed => &mut p.move_speed,
-                PassiveStat::Attribute(Attribute::Strength) => &mut p.strength,
-                PassiveStat::Attribute(Attribute::Agility) => &mut p.agility,
-                PassiveStat::Attribute(Attribute::Intelligence) => &mut p.intelligence,
-                PassiveStat::SpellAmp => &mut p.spell_amp,
-                PassiveStat::OutgoingPhysicalAmp => &mut p.outgoing_physical_amp,
-                PassiveStat::IncomingDamageAmp => &mut p.incoming_damage_amp,
-                PassiveStat::DamageBlock => &mut p.damage_block,
-                PassiveStat::DamageReflect => &mut p.damage_reflect,
-            };
-            *field += value;
+            if let AbilityEffect::PassiveStat { stat, amount } = entry.effect {
+                p.add_stat(stat, amount.at(1));
+            }
         }
         p
     }
@@ -2149,6 +2197,97 @@ mod tests {
             true,
         ));
         assert_eq!(health.max, 720.0);
+    }
+
+    fn passive_fields(p: &ItemPassives) -> [f32; 17] {
+        let ItemPassives {
+            max_health,
+            health_regen,
+            max_mana,
+            mana_regen,
+            attack_damage,
+            armor,
+            magic_resist,
+            move_speed,
+            attack_speed_flat,
+            strength,
+            agility,
+            intelligence,
+            spell_amp,
+            outgoing_physical_amp,
+            incoming_damage_amp,
+            damage_block,
+            damage_reflect,
+        } = *p;
+        [
+            max_health,
+            health_regen,
+            max_mana,
+            mana_regen,
+            attack_damage,
+            armor,
+            magic_resist,
+            move_speed,
+            attack_speed_flat,
+            strength,
+            agility,
+            intelligence,
+            spell_amp,
+            outgoing_physical_amp,
+            incoming_damage_amp,
+            damage_block,
+            damage_reflect,
+        ]
+    }
+
+    #[test]
+    fn every_passive_stat_maps_to_a_distinct_field() {
+        let stats = [
+            PassiveStat::MaxHealth,
+            PassiveStat::HealthRegen,
+            PassiveStat::MaxMana,
+            PassiveStat::ManaRegen,
+            PassiveStat::AttackDamage,
+            PassiveStat::AttackSpeed,
+            PassiveStat::Armor,
+            PassiveStat::MagicResist,
+            PassiveStat::MoveSpeed,
+            PassiveStat::Attribute(Attribute::Strength),
+            PassiveStat::Attribute(Attribute::Agility),
+            PassiveStat::Attribute(Attribute::Intelligence),
+            PassiveStat::SpellAmp,
+            PassiveStat::OutgoingPhysicalAmp,
+            PassiveStat::IncomingDamageAmp,
+            PassiveStat::DamageBlock,
+            PassiveStat::DamageReflect,
+        ];
+        let mut seen = Vec::new();
+        for stat in stats {
+            let mut p = ItemPassives::default();
+            p.add_stat(stat, 1.0);
+            let changed: Vec<usize> = passive_fields(&p)
+                .iter()
+                .enumerate()
+                .filter(|(_, v)| **v != 0.0)
+                .map(|(i, _)| i)
+                .collect();
+            assert_eq!(changed.len(), 1, "{stat:?} must change exactly one field");
+            assert!(!seen.contains(&changed[0]), "{stat:?} shares a field");
+            seen.push(changed[0]);
+        }
+        assert_eq!(seen.len(), 17, "every field is reachable");
+    }
+
+    #[test]
+    fn passives_add_assign_sums_every_field() {
+        let mut a = ItemPassives::default();
+        let mut b = ItemPassives::default();
+        a.add_stat(PassiveStat::Armor, 2.0);
+        b.add_stat(PassiveStat::Armor, 3.0);
+        b.add_stat(PassiveStat::DamageReflect, 0.1);
+        a += b;
+        assert_eq!(a.armor, 5.0);
+        assert_eq!(a.damage_reflect, 0.1);
     }
 
     #[test]
