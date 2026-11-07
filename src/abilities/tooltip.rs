@@ -287,6 +287,7 @@ fn effect_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
             kind,
             distance,
             duration,
+            ..
         } => {
             let name = match kind {
                 DisplacementKind::Knockback => "Knockback",

@@ -14,13 +14,14 @@ use crate::components::{
     Obstacle, ObstacleShape, Tower,
 };
 use crate::dimensions::{center_distance as flat_distance, collision_of};
+use crate::displacement::ForcedMovement;
 use crate::facing::turn_toward;
-use crate::status::StatusEffects;
 use crate::navigation::avoidance::{Neighbor, avoid};
 use crate::navigation::{
     DynamicBlocker, MobileFilter, NavGrid, NavPath, NavSteering, flat, ground, plan_paths,
     sync_nav_grid,
 };
+use crate::status::StatusEffects;
 
 /// Ordering of the simulation's order → AI → navigation/locomotion stages.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
@@ -87,7 +88,7 @@ type MoverQuery<'w, 's> = Query<
         Option<&'static mut NavPath>,
         Option<&'static mut NavSteering>,
     ),
-    MobileFilter,
+    (MobileFilter, Without<ForcedMovement>),
 >;
 
 type SnapQuery<'w, 's> = Query<
@@ -99,6 +100,7 @@ type SnapQuery<'w, 's> = Query<
         &'static CollisionRadius,
         Option<&'static StatusEffects>,
         Has<MoveTarget>,
+        Has<ForcedMovement>,
     ),
     (MobileFilter, With<CombatStats>),
 >;
@@ -134,8 +136,11 @@ pub fn apply_move_targets(
     let snaps: Vec<UnitSnap> = units
         .p1()
         .iter()
-        .filter(|(_, _, c, statuses, _)| c.0 > 0.0 && !statuses.is_some_and(|s| s.is_phased()))
-        .map(|(entity, tf, c, _, moving)| {
+        .filter(|(_, _, c, statuses, _, forced)| {
+            // Forced movers phase through units while they travel.
+            c.0 > 0.0 && !forced && !statuses.is_some_and(|s| s.is_phased())
+        })
+        .map(|(entity, tf, c, _, moving, _)| {
             fear_origin.insert(entity, flat(tf.translation));
             UnitSnap {
                 entity,
@@ -301,7 +306,10 @@ pub fn apply_move_targets(
             }
         }
 
-        if !feared && is_final && flat_distance(transform.translation, ground(waypoint)) < ARRIVE_DIST {
+        if !feared
+            && is_final
+            && flat_distance(transform.translation, ground(waypoint)) < ARRIVE_DIST
+        {
             commands.entity(entity).remove::<MoveTarget>();
         }
     }
@@ -379,6 +387,7 @@ fn resolve_unit_collisions(
             &CollisionRadius,
             Option<&StatusEffects>,
             Has<MoveTarget>,
+            Has<ForcedMovement>,
         ),
         (
             With<CombatStats>,
@@ -390,15 +399,17 @@ fn resolve_unit_collisions(
 ) {
     let snaps: Vec<CollisionSnap> = units
         .iter()
-        .filter(|(_, _, radius, _, _)| radius.0 > 0.0)
-        .map(|(entity, tf, radius, statuses, moving)| CollisionSnap {
-            entity,
-            pos: tf.translation,
-            radius: radius.0,
-            phased: statuses.is_some_and(|s| s.is_phased()),
-            forceful: statuses.is_some_and(|s| s.can_push_units()),
-            moving,
-        })
+        .filter(|(_, _, radius, _, _, _)| radius.0 > 0.0)
+        .map(
+            |(entity, tf, radius, statuses, moving, forced)| CollisionSnap {
+                entity,
+                pos: tf.translation,
+                radius: radius.0,
+                phased: forced || statuses.is_some_and(|s| s.is_phased()),
+                forceful: statuses.is_some_and(|s| s.can_push_units()),
+                moving,
+            },
+        )
         .collect();
 
     let mut pushes: Vec<(Entity, Vec3)> = Vec::new();
@@ -443,7 +454,7 @@ fn resolve_unit_collisions(
     }
 
     for (entity, push) in pushes {
-        if let Ok((_, mut tf, _, _, _)) = units.get_mut(entity) {
+        if let Ok((_, mut tf, ..)) = units.get_mut(entity) {
             tf.translation += push;
         }
     }

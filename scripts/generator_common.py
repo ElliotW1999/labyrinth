@@ -885,7 +885,7 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             distance = f"Some({rank_value(value)})" if value else "None"
             effect = (
                 f"AbilityEffect::Displace {{ kind: DisplacementKind::{MOVEMENTS[effect_id]}, "
-                f"distance: {distance}, duration: {rank_value(duration or [DEFAULT_MOVEMENT_DURATION])} }}"
+                f"distance: {distance}, duration: {rank_value(duration or [DEFAULT_MOVEMENT_DURATION])}, speed: None }}"
             )
     elif t == "stat_modifier":
         if not _require(e, "effect_id", report, "stat to modify") or not _require(e, "value", report, "stat bonus") or not no_scaling():

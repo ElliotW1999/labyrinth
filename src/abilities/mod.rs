@@ -97,6 +97,8 @@ impl Plugin for AbilitiesPlugin {
                     action_channel_end_triggers,
                     projectile_hit_triggers,
                     crate::items::item_attack_triggers,
+                    // Before trigger resolution, so contact / end triggers fire this frame.
+                    tick_forced_movement,
                     resolve_ability_triggers,
                     spawn_requested_projectiles,
                     (
@@ -107,11 +109,9 @@ impl Plugin for AbilitiesPlugin {
                         // Before the AI and navigation stages, so the orders it drops
                         // are gone before they are replanned or re-issued.
                         apply_teleport_events.before(crate::movement::SimSet::Ai),
-                        tick_forced_movement,
                     )
                         .chain(),
-                    despawn_indicators,
-                    animate_spell_fx,
+                    (despawn_indicators, animate_spell_fx).chain(),
                 )
                     .chain()
                     .run_if(crate::net::is_sim_authority)
@@ -648,13 +648,13 @@ mod tests {
                     action_channel_end_triggers,
                     projectile_hit_triggers,
                     crate::items::item_attack_triggers,
+                    tick_forced_movement,
                     resolve_ability_triggers,
                     apply_heal_events,
                     apply_mana_restore_events,
                     apply_displacement_events,
                     apply_status_effect_events,
                     apply_teleport_events,
-                    tick_forced_movement,
                     apply_damage_events,
                 )
                     .chain(),
@@ -1006,10 +1006,7 @@ mod tests {
         let mut app = test_app();
         let caster = spawn_caster_with_inventory(&mut app, KIT);
         give_item(&mut app, caster, ItemId::VialOfLight);
-        app.world_mut()
-            .get_mut::<Inventory>(caster)
-            .unwrap()
-            .slots[0]
+        app.world_mut().get_mut::<Inventory>(caster).unwrap().slots[0]
             .as_mut()
             .unwrap()
             .cooldown
@@ -1045,7 +1042,8 @@ mod tests {
             ],
         );
         let base = *app.world().get::<CombatStats>(caster).unwrap();
-        let toggled = |app: &App| app.world().get::<AbilityLoadout>(caster).unwrap().slots[0].toggled;
+        let toggled =
+            |app: &App| app.world().get::<AbilityLoadout>(caster).unwrap().slots[0].toggled;
         let cooldown = |app: &App| {
             app.world().get::<AbilityLoadout>(caster).unwrap().slots[0]
                 .cooldown
@@ -1060,7 +1058,10 @@ mod tests {
         let on = *app.world().get::<CombatStats>(caster).unwrap();
         assert!((on.move_speed - base.move_speed - 10.0).abs() < 1e-4);
         assert!((on.attack_speed_mult - base.attack_speed_mult - 0.2).abs() < 1e-4);
-        assert!(cooldown(&app).remaining > 0.0, "each flip starts the cooldown");
+        assert!(
+            cooldown(&app).remaining > 0.0,
+            "each flip starts the cooldown"
+        );
         let charges_on = cooldown(&app).charges;
 
         // Wait out the 1s cooldown, then cast again.
@@ -1074,7 +1075,10 @@ mod tests {
         }
         assert!(!toggled(&app), "the second cast turns it off");
         let off = *app.world().get::<CombatStats>(caster).unwrap();
-        assert!((off.move_speed - base.move_speed).abs() < 1e-4, "bonus removed");
+        assert!(
+            (off.move_speed - base.move_speed).abs() < 1e-4,
+            "bonus removed"
+        );
         assert!((off.attack_speed_mult - base.attack_speed_mult).abs() < 1e-4);
         assert!(
             app.world()
@@ -1083,10 +1087,16 @@ mod tests {
                 .effects
                 .is_empty()
         );
-        assert!(cooldown(&app).remaining > 0.0, "the off flip also starts the cooldown");
+        assert!(
+            cooldown(&app).remaining > 0.0,
+            "the off flip also starts the cooldown"
+        );
         assert_eq!(cooldown(&app).charges, charges_on, "no charge anomaly");
         let mana = app.world().get::<Mana>(caster).unwrap().current;
-        assert!(mana < 1000.0 - 2.0 * 15.0 + 1e-3, "two casts paid, got {mana}");
+        assert!(
+            mana < 1000.0 - 2.0 * 15.0 + 1e-3,
+            "two casts paid, got {mana}"
+        );
     }
 
     #[test]
@@ -1711,6 +1721,7 @@ mod tests {
                     kind: DisplacementKind::Pull,
                     distance: None,
                     duration: RankValue::fixed(0.3),
+                    speed: None,
                 },
             );
         app.world_mut()
@@ -1723,13 +1734,20 @@ mod tests {
         }
 
         request(&mut app, caster, 3, CastTarget::Unit(enemy));
-        let mut was_rooted = false;
+        let mut was_moving = false;
         for _ in 0..30 {
             step(&mut app);
-            was_rooted |= app.world().get::<StatusEffects>(enemy).unwrap().is_rooted();
+            was_moving |= app.world().get::<ForcedMovement>(enemy).is_some();
         }
         let x = app.world().get::<Transform>(enemy).unwrap().translation.x;
-        assert!(was_rooted, "displaced units are rooted while moving");
+        assert!(
+            was_moving,
+            "displaced units are in forced motion while moving"
+        );
+        assert!(
+            !app.world().get::<StatusEffects>(enemy).unwrap().is_rooted(),
+            "forced motion no longer roots the victim"
+        );
         assert!(
             (x - 48.0).abs() < 1e-2,
             "pulled into contact, not onto the caster: {x}"

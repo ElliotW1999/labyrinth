@@ -214,9 +214,14 @@ pub enum StatusSpec {
     /// Purges existing debuffs on application.
     DebuffImmunity,
     /// Absorbing shield pool (`amount` at rank).
-    Shield { amount: RankValue },
+    Shield {
+        amount: RankValue,
+    },
     /// Periodic damage while active (`dps` at rank).
-    Burn { dps: RankValue, damage_type: DamageType },
+    Burn {
+        dps: RankValue,
+        damage_type: DamageType,
+    },
     /// Items only; abilities use silence.
     Mute,
     /// Stops acting until damaged or duration ends.
@@ -297,7 +302,9 @@ impl StatusSpec {
             StatusSpec::Sleep => StatusEffect::sleep(duration),
             StatusSpec::Invulnerable => StatusEffect::invulnerable(duration),
             StatusSpec::Hex => StatusEffect::hexed(duration),
-            StatusSpec::Blind { miss_chance_percent } => StatusEffect::blind(
+            StatusSpec::Blind {
+                miss_chance_percent,
+            } => StatusEffect::blind(
                 (miss_chance_percent.at(rank) / 100.0).clamp(0.0, 1.0),
                 duration,
             ),
@@ -423,6 +430,8 @@ pub enum AbilityEffect {
         kind: DisplacementKind,
         distance: Option<RankValue>,
         duration: RankValue,
+        /// Travel speed; only kinds that chase a unit read it.
+        speed: Option<RankValue>,
     },
     /// Instantly relocates each target to the trigger's aim point, validated against the
     /// map, static obstacles, and unit overlap (see `crate::teleport`). Rejected

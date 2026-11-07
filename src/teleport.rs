@@ -20,9 +20,9 @@ use bevy::prelude::*;
 use crate::components::{AttackMoveOrder, CollisionRadius, CombatStats, Health, MoveTarget};
 use crate::dimensions::collision_of;
 use crate::displacement::ForcedMovement;
-use crate::status::StatusEffects;
 use crate::navigation::attack_position::AttackPositionGoal;
 use crate::navigation::{MobileFilter, NavGrid, NavPath, NavSteering, flat};
+use crate::status::StatusEffects;
 
 /// Request to relocate `target` to `destination` (ground plane; Y is ignored).
 /// Emitted for every resolved target of `AbilityEffect::Teleport`.
@@ -98,6 +98,7 @@ type TeleportQuery<'w, 's> = Query<
         Option<&'static StatusEffects>,
         Option<&'static Health>,
         Has<CombatStats>,
+        Has<ForcedMovement>,
     ),
     MobileFilter,
 >;
@@ -121,7 +122,7 @@ pub fn apply_teleport_events(
             });
         };
 
-        let Ok((_, _, radius, statuses, health, _)) = units.get(event.target) else {
+        let Ok((_, _, radius, statuses, health, ..)) = units.get(event.target) else {
             reject(&mut rejected, TeleportError::InvalidTarget);
             continue;
         };
@@ -135,13 +136,16 @@ pub fn apply_teleport_events(
         // Mirrors the participants of `resolve_unit_collisions`.
         let blockers = units
             .iter()
-            .filter(|(entity, _, other_radius, other_statuses, _, combatant)| {
-                !phased
-                    && *entity != event.target
-                    && *combatant
-                    && collision_of(*other_radius) > 0.0
-                    && !other_statuses.is_some_and(|s| s.is_phased())
-            })
+            .filter(
+                |(entity, _, other_radius, other_statuses, _, combatant, forced)| {
+                    !phased
+                        && *entity != event.target
+                        && *combatant
+                        && !*forced
+                        && collision_of(*other_radius) > 0.0
+                        && !other_statuses.is_some_and(|s| s.is_phased())
+                },
+            )
             .map(|(_, tf, other_radius, ..)| (flat(tf.translation), collision_of(other_radius)));
         if let Err(reason) = validate_destination(&grid, flat(destination), radius, blockers) {
             reject(&mut rejected, reason);
@@ -179,9 +183,9 @@ mod tests {
 
     use super::*;
     use crate::components::{Ancient, Mana, Obstacle, Team, Tower};
-    use crate::status::{StatusEffects, apply_phased};
     use crate::movement::{MovementPlugin, SimSet};
     use crate::scale;
+    use crate::status::{StatusEffects, apply_phased};
 
     const SPEED: f32 = 300.0;
 
@@ -452,12 +456,7 @@ mod tests {
         app.world_mut().entity_mut(unit).insert((
             MoveTarget { position: order },
             AttackMoveOrder { destination: order },
-            ForcedMovement {
-                from: Vec3::ZERO,
-                to: Vec3::new(500.0, 0.0, 0.0),
-                elapsed: 0.0,
-                duration: 5.0,
-            },
+            ForcedMovement::line(Vec3::ZERO, Vec3::new(500.0, 0.0, 0.0), 5.0),
         ));
         for _ in 0..5 {
             step(&mut app);

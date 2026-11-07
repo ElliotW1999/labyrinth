@@ -283,9 +283,11 @@ impl EffectRunner<'_, '_> {
                 .ok()
                 .filter(|(_, _, _, hp, _)| hp.current / hp.max.max(1.0) < threshold)
                 .map(|_| base),
-            EffectScaling::TargetMissingHealth(ratio) => self.units.get(target).ok().map(|(_, _, _, hp, _)| {
-                base + ratio * (hp.max - hp.current).max(0.0)
-            }),
+            EffectScaling::TargetMissingHealth(ratio) => self
+                .units
+                .get(target)
+                .ok()
+                .map(|(_, _, _, hp, _)| base + ratio * (hp.max - hp.current).max(0.0)),
             EffectScaling::TargetMaxHealth(ratio) => self
                 .units
                 .get(target)
@@ -297,7 +299,11 @@ impl EffectRunner<'_, '_> {
                 .ok()
                 .map(|(_, _, _, hp, _)| base + ratio * hp.current),
             EffectScaling::DistanceFromCaster { falloff } => {
-                let target_pos = self.units.get(target).ok().map(|(_, tf, ..)| tf.translation)?;
+                let target_pos = self
+                    .units
+                    .get(target)
+                    .ok()
+                    .map(|(_, tf, ..)| tf.translation)?;
                 let dist = crate::combat::flat_distance(ctx.origin, target_pos);
                 let max = cast_range.max(1.0);
                 let t = (dist / max).clamp(0.0, 1.0);
@@ -406,17 +412,17 @@ impl EffectRunner<'_, '_> {
                 kind,
                 distance,
                 duration,
+                speed,
             } => {
                 for target in targets {
-                    self.displacements.write(DisplacementEvent {
+                    self.displacements.write(DisplacementEvent::from_ctx(
+                        ctx,
                         target,
                         kind,
-                        caster: ctx.caster,
-                        origin: ctx.origin,
-                        point: ctx.point,
-                        distance: distance.map(|d| d.at(rank)),
-                        duration: duration.at(rank),
-                    });
+                        distance.map(|d| d.at(rank)),
+                        duration.at(rank),
+                        speed.map(|s| s.at(rank)),
+                    ));
                 }
             }
             AbilityEffect::Teleport => {
@@ -537,4 +543,3 @@ pub fn apply_mana_restore_events(
         }
     }
 }
-
