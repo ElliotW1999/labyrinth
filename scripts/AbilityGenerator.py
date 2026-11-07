@@ -84,11 +84,12 @@ ABILITY_COLUMNS = (
     "projectile_speed",
     "description",
 )
-# Optional extras: cast_backswing (default 0.25), max_rank (default from level counts / slot).
+# Optional extras: cast_backswing (default 0.25), max_rank (default from level counts / slot),
+# toggle_mana_per_sec (toggle abilities only; level list allowed).
 
 SLOTS = ("q", "w", "e", "r", "innate")
 ABILITY_TYPES = {"active": "Active", "passive": "Passive", "toggle": "Toggle"}
-LEVEL_FIELDS = ("cast_range", "aoe_radius", "cooldown", "mana_cost")
+LEVEL_FIELDS = ("cast_range", "aoe_radius", "cooldown", "mana_cost", "toggle_mana_per_sec")
 EFFECT_LEVEL_FIELDS = ("value", "duration", "amount", "radius")
 DEFAULT_BACKSWING = 0.25
 
@@ -140,6 +141,7 @@ class Ability:
     projectile_speed: float | None
     description: str
     max_rank: int
+    toggle_mana_per_sec: list[float] | None = None
     effects: list[str] = field(default_factory=list)
 
 
@@ -171,6 +173,9 @@ def parse_ability(row: Row, effect_rows: list[EffectRow], report: Report) -> Abi
     cooldown = parse_number(row, "cooldown", report, levels=True, minimum=0)
     mana_cost = parse_number(row, "mana_cost", report, levels=True, minimum=0)
     backswing = parse_scalar(row, "cast_backswing", report, minimum=0)
+    toggle_upkeep = parse_number(row, "toggle_mana_per_sec", report, levels=True, minimum=0)
+    if toggle_upkeep is not None and ability_type != "toggle":
+        report.error(row.file, row.line, "toggle_mana_per_sec", row.get("toggle_mana_per_sec"), "only toggle abilities have mana upkeep (ability_type toggle)")
     # Keep going after value errors so effect rows are still validated; only the
     # identifying enums are needed to interpret them.
     if None in (ident, slot, ability_type) or activation is None or not name:
@@ -215,6 +220,7 @@ def parse_ability(row: Row, effect_rows: list[EffectRow], report: Report) -> Abi
         projectile_speed=speed,
         description=row.get("description"),
         max_rank=max_rank,
+        toggle_mana_per_sec=toggle_upkeep,
     )
 
 
@@ -228,6 +234,8 @@ def effect_context(a: Ability) -> EffectContext:
         team=TARGET_TEAMS[a.target_team],
         has_aoe=bool(a.aoe_radius and any(a.aoe_radius)) or a.projectile == "skillshot",
     )
+    if a.behavior != "Toggle":
+        ctx.invalid_trigger["while_toggled"] = "while_toggled is only for ability_type toggle"
     if a.behavior == "Passive":
         for trigger in ("on_cast", "on_projectile_hit", "on_impact", "on_channel_tick", "on_channel_end", "on_channel_interrupted"):
             ctx.invalid_trigger[trigger] = "passive abilities are never cast, so this trigger never fires"
@@ -272,6 +280,8 @@ def ability_fn(a: Ability) -> str:
     lines.append(f"        .timing({f32(a.cast_time)}, {f32(a.backswing)})")
     if a.channel_time:
         lines.append(f"        .channel({f32(a.channel_time)})")
+    if a.toggle_mana_per_sec:
+        lines.append(f"        .toggle_upkeep({rank_value(a.toggle_mana_per_sec)})")
     if a.max_charges:
         lines.append(f"        .charges({a.max_charges}, {f32(a.charge_restore_time or 0.0)})")
     if a.projectile != "none":

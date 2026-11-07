@@ -110,6 +110,48 @@ class ItemEffectScalingTests(unittest.TestCase):
         self.assertFalse(report.errors)
 
 
+class WhileToggledTests(unittest.TestCase):
+    @staticmethod
+    def _effect(duration: str = "", owner_is_toggle: bool = True) -> tuple[EffectRow, EffectContext]:
+        cells = {
+            "ability_id": "overcharge",
+            "effect_index": "0",
+            "trigger": "while_toggled",
+            "effect_target": "caster",
+            "effect_type": "stat_modifier",
+            "effect_id": "move_speed",
+            "value": "10",
+            "duration": duration,
+        }
+        effect = EffectRow(row(cells), "overcharge", 0, "while_toggled", "caster", "stat_modifier")
+        ctx = EffectContext(kind="ability", owner_id="overcharge", levels=7, center_for={})
+        if not owner_is_toggle:
+            # Mirrors AbilityGenerator.effect_context for non-toggle abilities.
+            ctx.invalid_trigger["while_toggled"] = "while_toggled is only for ability_type toggle"
+        return effect, ctx
+
+    def test_while_toggled_accepted_with_zero_duration(self) -> None:
+        report = Report()
+        effect, ctx = self._effect()
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors)
+        self.assertIn("AbilityTrigger::WhileToggled", result[0])
+        self.assertIn("duration: RankValue::fixed(0.0)", result[2])
+
+    def test_while_toggled_rejected_on_non_toggle_ability(self) -> None:
+        report = Report()
+        effect, ctx = self._effect(owner_is_toggle=False)
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertIn("only for ability_type toggle", report.errors[0].message)
+
+    def test_while_toggled_rejects_a_duration(self) -> None:
+        report = Report()
+        effect, ctx = self._effect(duration="5")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertEqual(report.errors[0].field, "duration")
+        self.assertIn("while toggled", report.errors[0].message)
+
+
 class TriggerTableTests(unittest.TestCase):
     def test_both_trigger_tables_accept_on_channel_interrupted(self) -> None:
         self.assertEqual(ABILITY_TRIGGERS["on_channel_interrupted"], "OnChannelInterrupted")

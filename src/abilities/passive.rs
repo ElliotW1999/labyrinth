@@ -1,11 +1,12 @@
-//! Passive ability bonuses and toggle upkeep (Overcharge-style).
+//! Passive ability bonuses and toggle upkeep (mana drain and `WhileToggled` statuses).
 
 use bevy::prelude::*;
 
 use super::catalog::AbilityDefinitions;
-use super::definition::{AbilityBehavior, AbilityEffect, AbilityTrigger};
+use super::definition::{AbilityBehavior, AbilityEffect, AbilityTrigger, StatusBuildContext};
 use crate::components::{AbilityId, AbilityLoadout, CombatStats, Health, HeroAttributes, Mana};
 use crate::items::{ItemPassives, apply_passives, remove_passives};
+use crate::status::{DispelType, StatusChange, StatusEffectEvent, StatusEffects};
 
 /// Net passive stat bonuses currently applied from ranked passive abilities.
 #[derive(Component, Clone, Default, PartialEq)]
@@ -23,17 +24,6 @@ fn loadout_passive_key(loadout: &AbilityLoadout) -> [(AbilityId, u32); 4] {
         (loadout.slots[3].id, loadout.slots[3].rank),
     ]
 }
-
-/// Attack-speed and move-speed bonuses applied while a toggle ability is on.
-#[derive(Component, Clone, Copy, Default, PartialEq)]
-pub struct ToggleStatBonuses {
-    pub attack_speed_mult: f32,
-    pub move_speed: f32,
-}
-
-const OVERCHARGE_MANA_DRAIN_PER_SEC: f32 = 8.0;
-const OVERCHARGE_ATTACK_SPEED_MULT: f32 = 0.2;
-const OVERCHARGE_MOVE_SPEED: f32 = 10.0;
 
 /// Sum `Passive` trigger stat entries for one learned ability rank.
 pub fn passives_at_rank(def: &super::definition::AbilityDefinition, rank: u32) -> ItemPassives {
@@ -62,28 +52,6 @@ pub fn loadout_passives(loadout: &AbilityLoadout, defs: &AbilityDefinitions) -> 
         total += passives_at_rank(def, slot.rank);
     }
     total
-}
-
-fn desired_toggle_bonuses(loadout: &AbilityLoadout) -> ToggleStatBonuses {
-    let mut out = ToggleStatBonuses::default();
-    for slot in &loadout.slots {
-        if slot.id == AbilityId::Overcharge && slot.toggled {
-            out.attack_speed_mult += OVERCHARGE_ATTACK_SPEED_MULT;
-            out.move_speed += OVERCHARGE_MOVE_SPEED;
-        }
-    }
-    out
-}
-
-fn apply_toggle_delta(
-    before: ToggleStatBonuses,
-    after: ToggleStatBonuses,
-    stats: &mut CombatStats,
-    agility: f32,
-) {
-    stats.attack_speed_mult += after.attack_speed_mult - before.attack_speed_mult;
-    stats.move_speed += after.move_speed - before.move_speed;
-    stats.recompute_attack_speed(agility);
 }
 
 /// Reconcile passive ability stats when the loadout is new or ranks change.
@@ -120,34 +88,72 @@ pub fn sync_ability_passives(
     }
 }
 
-/// Mana drain and stat bonuses while toggle abilities stay on (Overcharge).
+/// Upkeep of toggle abilities. Runs at the front of the abilities chain.
+///
+/// 1. A toggled slot drains `toggle_mana_per_sec` and switches itself off at 0 mana (no
+///    cooldown).
+/// 2. The `WhileToggled` `ApplyStatus` entries are reconciled with the caster's statuses:
+///    applied (permanent, undispellable) once the toggle is on, removed once it is off.
+///    The status events land later in the same chain, so the bonus appears and
+///    disappears in the frame the toggle changes. A rank-up while on keeps the old
+///    values until the toggle is cycled.
 pub fn tick_toggle_upkeep(
     time: Res<Time>,
+    defs: Res<AbilityDefinitions>,
     mut heroes: Query<(
+        Entity,
         &mut AbilityLoadout,
         &mut Mana,
-        &mut CombatStats,
-        &HeroAttributes,
-        &mut ToggleStatBonuses,
+        &StatusEffects,
+        &CombatStats,
+        Option<&HeroAttributes>,
     )>,
+    mut status_events: MessageWriter<StatusEffectEvent>,
 ) {
     let dt = time.delta_secs();
-    for (mut loadout, mut mana, mut stats, attrs, mut bonuses) in &mut heroes {
-        let before = *bonuses;
+    for (entity, mut loadout, mut mana, statuses, stats, attrs) in &mut heroes {
+        let ctx = StatusBuildContext {
+            move_speed: stats.move_speed,
+            agility: attrs.map_or(0.0, |a| a.agility),
+            fear_source: None,
+        };
         for slot in &mut loadout.slots {
-            if slot.id != AbilityId::Overcharge || !slot.toggled {
+            let Some(def) = defs.get(slot.id) else {
+                continue;
+            };
+            if def.behavior != AbilityBehavior::Toggle {
                 continue;
             }
-            mana.current -= OVERCHARGE_MANA_DRAIN_PER_SEC * dt;
-            if mana.current <= 0.0 {
-                mana.current = 0.0;
-                slot.toggled = false;
+            if slot.toggled && slot.rank > 0 {
+                mana.current -= def.toggle_mana_per_sec.at(slot.rank) * dt;
+                if mana.current <= 0.0 {
+                    mana.current = 0.0;
+                    slot.toggled = false;
+                }
             }
-        }
-        let after = desired_toggle_bonuses(&loadout);
-        if after != before {
-            apply_toggle_delta(before, after, &mut stats, attrs.agility);
-            *bonuses = after;
+            let rank = slot.rank.max(1);
+            for entry in def.effects_for(AbilityTrigger::WhileToggled) {
+                let AbilityEffect::ApplyStatus { status, .. } = entry.effect else {
+                    continue;
+                };
+                let mut built = status.build(rank, f32::INFINITY, ctx);
+                let present = statuses.effects.iter().any(|e| e.id == built.id);
+                if slot.toggled && !present {
+                    built.undispellable = true;
+                    built.dispel_type = DispelType::None;
+                    status_events.write(StatusEffectEvent {
+                        source: Some(entity),
+                        target: entity,
+                        change: StatusChange::Apply(built),
+                    });
+                } else if !slot.toggled && present {
+                    status_events.write(StatusEffectEvent {
+                        source: Some(entity),
+                        target: entity,
+                        change: StatusChange::Remove(built.id),
+                    });
+                }
+            }
         }
     }
 }
@@ -178,5 +184,155 @@ mod tests {
         assert_eq!(loadout_passives(&loadout, &defs).armor, 8.0);
         loadout.slots[0].rank = 0;
         assert_eq!(loadout_passives(&loadout, &defs).armor, 0.0);
+    }
+
+    mod toggles {
+        use std::time::Duration;
+
+        use super::*;
+        use crate::status::{DispelStrength, StatusKind, apply_status_effect_events};
+
+        fn app() -> App {
+            let mut app = App::new();
+            app.init_resource::<Time>()
+                .init_resource::<AbilityDefinitions>()
+                .add_message::<StatusEffectEvent>()
+                .add_systems(
+                    Update,
+                    (tick_toggle_upkeep, apply_status_effect_events).chain(),
+                );
+            app.world_mut()
+                .resource_mut::<AbilityDefinitions>()
+                .ensure_builtin(AbilityId::Overcharge);
+            app
+        }
+
+        fn hero(app: &mut App, mana: f32) -> Entity {
+            let mut loadout = AbilityLoadout::from_abilities([
+                AbilityId::Overcharge,
+                AbilityId::Dash,
+                AbilityId::Bolt,
+                AbilityId::Nova,
+            ]);
+            loadout.slots[0].rank = 1;
+            app.world_mut()
+                .spawn((
+                    loadout,
+                    Mana::new(mana, 0.0),
+                    StatusEffects::default(),
+                    CombatStats::simple(10.0, 0.0, 1.0, 0.0, 0.0, 300.0),
+                    HeroAttributes::starter(),
+                ))
+                .id()
+        }
+
+        fn step(app: &mut App, secs: f32) {
+            app.world_mut()
+                .resource_mut::<Time>()
+                .advance_by(Duration::from_secs_f32(secs));
+            app.update();
+        }
+
+        fn set_toggled(app: &mut App, hero: Entity, on: bool) {
+            app.world_mut()
+                .get_mut::<AbilityLoadout>(hero)
+                .unwrap()
+                .slots[0]
+                .toggled = on;
+        }
+
+        fn stats(app: &App, hero: Entity) -> CombatStats {
+            *app.world().get::<CombatStats>(hero).unwrap()
+        }
+
+        #[test]
+        fn overcharge_on_adds_attack_speed_and_move_speed_and_drains_mana() {
+            let mut app = app();
+            let hero = hero(&mut app, 100.0);
+            let before = stats(&app, hero);
+            set_toggled(&mut app, hero, true);
+            step(&mut app, 0.5);
+            let after = stats(&app, hero);
+            assert!((after.attack_speed_mult - before.attack_speed_mult - 0.2).abs() < 1e-5);
+            assert!((after.move_speed - before.move_speed - 10.0).abs() < 1e-5);
+            let mana = app.world().get::<Mana>(hero).unwrap().current;
+            assert!(
+                (mana - (100.0 - 8.0 * 0.5)).abs() < 1e-4,
+                "8 mana per second, got {mana}"
+            );
+            step(&mut app, 0.5);
+            let again = stats(&app, hero);
+            assert_eq!(
+                again.move_speed, after.move_speed,
+                "applied once, not stacked"
+            );
+        }
+
+        #[test]
+        fn overcharge_turns_off_at_zero_mana_and_reverts_stats() {
+            let mut app = app();
+            let hero = hero(&mut app, 1.0);
+            let before = stats(&app, hero);
+            set_toggled(&mut app, hero, true);
+            step(&mut app, 0.05);
+            assert_ne!(stats(&app, hero).move_speed, before.move_speed);
+            step(&mut app, 0.5);
+            let loadout = app.world().get::<AbilityLoadout>(hero).unwrap();
+            assert!(!loadout.slots[0].toggled, "out of mana");
+            assert_eq!(app.world().get::<Mana>(hero).unwrap().current, 0.0);
+            let after = stats(&app, hero);
+            assert!((after.move_speed - before.move_speed).abs() < 1e-5);
+            assert!((after.attack_speed_mult - before.attack_speed_mult).abs() < 1e-5);
+            assert!(
+                app.world()
+                    .get::<StatusEffects>(hero)
+                    .unwrap()
+                    .effects
+                    .is_empty()
+            );
+        }
+
+        #[test]
+        fn overcharge_bonus_survives_strong_dispel() {
+            let mut app = app();
+            let hero = hero(&mut app, 100.0);
+            set_toggled(&mut app, hero, true);
+            step(&mut app, 0.1);
+            let on = stats(&app, hero);
+            app.world_mut().write_message(StatusEffectEvent {
+                source: None,
+                target: hero,
+                change: StatusChange::Dispel {
+                    kind: StatusKind::Buff,
+                    strength: DispelStrength::Strong,
+                },
+            });
+            step(&mut app, 0.1);
+            assert_eq!(stats(&app, hero).move_speed, on.move_speed);
+            assert_eq!(
+                app.world()
+                    .get::<StatusEffects>(hero)
+                    .unwrap()
+                    .effects
+                    .len(),
+                2,
+                "both bonus statuses are still there"
+            );
+        }
+
+        #[test]
+        fn toggle_off_cast_removes_the_bonus() {
+            let mut app = app();
+            let hero = hero(&mut app, 100.0);
+            let before = stats(&app, hero);
+            set_toggled(&mut app, hero, true);
+            step(&mut app, 0.1);
+            // A second cast flips the toggle back (`commit_ability`).
+            set_toggled(&mut app, hero, false);
+            step(&mut app, 0.1);
+            let after = stats(&app, hero);
+            assert!((after.move_speed - before.move_speed).abs() < 1e-5);
+            assert!((after.attack_speed_mult - before.attack_speed_mult).abs() < 1e-5);
+        }
     }
 }

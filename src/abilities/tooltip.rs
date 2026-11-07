@@ -188,6 +188,7 @@ fn trigger_tag(trigger: AbilityTrigger) -> &'static str {
         AbilityTrigger::OnChannelEnd => "channel end",
         AbilityTrigger::OnChannelInterrupted => "channel interrupted",
         AbilityTrigger::OnExpire => "on expire",
+        AbilityTrigger::WhileToggled => "while toggled",
         AbilityTrigger::Passive => "passive",
         AbilityTrigger::OnUse => "use",
         AbilityTrigger::OnAttack => "on attack",

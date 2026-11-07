@@ -59,6 +59,7 @@ ABILITY_TRIGGERS = {
     "on_channel_end": "OnChannelEnd",
     "on_channel_interrupted": "OnChannelInterrupted",
     "on_expire": "OnExpire",
+    "while_toggled": "WhileToggled",
     "passive": "Passive",
 }
 
@@ -693,6 +694,13 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
     if e.trigger in ctx.invalid_trigger:
         report.error(row.file, row.line, "trigger", e.trigger, ctx.invalid_trigger[e.trigger])
         return None
+    if e.trigger == "while_toggled":
+        if e.effect_type != "stat_modifier":
+            report.error(row.file, row.line, "effect_type", e.effect_type, "while_toggled only supports stat_modifier effects")
+            return None
+        if e.target != "caster":
+            report.error(row.file, row.line, "effect_target", e.target, "while_toggled bonuses apply to the caster")
+            return None
 
     combo = ctx.invalid_combo.get((e.trigger, e.target))
     if combo:
@@ -896,7 +904,13 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             if effect_id not in TIMED_STATS:
                 report.error(row.file, row.line, "effect_id", row.get("effect_id"), f"timed stat modifiers support: {', '.join(TIMED_STATS)}")
                 return None
-            if not _require(e, "duration", report, "timed stat modifiers need a duration (only item passives are permanent)"):
+            toggled = e.trigger == "while_toggled"
+            if toggled:
+                if duration:
+                    report.error(row.file, row.line, "duration", row.get("duration"), "while_toggled bonuses last while toggled; leave blank")
+                    return None
+                duration = [0.0]
+            elif not _require(e, "duration", report, "timed stat modifiers need a duration (only item passives are permanent)"):
                 return None
             beneficial = all(v >= 0 for v in value)
             kind = "Buff" if beneficial else "Debuff"

@@ -122,6 +122,10 @@ pub enum AbilityTrigger {
     /// A channel ended early because the caster was disabled.
     OnChannelInterrupted,
     OnExpire,
+    /// Held while a toggle ability is on. Only `ApplyStatus` entries are read: the
+    /// upkeep system applies them as permanent statuses when the toggle turns on and
+    /// removes them when it turns off.
+    WhileToggled,
     /// Item stat bonuses held while the item is owned (applied on purchase, not resolved).
     Passive,
     /// An item was activated from the inventory.
@@ -498,6 +502,8 @@ pub struct AbilityDefinition {
     pub mana_cost: RankValue,
     /// Seconds the caster channels after the cast point (`0` = not channelled).
     pub channel_time: f32,
+    /// Mana drained per second while a toggle ability is on.
+    pub toggle_mana_per_sec: RankValue,
     /// Charge-based abilities: maximum stored charges and seconds to restore one.
     pub charges: Option<(u32, f32)>,
     pub description: &'static str,
@@ -526,6 +532,7 @@ impl AbilityDefinition {
             cooldown: RankValue::ZERO,
             mana_cost: RankValue::ZERO,
             channel_time: 0.0,
+            toggle_mana_per_sec: RankValue::ZERO,
             charges: None,
             description: "",
             mechanics: Vec::new(),
@@ -554,6 +561,12 @@ impl AbilityDefinition {
     pub fn timing(mut self, cast_time: f32, backswing: f32) -> Self {
         self.cast_time = cast_time.clamp(0.0, 0.5);
         self.backswing = backswing.clamp(0.0, 0.5);
+        self
+    }
+
+    /// Mana per second a toggle ability drains while on.
+    pub fn toggle_upkeep(mut self, mana_per_sec: RankValue) -> Self {
+        self.toggle_mana_per_sec = mana_per_sec;
         self
     }
 

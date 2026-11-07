@@ -76,7 +76,6 @@ pub fn spawn_hero_entity(
         crate::unit_commands::CommandQueue::default(),
         crate::abilities::passive::AbilityPassiveSync::default(),
         crate::abilities::passive::AppliedAbilityPassives::default(),
-        crate::abilities::passive::ToggleStatBonuses::default(),
     ));
     if local {
         entity.insert(PlayerHero);
