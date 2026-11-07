@@ -424,11 +424,7 @@ pub fn tick_status_effects(
             if effect.remaining <= 0.0 {
                 let expired = statuses.effects.remove(i);
                 subtract_status_stat_delta(&expired, &mut stats, agi);
-                if expired.shield_amount > 0.0 {
-                    if let Some(pool) = shield.as_deref_mut() {
-                        pool.amount = (pool.amount - expired.shield_amount).max(0.0);
-                    }
-                }
+                release_shield(&expired, shield.as_deref_mut());
             } else {
                 i += 1;
             }
@@ -524,10 +520,41 @@ pub fn apply_debuff_immunity(
     )
 }
 
+/// Charge `absorbed` points of damage the [`ShieldPool`] soaked against the shield statuses
+/// that back it, so each status's `shield_amount` stays what is left of that shield.
+///
+/// Shields are consumed oldest first: the walk follows `statuses.effects` in vector order,
+/// which is application order (a refresh removes and re-pushes, so a refreshed shield becomes
+/// the newest). Each shield gives up what it has before the next one is touched.
+pub fn consume_shields(statuses: &mut StatusEffects, mut absorbed: f32) {
+    for effect in &mut statuses.effects {
+        if absorbed <= 0.0 {
+            break;
+        }
+        if effect.shield_amount <= 0.0 {
+            continue;
+        }
+        let taken = effect.shield_amount.min(absorbed);
+        effect.shield_amount -= taken;
+        absorbed -= taken;
+    }
+}
+
+/// Take the remaining part of a shield status back out of the pool (expiry, dispel, remove).
+/// Because of [`consume_shields`], `shield_amount` is what is left of that shield.
+fn release_shield(effect: &StatusEffect, pool: Option<&mut ShieldPool>) {
+    if effect.shield_amount > 0.0 {
+        if let Some(pool) = pool {
+            pool.amount = (pool.amount - effect.shield_amount).max(0.0);
+        }
+    }
+}
+
 fn remove_statuses(
     statuses: &mut StatusEffects,
     stats: &mut CombatStats,
     agility: f32,
+    mut pool: Option<&mut ShieldPool>,
     matches: impl Fn(&StatusEffect) -> bool,
 ) {
     statuses.effects.retain(|effect| {
@@ -535,6 +562,7 @@ fn remove_statuses(
             return true;
         }
         subtract_status_stat_delta(effect, stats, agility);
+        release_shield(effect, pool.as_deref_mut());
         false
     });
 }
@@ -559,7 +587,7 @@ pub fn apply_status_effect_events(
         match &event.change {
             StatusChange::Apply(effect) => {
                 if effect.debuff_immune {
-                    remove_statuses(&mut statuses, &mut stats, agility, |e| {
+                    remove_statuses(&mut statuses, &mut stats, agility, shield.as_deref_mut(), |e| {
                         e.kind == StatusKind::Debuff
                             && status_dispel_matches(e, StatusKind::Debuff, DispelStrength::Strong)
                     });
@@ -575,8 +603,8 @@ pub fn apply_status_effect_events(
                 } else {
                     0.0
                 };
-                let _ = apply_status(&mut statuses, &mut stats, effect.clone(), agility);
-                if effect.shield_amount > 0.0 {
+                let applied = apply_status(&mut statuses, &mut stats, effect.clone(), agility);
+                if applied && effect.shield_amount > 0.0 {
                     if let Some(pool) = shield.as_deref_mut() {
                         pool.amount = (pool.amount - old_shield).max(0.0) + effect.shield_amount;
                     } else {
@@ -587,12 +615,18 @@ pub fn apply_status_effect_events(
                 }
             }
             StatusChange::Dispel { kind, strength } => {
-                remove_statuses(&mut statuses, &mut stats, agility, |e| {
+                remove_statuses(&mut statuses, &mut stats, agility, shield.as_deref_mut(), |e| {
                     status_dispel_matches(e, *kind, *strength)
                 });
             }
             StatusChange::Remove(id) => {
-                remove_statuses(&mut statuses, &mut stats, agility, |e| e.id == *id);
+                remove_statuses(
+                    &mut statuses,
+                    &mut stats,
+                    agility,
+                    shield.as_deref_mut(),
+                    |e| e.id == *id,
+                );
             }
         }
     }
@@ -707,5 +741,138 @@ mod tests {
         app.update();
         let st = app.world().get::<StatusEffects>(victim).unwrap();
         assert!(!st.effects.iter().any(|e| e.id == "hex"));
+    }
+
+    mod shields {
+        use super::*;
+        use std::time::Duration;
+
+        fn app() -> App {
+            let mut app = App::new();
+            app.init_resource::<Time>()
+                .add_message::<StatusEffectEvent>()
+                .add_message::<DamageEvent>()
+                .add_systems(
+                    Update,
+                    (apply_status_effect_events, tick_status_effects).chain(),
+                );
+            app
+        }
+
+        fn unit(app: &mut App) -> Entity {
+            app.world_mut()
+                .spawn((
+                    StatusEffects::default(),
+                    CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 300.0),
+                    Health::new(1000.0),
+                    ShieldPool { amount: 0.0 },
+                ))
+                .id()
+        }
+
+        fn send(app: &mut App, target: Entity, change: StatusChange) {
+            app.world_mut().write_message(StatusEffectEvent {
+                source: None,
+                target,
+                change,
+            });
+        }
+
+        fn step(app: &mut App, secs: f32) {
+            app.world_mut()
+                .resource_mut::<Time>()
+                .advance_by(Duration::from_secs_f32(secs));
+            app.update();
+        }
+
+        fn pool(app: &App, unit: Entity) -> f32 {
+            app.world().get::<ShieldPool>(unit).unwrap().amount
+        }
+
+        fn shield_status(id: &'static str, amount: f32, duration: f32) -> StatusEffect {
+            StatusEffect {
+                id,
+                ..StatusEffect::shield(amount, duration)
+            }
+        }
+
+        /// What `combat::apply_damage_events` does on a hit that the pool soaks.
+        fn absorb(app: &mut App, unit: Entity, amount: f32) {
+            let mut e = app.world_mut().entity_mut(unit);
+            e.get_mut::<ShieldPool>().unwrap().amount -= amount;
+            consume_shields(&mut e.get_mut::<StatusEffects>().unwrap(), amount);
+        }
+
+        #[test]
+        fn dispelling_a_shield_buff_clears_its_pool() {
+            let mut app = app();
+            let u = unit(&mut app);
+            send(&mut app, u, StatusChange::Apply(shield_status("shield", 100.0, 10.0)));
+            step(&mut app, 0.1);
+            assert_eq!(pool(&app, u), 100.0);
+            send(
+                &mut app,
+                u,
+                StatusChange::Dispel {
+                    kind: StatusKind::Buff,
+                    strength: DispelStrength::Strong,
+                },
+            );
+            step(&mut app, 0.1);
+            assert_eq!(pool(&app, u), 0.0);
+        }
+
+        #[test]
+        fn removing_a_shield_by_id_clears_its_pool() {
+            let mut app = app();
+            let u = unit(&mut app);
+            send(&mut app, u, StatusChange::Apply(shield_status("shield", 100.0, 10.0)));
+            step(&mut app, 0.1);
+            send(&mut app, u, StatusChange::Remove("shield"));
+            step(&mut app, 0.1);
+            assert_eq!(pool(&app, u), 0.0);
+            assert!(app.world().get::<StatusEffects>(u).unwrap().effects.is_empty());
+        }
+
+        #[test]
+        fn partially_consumed_shield_expiry_leaves_other_shields_intact() {
+            let mut app = app();
+            let u = unit(&mut app);
+            send(&mut app, u, StatusChange::Apply(shield_status("first", 100.0, 1.0)));
+            send(&mut app, u, StatusChange::Apply(shield_status("second", 80.0, 30.0)));
+            step(&mut app, 0.1);
+            assert_eq!(pool(&app, u), 180.0);
+            absorb(&mut app, u, 50.0);
+            step(&mut app, 2.0);
+            let statuses = app.world().get::<StatusEffects>(u).unwrap();
+            assert_eq!(statuses.effects.len(), 1);
+            assert_eq!(statuses.effects[0].id, "second");
+            assert_eq!(pool(&app, u), 80.0, "the second shield keeps its full amount");
+        }
+
+        #[test]
+        fn shields_are_consumed_oldest_first() {
+            let mut statuses = StatusEffects::default();
+            statuses.effects.push(shield_status("a", 30.0, 5.0));
+            statuses.effects.push(shield_status("b", 40.0, 5.0));
+            consume_shields(&mut statuses, 50.0);
+            assert_eq!(statuses.effects[0].shield_amount, 0.0);
+            assert_eq!(statuses.effects[1].shield_amount, 20.0);
+        }
+
+        #[test]
+        fn refreshing_a_shield_replaces_only_its_remaining_amount() {
+            let mut app = app();
+            let u = unit(&mut app);
+            send(&mut app, u, StatusChange::Apply(shield_status("shield", 100.0, 10.0)));
+            send(&mut app, u, StatusChange::Apply(shield_status("other", 60.0, 10.0)));
+            step(&mut app, 0.1);
+            absorb(&mut app, u, 70.0);
+            assert_eq!(pool(&app, u), 90.0);
+            send(&mut app, u, StatusChange::Apply(shield_status("shield", 100.0, 10.0)));
+            step(&mut app, 0.1);
+            // "shield" had 30 left and "other" 60: refreshed to 100 gives 100 + 60.
+            assert_eq!(pool(&app, u), 160.0);
+        }
     }
 }

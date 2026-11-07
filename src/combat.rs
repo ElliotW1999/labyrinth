@@ -324,6 +324,11 @@ pub fn apply_damage_events(
             event.applies_block,
             event.pierces_shields,
         );
+        if resolved.shield_absorbed > 0.0 {
+            if let Some(st) = statuses.as_deref_mut() {
+                crate::status::consume_shields(st, resolved.shield_absorbed);
+            }
+        }
         health.current -= resolved.health_delta;
 
         if event.reflects && resolved.health_delta > 0.0 && damage_reflect > 0.0 {
