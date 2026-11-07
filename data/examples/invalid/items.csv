@@ -1,3 +1,4 @@
-id,name,item_type,cost,sell_value,tier,rarity,stackable,max_stack,consumable,max_charges,description
-gem,Gem,trinket,lots,,1,mythic,maybe,,false,,Unknown enums and bad numbers
-potion,Potion,consumable,50,25,1,common,false,3,true,,Max stack without stacking
+id,name,item_type,cost,sell_value,tier,rarity,stackable,max_stack,consumable,max_charges,description,charge_restore_time
+gem,Gem,trinket,lots,,1,mythic,maybe,,false,,Unknown enums and bad numbers,
+potion,Potion,consumable,50,25,1,common,false,3,true,,Max stack without stacking,
+tonic,Tonic,consumable,50,25,1,common,false,,true,3,Item charges never regenerate,30

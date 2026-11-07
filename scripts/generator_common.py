@@ -492,12 +492,12 @@ def validate_activation(
     def err(fld: str, message: str) -> None:
         report.error(row.file, row.line, fld, row.get(fld), message)
 
-    if spec.charge_restore_time is not None and spec.max_charges is None:
+    if kind == "item" and spec.charge_restore_time is not None:
+        err("charge_restore_time", "item charges do not regenerate; leave charge_restore_time blank")
+    elif spec.charge_restore_time is not None and spec.max_charges is None:
         err("charge_restore_time", "charge_restore_time requires max_charges")
     if spec.max_charges is not None and spec.charge_restore_time is None and kind == "ability":
         err("max_charges", "charge-based abilities need a charge_restore_time")
-    if spec.max_charges is not None and spec.charge_restore_time is None and kind == "item":
-        report.warn(row.file, row.line, "max_charges", row.get("max_charges"), "charge restore time is not modeled for items yet; charges refill from stack purchases")
 
     if spec.projectile_speed is not None and spec.projectile_type == "none":
         err("projectile_speed", "projectile_speed requires projectile_type targeted or skillshot")

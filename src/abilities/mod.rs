@@ -28,9 +28,9 @@ pub mod tooltip;
 use bevy::prelude::*;
 
 use crate::actions::{
-    ActionSource, ActionSources, ActionsPlugin, ActivationRequest, DisableRule,
-    check_ready, refresh_activation_aims, resolve_queued_activations, team_allows,
-    tick_activations, validate_activation_requests,
+    ActionSource, ActionSources, ActionsPlugin, ActivationRequest, DisableRule, check_ready,
+    refresh_activation_aims, resolve_queued_activations, team_allows, tick_activations,
+    validate_activation_requests,
 };
 use crate::combat::{flat_distance, spawn_requested_projectiles};
 use crate::components::{
@@ -77,6 +77,7 @@ impl Plugin for AbilitiesPlugin {
                 (
                     (
                         tick_ability_cooldowns,
+                        crate::items::tick_item_cooldowns,
                         regen_mana,
                         tick_toggle_upkeep,
                         sync_ability_passives,
@@ -636,6 +637,7 @@ mod tests {
                 Update,
                 (
                     register_loadout_definitions,
+                    crate::items::tick_item_cooldowns,
                     resolve_queued_activations,
                     validate_activation_requests,
                     refresh_activation_aims,
@@ -837,12 +839,9 @@ mod tests {
             800.0,
         )]);
         let defs = AbilityDefinitions::default();
-        let params = super::effects::source_params(
-            EffectSource::Item(ItemId::HeartwoodBand),
-            &defs,
-            1,
-        )
-        .expect("items always resolve");
+        let params =
+            super::effects::source_params(EffectSource::Item(ItemId::HeartwoodBand), &defs, 1)
+                .expect("items always resolve");
         assert_eq!(params.aoe_radius, 143.0);
         assert_eq!(params.cast_range, 800.0);
         assert_eq!(params.entries.len(), 1);
@@ -941,7 +940,10 @@ mod tests {
             );
         }
 
-        assert_eq!(fired, vec![(CastTarget::Point(last_position), last_position)]);
+        assert_eq!(
+            fired,
+            vec![(CastTarget::Point(last_position), last_position)]
+        );
         assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 900.0);
         let slot = &app.world().get::<AbilityLoadout>(caster).unwrap().slots[3];
         assert!(slot.cooldown.remaining > 0.0, "cooldown started");
@@ -968,7 +970,10 @@ mod tests {
             step(&mut app);
             fired.extend(fired_events(&app));
         }
-        assert_eq!(fired, vec![(CastTarget::Point(last_position), last_position)]);
+        assert_eq!(
+            fired,
+            vec![(CastTarget::Point(last_position), last_position)]
+        );
     }
 
     #[test]
@@ -983,7 +988,10 @@ mod tests {
         request(&mut app, caster, 3, CastTarget::Unit(target));
         step(&mut app);
         let moved = Vec3::new(260.0, 0.0, 60.0);
-        app.world_mut().get_mut::<Transform>(target).unwrap().translation = moved;
+        app.world_mut()
+            .get_mut::<Transform>(target)
+            .unwrap()
+            .translation = moved;
 
         let mut fired = Vec::new();
         for _ in 0..12 {
@@ -991,6 +999,28 @@ mod tests {
             fired.extend(fired_events(&app));
         }
         assert_eq!(fired, vec![(CastTarget::Unit(target), moved)]);
+    }
+
+    #[test]
+    fn item_cooldowns_tick_in_the_abilities_chain() {
+        let mut app = test_app();
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::VialOfLight);
+        request_item(&mut app, caster, 0, CastTarget::None);
+        step(&mut app);
+        let started = app.world().get::<Inventory>(caster).unwrap().slots[0]
+            .unwrap()
+            .cooldown
+            .remaining;
+        assert!(started > 0.0);
+        for _ in 0..10 {
+            step(&mut app);
+        }
+        let later = app.world().get::<Inventory>(caster).unwrap().slots[0]
+            .unwrap()
+            .cooldown
+            .remaining;
+        assert!(later < started - 0.4, "ticked from {started} to {later}");
     }
 
     #[test]
@@ -1071,7 +1101,10 @@ mod tests {
         request(&mut app, caster, 3, CastTarget::Unit(target));
         step(&mut app);
         let far = Vec3::new(5000.0, 0.0, 0.0);
-        app.world_mut().get_mut::<Transform>(target).unwrap().translation = far;
+        app.world_mut()
+            .get_mut::<Transform>(target)
+            .unwrap()
+            .translation = far;
         let mut fired = Vec::new();
         for _ in 0..12 {
             step(&mut app);
@@ -1106,7 +1139,11 @@ mod tests {
             fired.extend(fired_events(&app));
         }
         assert!(fired.is_empty());
-        assert!(app.world().get::<crate::actions::QueuedActivation>(caster).is_none());
+        assert!(
+            app.world()
+                .get::<crate::actions::QueuedActivation>(caster)
+                .is_none()
+        );
         assert!(app.world().get::<Activation>(caster).is_none());
         assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 1000.0);
     }

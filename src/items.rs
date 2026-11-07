@@ -38,7 +38,6 @@ impl Plugin for ItemsPlugin {
             .add_systems(
                 Update,
                 (
-                    tick_item_cooldowns,
                     try_purchase_from_ui,
                     try_sell_from_ui,
                     try_undo_from_ui,
@@ -188,36 +187,28 @@ impl ItemInstanceId {
 pub struct ItemInstance {
     pub id: ItemId,
     pub instance: ItemInstanceId,
-    pub cooldown_remaining: f32,
+    /// Cooldown and, for consumables with `max_charges`, the charges left on the
+    /// current unit. Item charges never regenerate; the next unit starts full.
+    pub cooldown: ActionCooldown,
     /// Units in this slot (stackable items).
     pub stack: u32,
-    /// Charges left on the current unit (items with `max_charges`).
-    pub charges: Option<u32>,
+    /// Units used up at commit whose passives `resolve_item_uses` has not removed yet.
+    pub spent_units: u32,
 }
 
 impl ItemInstance {
     pub fn new(id: ItemId) -> Self {
+        let def = id.definition();
         Self {
             id,
             instance: ItemInstanceId::next(),
-            cooldown_remaining: 0.0,
+            cooldown: ActionCooldown {
+                charges: def.max_charges.filter(|_| def.consumable),
+                ..ActionCooldown::default()
+            },
             stack: 1,
-            charges: id.definition().max_charges,
+            spent_units: 0,
         }
-    }
-
-    /// Spend one use of a consumable with `max_charges` per unit. Returns how many
-    /// units were used up (0 or 1).
-    pub fn consume(&mut self, max_charges: Option<u32>) -> u32 {
-        if let Some(charges) = self.charges.as_mut() {
-            *charges = charges.saturating_sub(1);
-            if *charges > 0 {
-                return 0;
-            }
-            self.charges = max_charges;
-        }
-        self.stack = self.stack.saturating_sub(1);
-        1
     }
 }
 
@@ -481,21 +472,26 @@ pub fn item_action_spec(inventory: &Inventory, slot: usize) -> Result<ActionSpec
             mana: activation.mana_cost,
         },
         cooldown: def.cooldown,
-        cooldown_state: ActionCooldown {
-            remaining: item.cooldown_remaining,
-            charges: item.charges,
-            charge_restore_remaining: 0.0,
-        },
+        cooldown_state: item.cooldown,
         disable: DisableRule::MuteOrStun,
         occupies_caster: activation.cast_time > 0.0 || activation.channel_time > 0.0,
     })
 }
 
-/// Start the item's cooldown. Charges and stacks are spent by `resolve_item_uses`,
-/// which also removes the passives of a used-up unit.
+/// Start the item's cooldown and spend its charge, and for a consumable whose last charge
+/// went, one unit of the stack. Spending at commit means a second request in the same
+/// frame already sees the emptied slot. `resolve_item_uses` removes the passives of the
+/// spent units (`spent_units`) and clears an emptied slot.
 pub fn commit_item(inventory: &mut Inventory, slot: usize, spec: &ActionSpec) {
-    if let Some(item) = inventory.slots.get_mut(slot).and_then(|s| s.as_mut()) {
-        item.cooldown_remaining = spec.cooldown;
+    let Some(item) = inventory.slots.get_mut(slot).and_then(|s| s.as_mut()) else {
+        return;
+    };
+    item.cooldown.start(spec.cooldown);
+    let def = item.id.definition();
+    if def.consumable && item.cooldown.charges.is_none_or(|charges| charges == 0) {
+        item.stack = item.stack.saturating_sub(1);
+        item.spent_units += 1;
+        item.cooldown.charges = def.max_charges;
     }
 }
 
@@ -1084,13 +1080,13 @@ fn spawn_shops(
     ));
 }
 
-fn tick_item_cooldowns(time: Res<Time>, mut inventories: Query<&mut Inventory>) {
+/// Ticks in the `AbilitiesPlugin` chain next to the ability cooldowns, so both sources
+/// share the authority gate. Charges do not regenerate.
+pub(crate) fn tick_item_cooldowns(time: Res<Time>, mut inventories: Query<&mut Inventory>) {
     let dt = time.delta_secs();
     for mut inv in &mut inventories {
-        for slot in &mut inv.slots {
-            if let Some(item) = slot.as_mut() {
-                item.cooldown_remaining = (item.cooldown_remaining - dt).max(0.0);
-            }
+        for item in inv.slots.iter_mut().flatten() {
+            item.cooldown.tick(dt);
         }
     }
 }
@@ -1141,10 +1137,11 @@ pub fn resolve_item_uses(
         let Some(slot) = inv.slots[index].as_mut() else {
             continue;
         };
-        if slot.consume(def.max_charges) > 0 {
+        let spent = std::mem::take(&mut slot.spent_units);
+        if spent > 0 {
             remove_passives(
                 item.passives(),
-                1,
+                spent,
                 &mut health,
                 &mut mana,
                 &mut stats,
@@ -1454,7 +1451,14 @@ pub fn try_sell_item(
     let Some(item) = inv.slots.get_mut(slot).and_then(|s| s.take()) else {
         return false;
     };
-    remove_passives(item.id.passives(), item.stack, health, mana, stats, attrs);
+    remove_passives(
+        item.id.passives(),
+        item.stack + item.spent_units,
+        health,
+        mana,
+        stats,
+        attrs,
+    );
     wallet.gold += item.id.definition().sell_value * item.stack;
     true
 }
@@ -2001,19 +2005,150 @@ mod tests {
         assert_eq!(stats.attack_speed_flat, 0.0);
     }
 
+    fn commit(inv: &mut Inventory, slot: usize) {
+        let spec = item_action_spec(inv, slot).expect("usable");
+        commit_item(inv, slot, &spec);
+    }
+
     #[test]
-    fn consumables_spend_charges_then_units() {
-        let mut item = ItemInstance {
-            stack: 2,
-            charges: Some(2),
-            ..ItemInstance::new(ItemId::VialOfLight)
-        };
-        assert_eq!(item.consume(Some(2)), 0);
-        assert_eq!(item.consume(Some(2)), 1);
-        assert_eq!((item.stack, item.charges), (1, Some(2)));
-        let mut plain = ItemInstance::new(ItemId::VialOfLight);
-        assert_eq!(plain.consume(None), 1);
-        assert_eq!(plain.stack, 0);
+    fn consumable_charges_spend_at_commit_and_refill_from_the_next_unit() {
+        let mut consumable = test_item(
+            ItemId::BladeOfAsh,
+            aimed(
+                TargetType::NoTarget,
+                TargetTeam::SelfOnly,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            ),
+        );
+        consumable.consumable = true;
+        consumable.max_charges = Some(2);
+        let _defs = DefinitionOverride::install([consumable]);
+        let mut item = ItemInstance::new(ItemId::BladeOfAsh);
+        assert_eq!(item.cooldown.charges, Some(2));
+        item.stack = 2;
+        let mut inv = Inventory::empty();
+        inv.slots[0] = Some(item);
+
+        commit(&mut inv, 0);
+        let first = inv.slots[0].unwrap();
+        assert_eq!(first.cooldown.charges, Some(1));
+        assert_eq!((first.stack, first.spent_units), (2, 0));
+
+        commit(&mut inv, 0);
+        let second = inv.slots[0].unwrap();
+        assert_eq!((second.stack, second.spent_units), (1, 1));
+        assert_eq!(
+            second.cooldown.charges,
+            Some(2),
+            "the next unit starts full"
+        );
+
+        let mut plain = Inventory::empty();
+        let mut single = ItemInstance::new(ItemId::BladeOfAsh);
+        single.cooldown.charges = None;
+        plain.slots[0] = Some(single);
+        commit(&mut plain, 0);
+        let used = plain.slots[0].unwrap();
+        assert_eq!((used.stack, used.spent_units), (0, 1));
+        assert!(
+            item_action_spec(&plain, 0).is_err(),
+            "an emptied slot cannot be requested again"
+        );
+    }
+
+    #[test]
+    fn non_consumable_items_never_lose_charges() {
+        let _defs = DefinitionOverride::install([ItemDefinition {
+            max_charges: Some(3),
+            consumable: false,
+            cooldown: 5.0,
+            ..test_item(
+                ItemId::AegisCharm,
+                aimed(
+                    TargetType::NoTarget,
+                    TargetTeam::SelfOnly,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                ),
+            )
+        }]);
+        let mut item = ItemInstance::new(ItemId::AegisCharm);
+        assert_eq!(item.cooldown.charges, None);
+        let mut inv = Inventory::empty();
+        item.stack = 1;
+        inv.slots[0] = Some(item);
+        for _ in 0..3 {
+            commit(&mut inv, 0);
+        }
+        let item = inv.slots[0].unwrap();
+        assert_eq!(item.cooldown.charges, None);
+        assert_eq!((item.stack, item.spent_units), (1, 0));
+    }
+
+    #[test]
+    fn last_consumable_unit_cannot_fire_twice_in_one_frame() {
+        let mut def = test_item(
+            ItemId::BladeOfAsh,
+            aimed(
+                TargetType::NoTarget,
+                TargetTeam::SelfOnly,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            ),
+        );
+        def.consumable = true;
+        def.max_charges = None;
+        def.cooldown = 0.0;
+        let _defs = DefinitionOverride::install([def]);
+        let mut app = item_app();
+        let caster = spawn_caster(&mut app, 50.0);
+        give(&mut app, caster, ItemId::BladeOfAsh);
+
+        request(&mut app, caster, 0, CastTarget::None);
+        request(&mut app, caster, 0, CastTarget::None);
+        step(&mut app);
+
+        assert_eq!(triggers(&app).len(), 1, "exactly one OnUse");
+        assert!(slot(&app, caster, 0).is_none());
+    }
+
+    #[test]
+    fn selling_between_commit_and_resolve_removes_the_spent_unit_passives() {
+        let (mut wallet, mut inv, mut health, mut mana, mut stats, mut attrs) = fresh_hero();
+        assert!(try_buy_item(
+            &mut wallet,
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            &mut attrs,
+            ItemId::IronBracer,
+            true,
+        ));
+        let max_health = health.max;
+        assert!(max_health > 720.0);
+        // As if committed (unit spent) but not yet resolved.
+        let item = inv.slots[0].as_mut().unwrap();
+        item.stack = 0;
+        item.spent_units = 1;
+        assert!(try_sell_item(
+            &mut wallet,
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            &mut attrs,
+            0,
+            true,
+        ));
+        assert_eq!(health.max, 720.0);
     }
 
     #[test]
@@ -2261,7 +2396,7 @@ mod tests {
             ItemId::IronBracer,
             true,
         ));
-        inv.slots[0].as_mut().unwrap().cooldown_remaining = 3.5;
+        inv.slots[0].as_mut().unwrap().cooldown.remaining = 3.5;
         assert!(record_sale(
             &mut log,
             &mut wallet,
@@ -2294,7 +2429,8 @@ mod tests {
                 .flatten()
                 .next()
                 .unwrap()
-                .cooldown_remaining,
+                .cooldown
+                .remaining,
             3.5
         );
         assert_eq!(wallet.gold, 2000 - ItemId::IronBracer.cost());
@@ -2373,6 +2509,7 @@ mod tests {
                 Update,
                 (
                     register_loadout_definitions,
+                    tick_item_cooldowns,
                     resolve_queued_activations,
                     validate_activation_requests,
                     refresh_activation_aims,
@@ -2559,7 +2696,7 @@ mod tests {
             220.0,
             "180 heal from the catalog active"
         );
-        assert_eq!(slot(&app, caster, 0).unwrap().cooldown_remaining, 40.0);
+        assert_eq!(slot(&app, caster, 0).unwrap().cooldown.remaining, 40.0);
         assert!(
             app.world().get::<Activation>(caster).is_none(),
             "instant items do not occupy the caster"
@@ -2625,7 +2762,7 @@ mod tests {
         assert_eq!(teleports[0].caster, caster);
         assert!((teleports[0].destination - Vec3::new(200.0, 0.0, 0.0)).length() < 1.0);
         assert!(
-            slot(&app, caster, 0).unwrap().cooldown_remaining > 0.0,
+            slot(&app, caster, 0).unwrap().cooldown.remaining > 0.0,
             "the use also paid its cooldown"
         );
         assert_eq!(heal_fx_count(&mut app), 0);
@@ -2649,8 +2786,8 @@ mod tests {
         step(&mut app);
 
         assert_eq!(health_of(&app, caster), 40.0);
-        assert_eq!(slot(&app, caster, 0).unwrap().cooldown_remaining, 0.0);
-        assert_eq!(slot(&app, caster, 1).unwrap().cooldown_remaining, 0.0);
+        assert_eq!(slot(&app, caster, 0).unwrap().cooldown.remaining, 0.0);
+        assert_eq!(slot(&app, caster, 1).unwrap().cooldown.remaining, 0.0);
         assert!(triggers(&app).is_empty());
     }
 
@@ -2719,7 +2856,7 @@ mod tests {
             triggers(&app).is_empty(),
             "allies are not valid enemy-item targets"
         );
-        assert_eq!(slot(&app, caster, 0).unwrap().cooldown_remaining, 0.0);
+        assert_eq!(slot(&app, caster, 0).unwrap().cooldown.remaining, 0.0);
         assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 100.0);
 
         request(&mut app, caster, 0, CastTarget::Unit(far));
@@ -2727,7 +2864,7 @@ mod tests {
         assert!(app.world().get::<QueuedActivation>(caster).is_some());
         assert!(app.world().get::<MoveTarget>(caster).is_some());
         assert_eq!(
-            slot(&app, caster, 0).unwrap().cooldown_remaining,
+            slot(&app, caster, 0).unwrap().cooldown.remaining,
             0.0,
             "walking into range is free"
         );
@@ -2741,14 +2878,15 @@ mod tests {
         let fired = triggers(&app);
         assert_eq!(fired.len(), 1);
         assert_eq!(fired[0].cast_target, Some(far));
-        assert_eq!(slot(&app, caster, 0).unwrap().cooldown_remaining, 5.0);
+        assert_eq!(slot(&app, caster, 0).unwrap().cooldown.remaining, 5.0);
         assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 75.0);
         assert_eq!(health_of(&app, caster), 60.0);
 
         app.world_mut().get_mut::<Inventory>(caster).unwrap().slots[0]
             .as_mut()
             .unwrap()
-            .cooldown_remaining = 0.0;
+            .cooldown
+            .remaining = 0.0;
         app.world_mut().get_mut::<Mana>(caster).unwrap().current = 10.0;
         request(&mut app, caster, 0, CastTarget::Unit(enemy));
         step(&mut app);
@@ -2756,7 +2894,7 @@ mod tests {
             triggers(&app).is_empty(),
             "unaffordable uses do not start the cooldown"
         );
-        assert_eq!(slot(&app, caster, 0).unwrap().cooldown_remaining, 0.0);
+        assert_eq!(slot(&app, caster, 0).unwrap().cooldown.remaining, 0.0);
         assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 10.0);
 
         let point = Vec3::new(400.0, 0.0, 0.0);
@@ -2766,7 +2904,7 @@ mod tests {
             app.world().get::<QueuedActivation>(caster).is_some(),
             "the point is out of range"
         );
-        assert_eq!(slot(&app, caster, 1).unwrap().cooldown_remaining, 0.0);
+        assert_eq!(slot(&app, caster, 1).unwrap().cooldown.remaining, 0.0);
         app.world_mut()
             .entity_mut(caster)
             .remove::<QueuedActivation>();
@@ -2783,7 +2921,7 @@ mod tests {
         );
         step(&mut app);
         assert_eq!(triggers(&app)[0].aim, Vec3::new(100.0, 0.0, 0.0));
-        assert_eq!(slot(&app, caster, 1).unwrap().cooldown_remaining, 5.0);
+        assert_eq!(slot(&app, caster, 1).unwrap().cooldown.remaining, 5.0);
 
         request(
             &mut app,
@@ -2829,39 +2967,40 @@ mod tests {
         let first = give(&mut app, caster, ItemId::BladeOfAsh);
         let second = give(&mut app, caster, ItemId::BladeOfAsh);
         assert_ne!(first, second, "each copy has its own instance");
-        assert_eq!(slot(&app, caster, 0).unwrap().charges, Some(2));
-        assert_eq!(slot(&app, caster, 1).unwrap().charges, Some(2));
+        assert_eq!(slot(&app, caster, 0).unwrap().cooldown.charges, Some(2));
+        assert_eq!(slot(&app, caster, 1).unwrap().cooldown.charges, Some(2));
 
         slot_set_charges(&mut app, caster, 0, Some(0));
         request(&mut app, caster, 0, CastTarget::None);
         step(&mut app);
         assert!(triggers(&app).is_empty());
         assert_eq!(
-            slot(&app, caster, 0).unwrap().charges,
+            slot(&app, caster, 0).unwrap().cooldown.charges,
             Some(0),
             "an empty copy is not spent"
         );
-        assert_eq!(slot(&app, caster, 1).unwrap().charges, Some(2));
+        assert_eq!(slot(&app, caster, 1).unwrap().cooldown.charges, Some(2));
 
         slot_set_charges(&mut app, caster, 0, Some(2));
         request(&mut app, caster, 0, CastTarget::None);
         step(&mut app);
-        assert_eq!(slot(&app, caster, 0).unwrap().charges, Some(1));
+        assert_eq!(slot(&app, caster, 0).unwrap().cooldown.charges, Some(1));
         assert_eq!(
-            slot(&app, caster, 1).unwrap().charges,
+            slot(&app, caster, 1).unwrap().cooldown.charges,
             Some(2),
             "the other copy is untouched"
         );
 
         request(&mut app, caster, 1, CastTarget::None);
         step(&mut app);
-        assert_eq!(slot(&app, caster, 1).unwrap().charges, Some(1));
+        assert_eq!(slot(&app, caster, 1).unwrap().cooldown.charges, Some(1));
     }
 
     fn slot_set_charges(app: &mut App, caster: Entity, index: usize, charges: Option<u32>) {
         app.world_mut().get_mut::<Inventory>(caster).unwrap().slots[index]
             .as_mut()
             .unwrap()
+            .cooldown
             .charges = charges;
     }
 
@@ -2882,7 +3021,7 @@ mod tests {
         assert!(app.world().get::<Activation>(caster).is_some());
         assert!(triggers(&app).is_empty());
         assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 100.0);
-        assert_eq!(slot(&app, caster, 0).unwrap().cooldown_remaining, 0.0);
+        assert_eq!(slot(&app, caster, 0).unwrap().cooldown.remaining, 0.0);
 
         {
             let mut inventory = app.world_mut().get_mut::<Inventory>(caster).unwrap();
@@ -2894,7 +3033,7 @@ mod tests {
         let moved = slot(&app, caster, 2).unwrap();
         assert_eq!(moved.instance, instance);
         assert_eq!(
-            moved.cooldown_remaining, 5.0,
+            moved.cooldown.remaining, 5.0,
             "the cooldown lands on the copy, not the old slot"
         );
         assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 70.0);
@@ -2976,7 +3115,7 @@ mod tests {
             220.0,
             "silence does not block items"
         );
-        assert!(slot(&app, caster, 0).unwrap().cooldown_remaining > 0.0);
+        assert!(slot(&app, caster, 0).unwrap().cooldown.remaining > 0.0);
     }
 
     #[test]
@@ -3087,7 +3226,10 @@ mod tests {
 
         let (fired, health) = channel_with_status(Some(StatusEffect::mute(5.0)));
         assert_eq!(fired, vec![AbilityTrigger::OnChannelInterrupted]);
-        assert_eq!(health, 550.0, "mute interrupts and heals the smaller amount");
+        assert_eq!(
+            health, 550.0,
+            "mute interrupts and heals the smaller amount"
+        );
 
         let (fired, health) = channel_with_status(None);
         assert_eq!(fired, vec![AbilityTrigger::OnChannelEnd]);
@@ -3222,7 +3364,11 @@ mod tests {
             "fires once, at the target's last position"
         );
         assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 180.0);
-        assert_eq!(slot(&app, caster, 0).unwrap().cooldown_remaining, 12.0);
+        let remaining = slot(&app, caster, 0).unwrap().cooldown.remaining;
+        assert!(
+            (11.0..=12.0).contains(&remaining),
+            "cooldown started at fire and has ticked since, got {remaining}"
+        );
         assert_eq!(health_of(&app, caster), 510.0);
         assert_eq!(contexts.len(), 1);
         assert_eq!(contexts[0].cast_target, None);
@@ -3269,15 +3415,15 @@ mod tests {
         give(&mut app, caster, ItemId::VialOfLight);
         request(&mut app, caster, 0, CastTarget::None);
         step(&mut app);
-        assert!(slot(&app, caster, 0).unwrap().cooldown_remaining > 0.0);
-        assert_eq!(slot(&app, caster, 1).unwrap().cooldown_remaining, 0.0);
+        assert!(slot(&app, caster, 0).unwrap().cooldown.remaining > 0.0);
+        assert_eq!(slot(&app, caster, 1).unwrap().cooldown.remaining, 0.0);
         request(&mut app, caster, 0, CastTarget::None);
         step(&mut app);
-        assert_eq!(
-            slot(&app, caster, 0).unwrap().cooldown_remaining,
-            40.0,
-            "the rejected second use does not refresh or clear the cooldown"
+        let remaining = slot(&app, caster, 0).unwrap().cooldown.remaining;
+        assert!(
+            (39.0..=40.0).contains(&remaining),
+            "the rejected second use does not refresh or clear the cooldown, got {remaining}"
         );
-        assert_eq!(slot(&app, caster, 1).unwrap().cooldown_remaining, 0.0);
+        assert_eq!(slot(&app, caster, 1).unwrap().cooldown.remaining, 0.0);
     }
 }

@@ -117,6 +117,25 @@ class TriggerTableTests(unittest.TestCase):
         self.assertEqual(ABILITY_TRIGGERS["on_channel_end"], "OnChannelEnd")
 
 
+class ItemChargeTests(unittest.TestCase):
+    def test_item_charge_restore_time_rejected(self) -> None:
+        report = Report()
+        cells = {"target_type": "no_target", "target_team": "self", "max_charges": "3", "charge_restore_time": "30"}
+        spec = parse_activation_spec(row(cells), kind="item", has_active_effects=True, report=report, levels=False)
+        validate_activation(row(cells), spec, kind="item", ability_type=None, report=report)
+        errors = [e for e in report.errors if e.field == "charge_restore_time"]
+        self.assertEqual(len(errors), 1)
+        self.assertIn("do not regenerate", errors[0].message)
+
+    def test_item_charges_without_restore_time_are_fine(self) -> None:
+        report = Report()
+        cells = {"target_type": "no_target", "target_team": "self", "max_charges": "3"}
+        spec = parse_activation_spec(row(cells), kind="item", has_active_effects=True, report=report, levels=False)
+        validate_activation(row(cells), spec, kind="item", ability_type=None, report=report)
+        self.assertFalse(report.errors)
+        self.assertFalse(report.warnings)
+
+
 class ParseActivationSpecTests(unittest.TestCase):
     def test_item_without_on_use_warns_orphan_columns(self) -> None:
         report = Report()

@@ -19,8 +19,8 @@ use crate::components::{
     Health, Mana, MoveTarget, Obstacle, Team, Tower,
 };
 use crate::dimensions::{center_distance, edge_distance};
-use crate::status::StatusEffects;
 use crate::movement::{MovementPlugin, SimSet};
+use crate::status::StatusEffects;
 use crate::unit_commands::{CommandQueue, IssueCommand, UnitCommand, UnitCommandsPlugin};
 
 const DT: f32 = 1.0 / 30.0;
@@ -41,6 +41,7 @@ fn sim_app() -> App {
             Update,
             (
                 register_loadout_definitions,
+                crate::items::tick_item_cooldowns,
                 resolve_queued_activations,
                 validate_activation_requests,
                 refresh_activation_aims,
