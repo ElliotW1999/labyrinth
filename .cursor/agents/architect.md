@@ -1,7 +1,7 @@
 ---
 name: architect
 description: Analyze cross-cutting gameplay changes and design minimal reusable architecture before implementation.
-model: claude-opus-5.5
+model: claude-opus-5
 readonly: true
 ---
 
