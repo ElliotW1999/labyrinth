@@ -18,13 +18,14 @@ use super::casting::AbilityCastEvent;
 use super::catalog::AbilityDefinitions;
 use super::definition::{AbilityMechanic, AbilityTrigger, AreaCenter, AreaRadius, RingStyle};
 use super::effects::{
-    AbilityTriggerEvent, EffectSource, StatusChange, StatusEffectEvent, TriggerContext,
+    AbilityTriggerEvent, EffectSource, TriggerContext,
 };
+use crate::status::{StatusChange, StatusEffectEvent};
 use crate::combat::{ProjectileHitEvent, ProjectilePayload, SpawnProjectileEvent, flat_distance};
 use crate::components::{
     AbilityId, AttackMoveOrder, AttackTarget, CombatStats, Health, MoveTarget, Team,
 };
-use crate::items::StatusEffect;
+use crate::status::StatusEffect;
 use crate::resources::SharedAssets;
 
 /// Everything a mechanic or custom behavior needs to know about one cast.
@@ -45,19 +46,17 @@ pub struct CastContext {
 impl CastContext {
     /// A trigger fired by this cast; mechanics fill in who was involved.
     pub fn trigger(&self, trigger: AbilityTrigger, point: Vec3) -> TriggerContext {
-        TriggerContext {
+        TriggerContext::new(
             trigger,
-            caster: self.caster,
-            team: self.team,
-            source: EffectSource::Ability(self.ability),
-            rank: self.rank,
-            origin: self.origin,
-            aim: self.aim,
-            point,
-            cast_target: self.unit_target,
-            trigger_unit: None,
-            affected_units: Vec::new(),
-        }
+            EffectSource::Ability(self.ability),
+            self.caster,
+            self.team,
+            self.rank,
+            self.origin,
+            self.aim,
+        )
+        .at(point)
+        .cast_target(self.unit_target)
     }
 }
 
@@ -271,24 +270,28 @@ pub fn projectile_hit_triggers(
 ) {
     for hit in hits.read() {
         let payload = hit.payload;
-        triggers.write(AbilityTriggerEvent(TriggerContext {
-            trigger: if hit.primary.is_some() {
-                AbilityTrigger::OnProjectileHit
-            } else {
-                AbilityTrigger::OnImpact
-            },
-            caster: payload.caster,
-            team: hit.team,
-            source: EffectSource::Ability(payload.ability),
-            rank: payload.rank,
-            origin: casters
-                .get(payload.caster)
-                .map_or(hit.impact, |tf| tf.translation),
-            aim: payload.aim,
-            point: hit.impact,
-            cast_target: payload.cast_target,
-            trigger_unit: hit.primary,
-            affected_units: hit.splashed.clone(),
-        }));
+        let trigger = if hit.primary.is_some() {
+            AbilityTrigger::OnProjectileHit
+        } else {
+            AbilityTrigger::OnImpact
+        };
+        let origin = casters
+            .get(payload.caster)
+            .map_or(hit.impact, |tf| tf.translation);
+        triggers.write(AbilityTriggerEvent(
+            TriggerContext::new(
+                trigger,
+                EffectSource::Ability(payload.ability),
+                payload.caster,
+                hit.team,
+                payload.rank,
+                origin,
+                payload.aim,
+            )
+            .at(hit.impact)
+            .cast_target(payload.cast_target)
+            .trigger_unit(hit.primary)
+            .affected(hit.splashed.clone()),
+        ));
     }
 }

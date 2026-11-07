@@ -15,7 +15,8 @@ use crate::components::{
     CombatStats, Health, Mana, MoveTarget, Team,
 };
 use crate::dimensions::bounds_of;
-use crate::items::{Inventory, StatusEffects, commit_item, item_action_spec};
+use crate::items::{Inventory, commit_item, item_action_spec};
+use crate::status::StatusEffects;
 
 /// Resolves an [`ActionSource`] to its [`ActionSpec`] and commits it, delegating the
 /// source-specific rules to the owning layer.
@@ -312,6 +313,37 @@ pub fn resolve_queued_activations(
         commands
             .entity(caster)
             .remove::<(QueuedActivation, MoveTarget)>();
+    }
+}
+
+/// Keep the aim of a cast-point activation on its unit target.
+///
+/// While the target lives, `aim` follows it. If it dies or despawns before the action
+/// fires, the target becomes a point at the last known position and the action still
+/// fires there, with costs paid; it is never cancelled for that reason. (The queued
+/// walk-into-range path in [`resolve_queued_activations`] differs: it drops unit-only
+/// casts whose target died before the caster got in range, since nothing has been paid
+/// or started yet.)
+///
+/// Only death or despawn stops the tracking. A unit that turns invisible or untargetable
+/// is still followed; revisit that if fog-based targeting is added.
+pub fn refresh_activation_aims(
+    mut activations: Query<&mut Activation>,
+    units: Query<(&Transform, &Health)>,
+) {
+    for mut activation in &mut activations {
+        if activation.fired {
+            continue;
+        }
+        let CastTarget::Unit(entity) = activation.target else {
+            continue;
+        };
+        match units.get(entity) {
+            Ok((transform, health)) if health.is_alive() => {
+                activation.aim = transform.translation;
+            }
+            _ => activation.target = CastTarget::Point(activation.aim),
+        }
     }
 }
 

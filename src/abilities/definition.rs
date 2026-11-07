@@ -6,7 +6,7 @@ use bevy::prelude::Entity;
 
 use crate::components::AbilityId;
 use crate::components::DamageType;
-use crate::items::{DispelType, StatusEffect, StatusKind};
+use crate::status::{DispelType, StatusEffect, StatusKind};
 
 /// A value that scales with ability level: `clamp(base + per_rank × rank, min, max)`,
 /// or an explicit per-level table (`75|150|225|300` in the generator CSVs).
@@ -116,8 +116,16 @@ pub enum AbilityTrigger {
     /// A projectile ended without striking a unit (ground impact or lost target).
     OnImpact,
     OnChannelTick,
+    /// A channel ran its full time. A channel cut short by a disable fires
+    /// [`Self::OnChannelInterrupted`] instead; a new order cancels silently.
     OnChannelEnd,
+    /// A channel ended early because the caster was disabled.
+    OnChannelInterrupted,
     OnExpire,
+    /// Held while a toggle ability is on. Only `ApplyStatus` entries are read: the
+    /// upkeep system applies them as permanent statuses when the toggle turns on and
+    /// removes them when it turns off.
+    WhileToggled,
     /// Item stat bonuses held while the item is owned (applied on purchase, not resolved).
     Passive,
     /// An item was activated from the inventory.
@@ -404,7 +412,7 @@ pub enum AbilityEffect {
     /// Remove every status of `kind` (reverting their stat modifiers).
     Dispel {
         kind: StatusKind,
-        strength: crate::items::DispelStrength,
+        strength: crate::status::DispelStrength,
     },
     /// Remove statuses with this id (e.g. `"stun"`, `"slow"`).
     RemoveStatus {
@@ -494,6 +502,8 @@ pub struct AbilityDefinition {
     pub mana_cost: RankValue,
     /// Seconds the caster channels after the cast point (`0` = not channelled).
     pub channel_time: f32,
+    /// Mana drained per second while a toggle ability is on.
+    pub toggle_mana_per_sec: RankValue,
     /// Charge-based abilities: maximum stored charges and seconds to restore one.
     pub charges: Option<(u32, f32)>,
     pub description: &'static str,
@@ -522,6 +532,7 @@ impl AbilityDefinition {
             cooldown: RankValue::ZERO,
             mana_cost: RankValue::ZERO,
             channel_time: 0.0,
+            toggle_mana_per_sec: RankValue::ZERO,
             charges: None,
             description: "",
             mechanics: Vec::new(),
@@ -550,6 +561,12 @@ impl AbilityDefinition {
     pub fn timing(mut self, cast_time: f32, backswing: f32) -> Self {
         self.cast_time = cast_time.clamp(0.0, 0.5);
         self.backswing = backswing.clamp(0.0, 0.5);
+        self
+    }
+
+    /// Mana per second a toggle ability drains while on.
+    pub fn toggle_upkeep(mut self, mana_per_sec: RankValue) -> Self {
+        self.toggle_mana_per_sec = mana_per_sec;
         self
     }
 

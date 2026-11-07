@@ -2,7 +2,7 @@
 
 use super::ActionError;
 use crate::components::Mana;
-use crate::items::StatusEffects;
+use crate::status::StatusEffects;
 
 /// What one activation spends when it commits.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -70,9 +70,10 @@ impl ActionCooldown {
 /// Which statuses stop the caster from starting (or continuing) an action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DisableRule {
-    /// Abilities: silence, stun, sleep, or mute (hex applies mute).
+    /// Abilities: silence, stun or sleep (hex counts as silence). Mute alone does not
+    /// block abilities.
     SilenceOrStun,
-    /// Items: stun or mute (silence does not block items).
+    /// Items: stun or mute. Silence and sleep do not block items.
     MuteOrStun,
 }
 

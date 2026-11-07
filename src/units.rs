@@ -8,7 +8,8 @@ use crate::components::{
 };
 use crate::dimensions::UnitDimensions;
 use crate::heroes::{HeroId, HeroKind};
-use crate::items::{Inventory, StatusEffects};
+use crate::items::Inventory;
+use crate::status::StatusEffects;
 use crate::net::{NetworkId, NetworkedHero};
 use crate::resources::SharedAssets;
 use crate::scale;
@@ -75,7 +76,6 @@ pub fn spawn_hero_entity(
         crate::unit_commands::CommandQueue::default(),
         crate::abilities::passive::AbilityPassiveSync::default(),
         crate::abilities::passive::AppliedAbilityPassives::default(),
-        crate::abilities::passive::ToggleStatBonuses::default(),
     ));
     if local {
         entity.insert(PlayerHero);
@@ -138,7 +138,7 @@ pub fn spawn_creep(
         dimensions.components(),
         GoldBounty(35),
         XpBounty(45),
-        crate::items::StatusEffects::default(),
+        crate::status::StatusEffects::default(),
         crate::ai::LaneFollower {
             waypoints: crate::map::lane_path(team, lane),
             index: 0,
@@ -169,7 +169,7 @@ pub fn spawn_training_dummy(commands: &mut Commands, assets: &SharedAssets) {
             UnitDimensions::MELEE_CREEP.components(),
             GoldBounty(0),
             XpBounty(0),
-            crate::items::StatusEffects::default(),
+            crate::status::StatusEffects::default(),
         ))
         .id();
     attach_mobile_unit_details(commands, id, assets, Team::Dire, false);

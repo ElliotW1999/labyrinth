@@ -13,8 +13,9 @@ use crate::components::{
 use crate::heroes::HeroKind;
 use crate::items::{
     Inventory, InventoryContextMenu, ItemId, ItemShop, PurchaseItemRequest, SellItemRequest,
-    ShopTab, ShopUiState, ShopUndoLog, StatusEffects, StatusKind, UndoShopRequest,
+    ShopTab, ShopUiState, ShopUndoLog, UndoShopRequest,
 };
+use crate::status::{StatusEffects, StatusKind};
 use crate::menu::MainMenuState;
 use crate::net::NetStatus;
 use crate::resources::MatchConfig;
@@ -1829,8 +1830,8 @@ fn refresh_inventory_bar(
 
     for (meta, mut text) in &mut cds {
         if let Some(item) = inv.slots.get(meta.index).and_then(|s| s.as_ref()) {
-            if item.cooldown_remaining > 0.05 {
-                *text = Text::new(format!("{:.0}s", item.cooldown_remaining.ceil()));
+            if item.cooldown.remaining > 0.05 {
+                *text = Text::new(format!("{:.0}s", item.cooldown.remaining.ceil()));
             } else if item.id.has_active() {
                 *text = Text::new("rdy");
             } else {
@@ -2192,8 +2193,8 @@ fn update_item_tooltips(
                         "{}\nHotkey: {}\n{}",
                         item.id.tooltip_body(),
                         hotkey,
-                        if item.cooldown_remaining > 0.05 {
-                            format!("Cooldown: {:.0}s", item.cooldown_remaining.ceil())
+                        if item.cooldown.remaining > 0.05 {
+                            format!("Cooldown: {:.0}s", item.cooldown.remaining.ceil())
                         } else if item.id.has_active() {
                             "Ready".into()
                         } else {

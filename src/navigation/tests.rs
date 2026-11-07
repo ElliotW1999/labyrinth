@@ -11,15 +11,16 @@ use crate::abilities::casting::{AbilityCastEvent, emit_ability_casts};
 use crate::abilities::catalog::{AbilityDefinitions, register_loadout_definitions};
 use crate::actions::{
     ActionChannelEndEvent, ActionFiredEvent, Activation, ActivationRequest,
-    resolve_queued_activations, tick_activations, validate_activation_requests,
+    refresh_activation_aims, resolve_queued_activations, tick_activations,
+    validate_activation_requests,
 };
 use crate::components::{
     AbilityId, AbilityLoadout, AttackTarget, BoundRadius, CastTarget, CollisionRadius, CombatStats,
     Health, Mana, MoveTarget, Obstacle, Team, Tower,
 };
 use crate::dimensions::{center_distance, edge_distance};
-use crate::items::StatusEffects;
 use crate::movement::{MovementPlugin, SimSet};
+use crate::status::StatusEffects;
 use crate::unit_commands::{CommandQueue, IssueCommand, UnitCommand, UnitCommandsPlugin};
 
 const DT: f32 = 1.0 / 30.0;
@@ -40,8 +41,10 @@ fn sim_app() -> App {
             Update,
             (
                 register_loadout_definitions,
+                crate::items::tick_item_cooldowns,
                 resolve_queued_activations,
                 validate_activation_requests,
+                refresh_activation_aims,
                 tick_activations,
                 emit_ability_casts,
             )
@@ -732,4 +735,120 @@ fn non_navigable_move_resolves_to_nearby_ground() {
     let p = pos(app.world(), hero);
     assert!(tree_gap(p, Vec2::new(600.0, 0.0), HERO_R) >= -0.5);
     assert!(center_distance(p, Vec3::new(600.0, 0.0, 10.0)) < 64.0 + HERO_R + 20.0);
+}
+
+/// A channelled test ability in slot 3 (Bulwark), learned at rank 1.
+fn channelling_hero(app: &mut App) -> Entity {
+    use crate::abilities::definition::{
+        AbilityDefinition, AbilityEffect, AbilityTrigger, EffectScaling, EffectTarget, RankValue,
+    };
+    let def = AbilityDefinition::new(AbilityId::Bulwark)
+        .costs(RankValue::fixed(8.0), RankValue::fixed(100.0))
+        .timing(0.1, 0.0)
+        .channel(1.0)
+        .on(
+            AbilityTrigger::OnChannelEnd,
+            EffectTarget::Caster,
+            AbilityEffect::Heal {
+                amount: RankValue::fixed(1.0),
+                scaling: EffectScaling::None,
+            },
+        );
+    app.world_mut()
+        .resource_mut::<AbilityDefinitions>()
+        .insert(def);
+    let hero = spawn_hero(app, Vec3::ZERO);
+    app.world_mut()
+        .get_mut::<AbilityLoadout>(hero)
+        .unwrap()
+        .slots[3]
+        .rank = 1;
+    app.world_mut().write_message(ActivationRequest::ability(
+        hero,
+        3,
+        CastTarget::None,
+    ));
+    for _ in 0..10 {
+        step(app);
+    }
+    assert!(
+        app.world().get::<Activation>(hero).is_some_and(|a| a.fired),
+        "the hero is channelling"
+    );
+    hero
+}
+
+fn channel_end_events(app: &App) -> Vec<bool> {
+    app.world()
+        .resource::<Messages<ActionChannelEndEvent>>()
+        .iter_current_update_messages()
+        .map(|end| end.completed)
+        .collect()
+}
+
+#[test]
+fn real_orders_cancel_a_channel_without_any_end_event() {
+    let orders = [
+        UnitCommand::Move {
+            destination: Vec3::new(300.0, 0.0, 0.0),
+        },
+        UnitCommand::AttackMove {
+            destination: Vec3::new(300.0, 0.0, 0.0),
+        },
+        UnitCommand::Stop,
+    ];
+    for order in orders {
+        let mut app = sim_app();
+        let hero = channelling_hero(&mut app);
+        issue(&mut app, hero, order, false);
+        let mut ends = Vec::new();
+        for _ in 0..60 {
+            step(&mut app);
+            ends.extend(channel_end_events(&app));
+        }
+        assert!(ends.is_empty(), "{order:?} must cancel silently, got {ends:?}");
+        assert!(app.world().get::<Activation>(hero).is_none(), "{order:?}");
+    }
+}
+
+#[test]
+fn an_attack_order_cancels_a_channel_without_any_end_event() {
+    let mut app = sim_app();
+    let hero = channelling_hero(&mut app);
+    let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(120.0, 0.0, 0.0), CREEP_R, 30.0, 0.0, 0.0);
+    issue(&mut app, hero, UnitCommand::Attack { target: enemy }, false);
+    let mut ends = Vec::new();
+    for _ in 0..60 {
+        step(&mut app);
+        ends.extend(channel_end_events(&app));
+    }
+    assert!(ends.is_empty(), "got {ends:?}");
+    assert!(app.world().get::<Activation>(hero).is_none());
+}
+
+#[test]
+fn an_uninterrupted_or_stunned_channel_does_emit_an_end_event() {
+    let mut app = sim_app();
+    let hero = channelling_hero(&mut app);
+    let mut ends = Vec::new();
+    for _ in 0..60 {
+        step(&mut app);
+        ends.extend(channel_end_events(&app));
+    }
+    assert_eq!(ends, vec![true]);
+
+    let mut app = sim_app();
+    let hero2 = channelling_hero(&mut app);
+    app.world_mut()
+        .get_mut::<StatusEffects>(hero2)
+        .unwrap()
+        .effects
+        .push(crate::status::StatusEffect::stunned(5.0));
+    let mut ends = Vec::new();
+    for _ in 0..60 {
+        step(&mut app);
+        ends.extend(channel_end_events(&app));
+    }
+    assert_eq!(ends, vec![false]);
+    let _ = hero;
 }

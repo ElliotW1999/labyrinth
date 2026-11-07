@@ -4,3 +4,4 @@ skewer,Skewer,E,active,point,enemy,900,,0.25,,20|18|16|14,80,,,none,,Charges for
 frost_lance,Frost Lance,W,active,unit,enemy,600,150,0.2,,6,70|80|90|100,2,12,targeted,1100,Homing lance; splashes and chills enemies near the target
 war_cry,War Cry,R,active,self,self,,400,0.1,,60|50|40,100|150|200,,,none,,Empowers the caster and nearby allies and knocks enemies back
 blink,Blink,Q,active,point,enemy,800,,0,,15,75,,,none,,Teleport to the target point
+mending_beam,Mending Beam,E,active,self,self,,,0.1,2,25,60,,,none,,Channel to heal; an interrupted channel heals less

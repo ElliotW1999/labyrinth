@@ -18,17 +18,13 @@ use super::definition::{
     AbilityEffect, AbilityEffectEntry, AbilityTrigger, AreaCenter, AreaRadius, Attribute,
     EffectScaling, EffectTarget, StatusBuildContext,
 };
-use crate::actions::team_allows;
+use crate::actions::{ActionId, team_allows};
 use crate::combat::DamageEvent;
-use crate::components::{
-    AbilityId, BoundRadius, CombatStats, Health, HeroAttributes, Mana, ShieldPool, Team,
-};
+use crate::components::{AbilityId, BoundRadius, CombatStats, Health, HeroAttributes, Mana, Team};
 use crate::dimensions::{area_contains, bounds_of};
 use crate::displacement::DisplacementEvent;
-use crate::items::{
-    DispelStrength, ItemId, StatusEffect, StatusEffects, StatusKind, apply_status,
-    status_dispel_matches, subtract_status_stat_delta,
-};
+use crate::items::ItemId;
+use crate::status::{StatusChange, StatusEffectEvent};
 use crate::teleport::TeleportEvent;
 
 /// What owns the effect entries a trigger resolves against.
@@ -63,6 +59,55 @@ pub struct TriggerContext {
     pub affected_units: Vec<Entity>,
 }
 
+impl TriggerContext {
+    /// The one constructor for trigger contexts. `point` starts at `aim`; every optional
+    /// part starts empty. Fill the rest with the chainable setters.
+    pub fn new(
+        trigger: AbilityTrigger,
+        source: EffectSource,
+        caster: Entity,
+        team: Team,
+        rank: u32,
+        origin: Vec3,
+        aim: Vec3,
+    ) -> Self {
+        Self {
+            trigger,
+            caster,
+            team,
+            source,
+            rank,
+            origin,
+            aim,
+            point: aim,
+            cast_target: None,
+            trigger_unit: None,
+            affected_units: Vec::new(),
+        }
+    }
+
+    /// Where the trigger happened, when that is not the aim point.
+    pub fn at(mut self, point: Vec3) -> Self {
+        self.point = point;
+        self
+    }
+
+    pub fn cast_target(mut self, cast_target: Option<Entity>) -> Self {
+        self.cast_target = cast_target;
+        self
+    }
+
+    pub fn trigger_unit(mut self, trigger_unit: Option<Entity>) -> Self {
+        self.trigger_unit = trigger_unit;
+        self
+    }
+
+    pub fn affected(mut self, affected_units: Vec<Entity>) -> Self {
+        self.affected_units = affected_units;
+        self
+    }
+}
+
 #[derive(Message, Debug, Clone, PartialEq)]
 pub struct AbilityTriggerEvent(pub TriggerContext);
 
@@ -77,26 +122,6 @@ pub struct HealEvent {
 pub struct ManaRestoreEvent {
     pub target: Entity,
     pub amount: f32,
-}
-
-#[derive(Debug, Clone)]
-pub enum StatusChange {
-    Apply(StatusEffect),
-    Dispel {
-        kind: StatusKind,
-        strength: DispelStrength,
-    },
-    Remove(&'static str),
-}
-
-/// Single entry point for adding/removing statuses so debuff immunity and stat
-/// modifiers are handled consistently.
-#[derive(Message, Debug, Clone)]
-pub struct StatusEffectEvent {
-    #[allow(dead_code)]
-    pub source: Option<Entity>,
-    pub target: Entity,
-    pub change: StatusChange,
 }
 
 /// Input for an [`AbilityEffect::Custom`] system.
@@ -430,6 +455,48 @@ impl EffectRunner<'_, '_> {
     }
 }
 
+impl From<ActionId> for EffectSource {
+    fn from(action: ActionId) -> Self {
+        match action {
+            ActionId::Ability(id) => Self::Ability(id),
+            ActionId::Item { item, .. } => Self::Item(item),
+        }
+    }
+}
+
+/// What a trigger needs from its source, whether an ability or an item.
+pub struct SourceParams<'a> {
+    pub entries: &'a [AbilityEffectEntry],
+    /// Radius an `AreaRadius::Ability` area resolves to.
+    pub aoe_radius: f32,
+    /// Range that `EffectScaling::DistanceFromCaster` falls off over.
+    pub cast_range: f32,
+}
+
+/// One lookup for the effect entries, area radius and cast range of any [`EffectSource`].
+/// `None` when an ability has no registered definition.
+pub fn source_params<'a>(
+    source: EffectSource,
+    defs: &'a AbilityDefinitions,
+    rank: u32,
+) -> Option<SourceParams<'a>> {
+    match source {
+        EffectSource::Ability(id) => defs.get(id).map(|def| SourceParams {
+            entries: &def.effects,
+            aoe_radius: def.aoe_radius.at(rank),
+            cast_range: def.cast_range.at(rank),
+        }),
+        EffectSource::Item(id) => {
+            let def = id.definition();
+            Some(SourceParams {
+                entries: def.effects,
+                aoe_radius: def.aoe_radius(),
+                cast_range: def.activation.cast_range,
+            })
+        }
+    }
+}
+
 /// Runs every effect entry whose trigger matches, against the trigger's context.
 /// Nothing here depends on which ability or item fired.
 pub fn resolve_ability_triggers(
@@ -438,20 +505,16 @@ pub fn resolve_ability_triggers(
     mut runner: EffectRunner,
 ) {
     for AbilityTriggerEvent(ctx) in triggers.read() {
-        let (entries, aoe_radius): (&[AbilityEffectEntry], f32) = match ctx.source {
-            EffectSource::Ability(id) => match defs.get(id) {
-                Some(def) => (&def.effects, def.aoe_radius.at(ctx.rank)),
-                None => continue,
-            },
-            EffectSource::Item(id) => (id.definition().effects, 0.0),
+        let Some(params) = source_params(ctx.source, &defs, ctx.rank) else {
+            continue;
         };
-        let cast_range = match ctx.source {
-            EffectSource::Ability(id) => defs.get(id).map_or(0.0, |d| d.cast_range.at(ctx.rank)),
-            EffectSource::Item(_) => 0.0,
-        };
-        for entry in entries.iter().filter(|entry| entry.trigger == ctx.trigger) {
-            let targets = runner.targets(ctx, entry.target, aoe_radius);
-            runner.execute(ctx, &entry.effect, targets, cast_range);
+        for entry in params
+            .entries
+            .iter()
+            .filter(|entry| entry.trigger == ctx.trigger)
+        {
+            let targets = runner.targets(ctx, entry.target, params.aoe_radius);
+            runner.execute(ctx, &entry.effect, targets, params.cast_range);
         }
     }
 }
@@ -475,78 +538,3 @@ pub fn apply_mana_restore_events(
     }
 }
 
-fn remove_statuses(
-    statuses: &mut StatusEffects,
-    stats: &mut CombatStats,
-    agility: f32,
-    matches: impl Fn(&StatusEffect) -> bool,
-) {
-    statuses.effects.retain(|effect| {
-        if !matches(effect) {
-            return true;
-        }
-        subtract_status_stat_delta(effect, stats, agility);
-        false
-    });
-}
-
-pub fn apply_status_effect_events(
-    mut commands: Commands,
-    mut events: MessageReader<StatusEffectEvent>,
-    mut units: Query<(
-        Entity,
-        &mut StatusEffects,
-        &mut CombatStats,
-        Option<&mut ShieldPool>,
-        Option<&HeroAttributes>,
-    )>,
-) {
-    for event in events.read() {
-        let Ok((entity, mut statuses, mut stats, mut shield, attrs)) = units.get_mut(event.target)
-        else {
-            continue;
-        };
-        let agility = attrs.map(|a| a.agility).unwrap_or(0.0);
-        match &event.change {
-            StatusChange::Apply(effect) => {
-                if effect.debuff_immune {
-                    remove_statuses(&mut statuses, &mut stats, agility, |e| {
-                        e.kind == StatusKind::Debuff
-                            && status_dispel_matches(e, StatusKind::Debuff, DispelStrength::Strong)
-                    });
-                }
-                let refresh_shield = effect.shield_amount > 0.0;
-                let old_shield = if refresh_shield {
-                    statuses
-                        .effects
-                        .iter()
-                        .find(|e| e.id == effect.id)
-                        .map(|e| e.shield_amount)
-                        .unwrap_or(0.0)
-                } else {
-                    0.0
-                };
-                let _ = apply_status(&mut statuses, &mut stats, effect.clone(), agility);
-                if effect.shield_amount > 0.0 {
-                    if let Some(pool) = shield.as_deref_mut() {
-                        pool.amount = (pool.amount - old_shield).max(0.0) + effect.shield_amount;
-                    } else {
-                        commands
-                            .entity(entity)
-                            .insert(ShieldPool {
-                                amount: effect.shield_amount,
-                            });
-                    }
-                }
-            }
-            StatusChange::Dispel { kind, strength } => {
-                remove_statuses(&mut statuses, &mut stats, agility, |e| {
-                    status_dispel_matches(e, *kind, *strength)
-                });
-            }
-            StatusChange::Remove(id) => {
-                remove_statuses(&mut statuses, &mut stats, agility, |e| e.id == *id);
-            }
-        }
-    }
-}

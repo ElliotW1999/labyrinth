@@ -6,14 +6,13 @@
 //!   → actions pipeline: cooldown / charges, mana, targeting, range, cast point, channel
 //!   → commit_ability: cooldown, charge, toggle state
 //!   → ActionFiredEvent → emit_ability_casts → AbilityCastEvent (consumed by `mechanics`)
-//!   → ActionChannelEndEvent → action_channel_end_triggers → OnChannelEnd trigger
+//!   → ActionChannelEndEvent → action_channel_end_triggers → OnChannelEnd / OnChannelInterrupted trigger
 //! ```
 
 use bevy::prelude::*;
 
 use super::definition::{AbilityBehavior, AbilityDefinition, AbilityTrigger};
-use super::effects::{AbilityTriggerEvent, EffectSource, TriggerContext};
-use crate::items::item_channel_end_context;
+use super::effects::{AbilityTriggerEvent, TriggerContext};
 use crate::actions::{
     ActionChannelEndEvent, ActionCost, ActionFiredEvent, ActionId, ActionSource, ActionSpec,
     DisableRule,
@@ -98,8 +97,9 @@ pub fn emit_ability_casts(
     }
 }
 
-/// `OnChannelEnd` for channelled abilities and active items, whether the channel
-/// completed or the caster was disabled.
+/// Channel triggers for channelled abilities and active items: `OnChannelEnd` when the
+/// channel completed, `OnChannelInterrupted` when the caster was disabled. Cancelling
+/// with a new order emits no end event, so neither trigger fires.
 pub fn action_channel_end_triggers(
     mut ends: MessageReader<ActionChannelEndEvent>,
     casters: Query<(&Transform, &Team)>,
@@ -109,28 +109,21 @@ pub fn action_channel_end_triggers(
         let Ok((transform, team)) = casters.get(end.caster) else {
             continue;
         };
-        let ctx = match end.action {
-            ActionId::Ability(ability) => TriggerContext {
-                trigger: AbilityTrigger::OnChannelEnd,
-                caster: end.caster,
-                team: *team,
-                source: EffectSource::Ability(ability),
-                rank: end.level,
-                origin: transform.translation,
-                aim: end.aim,
-                point: end.aim,
-                cast_target: end.target.unit(),
-                trigger_unit: None,
-                affected_units: Vec::new(),
-            },
-            ActionId::Item { item, .. } => item_channel_end_context(
-                item,
-                end.caster,
-                *team,
-                transform.translation,
-                end.aim,
-            ),
+        let trigger = if end.completed {
+            AbilityTrigger::OnChannelEnd
+        } else {
+            AbilityTrigger::OnChannelInterrupted
         };
+        let ctx = TriggerContext::new(
+            trigger,
+            end.action.into(),
+            end.caster,
+            *team,
+            end.level,
+            transform.translation,
+            end.aim,
+        )
+        .cast_target(end.target.unit());
         triggers.write(AbilityTriggerEvent(ctx));
     }
 }
@@ -143,7 +136,7 @@ mod tests {
         ActionCooldown, ActionError, CasterInfo, UnitInfo, check_ready, resolve_target,
     };
     use crate::components::Mana;
-    use crate::items::StatusEffects;
+    use crate::status::StatusEffects;
 
     #[derive(Debug, PartialEq)]
     enum Unusable {

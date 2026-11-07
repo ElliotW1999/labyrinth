@@ -3,11 +3,12 @@
 //! Per-rank numbers are separate spans so the HUD can paint learned ranks yellow.
 
 use super::definition::{
-    AbilityBehavior, AbilityDefinition, AbilityEffect, AbilityMechanic, AbilityTrigger, Attribute,
-    DisplacementKind, EffectScaling, RankValue, StatusSpec, TargetTeam, TargetType,
+    AbilityBehavior, AbilityDefinition, AbilityEffect, AbilityEffectEntry, AbilityMechanic,
+    AbilityTrigger, AreaRadius, Attribute, DisplacementKind, EffectScaling, EffectTarget,
+    RankValue, StatusSpec, TargetTeam, TargetType,
 };
 use crate::components::DamageType;
-use crate::items::StatusKind;
+use crate::status::StatusKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TipTone {
@@ -64,10 +65,16 @@ pub fn ability_tooltip_bits(def: &AbilityDefinition, learned_rank: u32) -> Vec<T
     }
 
     for entry in &def.effects {
-        for (label, value) in effect_rows(entry.trigger, &entry.effect) {
-            push_value(&mut bits, &label, value, max_rank, learned_rank);
+        let tag = trigger_tag(entry.trigger);
+        let (rows, notes) = describe_effect(entry);
+        for row in rows {
+            let label = format!("{} ({tag})", row.label);
+            match row.value {
+                Some(value) => push_value(&mut bits, &label, value, max_rank, learned_rank),
+                None => plain(&mut bits, format!("{label}\n")),
+            }
         }
-        for note in effect_notes(entry.trigger, &entry.effect) {
+        for note in notes {
             plain(&mut bits, format!("{note}\n"));
         }
     }
@@ -167,7 +174,7 @@ fn plain(bits: &mut Vec<TipBit>, text: impl Into<String>) {
     });
 }
 
-fn fmt_num(value: f32) -> String {
+pub(crate) fn fmt_num(value: f32) -> String {
     if !value.is_finite() {
         return "0".into();
     }
@@ -178,7 +185,7 @@ fn fmt_num(value: f32) -> String {
     }
 }
 
-fn trigger_tag(trigger: AbilityTrigger) -> &'static str {
+pub(crate) fn trigger_tag(trigger: AbilityTrigger) -> &'static str {
     match trigger {
         AbilityTrigger::OnCast => "on cast",
         AbilityTrigger::OnProjectileHit => "on hit",
@@ -186,7 +193,9 @@ fn trigger_tag(trigger: AbilityTrigger) -> &'static str {
         AbilityTrigger::OnImpact => "on impact",
         AbilityTrigger::OnChannelTick => "while channelling",
         AbilityTrigger::OnChannelEnd => "channel end",
+        AbilityTrigger::OnChannelInterrupted => "channel interrupted",
         AbilityTrigger::OnExpire => "on expire",
+        AbilityTrigger::WhileToggled => "while toggled",
         AbilityTrigger::Passive => "passive",
         AbilityTrigger::OnUse => "use",
         AbilityTrigger::OnAttack => "on attack",
@@ -198,22 +207,82 @@ fn trigger_tag(trigger: AbilityTrigger) -> &'static str {
     }
 }
 
-fn effect_rows(trigger: AbilityTrigger, effect: &AbilityEffect) -> Vec<(String, RankValue)> {
-    let tag = trigger_tag(trigger);
+/// One line of an effect's description: a label with no trigger tag, and the per-rank
+/// number when it has one ("Physical damage" / 80..., "Teleports to the target point" / none).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct EffectRow {
+    pub label: String,
+    pub value: Option<RankValue>,
+    /// The value is a duration in seconds (item tooltips print a unit; ability tooltips
+    /// keep their bare numbers).
+    pub seconds: bool,
+}
+
+fn row(label: impl Into<String>, value: RankValue) -> EffectRow {
+    EffectRow {
+        label: label.into(),
+        value: Some(value),
+        seconds: false,
+    }
+}
+
+fn seconds_row(label: impl Into<String>, value: RankValue) -> EffectRow {
+    EffectRow {
+        seconds: true,
+        ..row(label, value)
+    }
+}
+
+fn text_row(label: impl Into<String>) -> EffectRow {
+    EffectRow {
+        label: label.into(),
+        value: None,
+        seconds: false,
+    }
+}
+
+/// The one description of an effect entry, shared by ability and item tooltips. Rows
+/// carry no trigger tag (the caller adds "(on cast)" or "Use:"); the second list holds
+/// untagged notes such as scaling.
+pub(crate) fn describe_effect(entry: &AbilityEffectEntry) -> (Vec<EffectRow>, Vec<String>) {
+    let mut rows = effect_rows(&entry.effect);
+    rows.extend(effect_text_rows(&entry.effect));
+    let notes = match entry.effect {
+        AbilityEffect::Damage { scaling, .. } | AbilityEffect::Heal { scaling, .. } => {
+            scaling_note(scaling).into_iter().collect()
+        }
+        _ => Vec::new(),
+    };
+    (rows, notes)
+}
+
+/// Where an area effect lands, for item tooltips ("enemies within 143").
+pub(crate) fn area_note(target: &EffectTarget) -> Option<String> {
+    let EffectTarget::UnitsInRadius { radius, team, .. } = target else {
+        return None;
+    };
+    let who = match team {
+        TargetTeam::Enemy => "enemies",
+        TargetTeam::Ally => "allies",
+        TargetTeam::Any => "units",
+        TargetTeam::SelfOnly => "self",
+    };
+    Some(match radius {
+        AreaRadius::Ability => format!("{who} in the area"),
+        AreaRadius::Fixed(value) => format!("{who} within {}", fmt_num(value.at(1))),
+    })
+}
+
+fn effect_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
     match *effect {
         AbilityEffect::Damage {
             amount,
             damage_type,
             ..
-        } => {
-            vec![(
-                format!("{} damage ({tag})", damage_name(damage_type)),
-                amount,
-            )]
-        }
-        AbilityEffect::Heal { amount, .. } => vec![(format!("Heal ({tag})"), amount)],
-        AbilityEffect::RestoreMana { amount } => vec![(format!("Mana restore ({tag})"), amount)],
-        AbilityEffect::ApplyStatus { status, duration } => status_rows(tag, status, duration),
+        } => vec![row(format!("{} damage", damage_name(damage_type)), amount)],
+        AbilityEffect::Heal { amount, .. } => vec![row("Heal", amount)],
+        AbilityEffect::RestoreMana { amount } => vec![row("Mana restore", amount)],
+        AbilityEffect::ApplyStatus { status, duration } => status_rows(status, duration),
         AbilityEffect::Displace {
             kind,
             distance,
@@ -225,16 +294,12 @@ fn effect_rows(trigger: AbilityTrigger, effect: &AbilityEffect) -> Vec<(String, 
             };
             let mut rows = Vec::new();
             if let Some(distance) = distance {
-                rows.push((format!("{name} distance ({tag})"), distance));
-            } else {
-                rows.push((format!("{name} ({tag})"), RankValue::ZERO));
+                rows.push(row(format!("{name} distance"), distance));
             }
-            rows.push((format!("{name} duration ({tag})"), duration));
+            rows.push(seconds_row(format!("{name} duration"), duration));
             rows
         }
-        AbilityEffect::PassiveStat { stat, amount } => {
-            vec![(format!("{} ({tag})", passive_name(stat)), amount)]
-        }
+        AbilityEffect::PassiveStat { stat, amount } => vec![row(passive_name(stat), amount)],
         AbilityEffect::Custom {
             id,
             value,
@@ -243,13 +308,13 @@ fn effect_rows(trigger: AbilityTrigger, effect: &AbilityEffect) -> Vec<(String, 
         } => {
             let mut rows = Vec::new();
             if value != RankValue::ZERO {
-                rows.push((format!("{id} ({tag})"), value));
+                rows.push(row(id, value));
             }
             if amount != RankValue::ZERO {
-                rows.push((format!("{id} amount ({tag})"), amount));
+                rows.push(row(format!("{id} amount"), amount));
             }
             if duration != RankValue::ZERO {
-                rows.push((format!("{id} duration ({tag})"), duration));
+                rows.push(seconds_row(format!("{id} duration"), duration));
             }
             rows
         }
@@ -259,12 +324,14 @@ fn effect_rows(trigger: AbilityTrigger, effect: &AbilityEffect) -> Vec<(String, 
     }
 }
 
-fn status_rows(tag: &str, status: StatusSpec, duration: RankValue) -> Vec<(String, RankValue)> {
+fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
     match status {
-        StatusSpec::Slow { percent } => vec![
-            (format!("Slow % ({tag})"), percent),
-            (format!("Slow duration ({tag})"), duration),
-        ],
+        StatusSpec::Slow { percent } => {
+            vec![
+                row("Slow %", percent),
+                seconds_row("Slow duration", duration),
+            ]
+        }
         StatusSpec::Modifier {
             armor,
             magic_resist,
@@ -274,50 +341,44 @@ fn status_rows(tag: &str, status: StatusSpec, duration: RankValue) -> Vec<(Strin
         } => {
             let mut rows = Vec::new();
             if armor != RankValue::ZERO {
-                rows.push((format!("Armor ({tag})"), armor));
+                rows.push(row("Armor", armor));
             }
             if magic_resist != RankValue::ZERO {
-                rows.push((format!("Magic resist ({tag})"), magic_resist));
+                rows.push(row("Magic resist", magic_resist));
             }
             if move_speed != RankValue::ZERO {
-                rows.push((format!("Move speed ({tag})"), move_speed));
+                rows.push(row("Move speed", move_speed));
             }
             if attack_damage != RankValue::ZERO {
-                rows.push((format!("Attack damage ({tag})"), attack_damage));
+                rows.push(row("Attack damage", attack_damage));
             }
-            rows.push((format!("Duration ({tag})"), duration));
+            rows.push(seconds_row("Duration", duration));
             rows
         }
-        other => vec![(format!("{} ({tag})", status_name(other)), duration)],
+        other => vec![seconds_row(status_name(other), duration)],
     }
 }
 
-fn effect_notes(trigger: AbilityTrigger, effect: &AbilityEffect) -> Vec<String> {
-    let tag = trigger_tag(trigger);
+/// Effects that read as a sentence rather than a number.
+fn effect_text_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
     match *effect {
-        AbilityEffect::Damage { scaling, .. } | AbilityEffect::Heal { scaling, .. } => {
-            scaling_note(scaling).into_iter().collect()
-        }
         AbilityEffect::Dispel { kind, strength } => {
             let tier = match strength {
-                crate::items::DispelStrength::Basic => "basic",
-                crate::items::DispelStrength::Strong => "strong",
+                crate::status::DispelStrength::Basic => "basic",
+                crate::status::DispelStrength::Strong => "strong",
             };
             match kind {
-                StatusKind::Buff => vec![format!("{tier} dispel buffs ({tag})")],
-                StatusKind::Debuff => vec![format!("{tier} dispel debuffs ({tag})")],
+                StatusKind::Buff => vec![text_row(format!("{tier} dispel buffs"))],
+                StatusKind::Debuff => vec![text_row(format!("{tier} dispel debuffs"))],
             }
         }
-        AbilityEffect::RemoveStatus { id } => vec![format!("Remove {id} ({tag})")],
-        AbilityEffect::Teleport => vec![format!("Teleports to the target point ({tag})")],
+        AbilityEffect::RemoveStatus { id } => vec![text_row(format!("Remove {id}"))],
+        AbilityEffect::Teleport => vec![text_row("Teleports to the target point")],
         AbilityEffect::Displace {
             distance: None,
-            kind,
+            kind: DisplacementKind::Pull,
             ..
-        } => match kind {
-            DisplacementKind::Pull => vec![format!("Pulls to the caster ({tag})")],
-            DisplacementKind::Knockback => Vec::new(),
-        },
+        } => vec![text_row("Pulls to the caster")],
         AbilityEffect::Custom {
             id,
             value,
@@ -327,7 +388,7 @@ fn effect_notes(trigger: AbilityTrigger, effect: &AbilityEffect) -> Vec<String> 
             && amount == RankValue::ZERO
             && duration == RankValue::ZERO =>
         {
-            vec![format!("{id} ({tag})")]
+            vec![text_row(id)]
         }
         _ => Vec::new(),
     }
@@ -384,7 +445,7 @@ fn status_name(status: StatusSpec) -> &'static str {
     }
 }
 
-fn passive_name(stat: super::definition::PassiveStat) -> &'static str {
+pub(crate) fn passive_name(stat: super::definition::PassiveStat) -> &'static str {
     use super::definition::PassiveStat;
     match stat {
         PassiveStat::MaxHealth => "Health",

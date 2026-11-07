@@ -20,14 +20,14 @@ use bevy::prelude::*;
 
 use crate::combat::{DamageEvent, flat_distance};
 use crate::components::{
-    AttackCooldown, AttackSwing, AttackTarget, BoundRadius, CombatStats, DamageType, Health,
-    Lifetime, PlayerHero, ProjectileStyle, Team,
+    AttackCooldown, AttackSwing, AttackTarget, BoundRadius, CombatStats, Health, Lifetime,
+    PlayerHero, ProjectileStyle, Team,
 };
 use crate::dimensions::{area_contains, bounds_of, edge_distance, within_range};
 use crate::facing::turn_toward;
-use crate::items::StatusEffects;
 use crate::resources::SharedAssets;
 use crate::scale;
+use crate::status::StatusEffects;
 
 /// Deterministic "roll" for blind miss (same attacker/target pair is stable within a session).
 fn basic_attack_misses_blind(attacker: Entity, target: Entity, miss_chance: f32) -> bool {
@@ -452,7 +452,9 @@ pub fn resolve_basic_attack_impacts(
         if *team != impact.attacker_team.enemy() || !health.is_alive() {
             continue;
         }
-        let blind = defender_status.map(|s| s.blind_miss_chance()).unwrap_or(0.0);
+        let blind = defender_status
+            .map(|s| s.blind_miss_chance())
+            .unwrap_or(0.0);
         if basic_attack_misses_blind(impact.attacker, impact.target, blind) {
             continue;
         }
@@ -471,17 +473,28 @@ pub fn resolve_basic_attack_impacts(
         let origin = attacker_tf.translation;
         let cleave_amount = impact.damage * stats.cleave_damage_ratio;
         for (entity, tf, unit_team, hp, bound) in &cleave_candidates {
-            if entity == impact.target || *unit_team != impact.attacker_team.enemy() || !hp.is_alive()
+            if entity == impact.target
+                || *unit_team != impact.attacker_team.enemy()
+                || !hp.is_alive()
             {
                 continue;
             }
             if flat_distance(origin, tf.translation) > stats.cleave_radius {
                 continue;
             }
-            if !area_contains(origin, stats.cleave_radius, tf.translation, bounds_of(bound)) {
+            if !area_contains(
+                origin,
+                stats.cleave_radius,
+                tf.translation,
+                bounds_of(bound),
+            ) {
                 continue;
             }
-            damage.write(DamageEvent::basic_attack(impact.attacker, entity, cleave_amount));
+            damage.write(DamageEvent::basic_attack(
+                impact.attacker,
+                entity,
+                cleave_amount,
+            ));
         }
     }
 }
@@ -611,6 +624,7 @@ mod tests {
 
     use super::*;
     use crate::combat::{apply_damage, apply_damage_events};
+    use crate::components::DamageType;
 
     const DT: f32 = 0.05;
 

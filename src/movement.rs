@@ -15,7 +15,7 @@ use crate::components::{
 };
 use crate::dimensions::{center_distance as flat_distance, collision_of};
 use crate::facing::turn_toward;
-use crate::items::StatusEffects;
+use crate::status::StatusEffects;
 use crate::navigation::avoidance::{Neighbor, avoid};
 use crate::navigation::{
     DynamicBlocker, MobileFilter, NavGrid, NavPath, NavSteering, flat, ground, plan_paths,

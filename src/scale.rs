@@ -48,7 +48,6 @@ pub const CREEP_VISION_RANGE: f32 = 800.0;
 
 // --- Ability geometry ---
 pub const ABILITY_DASH_RANGE: f32 = 350.0;
-pub const ABILITY_BLINK_RANGE: f32 = 400.0;
 pub const ABILITY_UNIT_CAST_RANGE: f32 = 500.0;
 pub const ABILITY_GROUND_CAST_RANGE: f32 = 550.0;
 pub const ABILITY_INSTANT_AOE: f32 = 220.0;

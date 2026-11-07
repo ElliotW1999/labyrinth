@@ -10,8 +10,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from generator_common import (  # noqa: E402
     ActivationSpec,
+    EffectContext,
+    EffectRow,
     Report,
     Row,
+    ABILITY_TRIGGERS,
+    ITEM_TRIGGERS,
+    effect_to_rust,
     parse_activation_spec,
     validate_activation,
 )
@@ -65,6 +70,112 @@ class ValidateActivationTests(unittest.TestCase):
         validate_activation(row({"target_type": "point", "target_team": "enemy"}), spec, kind="item", ability_type=None, report=report)
         self.assertEqual(len(report.errors), 1)
         self.assertIn("cast_range", report.errors[0].field or "")
+
+
+class ItemEffectScalingTests(unittest.TestCase):
+    @staticmethod
+    def _damage_row(kind: str, scaling_type: str) -> tuple[EffectRow, EffectContext]:
+        cells = {
+            "item_id": "potion",
+            "effect_index": "0",
+            "trigger": "on_use",
+            "effect_target": "owner",
+            "effect_type": "damage",
+            "value": "10",
+            "damage_type": "magical",
+            "scaling_type": scaling_type,
+            "scaling_value": "0.5" if scaling_type else "",
+        }
+        effect = EffectRow(row(cells), "potion", 0, "on_use", "owner", "damage")
+        ctx = EffectContext(
+            kind=kind,
+            owner_id="potion",
+            levels=None if kind == "item" else 1,
+            center_for={"on_use": "Caster"},
+        )
+        return effect, ctx
+
+    def test_item_distance_scaling_rejected(self) -> None:
+        report = Report()
+        effect, ctx = self._damage_row("item", "distance")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertEqual(len(report.errors), 1)
+        self.assertEqual(report.errors[0].field, "scaling_type")
+        self.assertIn("ability-only", report.errors[0].message)
+
+    def test_item_other_scaling_still_accepted(self) -> None:
+        report = Report()
+        effect, ctx = self._damage_row("item", "strength")
+        self.assertIsNotNone(effect_to_rust(effect, ctx, report))
+        self.assertFalse(report.errors)
+
+
+class WhileToggledTests(unittest.TestCase):
+    @staticmethod
+    def _effect(duration: str = "", owner_is_toggle: bool = True) -> tuple[EffectRow, EffectContext]:
+        cells = {
+            "ability_id": "overcharge",
+            "effect_index": "0",
+            "trigger": "while_toggled",
+            "effect_target": "caster",
+            "effect_type": "stat_modifier",
+            "effect_id": "move_speed",
+            "value": "10",
+            "duration": duration,
+        }
+        effect = EffectRow(row(cells), "overcharge", 0, "while_toggled", "caster", "stat_modifier")
+        ctx = EffectContext(kind="ability", owner_id="overcharge", levels=7, center_for={})
+        if not owner_is_toggle:
+            # Mirrors AbilityGenerator.effect_context for non-toggle abilities.
+            ctx.invalid_trigger["while_toggled"] = "while_toggled is only for ability_type toggle"
+        return effect, ctx
+
+    def test_while_toggled_accepted_with_zero_duration(self) -> None:
+        report = Report()
+        effect, ctx = self._effect()
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors)
+        self.assertIn("AbilityTrigger::WhileToggled", result[0])
+        self.assertIn("duration: RankValue::fixed(0.0)", result[2])
+
+    def test_while_toggled_rejected_on_non_toggle_ability(self) -> None:
+        report = Report()
+        effect, ctx = self._effect(owner_is_toggle=False)
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertIn("only for ability_type toggle", report.errors[0].message)
+
+    def test_while_toggled_rejects_a_duration(self) -> None:
+        report = Report()
+        effect, ctx = self._effect(duration="5")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertEqual(report.errors[0].field, "duration")
+        self.assertIn("while toggled", report.errors[0].message)
+
+
+class TriggerTableTests(unittest.TestCase):
+    def test_both_trigger_tables_accept_on_channel_interrupted(self) -> None:
+        self.assertEqual(ABILITY_TRIGGERS["on_channel_interrupted"], "OnChannelInterrupted")
+        self.assertEqual(ITEM_TRIGGERS["on_channel_interrupted"], "OnChannelInterrupted")
+        self.assertEqual(ABILITY_TRIGGERS["on_channel_end"], "OnChannelEnd")
+
+
+class ItemChargeTests(unittest.TestCase):
+    def test_item_charge_restore_time_rejected(self) -> None:
+        report = Report()
+        cells = {"target_type": "no_target", "target_team": "self", "max_charges": "3", "charge_restore_time": "30"}
+        spec = parse_activation_spec(row(cells), kind="item", has_active_effects=True, report=report, levels=False)
+        validate_activation(row(cells), spec, kind="item", ability_type=None, report=report)
+        errors = [e for e in report.errors if e.field == "charge_restore_time"]
+        self.assertEqual(len(errors), 1)
+        self.assertIn("do not regenerate", errors[0].message)
+
+    def test_item_charges_without_restore_time_are_fine(self) -> None:
+        report = Report()
+        cells = {"target_type": "no_target", "target_team": "self", "max_charges": "3"}
+        spec = parse_activation_spec(row(cells), kind="item", has_active_effects=True, report=report, levels=False)
+        validate_activation(row(cells), spec, kind="item", ability_type=None, report=report)
+        self.assertFalse(report.errors)
+        self.assertFalse(report.warnings)
 
 
 class ParseActivationSpecTests(unittest.TestCase):
