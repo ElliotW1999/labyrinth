@@ -176,7 +176,9 @@ IssueCommand (input / minimap / network host)
 
 | Status | Effect |
 | --- | --- |
-| Silence | Blocks active abilities |
+| Silence | Blocks active abilities (items still work) |
+| Mute | Blocks active items (abilities still work) |
+| Sleep | Blocks abilities, movement and attacks until damaged or expired (an item channel is not interrupted) |
 | Stun | Blocks move, attack, and abilities |
 | Root | Blocks movement |
 | Disarm | Blocks attacking |
@@ -224,9 +226,11 @@ input / AI → ActivationRequest { caster, source: Ability(slot) | Item(slot), t
            → validate (source available, cooldown + charges, mana, caster state, target, range)
            → cast point → ActionFiredEvent → AbilityCastEvent / item OnUse → channel → backswing
            → mechanics: Dash / Projectile / AttackUnitTarget / RingFx / custom behavior
-           → AbilityTriggerEvent(TriggerContext)          OnCast, OnProjectileHit, OnImpact, Custom("on_…")
+           → AbilityTriggerEvent(TriggerContext)          OnCast, OnProjectileHit, OnImpact, OnChannelEnd / OnChannelInterrupted, WhileToggled, Custom("on_…")
+                                                          (every context is built by TriggerContext::new)
            → effect entries whose trigger matches → resolve EffectTarget
-           → DamageEvent / HealEvent / StatusEffectEvent  (shared systems apply mitigation, immunity, stats)
+           → DamageEvent / HealEvent / StatusEffectEvent  (shared systems apply mitigation, immunity, stats;
+                                                          statuses live in status.rs and change only through StatusEffectEvent)
 spell projectile → ProjectileHitEvent { primary, splashed } → OnProjectileHit (struck) / OnImpact (landed)
 ```
 
@@ -235,7 +239,7 @@ spell projectile → ProjectileHitEvent { primary, splashed } → OnProjectileHi
 - **Effects** (`abilities/effects.rs`): `resolve_ability_triggers` runs every entry tagged with the fired trigger. Targets: `Caster`, `CastTarget`, `TriggerUnit`, `AffectedUnits` (e.g. splash victims), `UnitsInRadius`. Effects: `Damage` (optional `EffectScaling`), `Heal`, `ApplyStatus`, `Dispel`, and `Custom { id }` for systems registered with `app.register_custom_effect(id, system)`
 - **Projectiles** (`combat.rs`) know their source, target / aim, speed, and collision / splash radius only
 - **Activation** (`actions/`) is shared by abilities and active items: target types (no target, self, unit, point, area, direction), team rules (enemy / ally / both / self), range, cast point, channel, mana cost, cooldown, and charges. Out-of-range activations walk into range and re-request. Mana and cooldown are paid when the action fires. `ActionSources` asks the ability layer (learned / castable, rank) or the item layer (the inventory slot holds that active, per-copy cooldown and charges). Items carry an instance id, so two copies keep separate state and an in-flight use follows its copy if it changes slots
-- **Casting** (`abilities/casting.rs`) is the ability layer on top: learned / passive gating, the `ActionSpec` at the slot's rank, toggle state, and turning fired actions into `AbilityCastEvent`s and channel ends into `OnChannelEnd` triggers (`action_channel_end_triggers`, for both abilities and items). Silence, stun, sleep or mute block abilities; stun or mute block items
+- **Casting** (`abilities/casting.rs`) is the ability layer on top: learned / passive gating, the `ActionSpec` at the slot's rank, toggle state, and turning fired actions into `AbilityCastEvent`s and channel ends into `OnChannelEnd` triggers (`action_channel_end_triggers`, for both abilities and items). Abilities (`DisableRule::SilenceOrStun`, via `can_cast()`) are blocked and interrupted by silence, stun or sleep (hex counts as silence); mute alone does not stop them. Items (`DisableRule::MuteOrStun`) are blocked and interrupted by mute or stun; silence and sleep do not stop them
 - **Passive abilities** (`abilities/passive.rs`): `ability_type=passive` with `passive` effect rows (`stat_modifier` → `AbilityEffect::PassiveStat`) apply on loadout init and rank-up, mirroring item passives. **Toggle upkeep:** `ability_type=toggle` flips `AbilityState.toggled` on each cast (cooldown starts each flip); a toggle drains `toggle_mana_per_sec` while on and turns off at 0 mana (no cooldown). Its `while_toggled` `stat_modifier` rows are ordinary permanent, undispellable statuses applied and removed through `StatusEffectEvent` by `tick_toggle_upkeep`; ranking up while on keeps the old values until the toggle is cycled
 - **Autocast:** not implemented (no CSV column or AI heuristic yet)
 
@@ -268,11 +272,13 @@ Shared pipeline: `ActivationRequest` → `ActionSpec` (`src/actions/`) → cast 
 
 #### Cast interruption
 
-| Phase | Silence / stun | New move / stop / attack | Target dies | Source slot changes |
+| Phase | Disable (abilities: silence / stun / sleep; items: mute / stun) | New move / stop / attack | Target dies | Source slot changes |
 | --- | --- | --- | --- | --- |
-| Cast point (before fire) | Cancel, no cost | Cancel, no cost | The aim follows a living unit target; if it dies or despawns the action still fires at its last known position (costs paid, effects keyed on the target resolve to nothing). A queued cast still walking into range is dropped instead if its unit-only target died | Cancel |
-| After fire, channeling | End channel early and fire `OnChannelInterrupted` (abilities: silence / stun; items: mute / stun). A channel that runs its full time fires `OnChannelEnd` | Cancel channel (no item/ability trigger) | — | Cancel |
+| Cast point (before fire) | Cancel, no cost (a silenced ability is cancelled but an item still fires; a muted item is cancelled but an ability still fires) | Cancel, no cost | The aim follows a living unit target; if it dies or despawns the action still fires at its last known position (costs paid, effects keyed on the target resolve to nothing). A queued cast still walking into range is dropped instead if its unit-only target died | Cancel |
+| After fire, channeling | End channel early and fire `OnChannelInterrupted` (abilities: silence, stun or sleep; items: mute or stun; sleep does not interrupt an item channel). A channel that runs its full time fires `OnChannelEnd` | Cancel channel (no item/ability trigger) | — | Cancel |
 | Backswing | Does not remove backswing by itself | Removes `Activation` | — | Cancel |
+
+A `CastTarget::Unit` that turns invisible or untargetable during the cast point is still tracked by `refresh_activation_aims`; only death or despawn stops the tracking. That is acceptable today and would need revisiting if fog-based targeting is added.
 - **Custom mechanics** (`abilities/custom.rs`): `app.register_ability_behavior(id, system)` runs a one-shot system with the `CastContext`. It reports what happened with a trigger such as `AbilityTrigger::Custom("on_skewer_end")`, and the ability's effect entries apply the consequences
 
 Adding a simple ability: add an `AbilityId` variant (or use the generators), then add an arm to `catalog::builtin`:
@@ -315,7 +321,7 @@ shockwave,1,on_projectile_hit,trigger_unit,movement,pull,,,,,,,
 skewer,1,on_unit_contact,trigger_unit,custom,skewer_drag,,,,,,,
 ```
 
-- `trigger`: `on_cast`, `on_projectile_hit`, `on_unit_contact`, `on_impact`, `on_channel_tick`, `on_channel_end` (channel completed), `on_channel_interrupted` (channel cut short by silence/stun/mute; a new order fires neither), `on_expire`, `while_toggled` (toggle abilities only: `stat_modifier` on `caster`, no duration; applied while the toggle is on), or any other `on_…` name raised by a custom mechanic
+- `trigger`: `on_cast`, `on_projectile_hit`, `on_unit_contact`, `on_impact`, `on_channel_tick`, `on_channel_end` (channel completed), `on_channel_interrupted` (channel cut short by silence/stun/mute; a new order fires neither), `on_expire`, `while_toggled` (toggle abilities only: `stat_modifier` on `caster`, no duration; applied while the toggle is on; the upkeep is the ability row's `toggle_mana_per_sec`), or any other `on_…` name raised by a custom mechanic
 - `effect_target`: `caster`, `cast_target`, `trigger_unit`, `affected_units`, `units_in_radius` (around the trigger point; `radius` or the ability AoE; team from the ability / effect polarity)
 - `effect_type` (+ `effect_id`): `damage` (`value` or `amount`, `damage_type` physical/magical/pure), `heal` (`effect_id=mana` restores mana), `apply_status` (`stun`, `root`, `silence`, `disarm`, `slow` (% from `amount`/`value`), `phased`, `forceful`, `debuff_immunity`, or any id as a timed `stat_modifier`), `remove_status` (`buff`/`debuff` dispel, otherwise a status id), `movement` (`knockback` / `pull`; `value` = distance, `duration`; `teleport` sends `caster` / `owner` / `cast_target` / `trigger_unit` to the cast's aim point — see Teleport below), `stat_modifier` (`effect_id` = stat, `amount`, `duration`), `custom` (registered id; receives `value`, `amount`, `duration`)
 - `scaling_type`: `strength` / `agility` / `intelligence` / `attack_damage` × `scaling_value` (damage and heal)
@@ -356,9 +362,9 @@ frost_hammer,Frost Hammer,weapon,2800,1400,3,rare,false,,false,,A heavy weapon i
 ```
 
 - `item_type` component/weapon/armor/accessory/consumable/utility/recipe, `rarity` common/uncommon/rare/epic/legendary; optional extras `short_label`, `cooldown`, `components` (`;`-separated ids), `color_r/g/b`
-- Optional activation columns on items with `on_use` (blank = instant no-target use): `charge_restore_time`, `target_type` (`unit`, `point`, `direction`, `no_target`, `self`), `target_team` (`enemy`, `ally`, `both`, `self`), `cast_range`, `cast_time`, `channel_time`, `mana_cost`, `projectile_type`, `projectile_speed` (`cooldown` remains on the item row). Unit targets require `target_team`. Point, unit, and direction targets require `cast_range`. Teleport items must be `point` or `direction` so the destination is the cast aim. Item `projectile_*` fields are reserved — the runtime only emits ability projectiles today
+- Optional activation columns on items with `on_use` or a channel trigger (blank = instant no-target use): `target_type` (`unit`, `point`, `direction`, `no_target`, `self`), `target_team` (`enemy`, `ally`, `both`, `self`), `cast_range`, `cast_time`, `channel_time`, `mana_cost`, `projectile_type`, `projectile_speed` (`cooldown` remains on the item row). Unit targets require `target_team`. Point, unit, and direction targets require `cast_range`. Teleport items must be `point` or `direction` so the destination is the cast aim. Item `projectile_*` fields are reserved — the runtime only emits ability projectiles today
 - Effects use the ability effect schema with item triggers `passive` (must be `stat_modifier`: `max_health`, `health_regen`, `max_mana`, `mana_regen`, `attack_damage`, `attack_speed`, `armor`, `magic_resist`, `move_speed`, `strength`, `agility`, `intelligence`, `spell_amp`, `outgoing_physical_amp`, `incoming_damage_amp`, `damage_block`, `damage_reflect`; `health` and `mana` are aliases of `max_health` and `max_mana`), `on_use`, `on_attack`, `on_attack_hit`, `on_channel_end` / `on_channel_interrupted` (channelled actives only), `on_damage_taken`, `on_kill`, `on_death` and targets `owner`, `cast_target` (unit and self actives), `trigger_unit`, `attacker`, `affected_units`, `units_in_radius`
-- Consumables spend a charge (or one of the stack) when the use fires, and disappear when empty. A rejected activation spends nothing
+- Consumables spend a charge (or one of the stack) when the use fires, and disappear when empty. A rejected activation spends nothing. Item charges never regenerate, so a `charge_restore_time` on an item is an error. `scaling_type=distance` is also rejected on items (they have no rank-scaled cast range); every other scaling works
 
 ### Teleport
 

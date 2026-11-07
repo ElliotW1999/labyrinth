@@ -103,7 +103,7 @@ The last command only applies when the phase didn't intend to regenerate. When i
 3. `src/effects/mod.rs`: **remove it.** Nothing imports `crate::effects`. It hides its own unused imports behind `#![allow(unused_imports)]`, and every later move would have to keep its re-exports in sync. The shared-effects plan only marked it optional.
 4. Docs:
    - README:214: add Blink to the list of generated abilities, and state that SeismicSlam, ArcaneLance, Cataclysm, StoneSkin and Overcharge are **test content**, not in any hero loadout (decision 5).
-   - README:238: "silence, stun, sleep or mute block abilities; stun or mute block items".
+   - README:238: abilities are blocked by silence, stun or sleep (hex counts as silence; mute alone does not); items are blocked by mute or stun (silence and sleep do not).
    - README:257: channel ends are handled by `action_channel_end_triggers` in `abilities/casting.rs` for both sources.
    - README:341: "Phased (Dash)". Blink is now a teleport and does not phase.
    - README:360: list every `PASSIVE_STATS` key from `generator_common.py:158-178`.

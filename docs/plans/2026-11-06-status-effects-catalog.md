@@ -30,7 +30,7 @@ Gaps vs a full MOBA surface:
 | Apply/dispel events | `src/abilities/effects.rs` (`apply_status_effect_events`) | Single consumer; debuff immunity gate; dispel by kind or by `id` |
 | Movement | `src/movement.rs` (`can_move`, phased) | Root/stun stops locomotion; phased skips avoidance/collision with units |
 | Attacks | `src/basic_attack.rs` (`can_attack`) | Disarm/stun gates requests and cancels swings |
-| Cast/items | `src/actions/resources.rs` (`DisableRule`) | Abilities: silence **or** stun; items: stun only |
+| Cast/items | `src/actions/resources.rs` (`DisableRule`) | Abilities: silence, stun or sleep (hex counts as silence; mute alone does not block); items: mute or stun (current code; this row once said items were stun only) |
 | Teleport | `src/teleport.rs` | Phased bypasses unit blocking |
 | Vision | `src/fog.rs` | Team vision radii only; **not** tied to statuses |
 | Picking | `src/picking.rs` | Uses `Visibility::Hidden` for living units — **not** status-driven today |

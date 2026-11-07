@@ -324,6 +324,9 @@ pub fn resolve_queued_activations(
 /// walk-into-range path in [`resolve_queued_activations`] differs: it drops unit-only
 /// casts whose target died before the caster got in range, since nothing has been paid
 /// or started yet.)
+///
+/// Only death or despawn stops the tracking. A unit that turns invisible or untargetable
+/// is still followed; revisit that if fog-based targeting is added.
 pub fn refresh_activation_aims(
     mut activations: Query<&mut Activation>,
     units: Query<(&Transform, &Health)>,

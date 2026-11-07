@@ -43,6 +43,8 @@ Hotkey / command queue → ActivationRequest { caster, ActionSource, CastTarget 
 
 ## Mechanic matrix
 
+> Superseded by `2026-11-07-item-ability-architecture-cleanup.md` (2026-11-07): several gaps below are closed there. Where this table and the cleanup plan disagree, the cleanup plan and the code win.
+
 Status key: **Implemented** = wired end-to-end for at least abilities or items; **Partial** = typed/data present but incomplete semantics or docs; **Missing** = no type, hook, or emission.
 
 | Mechanic | Status | File / data refs | Recommended work (minimal diff) |
@@ -71,10 +73,10 @@ Status key: **Implemented** = wired end-to-end for at least abilities or items; 
 
 ### Cast interruption (reference)
 
-| Phase | Silence / stun | New move / stop / attack | Target dies | Source slot changes |
+| Phase | Disable (abilities: silence / stun / sleep; items: mute / stun) | New move / stop / attack | Target dies | Source slot changes |
 |-------|----------------|---------------------------|-------------|------------------------|
-| Cast point (before fire) | Cancel, no cost | Cancel, no cost | Queued cast may fail on re-request | Cancel |
-| After fire, channeling | End channel, `OnChannelEnd` (abilities) | Cancel channel silently | N/A | Cancel |
+| Cast point (before fire) | Cancel, no cost | Cancel, no cost | Aim follows the target; if it dies the action still fires at its last position (queued casts still drop) | Cancel |
+| After fire, channeling | End channel, `OnChannelInterrupted` (abilities and items) | Cancel channel silently | N/A | Cancel |
 | Backswing | Does not remove backswing by itself | Removes `Activation` | N/A | Cancel |
 
 ---
