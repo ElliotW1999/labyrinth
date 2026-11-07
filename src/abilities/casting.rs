@@ -12,8 +12,7 @@
 use bevy::prelude::*;
 
 use super::definition::{AbilityBehavior, AbilityDefinition, AbilityTrigger};
-use super::effects::{AbilityTriggerEvent, EffectSource, TriggerContext};
-use crate::items::item_channel_end_context;
+use super::effects::{AbilityTriggerEvent, TriggerContext};
 use crate::actions::{
     ActionChannelEndEvent, ActionCost, ActionFiredEvent, ActionId, ActionSource, ActionSpec,
     DisableRule,
@@ -109,28 +108,16 @@ pub fn action_channel_end_triggers(
         let Ok((transform, team)) = casters.get(end.caster) else {
             continue;
         };
-        let ctx = match end.action {
-            ActionId::Ability(ability) => TriggerContext {
-                trigger: AbilityTrigger::OnChannelEnd,
-                caster: end.caster,
-                team: *team,
-                source: EffectSource::Ability(ability),
-                rank: end.level,
-                origin: transform.translation,
-                aim: end.aim,
-                point: end.aim,
-                cast_target: end.target.unit(),
-                trigger_unit: None,
-                affected_units: Vec::new(),
-            },
-            ActionId::Item { item, .. } => item_channel_end_context(
-                item,
-                end.caster,
-                *team,
-                transform.translation,
-                end.aim,
-            ),
-        };
+        let ctx = TriggerContext::new(
+            AbilityTrigger::OnChannelEnd,
+            end.action.into(),
+            end.caster,
+            *team,
+            end.level,
+            transform.translation,
+            end.aim,
+        )
+        .cast_target(end.target.unit());
         triggers.write(AbilityTriggerEvent(ctx));
     }
 }

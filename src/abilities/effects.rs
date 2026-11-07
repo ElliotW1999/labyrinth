@@ -59,6 +59,55 @@ pub struct TriggerContext {
     pub affected_units: Vec<Entity>,
 }
 
+impl TriggerContext {
+    /// The one constructor for trigger contexts. `point` starts at `aim`; every optional
+    /// part starts empty. Fill the rest with the chainable setters.
+    pub fn new(
+        trigger: AbilityTrigger,
+        source: EffectSource,
+        caster: Entity,
+        team: Team,
+        rank: u32,
+        origin: Vec3,
+        aim: Vec3,
+    ) -> Self {
+        Self {
+            trigger,
+            caster,
+            team,
+            source,
+            rank,
+            origin,
+            aim,
+            point: aim,
+            cast_target: None,
+            trigger_unit: None,
+            affected_units: Vec::new(),
+        }
+    }
+
+    /// Where the trigger happened, when that is not the aim point.
+    pub fn at(mut self, point: Vec3) -> Self {
+        self.point = point;
+        self
+    }
+
+    pub fn cast_target(mut self, cast_target: Option<Entity>) -> Self {
+        self.cast_target = cast_target;
+        self
+    }
+
+    pub fn trigger_unit(mut self, trigger_unit: Option<Entity>) -> Self {
+        self.trigger_unit = trigger_unit;
+        self
+    }
+
+    pub fn affected(mut self, affected_units: Vec<Entity>) -> Self {
+        self.affected_units = affected_units;
+        self
+    }
+}
+
 #[derive(Message, Debug, Clone, PartialEq)]
 pub struct AbilityTriggerEvent(pub TriggerContext);
 

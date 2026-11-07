@@ -1159,62 +1159,17 @@ fn item_use_trigger(
     aim: Vec3,
     target: CastTarget,
 ) -> TriggerContext {
-    TriggerContext {
-        aim,
-        cast_target: target.unit(),
-        ..item_trigger(
-            AbilityTrigger::OnUse,
-            item,
-            owner,
-            team,
-            position,
-            None,
-            position,
-        )
-    }
-}
-
-/// Build an item `OnChannelEnd` trigger (resolved in `abilities::casting::action_channel_end_triggers`).
-pub fn item_channel_end_context(
-    item: ItemId,
-    owner: Entity,
-    team: Team,
-    position: Vec3,
-    aim: Vec3,
-) -> TriggerContext {
-    item_trigger(
-        AbilityTrigger::OnChannelEnd,
-        item,
+    TriggerContext::new(
+        AbilityTrigger::OnUse,
+        EffectSource::Item(item),
         owner,
         team,
+        1,
         position,
-        None,
         aim,
     )
-}
-
-fn item_trigger(
-    trigger: AbilityTrigger,
-    item: ItemId,
-    owner: Entity,
-    team: Team,
-    origin: Vec3,
-    trigger_unit: Option<Entity>,
-    point: Vec3,
-) -> TriggerContext {
-    TriggerContext {
-        trigger,
-        caster: owner,
-        team,
-        source: EffectSource::Item(item),
-        rank: 1,
-        origin,
-        aim: point,
-        point,
-        cast_target: None,
-        trigger_unit,
-        affected_units: Vec::new(),
-    }
+    .at(position)
+    .cast_target(target.unit())
 }
 
 /// `OnAttack` (release) and `OnAttackHit` (impact) for every distinct item the
@@ -1248,15 +1203,18 @@ pub(crate) fn item_attack_triggers(
                 continue;
             }
             seen.push(item.id);
-            triggers.write(AbilityTriggerEvent(item_trigger(
-                trigger,
-                item.id,
-                attacker,
-                *team,
-                owner_tf.translation,
-                Some(target),
-                point,
-            )));
+            triggers.write(AbilityTriggerEvent(
+                TriggerContext::new(
+                    trigger,
+                    EffectSource::Item(item.id),
+                    attacker,
+                    *team,
+                    1,
+                    owner_tf.translation,
+                    point,
+                )
+                .trigger_unit(Some(target)),
+            ));
         }
     }
 }
@@ -3049,6 +3007,39 @@ mod tests {
             ctx.source,
             crate::abilities::effects::EffectSource::Item(ItemId::HeartwoodBand)
         );
+    }
+
+    #[test]
+    fn item_channel_end_carries_the_cast_target() {
+        let mut app = item_app();
+        let def = ItemDefinition {
+            activation: aimed(TargetType::Unit, TargetTeam::Enemy, 500.0, 0.1, 0.5, 0.0),
+            ..channeled_test_item(ItemId::HeartwoodBand)
+        };
+        let _defs = DefinitionOverride::install([def]);
+        let caster = spawn_caster(&mut app, 200.0);
+        let target = app
+            .world_mut()
+            .spawn((
+                Transform::from_translation(Vec3::new(100.0, 0.0, 0.0)),
+                Team::Dire,
+                Health::new(1000.0),
+            ))
+            .id();
+        give(&mut app, caster, ItemId::HeartwoodBand);
+
+        request(&mut app, caster, 0, CastTarget::Unit(target));
+        let mut channel_end = None;
+        for _ in 0..20 {
+            step(&mut app);
+            for ctx in triggers(&app) {
+                if ctx.trigger == AbilityTrigger::OnChannelEnd {
+                    channel_end = Some(ctx);
+                }
+            }
+        }
+        let ctx = channel_end.expect("OnChannelEnd trigger fired");
+        assert_eq!(ctx.cast_target, Some(target));
     }
 
     #[test]
