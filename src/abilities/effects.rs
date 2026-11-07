@@ -18,7 +18,7 @@ use super::definition::{
     AbilityEffect, AbilityEffectEntry, AbilityTrigger, AreaCenter, AreaRadius, Attribute,
     EffectScaling, EffectTarget, StatusBuildContext,
 };
-use crate::actions::team_allows;
+use crate::actions::{ActionId, team_allows};
 use crate::combat::DamageEvent;
 use crate::components::{AbilityId, BoundRadius, CombatStats, Health, HeroAttributes, Mana, Team};
 use crate::dimensions::{area_contains, bounds_of};
@@ -406,6 +406,48 @@ impl EffectRunner<'_, '_> {
     }
 }
 
+impl From<ActionId> for EffectSource {
+    fn from(action: ActionId) -> Self {
+        match action {
+            ActionId::Ability(id) => Self::Ability(id),
+            ActionId::Item { item, .. } => Self::Item(item),
+        }
+    }
+}
+
+/// What a trigger needs from its source, whether an ability or an item.
+pub struct SourceParams<'a> {
+    pub entries: &'a [AbilityEffectEntry],
+    /// Radius an `AreaRadius::Ability` area resolves to.
+    pub aoe_radius: f32,
+    /// Range that `EffectScaling::DistanceFromCaster` falls off over.
+    pub cast_range: f32,
+}
+
+/// One lookup for the effect entries, area radius and cast range of any [`EffectSource`].
+/// `None` when an ability has no registered definition.
+pub fn source_params<'a>(
+    source: EffectSource,
+    defs: &'a AbilityDefinitions,
+    rank: u32,
+) -> Option<SourceParams<'a>> {
+    match source {
+        EffectSource::Ability(id) => defs.get(id).map(|def| SourceParams {
+            entries: &def.effects,
+            aoe_radius: def.aoe_radius.at(rank),
+            cast_range: def.cast_range.at(rank),
+        }),
+        EffectSource::Item(id) => {
+            let def = id.definition();
+            Some(SourceParams {
+                entries: def.effects,
+                aoe_radius: def.aoe_radius(),
+                cast_range: def.activation.cast_range,
+            })
+        }
+    }
+}
+
 /// Runs every effect entry whose trigger matches, against the trigger's context.
 /// Nothing here depends on which ability or item fired.
 pub fn resolve_ability_triggers(
@@ -414,20 +456,16 @@ pub fn resolve_ability_triggers(
     mut runner: EffectRunner,
 ) {
     for AbilityTriggerEvent(ctx) in triggers.read() {
-        let (entries, aoe_radius): (&[AbilityEffectEntry], f32) = match ctx.source {
-            EffectSource::Ability(id) => match defs.get(id) {
-                Some(def) => (&def.effects, def.aoe_radius.at(ctx.rank)),
-                None => continue,
-            },
-            EffectSource::Item(id) => (id.definition().effects, 0.0),
+        let Some(params) = source_params(ctx.source, &defs, ctx.rank) else {
+            continue;
         };
-        let cast_range = match ctx.source {
-            EffectSource::Ability(id) => defs.get(id).map_or(0.0, |d| d.cast_range.at(ctx.rank)),
-            EffectSource::Item(_) => 0.0,
-        };
-        for entry in entries.iter().filter(|entry| entry.trigger == ctx.trigger) {
-            let targets = runner.targets(ctx, entry.target, aoe_radius);
-            runner.execute(ctx, &entry.effect, targets, cast_range);
+        for entry in params
+            .entries
+            .iter()
+            .filter(|entry| entry.trigger == ctx.trigger)
+        {
+            let targets = runner.targets(ctx, entry.target, params.aoe_radius);
+            runner.execute(ctx, &entry.effect, targets, params.cast_range);
         }
     }
 }

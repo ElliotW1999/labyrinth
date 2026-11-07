@@ -500,6 +500,29 @@ pub fn commit_item(inventory: &mut Inventory, slot: usize, spec: &ActionSpec) {
 }
 
 impl ItemDefinition {
+    /// Radius of the item's fixed-size areas: the largest `AreaRadius::Fixed` among its
+    /// `UnitsInRadius` entries that fire from the active (`OnUse` / `OnChannelEnd`).
+    /// `0.0` when it has none. Used for the targeting indicator and as the
+    /// `AreaRadius::Ability` fallback.
+    pub fn aoe_radius(&self) -> f32 {
+        self.effects
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry.trigger,
+                    AbilityTrigger::OnUse | AbilityTrigger::OnChannelEnd
+                )
+            })
+            .filter_map(|entry| match entry.target {
+                EffectTarget::UnitsInRadius {
+                    radius: AreaRadius::Fixed(radius),
+                    ..
+                } => Some(radius.at(1)),
+                _ => None,
+            })
+            .fold(0.0, f32::max)
+    }
+
     pub fn effects_for(
         &self,
         trigger: AbilityTrigger,

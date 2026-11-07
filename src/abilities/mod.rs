@@ -28,7 +28,7 @@ pub mod tooltip;
 use bevy::prelude::*;
 
 use crate::actions::{
-    ActionId, ActionSource, ActionSources, ActionsPlugin, ActivationRequest, DisableRule,
+    ActionSource, ActionSources, ActionsPlugin, ActivationRequest, DisableRule,
     check_ready, resolve_queued_activations, team_allows, tick_activations,
     validate_activation_requests,
 };
@@ -50,7 +50,7 @@ use catalog::{AbilityDefinitions, register_loadout_definitions, restore_ability_
 use definition::{TargetTeam, TargetType};
 use effects::{
     AbilityTriggerEvent, CustomAbilityEffects, HealEvent, ManaRestoreEvent, apply_heal_events,
-    apply_mana_restore_events, resolve_ability_triggers,
+    apply_mana_restore_events, resolve_ability_triggers, source_params,
 };
 use mechanics::{CustomAbilityBehaviors, execute_ability_casts, projectile_hit_triggers};
 use passive::{sync_ability_passives, tick_toggle_upkeep};
@@ -253,12 +253,8 @@ fn begin_or_cast_from_hotkeys(
             }
             continue;
         }
-        let aoe_radius = match spec.action {
-            ActionId::Ability(id) => defs
-                .get(id)
-                .map_or(0.0, |def| def.aoe_radius.at(spec.level)),
-            ActionId::Item { .. } => 0.0,
-        };
+        let aoe_radius = source_params(spec.action.into(), &defs, spec.level)
+            .map_or(0.0, |params| params.aoe_radius);
         let pending = PendingTargetedCast {
             source,
             cast_range: spec.cast_range,
@@ -800,6 +796,89 @@ mod tests {
             description: "test",
             effects,
         }
+    }
+
+    fn item_with(
+        effects: &'static [AbilityEffectEntry],
+        target_type: TargetType,
+        target_team: TargetTeam,
+        cast_range: f32,
+    ) -> ItemDefinition {
+        ItemDefinition {
+            activation: ItemActivation {
+                target_type,
+                target_team,
+                cast_range,
+                cast_time: 0.0,
+                channel_time: 0.0,
+                mana_cost: 0.0,
+            },
+            effects,
+            ..attack_hit_heal_item()
+        }
+    }
+
+    #[test]
+    fn item_source_params_use_activation_range_and_fixed_radius() {
+        let effects: &'static [AbilityEffectEntry] = Box::leak(Box::new([AbilityEffectEntry {
+            trigger: AbilityTrigger::OnUse,
+            target: EffectTarget::UnitsInRadius {
+                center: super::definition::AreaCenter::Aim,
+                radius: AreaRadius::Fixed(RankValue::fixed(143.0)),
+                team: TargetTeam::Enemy,
+            },
+            effect: fixed_magical_damage(10.0),
+        }]));
+        let _defs = install_test_item_definitions([item_with(
+            effects,
+            TargetType::Point,
+            TargetTeam::Enemy,
+            800.0,
+        )]);
+        let defs = AbilityDefinitions::default();
+        let params = super::effects::source_params(
+            EffectSource::Item(ItemId::HeartwoodBand),
+            &defs,
+            1,
+        )
+        .expect("items always resolve");
+        assert_eq!(params.aoe_radius, 143.0);
+        assert_eq!(params.cast_range, 800.0);
+        assert_eq!(params.entries.len(), 1);
+    }
+
+    #[test]
+    fn item_distance_falloff_uses_the_item_cast_range() {
+        let effects: &'static [AbilityEffectEntry] = Box::leak(Box::new([AbilityEffectEntry {
+            trigger: AbilityTrigger::OnUse,
+            target: EffectTarget::CastTarget,
+            effect: AbilityEffect::Damage {
+                amount: RankValue::fixed(100.0),
+                damage_type: DamageType::Magical,
+                scaling: EffectScaling::DistanceFromCaster { falloff: 0.5 },
+            },
+        }]));
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with(
+            effects,
+            TargetType::Unit,
+            TargetTeam::Enemy,
+            600.0,
+        )]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(300.0, 0.0, 0.0));
+
+        request_item(&mut app, caster, 0, CastTarget::Unit(target));
+        for _ in 0..4 {
+            step(&mut app);
+        }
+
+        assert!(
+            (health(&app, target) - 925.0).abs() < 1e-3,
+            "300 / 600 of the range at falloff 0.5 leaves 75% of 100 damage, got {}",
+            1000.0 - health(&app, target)
+        );
     }
 
     fn write_attack_hit(app: &mut App, attacker: Entity, target: Entity) {

@@ -711,6 +711,15 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
     if scaling_value is not None and not scaling_type:
         report.error(row.file, row.line, "scaling_type", "", "required when scaling_value is set")
         return None
+    if ctx.kind == "item" and scaling_type == "distance":
+        report.error(
+            row.file,
+            row.line,
+            "scaling_type",
+            scaling_type,
+            "distance scaling is ability-only (items have no rank-scaled cast range)",
+        )
+        return None
     scaling = "EffectScaling::None"
     if scaling_type:
         scaling = SCALING_TYPES[scaling_type].format(v=f32(scaling_value))

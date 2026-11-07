@@ -10,8 +10,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from generator_common import (  # noqa: E402
     ActivationSpec,
+    EffectContext,
+    EffectRow,
     Report,
     Row,
+    effect_to_rust,
     parse_activation_spec,
     validate_activation,
 )
@@ -65,6 +68,44 @@ class ValidateActivationTests(unittest.TestCase):
         validate_activation(row({"target_type": "point", "target_team": "enemy"}), spec, kind="item", ability_type=None, report=report)
         self.assertEqual(len(report.errors), 1)
         self.assertIn("cast_range", report.errors[0].field or "")
+
+
+class ItemEffectScalingTests(unittest.TestCase):
+    @staticmethod
+    def _damage_row(kind: str, scaling_type: str) -> tuple[EffectRow, EffectContext]:
+        cells = {
+            "item_id": "potion",
+            "effect_index": "0",
+            "trigger": "on_use",
+            "effect_target": "owner",
+            "effect_type": "damage",
+            "value": "10",
+            "damage_type": "magical",
+            "scaling_type": scaling_type,
+            "scaling_value": "0.5" if scaling_type else "",
+        }
+        effect = EffectRow(row(cells), "potion", 0, "on_use", "owner", "damage")
+        ctx = EffectContext(
+            kind=kind,
+            owner_id="potion",
+            levels=None if kind == "item" else 1,
+            center_for={"on_use": "Caster"},
+        )
+        return effect, ctx
+
+    def test_item_distance_scaling_rejected(self) -> None:
+        report = Report()
+        effect, ctx = self._damage_row("item", "distance")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertEqual(len(report.errors), 1)
+        self.assertEqual(report.errors[0].field, "scaling_type")
+        self.assertIn("ability-only", report.errors[0].message)
+
+    def test_item_other_scaling_still_accepted(self) -> None:
+        report = Report()
+        effect, ctx = self._damage_row("item", "strength")
+        self.assertIsNotNone(effect_to_rust(effect, ctx, report))
+        self.assertFalse(report.errors)
 
 
 class ParseActivationSpecTests(unittest.TestCase):
