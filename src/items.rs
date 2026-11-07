@@ -3,10 +3,11 @@
 use bevy::prelude::*;
 
 use crate::abilities::definition::{
-    AbilityEffect, AbilityEffectEntry, AbilityTrigger, AreaRadius, Attribute, DisplacementKind,
-    EffectScaling, EffectTarget, PassiveStat, RankValue, StatusSpec,
+    AbilityEffect, AbilityEffectEntry, AbilityTrigger, AreaRadius, Attribute, EffectScaling,
+    EffectTarget, PassiveStat, RankValue,
 };
 use crate::abilities::effects::{AbilityTriggerEvent, EffectSource, TriggerContext};
+use crate::abilities::tooltip;
 use crate::actions::{
     ActionCooldown, ActionCost, ActionFiredEvent, ActionId, ActionSpec, DisableRule, TargetTeam,
     TargetType,
@@ -14,12 +15,11 @@ use crate::actions::{
 use crate::basic_attack::{BasicAttackImpactEvent, BasicAttackReleaseEvent};
 use crate::combat::flat_distance;
 use crate::components::{
-    CastTarget, CombatStats, DamageType, Health, HeroAttributes, Lifetime, Mana, PlayerHero,
-    PlayerWallet, SpellFx, Team,
+    CastTarget, CombatStats, Health, HeroAttributes, Lifetime, Mana, PlayerHero, PlayerWallet,
+    SpellFx, Team,
 };
 use crate::resources::SharedAssets;
 use crate::scale;
-use crate::status::DispelStrength;
 
 pub struct ItemsPlugin;
 
@@ -671,15 +671,7 @@ impl ItemId {
                 body.push_str(&format!("\n{line}"));
             }
         }
-        let mut effects = Vec::new();
-        for entry in def.effects {
-            if entry.trigger == AbilityTrigger::Passive {
-                continue;
-            }
-            if let Some(line) = describe_item_effect(entry) {
-                effects.push(line);
-            }
-        }
+        let effects: Vec<String> = def.effects.iter().flat_map(item_effect_lines).collect();
         if !effects.is_empty() {
             body.push_str("\n\nEffects:");
             for line in effects {
@@ -844,172 +836,60 @@ impl ItemId {
 
 fn passive_stat_lines(passives: &ItemPassives) -> Vec<String> {
     let rows = [
-        (passives.max_health, "Health"),
-        (passives.health_regen, "Health regen"),
-        (passives.max_mana, "Mana"),
-        (passives.mana_regen, "Mana regen"),
-        (passives.attack_damage, "Attack damage"),
-        (passives.attack_speed_flat, "Attack speed"),
-        (passives.armor, "Armor"),
-        (passives.magic_resist, "Magic resist"),
-        (passives.move_speed, "Move speed"),
-        (passives.strength, "Strength"),
-        (passives.agility, "Agility"),
-        (passives.intelligence, "Intelligence"),
+        (passives.max_health, PassiveStat::MaxHealth),
+        (passives.health_regen, PassiveStat::HealthRegen),
+        (passives.max_mana, PassiveStat::MaxMana),
+        (passives.mana_regen, PassiveStat::ManaRegen),
+        (passives.attack_damage, PassiveStat::AttackDamage),
+        (passives.attack_speed_flat, PassiveStat::AttackSpeed),
+        (passives.armor, PassiveStat::Armor),
+        (passives.magic_resist, PassiveStat::MagicResist),
+        (passives.move_speed, PassiveStat::MoveSpeed),
+        (
+            passives.strength,
+            PassiveStat::Attribute(Attribute::Strength),
+        ),
+        (passives.agility, PassiveStat::Attribute(Attribute::Agility)),
+        (
+            passives.intelligence,
+            PassiveStat::Attribute(Attribute::Intelligence),
+        ),
     ];
     rows.into_iter()
         .filter(|(value, _)| value.abs() >= 0.05)
-        .map(|(value, label)| format!("{:+.0} {label}", value))
+        .map(|(value, stat)| format!("{:+.0} {}", value, tooltip::passive_name(stat)))
         .collect()
 }
 
-fn describe_item_effect(entry: &AbilityEffectEntry) -> Option<String> {
-    let tag = match entry.trigger {
-        AbilityTrigger::OnUse => "Use",
-        AbilityTrigger::OnChannelEnd => "Channel end",
-        AbilityTrigger::OnChannelInterrupted => "Channel interrupted",
-        AbilityTrigger::OnAttack => "On attack",
-        AbilityTrigger::OnAttackHit => "On attack hit",
-        AbilityTrigger::OnDamageTaken => "When damaged",
-        AbilityTrigger::OnKill => "On kill",
-        AbilityTrigger::OnDeath => "On death",
-        AbilityTrigger::Passive => return None,
-        other => return Some(format!("{other:?}")),
-    };
-    let detail = match entry.effect {
-        AbilityEffect::Damage {
-            amount,
-            damage_type,
-            scaling,
-        } => {
-            let mut line = format!(
-                "Deal {} {} damage",
-                fmt_rank(amount),
-                damage_label(damage_type)
-            );
-            if let Some(note) = scaling_label(scaling) {
-                line.push_str(&format!(" ({note})"));
-            }
-            line.push_str(&target_suffix(&entry.target));
-            line
-        }
-        AbilityEffect::Heal { amount, scaling } => {
-            let mut line = format!("Heal {}", fmt_rank(amount));
-            if let Some(note) = scaling_label(scaling) {
-                line.push_str(&format!(" ({note})"));
-            }
-            line
-        }
-        AbilityEffect::RestoreMana { amount } => format!("Restore {} mana", fmt_rank(amount)),
-        AbilityEffect::ApplyStatus { status, duration } => match status {
-            StatusSpec::Slow { percent } => {
-                format!("Slow {}% for {}s", fmt_rank(percent), fmt_rank(duration))
-            }
-            StatusSpec::Stun => format!("Stun for {}s", fmt_rank(duration)),
-            StatusSpec::Root => format!("Root for {}s", fmt_rank(duration)),
-            StatusSpec::Silence => format!("Silence for {}s", fmt_rank(duration)),
-            StatusSpec::Disarm => format!("Disarm for {}s", fmt_rank(duration)),
-            StatusSpec::Modifier {
-                armor,
-                magic_resist,
-                move_speed,
-                attack_damage,
-                ..
-            } => {
-                let mut parts = Vec::new();
-                if armor != RankValue::ZERO {
-                    parts.push(format!("{:+.0} armor", armor.at(1)));
-                }
-                if magic_resist != RankValue::ZERO {
-                    parts.push(format!("{:+.0} magic resist", magic_resist.at(1)));
-                }
-                if move_speed != RankValue::ZERO {
-                    parts.push(format!("{:+.0} move speed", move_speed.at(1)));
-                }
-                if attack_damage != RankValue::ZERO {
-                    parts.push(format!("{:+.0} attack damage", attack_damage.at(1)));
-                }
-                format!("{} for {}s", parts.join(", "), fmt_rank(duration))
-            }
-            other => format!("{other:?} for {}s", fmt_rank(duration)),
-        },
-        AbilityEffect::Displace {
-            kind,
-            distance,
-            duration,
-        } => {
-            let name = match kind {
-                DisplacementKind::Knockback => "Knockback",
-                DisplacementKind::Pull => "Pull",
-            };
-            match distance {
-                Some(distance) => {
-                    format!("{name} {} over {}s", fmt_rank(distance), fmt_rank(duration))
-                }
-                None => format!("{name} to the caster over {}s", fmt_rank(duration)),
-            }
-        }
-        AbilityEffect::Dispel { kind, strength } => {
-            let tier = match strength {
-                DispelStrength::Basic => "Basic",
-                DispelStrength::Strong => "Strong",
-            };
-            format!("{tier} dispel {kind:?}s")
-        }
-        AbilityEffect::RemoveStatus { id } => format!("Remove {id}"),
-        AbilityEffect::Teleport => "Teleport to the target point".to_string(),
-        AbilityEffect::Custom { id, .. } => format!("Custom: {id}"),
-        AbilityEffect::PassiveStat { .. } => return None,
-    };
-    Some(format!("{tag}: {detail}"))
-}
-
-fn target_suffix(target: &EffectTarget) -> String {
-    match target {
-        EffectTarget::UnitsInRadius { radius, team, .. } => {
-            let reach = match radius {
-                AreaRadius::Ability => "the area".into(),
-                AreaRadius::Fixed(value) => format!("{}", fmt_rank(*value)),
-            };
-            format!(" to {team:?} in {reach}")
-        }
-        _ => String::new(),
+/// Tooltip lines for one non-passive effect entry, from the same describer abilities
+/// use: `"{Tag}: {label} {value}"` per row, then the notes.
+fn item_effect_lines(entry: &AbilityEffectEntry) -> Vec<String> {
+    if entry.trigger == AbilityTrigger::Passive {
+        return Vec::new();
     }
+    let tag = capitalized(tooltip::trigger_tag(entry.trigger));
+    let (rows, notes) = tooltip::describe_effect(entry);
+    let mut lines: Vec<String> = rows
+        .into_iter()
+        .map(|row| match row.value {
+            Some(value) => format!("{tag}: {} {}", row.label, tooltip::fmt_num(value.at(1))),
+            None => format!("{tag}: {}", row.label),
+        })
+        .collect();
+    lines.extend(
+        tooltip::area_note(&entry.target)
+            .into_iter()
+            .chain(notes)
+            .map(|note| format!("{tag}: {note}")),
+    );
+    lines
 }
 
-fn scaling_label(scaling: EffectScaling) -> Option<String> {
-    match scaling {
-        EffectScaling::None => None,
-        EffectScaling::CasterAttackDamage(ratio) => Some(format!("+ {ratio:.2}× attack damage")),
-        EffectScaling::CasterAttribute(attribute, ratio) => {
-            Some(format!("+ {ratio:.2}× {attribute:?}"))
-        }
-        EffectScaling::TargetHealthBelow(fraction) => {
-            Some(format!("below {:.0}% health", fraction * 100.0))
-        }
-        EffectScaling::TargetMissingHealth(ratio) => Some(format!("+ {ratio:.2}× missing health")),
-        EffectScaling::TargetMaxHealth(ratio) => Some(format!("+ {ratio:.2}× max health")),
-        EffectScaling::TargetCurrentHealth(ratio) => Some(format!("+ {ratio:.2}× current health")),
-        EffectScaling::DistanceFromCaster { falloff } => {
-            Some(format!("−{:.0}% at max range", falloff * 100.0))
-        }
-    }
-}
-
-fn damage_label(damage_type: DamageType) -> &'static str {
-    match damage_type {
-        DamageType::Physical => "physical",
-        DamageType::Magical => "magical",
-        DamageType::Pure => "pure",
-    }
-}
-
-fn fmt_rank(value: RankValue) -> String {
-    let number = value.at(1);
-    if (number - number.round()).abs() < 0.05 {
-        format!("{}", number.round() as i32)
-    } else {
-        format!("{number:.1}")
+fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
     }
 }
 
@@ -2288,6 +2168,46 @@ mod tests {
         a += b;
         assert_eq!(a.armor, 5.0);
         assert_eq!(a.damage_reflect, 0.1);
+    }
+
+    #[test]
+    fn item_and_ability_describe_the_same_effect_with_the_same_label() {
+        use crate::abilities::definition::AbilityDefinition;
+        use crate::components::DamageType;
+
+        let damage = AbilityEffect::Damage {
+            amount: RankValue::fixed(50.0),
+            damage_type: DamageType::Magical,
+            scaling: EffectScaling::None,
+        };
+        let on_cast = AbilityEffectEntry {
+            trigger: AbilityTrigger::OnCast,
+            target: EffectTarget::Caster,
+            effect: damage,
+        };
+        let on_use = AbilityEffectEntry {
+            trigger: AbilityTrigger::OnUse,
+            ..on_cast
+        };
+        let (ability_rows, _) = tooltip::describe_effect(&on_cast);
+        let (item_rows, _) = tooltip::describe_effect(&on_use);
+        assert_eq!(
+            ability_rows, item_rows,
+            "the label does not depend on the trigger"
+        );
+        assert_eq!(ability_rows[0].label, "Magical damage");
+
+        let mut def = AbilityDefinition::new(AbilityId::Bolt);
+        def.effects.push(on_cast);
+        let ability_text: String = tooltip::ability_tooltip_bits(&def, 1)
+            .iter()
+            .map(|bit| bit.text.as_str())
+            .collect();
+        assert!(
+            ability_text.contains("Magical damage (on cast): 50"),
+            "{ability_text}"
+        );
+        assert_eq!(item_effect_lines(&on_use), vec!["Use: Magical damage 50"]);
     }
 
     #[test]
