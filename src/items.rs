@@ -39,7 +39,6 @@ impl Plugin for ItemsPlugin {
                 Update,
                 (
                     tick_item_cooldowns,
-                    item_attack_triggers,
                     try_purchase_from_ui,
                     try_sell_from_ui,
                     try_undo_from_ui,
@@ -1197,7 +1196,7 @@ fn item_trigger(
 
 /// `OnAttack` (release) and `OnAttackHit` (impact) for every distinct item the
 /// attacker owns that has entries for the trigger.
-fn item_attack_triggers(
+pub(crate) fn item_attack_triggers(
     mut releases: MessageReader<BasicAttackReleaseEvent>,
     mut impacts: MessageReader<BasicAttackImpactEvent>,
     owners: Query<(&Transform, &Team, &Inventory)>,

@@ -37,10 +37,10 @@ use crate::components::{
     AbilityLoadout, CastTarget, Ground, Lifetime, Mana, PlayerHero, SpellFx, Team,
 };
 use crate::displacement::{DisplacementEvent, apply_displacement_events, tick_forced_movement};
-use crate::status::StatusEffects;
 use crate::picking::{PickableUnits, cursor_ground_hit, cursor_ray, ground_hit, pick_under_ray};
 use crate::resources::SharedAssets;
 use crate::scale;
+use crate::status::{StatusEffectEvent, StatusEffects, apply_status_effect_events};
 use crate::teleport::{
     TeleportCompletedEvent, TeleportEvent, TeleportRejectedEvent, apply_teleport_events,
 };
@@ -49,10 +49,9 @@ use casting::{AbilityCastEvent, action_channel_end_triggers, emit_ability_casts}
 use catalog::{AbilityDefinitions, register_loadout_definitions, restore_ability_charges};
 use definition::{TargetTeam, TargetType};
 use effects::{
-    AbilityTriggerEvent, CustomAbilityEffects, HealEvent, ManaRestoreEvent,
-    apply_heal_events, apply_mana_restore_events, resolve_ability_triggers,
+    AbilityTriggerEvent, CustomAbilityEffects, HealEvent, ManaRestoreEvent, apply_heal_events,
+    apply_mana_restore_events, resolve_ability_triggers,
 };
-use crate::status::{StatusEffectEvent, apply_status_effect_events};
 use mechanics::{CustomAbilityBehaviors, execute_ability_casts, projectile_hit_triggers};
 use passive::{sync_ability_passives, tick_toggle_upkeep};
 
@@ -96,6 +95,7 @@ impl Plugin for AbilitiesPlugin {
                     execute_ability_casts,
                     action_channel_end_triggers,
                     projectile_hit_triggers,
+                    crate::items::item_attack_triggers,
                     resolve_ability_triggers,
                     spawn_requested_projectiles,
                     (
@@ -634,6 +634,8 @@ mod tests {
             .add_message::<DamageEvent>()
             .add_message::<SpawnProjectileEvent>()
             .add_message::<ProjectileHitEvent>()
+            .add_message::<crate::basic_attack::BasicAttackReleaseEvent>()
+            .add_message::<crate::basic_attack::BasicAttackImpactEvent>()
             .add_systems(
                 Update,
                 (
@@ -646,6 +648,7 @@ mod tests {
                     execute_ability_casts,
                     action_channel_end_triggers,
                     projectile_hit_triggers,
+                    crate::items::item_attack_triggers,
                     resolve_ability_triggers,
                     apply_heal_events,
                     apply_mana_restore_events,
@@ -756,6 +759,88 @@ mod tests {
             description: "test",
             effects,
         }
+    }
+
+    fn attack_hit_heal_item() -> ItemDefinition {
+        static EFFECTS: std::sync::OnceLock<&'static [AbilityEffectEntry]> =
+            std::sync::OnceLock::new();
+        let effects = EFFECTS.get_or_init(|| {
+            Box::leak(Box::new([AbilityEffectEntry {
+                trigger: AbilityTrigger::OnAttackHit,
+                target: EffectTarget::Caster,
+                effect: AbilityEffect::Heal {
+                    amount: RankValue::fixed(50.0),
+                    scaling: EffectScaling::None,
+                },
+            }]))
+        });
+        ItemDefinition {
+            id: ItemId::HeartwoodBand,
+            name: "Attack Heal",
+            short_label: "AH",
+            item_type: ItemType::Miscellaneous,
+            cost: 1,
+            sell_value: 0,
+            tier: 1,
+            rarity: ItemRarity::Common,
+            max_stack: 1,
+            consumable: false,
+            max_charges: None,
+            cooldown: 0.0,
+            activation: ItemActivation {
+                target_type: TargetType::NoTarget,
+                target_team: TargetTeam::SelfOnly,
+                cast_range: 0.0,
+                cast_time: 0.0,
+                channel_time: 0.0,
+                mana_cost: 0.0,
+            },
+            components: &[],
+            color: [1.0, 1.0, 1.0],
+            description: "test",
+            effects,
+        }
+    }
+
+    fn write_attack_hit(app: &mut App, attacker: Entity, target: Entity) {
+        app.world_mut()
+            .write_message(crate::basic_attack::BasicAttackImpactEvent {
+                attacker,
+                attacker_team: Team::Radiant,
+                target,
+                damage: 10.0,
+            });
+    }
+
+    #[test]
+    fn item_on_attack_hit_resolves_in_the_same_frame() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([attack_hit_heal_item()]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 500.0;
+
+        write_attack_hit(&mut app, caster, target);
+        step(&mut app);
+
+        assert_eq!(health(&app, caster), 550.0);
+    }
+
+    #[test]
+    fn two_copies_of_one_item_fire_one_attack_trigger() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([attack_hit_heal_item()]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 500.0;
+
+        write_attack_hit(&mut app, caster, target);
+        step(&mut app);
+
+        assert_eq!(health(&app, caster), 550.0, "one trigger, not one per copy");
     }
 
     fn request(app: &mut App, caster: Entity, slot: usize, target: CastTarget) {
