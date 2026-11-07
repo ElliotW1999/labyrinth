@@ -660,7 +660,7 @@ mod tests {
         let mut app = App::new();
         app.add_message::<StatusEffectEvent>().add_systems(
             Update,
-            crate::abilities::effects::apply_status_effect_events,
+            apply_status_effect_events,
         );
         let victim = app
             .world_mut()

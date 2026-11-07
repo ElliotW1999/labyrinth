@@ -168,7 +168,7 @@ impl CombatStats {
     }
 
     /// Turn rate after stacking status slow on top of the hero/creep base in `turn_rate`.
-    pub fn effective_turn_rate(&self, statuses: Option<&crate::items::StatusEffects>) -> f32 {
+    pub fn effective_turn_rate(&self, statuses: Option<&crate::status::StatusEffects>) -> f32 {
         let base = self.turn_rate.max(0.01);
         let slow_pct = statuses
             .map(|s| {

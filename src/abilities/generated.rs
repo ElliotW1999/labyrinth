@@ -15,9 +15,9 @@ use super::definition::{
 #[allow(unused_imports)]
 use crate::components::{AbilityId, DamageType};
 #[allow(unused_imports)]
-use crate::items::{DispelStrength, StatusKind};
-#[allow(unused_imports)]
 use crate::scale;
+#[allow(unused_imports)]
+use crate::status::{DispelStrength, StatusKind};
 
 /// CSV-authored definition for `id`, if any.
 pub fn definition(id: AbilityId) -> Option<AbilityDefinition> {

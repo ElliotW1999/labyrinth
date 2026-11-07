@@ -15,7 +15,8 @@ use crate::components::{
     CombatStats, Health, Mana, MoveTarget, Team,
 };
 use crate::dimensions::bounds_of;
-use crate::items::{Inventory, StatusEffects, commit_item, item_action_spec};
+use crate::items::{Inventory, commit_item, item_action_spec};
+use crate::status::StatusEffects;
 
 /// Resolves an [`ActionSource`] to its [`ActionSpec`] and commits it, delegating the
 /// source-specific rules to the owning layer.

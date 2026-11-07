@@ -19,15 +19,7 @@ use crate::components::{
 };
 use crate::resources::SharedAssets;
 use crate::scale;
-
-// Temporary re-exports while importers migrate to `crate::status` (removed in step 2b).
-#[allow(unused_imports)]
-pub use crate::status::{
-    DispelStrength, DispelType, StatusEffect, StatusEffects, StatusKind, apply_debuff_immunity,
-    apply_forceful, apply_phased, apply_status, apply_stun, status_dispel_matches,
-};
-#[allow(unused_imports)]
-pub(crate) use crate::status::{add_status_stat_delta, subtract_status_stat_delta};
+use crate::status::DispelStrength;
 
 pub struct ItemsPlugin;
 
@@ -1829,6 +1821,7 @@ mod tests {
     use crate::components::{AbilityId, AbilityLoadout, MoveTarget};
     use crate::displacement::DisplacementEvent;
     use crate::resources::SharedAssets;
+    use crate::status::{StatusEffect, StatusEffects};
     use crate::teleport::TeleportEvent;
 
     #[test]
@@ -2386,7 +2379,7 @@ mod tests {
             .add_message::<AbilityTriggerEvent>()
             .add_message::<HealEvent>()
             .add_message::<crate::abilities::effects::ManaRestoreEvent>()
-            .add_message::<crate::abilities::effects::StatusEffectEvent>()
+            .add_message::<crate::status::StatusEffectEvent>()
             .add_message::<crate::combat::DamageEvent>()
             .add_message::<DisplacementEvent>()
             .add_message::<TeleportEvent>()

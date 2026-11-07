@@ -20,7 +20,7 @@ use bevy::prelude::*;
 use crate::components::{AttackMoveOrder, CollisionRadius, CombatStats, Health, MoveTarget};
 use crate::dimensions::collision_of;
 use crate::displacement::ForcedMovement;
-use crate::items::StatusEffects;
+use crate::status::StatusEffects;
 use crate::navigation::attack_position::AttackPositionGoal;
 use crate::navigation::{MobileFilter, NavGrid, NavPath, NavSteering, flat};
 
@@ -179,7 +179,7 @@ mod tests {
 
     use super::*;
     use crate::components::{Ancient, Mana, Obstacle, Team, Tower};
-    use crate::items::{StatusEffects, apply_phased};
+    use crate::status::{StatusEffects, apply_phased};
     use crate::movement::{MovementPlugin, SimSet};
     use crate::scale;
 

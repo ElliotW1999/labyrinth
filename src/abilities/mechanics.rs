@@ -18,13 +18,14 @@ use super::casting::AbilityCastEvent;
 use super::catalog::AbilityDefinitions;
 use super::definition::{AbilityMechanic, AbilityTrigger, AreaCenter, AreaRadius, RingStyle};
 use super::effects::{
-    AbilityTriggerEvent, EffectSource, StatusChange, StatusEffectEvent, TriggerContext,
+    AbilityTriggerEvent, EffectSource, TriggerContext,
 };
+use crate::status::{StatusChange, StatusEffectEvent};
 use crate::combat::{ProjectileHitEvent, ProjectilePayload, SpawnProjectileEvent, flat_distance};
 use crate::components::{
     AbilityId, AttackMoveOrder, AttackTarget, CombatStats, Health, MoveTarget, Team,
 };
-use crate::items::StatusEffect;
+use crate::status::StatusEffect;
 use crate::resources::SharedAssets;
 
 /// Everything a mechanic or custom behavior needs to know about one cast.

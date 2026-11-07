@@ -18,7 +18,7 @@ use crate::components::{
     Health, Mana, MoveTarget, Obstacle, Team, Tower,
 };
 use crate::dimensions::{center_distance, edge_distance};
-use crate::items::StatusEffects;
+use crate::status::StatusEffects;
 use crate::movement::{MovementPlugin, SimSet};
 use crate::unit_commands::{CommandQueue, IssueCommand, UnitCommand, UnitCommandsPlugin};
 

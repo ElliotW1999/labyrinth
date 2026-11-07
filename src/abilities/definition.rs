@@ -6,7 +6,7 @@ use bevy::prelude::Entity;
 
 use crate::components::AbilityId;
 use crate::components::DamageType;
-use crate::items::{DispelType, StatusEffect, StatusKind};
+use crate::status::{DispelType, StatusEffect, StatusKind};
 
 /// A value that scales with ability level: `clamp(base + per_rank × rank, min, max)`,
 /// or an explicit per-level table (`75|150|225|300` in the generator CSVs).
@@ -404,7 +404,7 @@ pub enum AbilityEffect {
     /// Remove every status of `kind` (reverting their stat modifiers).
     Dispel {
         kind: StatusKind,
-        strength: crate::items::DispelStrength,
+        strength: crate::status::DispelStrength,
     },
     /// Remove statuses with this id (e.g. `"stun"`, `"slow"`).
     RemoveStatus {

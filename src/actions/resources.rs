@@ -2,7 +2,7 @@
 
 use super::ActionError;
 use crate::components::Mana;
-use crate::items::StatusEffects;
+use crate::status::StatusEffects;
 
 /// What one activation spends when it commits.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]

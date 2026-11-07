@@ -415,7 +415,8 @@ src/
   progression.rs      Hero XP, attributes, and level-up growth
   actions/            Shared activation pipeline: targeting, range, cast point, channel, costs, cooldowns, charges
   abilities/          Ability definitions, ability cast layer, mechanics → triggers → effects, generated.rs, targeting UI
-  items.rs            Shop, inventory, sell, actives, status effects
+  items.rs            Shop, inventory, sell, actives
+  status.rs           Buffs and debuffs, dispel, shields, DoT ticking (`StatusPlugin`)
   item_catalog.rs     Generated ItemDefinitions (ItemGenerator)
   displacement.rs     Knockback / pull forced movement
   teleport.rs         Teleport effect: destination validation, instant relocation, completion / rejection events

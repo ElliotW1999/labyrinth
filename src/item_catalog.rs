@@ -10,9 +10,9 @@ use crate::abilities::definition::{
 #[allow(unused_imports)]
 use crate::components::DamageType;
 #[allow(unused_imports)]
-use crate::items::{
-    DispelStrength, ItemActivation, ItemDefinition, ItemId, ItemRarity, ItemType, StatusKind,
-};
+use crate::items::{ItemActivation, ItemDefinition, ItemId, ItemRarity, ItemType};
+#[allow(unused_imports)]
+use crate::status::{DispelStrength, StatusKind};
 
 pub fn definition(id: ItemId) -> &'static ItemDefinition {
     match id {

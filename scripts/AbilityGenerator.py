@@ -110,7 +110,7 @@ use super::definition::{
 #[allow(unused_imports)]
 use crate::components::{AbilityId, DamageType};
 #[allow(unused_imports)]
-use crate::items::{DispelStrength, StatusKind};
+use crate::status::{DispelStrength, StatusKind};
 #[allow(unused_imports)]
 use crate::scale;
 """

@@ -20,17 +20,12 @@ use super::definition::{
 };
 use crate::actions::team_allows;
 use crate::combat::DamageEvent;
-use crate::components::{
-    AbilityId, BoundRadius, CombatStats, Health, HeroAttributes, Mana, Team,
-};
+use crate::components::{AbilityId, BoundRadius, CombatStats, Health, HeroAttributes, Mana, Team};
 use crate::dimensions::{area_contains, bounds_of};
 use crate::displacement::DisplacementEvent;
 use crate::items::ItemId;
+use crate::status::{StatusChange, StatusEffectEvent};
 use crate::teleport::TeleportEvent;
-
-// Temporary re-exports while importers migrate to `crate::status` (removed in step 2b).
-#[allow(unused_imports)]
-pub use crate::status::{StatusChange, StatusEffectEvent, apply_status_effect_events};
 
 /// What owns the effect entries a trigger resolves against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

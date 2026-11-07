@@ -143,7 +143,7 @@ mod tests {
         ActionCooldown, ActionError, CasterInfo, UnitInfo, check_ready, resolve_target,
     };
     use crate::components::Mana;
-    use crate::items::StatusEffects;
+    use crate::status::StatusEffects;
 
     #[derive(Debug, PartialEq)]
     enum Unusable {

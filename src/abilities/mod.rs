@@ -37,7 +37,7 @@ use crate::components::{
     AbilityLoadout, CastTarget, Ground, Lifetime, Mana, PlayerHero, SpellFx, Team,
 };
 use crate::displacement::{DisplacementEvent, apply_displacement_events, tick_forced_movement};
-use crate::items::StatusEffects;
+use crate::status::StatusEffects;
 use crate::picking::{PickableUnits, cursor_ground_hit, cursor_ray, ground_hit, pick_under_ray};
 use crate::resources::SharedAssets;
 use crate::scale;
@@ -49,10 +49,10 @@ use casting::{AbilityCastEvent, action_channel_end_triggers, emit_ability_casts}
 use catalog::{AbilityDefinitions, register_loadout_definitions, restore_ability_charges};
 use definition::{TargetTeam, TargetType};
 use effects::{
-    AbilityTriggerEvent, CustomAbilityEffects, HealEvent, ManaRestoreEvent, StatusEffectEvent,
-    apply_heal_events, apply_mana_restore_events, apply_status_effect_events,
-    resolve_ability_triggers,
+    AbilityTriggerEvent, CustomAbilityEffects, HealEvent, ManaRestoreEvent,
+    apply_heal_events, apply_mana_restore_events, resolve_ability_triggers,
 };
+use crate::status::{StatusEffectEvent, apply_status_effect_events};
 use mechanics::{CustomAbilityBehaviors, execute_ability_casts, projectile_hit_triggers};
 use passive::{sync_ability_passives, tick_toggle_upkeep};
 
@@ -1496,7 +1496,7 @@ mod tests {
             .get_mut::<StatusEffects>(caster)
             .unwrap()
             .effects
-            .push(crate::items::StatusEffect::stunned(1.0));
+            .push(crate::status::StatusEffect::stunned(1.0));
         step(&mut app);
         let ends = app.world().resource::<Messages<ActionChannelEndEvent>>();
         let ends: Vec<_> = ends

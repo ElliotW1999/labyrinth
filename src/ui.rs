@@ -13,8 +13,9 @@ use crate::components::{
 use crate::heroes::HeroKind;
 use crate::items::{
     Inventory, InventoryContextMenu, ItemId, ItemShop, PurchaseItemRequest, SellItemRequest,
-    ShopTab, ShopUiState, ShopUndoLog, StatusEffects, StatusKind, UndoShopRequest,
+    ShopTab, ShopUiState, ShopUndoLog, UndoShopRequest,
 };
+use crate::status::{StatusEffects, StatusKind};
 use crate::menu::MainMenuState;
 use crate::net::NetStatus;
 use crate::resources::MatchConfig;

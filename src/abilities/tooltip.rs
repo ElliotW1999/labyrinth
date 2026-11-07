@@ -7,7 +7,7 @@ use super::definition::{
     DisplacementKind, EffectScaling, RankValue, StatusSpec, TargetTeam, TargetType,
 };
 use crate::components::DamageType;
-use crate::items::StatusKind;
+use crate::status::StatusKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TipTone {
@@ -300,8 +300,8 @@ fn effect_notes(trigger: AbilityTrigger, effect: &AbilityEffect) -> Vec<String> 
         }
         AbilityEffect::Dispel { kind, strength } => {
             let tier = match strength {
-                crate::items::DispelStrength::Basic => "basic",
-                crate::items::DispelStrength::Strong => "strong",
+                crate::status::DispelStrength::Basic => "basic",
+                crate::status::DispelStrength::Strong => "strong",
             };
             match kind {
                 StatusKind::Buff => vec![format!("{tier} dispel buffs ({tag})")],

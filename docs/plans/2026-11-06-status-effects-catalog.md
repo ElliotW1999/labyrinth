@@ -8,7 +8,7 @@
 
 ## Executive conclusion
 
-The game already has a **single shared status pipeline**: `StatusEffect` + `StatusEffects` on units (`src/items.rs`), authoring via `StatusSpec` (`src/abilities/definition.rs`), execution through `StatusEffectEvent` / `StatusChange` (`src/abilities/effects.rs`), and consumption in movement (`src/movement.rs`), basic attacks (`src/basic_attack.rs`), activation gating (`src/actions/resources.rs`), teleport collision (`src/teleport.rs`), and tests in `src/abilities/mod.rs`.
+The game already has a **single shared status pipeline**: `StatusEffect` + `StatusEffects` on units (`src/status.rs`), authoring via `StatusSpec` (`src/abilities/definition.rs`), execution through `StatusEffectEvent` / `StatusChange` (`src/status.rs`), and consumption in movement (`src/movement.rs`), basic attacks (`src/basic_attack.rs`), activation gating (`src/actions/resources.rs`), teleport collision (`src/teleport.rs`), and tests in `src/abilities/mod.rs`.
 
 Gaps vs a full MOBA surface:
 
@@ -161,3 +161,5 @@ Any new `StatusSpec` variant must be reflected in:
 ## File index (audit trace)
 
 `src/items.rs`, `src/abilities/definition.rs`, `src/abilities/effects.rs`, `src/components.rs`, `src/input.rs`, `src/movement.rs`, `src/basic_attack.rs`, `src/combat.rs`, `src/fog.rs`, `src/picking.rs`, `src/actions/resources.rs`, `src/actions/pipeline.rs`, `src/teleport.rs`, `src/displacement.rs`, `scripts/generator_common.py`.
+
+Note (2026-11-07): the status types, `tick_status_effects`, `StatusChange` / `StatusEffectEvent` and `apply_status_effect_events` now live in `src/status.rs` (`StatusPlugin`); references to `src/items.rs` and `src/abilities/effects.rs` above for those items now mean `src/status.rs`.

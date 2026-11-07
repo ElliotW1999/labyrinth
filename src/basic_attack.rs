@@ -25,7 +25,7 @@ use crate::components::{
 };
 use crate::dimensions::{area_contains, bounds_of, edge_distance, within_range};
 use crate::facing::turn_toward;
-use crate::items::StatusEffects;
+use crate::status::StatusEffects;
 use crate::resources::SharedAssets;
 use crate::scale;
 

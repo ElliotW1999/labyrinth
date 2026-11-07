@@ -14,7 +14,7 @@ use crate::components::{
     HeroAttributes, HeroProgress, Lifetime, PlayerHero, PlayerWallet, Projectile, ProjectileHome,
     ProjectileStyle, ShieldPool, Team, XpBounty,
 };
-use crate::items::{StatusEffects, subtract_status_stat_delta};
+use crate::status::{StatusEffects, subtract_status_stat_delta};
 use crate::dimensions::{area_contains, bounds_of};
 use crate::progression::add_xp;
 use crate::resources::SharedAssets;
