@@ -1638,7 +1638,7 @@ fn item_use_trigger(
     }
 }
 
-/// Build an item `OnChannelEnd` trigger (resolved in `abilities::casting::ability_channel_end_triggers`).
+/// Build an item `OnChannelEnd` trigger (resolved in `abilities::casting::action_channel_end_triggers`).
 pub fn item_channel_end_context(
     item: ItemId,
     owner: Entity,
@@ -1730,7 +1730,9 @@ fn item_attack_triggers(
 fn spawn_item_use_fx(commands: &mut Commands, assets: &SharedAssets, item: ItemId, at: Vec3) {
     for entry in item.definition().effects_for(AbilityTrigger::OnUse) {
         match entry.target {
-            EffectTarget::Caster => spawn_heal_fx(commands, assets, at),
+            EffectTarget::Caster if matches!(entry.effect, AbilityEffect::Heal { .. }) => {
+                spawn_heal_fx(commands, assets, at)
+            }
             EffectTarget::UnitsInRadius {
                 radius: AreaRadius::Fixed(radius),
                 ..
@@ -3178,6 +3180,50 @@ mod tests {
             fired[0].source,
             crate::abilities::effects::EffectSource::Item(ItemId::VialOfLight)
         );
+    }
+
+    fn heal_fx_count(app: &mut App) -> usize {
+        let mut query = app.world_mut().query::<&Name>();
+        query
+            .iter(app.world())
+            .filter(|name| name.as_str() == "Item Heal FX")
+            .count()
+    }
+
+    #[test]
+    fn vial_use_spawns_heal_flash() {
+        let mut app = item_app();
+        let caster = spawn_caster(&mut app, 200.0);
+        give(&mut app, caster, ItemId::VialOfLight);
+
+        request(&mut app, caster, 0, CastTarget::None);
+        step(&mut app);
+
+        assert_eq!(heal_fx_count(&mut app), 1);
+    }
+
+    #[test]
+    fn blink_dagger_use_spawns_no_heal_flash() {
+        let mut app = item_app();
+        let caster = spawn_caster(&mut app, 200.0);
+        give(&mut app, caster, ItemId::BlinkDagger);
+
+        request(
+            &mut app,
+            caster,
+            0,
+            CastTarget::Point(Vec3::new(200.0, 0.0, 0.0)),
+        );
+        for _ in 0..10 {
+            step(&mut app);
+        }
+
+        assert!(
+            app.world().resource::<Messages<TeleportEvent>>().len() > 0
+                || slot(&app, caster, 0).unwrap().cooldown_remaining > 0.0,
+            "the blink must actually have been used"
+        );
+        assert_eq!(heal_fx_count(&mut app), 0);
     }
 
     #[test]

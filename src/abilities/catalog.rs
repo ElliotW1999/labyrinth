@@ -16,8 +16,8 @@ use super::definition::{
 use super::generated;
 use crate::components::{AbilityId, AbilityLoadout, DamageType};
 use crate::scale::{
-    self, ABILITY_BLINK_RANGE, ABILITY_DASH_RANGE, ABILITY_GROUND_AOE, ABILITY_GROUND_CAST_RANGE,
-    ABILITY_INSTANT_AOE, ABILITY_PROJECTILE_WIDTH, ABILITY_ULT_AOE, ABILITY_UNIT_CAST_RANGE,
+    self, ABILITY_DASH_RANGE, ABILITY_GROUND_AOE, ABILITY_GROUND_CAST_RANGE, ABILITY_INSTANT_AOE,
+    ABILITY_PROJECTILE_WIDTH, ABILITY_ULT_AOE, ABILITY_UNIT_CAST_RANGE,
 };
 
 /// Lookup from [`AbilityId`] to its definition. Built-ins are registered for every
@@ -164,12 +164,8 @@ fn handwritten(id: AbilityId) -> AbilityDefinition {
     let around_caster = EffectTarget::enemies_around(AreaCenter::Caster);
     let around_aim = EffectTarget::enemies_around(AreaCenter::Aim);
     match id {
-        AbilityId::Dash | AbilityId::Blink => {
-            let distance = if id == AbilityId::Blink {
-                RankValue::linear(ABILITY_BLINK_RANGE, 25.0)
-            } else {
-                RankValue::linear(ABILITY_DASH_RANGE, 30.0)
-            };
+        AbilityId::Dash => {
+            let distance = RankValue::linear(ABILITY_DASH_RANGE, 30.0);
             def.targeting(TargetType::Point, distance, RankValue::fixed(48.0))
                 .costs(
                     RankValue::linear(7.5, -0.35).at_least(4.0),
@@ -431,6 +427,17 @@ mod tests {
         assert_eq!(
             builtin(AbilityId::ArcMissile).target_type,
             TargetType::Point
+        );
+    }
+
+    #[test]
+    fn generated_blink_is_a_pure_teleport_definition() {
+        let blink = builtin(AbilityId::Blink);
+        assert!(blink.mechanics.is_empty());
+        assert!(
+            blink
+                .effects_for(AbilityTrigger::OnCast)
+                .any(|e| matches!(e.effect, AbilityEffect::Teleport { .. }))
         );
     }
 

@@ -211,7 +211,7 @@ IssueCommand (input / minimap / network host)
 - Ultimates: up to 4 ranks; unlocked at overall levels 6 / 12 / 18 / 24
 - Each rank scales damage, cooldown, range, and mana cost
 - **Unit-targeted** spells (Bolt, Execute) require clicking a creep or hero
-- **Seismic Slam**, **Arcane Lance**, **Cataclysm**, **Stone Skin**, **Overcharge** are generated from `data/abilities.csv` + `data/ability_effects.csv` (Stone Skin passive armor and Overcharge toggle upkeep are wired in `abilities/passive.rs`)
+- **Blink**, **Seismic Slam**, **Arcane Lance**, **Cataclysm**, **Stone Skin**, **Overcharge** are generated from `data/abilities.csv` + `data/ability_effects.csv` (Stone Skin passive armor and Overcharge toggle upkeep are wired in `abilities/passive.rs`). Seismic Slam, Arcane Lance, Cataclysm, Stone Skin and Overcharge are test content: they are not in any hero loadout
 
 ### Ability architecture
 
@@ -235,7 +235,7 @@ spell projectile → ProjectileHitEvent { primary, splashed } → OnProjectileHi
 - **Effects** (`abilities/effects.rs`): `resolve_ability_triggers` runs every entry tagged with the fired trigger. Targets: `Caster`, `CastTarget`, `TriggerUnit`, `AffectedUnits` (e.g. splash victims), `UnitsInRadius`. Effects: `Damage` (optional `EffectScaling`), `Heal`, `ApplyStatus`, `Dispel`, and `Custom { id }` for systems registered with `app.register_custom_effect(id, system)`
 - **Projectiles** (`combat.rs`) know their source, target / aim, speed, and collision / splash radius only
 - **Activation** (`actions/`) is shared by abilities and active items: target types (no target, self, unit, point, area, direction), team rules (enemy / ally / both / self), range, cast point, channel, mana cost, cooldown, and charges. Out-of-range activations walk into range and re-request. Mana and cooldown are paid when the action fires. `ActionSources` asks the ability layer (learned / castable, rank) or the item layer (the inventory slot holds that active, per-copy cooldown and charges). Items carry an instance id, so two copies keep separate state and an in-flight use follows its copy if it changes slots
-- **Casting** (`abilities/casting.rs`) is the ability layer on top: learned / passive gating, the `ActionSpec` at the slot's rank, toggle state, and turning fired actions into `AbilityCastEvent`s and channel ends into `OnChannelEnd` triggers. Silence and stun both block abilities; only stun blocks items
+- **Casting** (`abilities/casting.rs`) is the ability layer on top: learned / passive gating, the `ActionSpec` at the slot's rank, toggle state, and turning fired actions into `AbilityCastEvent`s and channel ends into `OnChannelEnd` triggers (`action_channel_end_triggers`, for both abilities and items). Silence, stun, sleep or mute block abilities; stun or mute block items
 - **Passive abilities** (`abilities/passive.rs`): `ability_type=passive` with `passive` effect rows (`stat_modifier` → `AbilityEffect::PassiveStat`) apply on loadout init and rank-up, mirroring item passives. **Toggle upkeep:** `ability_type=toggle` flips `AbilityState.toggled` on each cast (cooldown starts each flip); Overcharge drains mana per second and applies move / attack-speed bonuses while on, and turns off at 0 mana
 - **Autocast:** not implemented (no CSV column or AI heuristic yet)
 
@@ -254,7 +254,7 @@ Shared pipeline: `ActivationRequest` → `ActionSpec` (`src/actions/`) → cast 
 | Toggle | `AbilityBehavior::Toggle`; `AbilityState.toggled`; upkeep in `abilities/passive.rs` |
 | Autocast | *Not implemented* |
 | Passive ability | `AbilityBehavior::Passive`; `AbilityTrigger::Passive` + `PassiveStat` effects; `sync_ability_passives` |
-| Channeling | `ActionSpec.channel_time`, `Activation.channel_remaining`; abilities → `OnChannelEnd` in `casting.rs`; items → `item_channel_end_triggers` in `items.rs` (`on_channel_end` in `item_effects.csv`) |
+| Channeling | `ActionSpec.channel_time`, `Activation.channel_remaining`; `OnChannelEnd` for abilities and items is produced by `action_channel_end_triggers` in `abilities/casting.rs` (`on_channel_end` in `item_effects.csv`) |
 | Cast point | `ActionSpec.cast_time` / `point_remaining`; mana and cooldown on fire |
 | Cast backswing | `ActionSpec.backswing`; items default to **0** backswing |
 | Cast range | `ActionSpec.cast_range` (`RankValue` on abilities, flat on items); edge-to-edge via `dimensions` |
@@ -338,7 +338,7 @@ Re-running overwrites: each owner lives in a `// <ability:id>` / `// <item:id>` 
 - Gold shop near each base; click an item for its build tree (components + recipe scraps); buy from the detail popup. Recipes are hidden from the default shop grid.
 - Six inventory slots; RMB → **Sell (50%)** near shop; actives use ASDZXC through the same activation pipeline as abilities (no target and self fire on the key; unit, point, and direction enter targeting mode)
 - Heroes carry a `StatusEffects` list for buffs / debuffs
-- Heroes and creeps separate by collision size without pushing each other (moving units yield to stationary ones); the **forceful** buff can shove (e.g. Vanguard Shockwave). **Phased** (Dash/Blink) ignores unit collision.
+- Heroes and creeps separate by collision size without pushing each other (moving units yield to stationary ones); the **forceful** buff can shove (e.g. Vanguard Shockwave). **Phased** (Dash) ignores unit collision.
 - Every item is an `ItemDefinition` (`src/item_catalog.rs`): price, sell value, tier, rarity, stacking, charges, recipe components, and `AbilityEffectEntry` effects. Passive `PassiveStat` entries fold into stats; `on_use` (hotkeys), `on_attack` and `on_attack_hit` fire `AbilityTriggerEvent`s with `EffectSource::Item`, resolved by the same effect systems as abilities
 
 ### Adding items (ItemGenerator)
@@ -357,7 +357,7 @@ frost_hammer,Frost Hammer,weapon,2800,1400,3,rare,false,,false,,A heavy weapon i
 
 - `item_type` component/weapon/armor/accessory/consumable/utility/recipe, `rarity` common/uncommon/rare/epic/legendary; optional extras `short_label`, `cooldown`, `components` (`;`-separated ids), `color_r/g/b`
 - Optional activation columns on items with `on_use` (blank = instant no-target use): `charge_restore_time`, `target_type` (`unit`, `point`, `direction`, `no_target`, `self`), `target_team` (`enemy`, `ally`, `both`, `self`), `cast_range`, `cast_time`, `channel_time`, `mana_cost`, `projectile_type`, `projectile_speed` (`cooldown` remains on the item row). Unit targets require `target_team`. Point, unit, and direction targets require `cast_range`. Teleport items must be `point` or `direction` so the destination is the cast aim. Item `projectile_*` fields are reserved — the runtime only emits ability projectiles today
-- Effects use the ability effect schema with item triggers `passive` (must be `stat_modifier`: `max_health`, `health_regen`, `max_mana`, `mana_regen`, `attack_damage`, `attack_speed`, `armor`, `magic_resist`, `move_speed`, `strength`, `agility`, `intelligence`), `on_use`, `on_attack`, `on_attack_hit`, `on_channel_end` (channelled actives only), `on_damage_taken`, `on_kill`, `on_death` and targets `owner`, `cast_target` (unit and self actives), `trigger_unit`, `attacker`, `affected_units`, `units_in_radius`
+- Effects use the ability effect schema with item triggers `passive` (must be `stat_modifier`: `max_health`, `health_regen`, `max_mana`, `mana_regen`, `attack_damage`, `attack_speed`, `armor`, `magic_resist`, `move_speed`, `strength`, `agility`, `intelligence`, `spell_amp`, `outgoing_physical_amp`, `incoming_damage_amp`, `damage_block`, `damage_reflect`; `health` and `mana` are aliases of `max_health` and `max_mana`), `on_use`, `on_attack`, `on_attack_hit`, `on_channel_end` (channelled actives only), `on_damage_taken`, `on_kill`, `on_death` and targets `owner`, `cast_target` (unit and self actives), `trigger_unit`, `attacker`, `affected_units`, `units_in_radius`
 - Consumables spend a charge (or one of the stack) when the use fires, and disappear when empty. A rejected activation spends nothing
 
 ### Teleport

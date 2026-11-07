@@ -16,7 +16,6 @@ mod components;
 mod debug_overlay;
 mod dimensions;
 mod displacement;
-mod effects;
 mod facing;
 mod fog;
 mod healthbars;
