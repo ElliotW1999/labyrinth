@@ -1002,6 +1002,94 @@ mod tests {
     }
 
     #[test]
+    fn item_cooldown_ticks_before_the_activation_request_in_the_same_frame() {
+        let mut app = test_app();
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::VialOfLight);
+        app.world_mut()
+            .get_mut::<Inventory>(caster)
+            .unwrap()
+            .slots[0]
+            .as_mut()
+            .unwrap()
+            .cooldown
+            .remaining = 0.04;
+        request_item(&mut app, caster, 0, CastTarget::None);
+        step(&mut app); // dt 0.05: the tick must clear 0.04 before the request is validated
+        let fired = app
+            .world()
+            .resource::<Messages<ActionFiredEvent>>()
+            .iter_current_update_messages()
+            .count();
+        assert_eq!(fired, 1, "the request saw the freshly ticked cooldown");
+    }
+
+    #[test]
+    fn overcharge_toggles_off_through_a_real_cast_and_removes_the_bonus() {
+        let mut app = test_app();
+        // The shared test app lists neither upkeep nor ability cooldowns; add them in order.
+        app.add_systems(
+            Update,
+            (passive::tick_toggle_upkeep, tick_ability_cooldowns)
+                .chain()
+                .after(register_loadout_definitions)
+                .before(validate_activation_requests),
+        );
+        let caster = spawn_caster(
+            &mut app,
+            [
+                AbilityId::Overcharge,
+                AbilityId::Bolt,
+                AbilityId::Execute,
+                AbilityId::Bulwark,
+            ],
+        );
+        let base = *app.world().get::<CombatStats>(caster).unwrap();
+        let toggled = |app: &App| app.world().get::<AbilityLoadout>(caster).unwrap().slots[0].toggled;
+        let cooldown = |app: &App| {
+            app.world().get::<AbilityLoadout>(caster).unwrap().slots[0]
+                .cooldown
+                .clone()
+        };
+
+        request(&mut app, caster, 0, CastTarget::None);
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        assert!(toggled(&app), "the first cast turns it on");
+        let on = *app.world().get::<CombatStats>(caster).unwrap();
+        assert!((on.move_speed - base.move_speed - 10.0).abs() < 1e-4);
+        assert!((on.attack_speed_mult - base.attack_speed_mult - 0.2).abs() < 1e-4);
+        assert!(cooldown(&app).remaining > 0.0, "each flip starts the cooldown");
+        let charges_on = cooldown(&app).charges;
+
+        // Wait out the 1s cooldown, then cast again.
+        for _ in 0..25 {
+            step(&mut app);
+        }
+        assert_eq!(cooldown(&app).remaining, 0.0);
+        request(&mut app, caster, 0, CastTarget::None);
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        assert!(!toggled(&app), "the second cast turns it off");
+        let off = *app.world().get::<CombatStats>(caster).unwrap();
+        assert!((off.move_speed - base.move_speed).abs() < 1e-4, "bonus removed");
+        assert!((off.attack_speed_mult - base.attack_speed_mult).abs() < 1e-4);
+        assert!(
+            app.world()
+                .get::<StatusEffects>(caster)
+                .unwrap()
+                .effects
+                .is_empty()
+        );
+        assert!(cooldown(&app).remaining > 0.0, "the off flip also starts the cooldown");
+        assert_eq!(cooldown(&app).charges, charges_on, "no charge anomaly");
+        let mana = app.world().get::<Mana>(caster).unwrap().current;
+        assert!(mana < 1000.0 - 2.0 * 15.0 + 1e-3, "two casts paid, got {mana}");
+    }
+
+    #[test]
     fn item_cooldowns_tick_in_the_abilities_chain() {
         let mut app = test_app();
         let caster = spawn_caster_with_inventory(&mut app, KIT);

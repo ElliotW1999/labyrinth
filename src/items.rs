@@ -2048,6 +2048,97 @@ mod tests {
     }
 
     #[test]
+    fn undoing_a_sale_restores_the_cooldown_and_leaves_no_spent_units() {
+        let (mut wallet, mut inv, mut health, mut mana, mut stats, mut attrs) = fresh_hero();
+        let mut log = ShopUndoLog::default();
+        assert!(record_purchase(
+            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs,
+            ItemId::IronBracer, true,
+        ));
+        inv.slots[0].as_mut().unwrap().cooldown.remaining = 4.0;
+        assert!(record_sale(
+            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs, 0,
+            true,
+        ));
+        assert!(try_undo_last(
+            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs,
+        ));
+        let restored = inv.slots.iter().flatten().next().unwrap();
+        assert_eq!(restored.cooldown.remaining, 4.0);
+        assert_eq!(restored.spent_units, 0);
+        assert_eq!(restored.stack, 1);
+    }
+
+    #[test]
+    #[ignore = "known defect: undo_sale restores spent_units (items.rs undo_sale); remove the ignore once fixed"]
+    fn undoing_a_sale_made_between_commit_and_resolve_leaves_no_dangling_spent_units() {
+        let (mut wallet, mut inv, mut health, mut mana, mut stats, mut attrs) = fresh_hero();
+        let mut log = ShopUndoLog::default();
+        assert!(record_purchase(
+            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs,
+            ItemId::IronBracer, true,
+        ));
+        let with_item = health.max;
+        // As if committed (unit spent) but not yet resolved.
+        let item = inv.slots[0].as_mut().unwrap();
+        item.stack = 0;
+        item.spent_units = 1;
+        assert!(record_sale(
+            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs, 0,
+            true,
+        ));
+        assert_eq!(health.max, 720.0, "the spent unit's passives left with the sale");
+        let _ = try_undo_last(
+            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs,
+        );
+        // Whatever undo decides, the slot must not carry a unit that is already spent.
+        for item in inv.slots.iter().flatten() {
+            assert_eq!(item.spent_units, 0, "dangling spent_units after undo");
+            assert!(item.stack > 0, "a ghost slot with no units");
+        }
+        assert!(health.max <= with_item);
+    }
+
+    fn two_unit_consumable(cooldown: f32) -> ItemDefinition {
+        let mut def = test_item(
+            ItemId::BladeOfAsh,
+            aimed(TargetType::NoTarget, TargetTeam::SelfOnly, 0.0, 0.0, 0.0, 0.0),
+        );
+        def.consumable = true;
+        def.max_charges = None;
+        def.max_stack = 2;
+        def.cooldown = cooldown;
+        def
+    }
+
+    #[test]
+    fn same_frame_requests_never_use_more_units_than_the_stack_spends() {
+        for cooldown in [0.0, 5.0] {
+            let _defs = DefinitionOverride::install([two_unit_consumable(cooldown)]);
+            let mut app = item_app();
+            let caster = spawn_caster(&mut app, 50.0);
+            give(&mut app, caster, ItemId::BladeOfAsh);
+            give(&mut app, caster, ItemId::BladeOfAsh);
+            assert_eq!(slot(&app, caster, 0).unwrap().stack, 2);
+
+            request(&mut app, caster, 0, CastTarget::None);
+            request(&mut app, caster, 0, CastTarget::None);
+            let mut uses = 0;
+            for _ in 0..4 {
+                step(&mut app);
+                uses += triggers(&app).len();
+            }
+            let left = slot(&app, caster, 0).map_or(0, |item| item.stack);
+            assert_eq!(uses as u32, 2 - left, "cooldown {cooldown}: uses == units spent");
+            assert!(uses >= 1);
+            if cooldown > 0.0 {
+                assert_eq!(uses, 1, "the cooldown blocks the second use");
+            }
+            assert!(slot(&app, caster, 0).is_none_or(|item| item.spent_units == 0));
+        }
+    }
+
+    #[test]
     fn selling_between_commit_and_resolve_removes_the_spent_unit_passives() {
         let (mut wallet, mut inv, mut health, mut mana, mut stats, mut attrs) = fresh_hero();
         assert!(try_buy_item(
