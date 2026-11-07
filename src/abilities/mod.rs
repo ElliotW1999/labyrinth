@@ -1755,6 +1755,55 @@ mod tests {
         assert!(app.world().get::<ForcedMovement>(enemy).is_none());
     }
 
+    #[test]
+    fn hook_composition_pulls_the_skillshot_victim_to_the_caster() {
+        let mut app = test_app();
+        let hook = AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::Point, RankValue::fixed(900.0), RankValue::ZERO)
+            .costs(RankValue::fixed(8.0), RankValue::fixed(100.0))
+            .on(
+                AbilityTrigger::OnProjectileHit,
+                EffectTarget::TriggerUnit,
+                AbilityEffect::Displace {
+                    kind: DisplacementKind::Pull,
+                    distance: None,
+                    duration: RankValue::fixed(0.3),
+                    speed: None,
+                },
+            );
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(hook);
+        let caster = spawn_caster(&mut app, KIT);
+        let victim = spawn_unit(&mut app, Team::Dire, Vec3::new(700.0, 0.0, 0.0));
+        let bystander = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, 700.0));
+        for unit in [caster, victim, bystander] {
+            app.world_mut().entity_mut(unit).insert(BoundRadius(24.0));
+        }
+        let payload = ProjectilePayload {
+            caster,
+            ability: AbilityId::Bulwark,
+            rank: 1,
+            cast_target: None,
+            aim: Vec3::new(900.0, 0.0, 0.0),
+        };
+        app.world_mut().write_message(hit(
+            payload,
+            Vec3::new(700.0, 0.0, 0.0),
+            Some(victim),
+            Vec::new(),
+        ));
+        for _ in 0..20 {
+            step(&mut app);
+        }
+        let world = app.world();
+        assert!((world.get::<Transform>(victim).unwrap().translation.x - 48.0).abs() < 1e-2);
+        assert_eq!(
+            world.get::<Transform>(bystander).unwrap().translation,
+            Vec3::new(0.0, 0.0, 700.0)
+        );
+    }
+
     fn blink_ability() -> AbilityDefinition {
         AbilityDefinition::new(AbilityId::Bulwark)
             .targeting(TargetType::Point, RankValue::fixed(2000.0), RankValue::ZERO)

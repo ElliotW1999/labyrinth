@@ -190,6 +190,7 @@ pub(crate) fn trigger_tag(trigger: AbilityTrigger) -> &'static str {
         AbilityTrigger::OnCast => "on cast",
         AbilityTrigger::OnProjectileHit => "on hit",
         AbilityTrigger::OnUnitContact => "on contact",
+        AbilityTrigger::OnMovementEnd => "movement end",
         AbilityTrigger::OnImpact => "on impact",
         AbilityTrigger::OnChannelTick => "while channelling",
         AbilityTrigger::OnChannelEnd => "channel end",
@@ -291,7 +292,7 @@ fn effect_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
         } => {
             let name = match kind {
                 DisplacementKind::Knockback => "Knockback",
-                DisplacementKind::Pull => "Pull",
+                DisplacementKind::Pull | DisplacementKind::PullToPoint => "Pull",
             };
             let mut rows = Vec::new();
             if let Some(distance) = distance {

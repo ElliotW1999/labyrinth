@@ -112,7 +112,12 @@ pub enum AbilityTrigger {
     OnCast,
     /// A projectile struck its unit target. Splash units are the affected units.
     OnProjectileHit,
+    /// A self-propelled mover (dash, charge) touched an enemy; trigger unit = that enemy.
     OnUnitContact,
+    /// A self-propelled forced movement ended (arrival, block, timeout, or the mover was
+    /// disabled). Trigger unit = the chased unit if it was reached; affected units =
+    /// every unit contacted on the way. Replacement, teleport and death end silently.
+    OnMovementEnd,
     /// A projectile ended without striking a unit (ground impact or lost target).
     OnImpact,
     OnChannelTick,
@@ -364,8 +369,10 @@ impl StatusSpec {
 pub enum DisplacementKind {
     /// Away from the trigger point (or the caster when they coincide).
     Knockback,
-    /// Toward the caster.
+    /// Toward the caster; tracks the caster while pulling.
     Pull,
+    /// Toward the trigger point, up to the distance.
+    PullToPoint,
 }
 
 /// Permanent stat bonus granted by an item's `Passive` entries.
