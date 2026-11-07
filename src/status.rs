@@ -587,10 +587,20 @@ pub fn apply_status_effect_events(
         match &event.change {
             StatusChange::Apply(effect) => {
                 if effect.debuff_immune {
-                    remove_statuses(&mut statuses, &mut stats, agility, shield.as_deref_mut(), |e| {
-                        e.kind == StatusKind::Debuff
-                            && status_dispel_matches(e, StatusKind::Debuff, DispelStrength::Strong)
-                    });
+                    remove_statuses(
+                        &mut statuses,
+                        &mut stats,
+                        agility,
+                        shield.as_deref_mut(),
+                        |e| {
+                            e.kind == StatusKind::Debuff
+                                && status_dispel_matches(
+                                    e,
+                                    StatusKind::Debuff,
+                                    DispelStrength::Strong,
+                                )
+                        },
+                    );
                 }
                 let refresh_shield = effect.shield_amount > 0.0;
                 let old_shield = if refresh_shield {
@@ -615,9 +625,13 @@ pub fn apply_status_effect_events(
                 }
             }
             StatusChange::Dispel { kind, strength } => {
-                remove_statuses(&mut statuses, &mut stats, agility, shield.as_deref_mut(), |e| {
-                    status_dispel_matches(e, *kind, *strength)
-                });
+                remove_statuses(
+                    &mut statuses,
+                    &mut stats,
+                    agility,
+                    shield.as_deref_mut(),
+                    |e| status_dispel_matches(e, *kind, *strength),
+                );
             }
             StatusChange::Remove(id) => {
                 remove_statuses(
@@ -692,10 +706,8 @@ mod tests {
     #[test]
     fn dispel_tiers_remove_basic_but_not_strong_debuffs() {
         let mut app = App::new();
-        app.add_message::<StatusEffectEvent>().add_systems(
-            Update,
-            apply_status_effect_events,
-        );
+        app.add_message::<StatusEffectEvent>()
+            .add_systems(Update, apply_status_effect_events);
         let victim = app
             .world_mut()
             .spawn((
@@ -807,7 +819,11 @@ mod tests {
         fn dispelling_a_shield_buff_clears_its_pool() {
             let mut app = app();
             let u = unit(&mut app);
-            send(&mut app, u, StatusChange::Apply(shield_status("shield", 100.0, 10.0)));
+            send(
+                &mut app,
+                u,
+                StatusChange::Apply(shield_status("shield", 100.0, 10.0)),
+            );
             step(&mut app, 0.1);
             assert_eq!(pool(&app, u), 100.0);
             send(
@@ -826,20 +842,38 @@ mod tests {
         fn removing_a_shield_by_id_clears_its_pool() {
             let mut app = app();
             let u = unit(&mut app);
-            send(&mut app, u, StatusChange::Apply(shield_status("shield", 100.0, 10.0)));
+            send(
+                &mut app,
+                u,
+                StatusChange::Apply(shield_status("shield", 100.0, 10.0)),
+            );
             step(&mut app, 0.1);
             send(&mut app, u, StatusChange::Remove("shield"));
             step(&mut app, 0.1);
             assert_eq!(pool(&app, u), 0.0);
-            assert!(app.world().get::<StatusEffects>(u).unwrap().effects.is_empty());
+            assert!(
+                app.world()
+                    .get::<StatusEffects>(u)
+                    .unwrap()
+                    .effects
+                    .is_empty()
+            );
         }
 
         #[test]
         fn partially_consumed_shield_expiry_leaves_other_shields_intact() {
             let mut app = app();
             let u = unit(&mut app);
-            send(&mut app, u, StatusChange::Apply(shield_status("first", 100.0, 1.0)));
-            send(&mut app, u, StatusChange::Apply(shield_status("second", 80.0, 30.0)));
+            send(
+                &mut app,
+                u,
+                StatusChange::Apply(shield_status("first", 100.0, 1.0)),
+            );
+            send(
+                &mut app,
+                u,
+                StatusChange::Apply(shield_status("second", 80.0, 30.0)),
+            );
             step(&mut app, 0.1);
             assert_eq!(pool(&app, u), 180.0);
             absorb(&mut app, u, 50.0);
@@ -847,7 +881,11 @@ mod tests {
             let statuses = app.world().get::<StatusEffects>(u).unwrap();
             assert_eq!(statuses.effects.len(), 1);
             assert_eq!(statuses.effects[0].id, "second");
-            assert_eq!(pool(&app, u), 80.0, "the second shield keeps its full amount");
+            assert_eq!(
+                pool(&app, u),
+                80.0,
+                "the second shield keeps its full amount"
+            );
         }
 
         #[test]
@@ -864,15 +902,336 @@ mod tests {
         fn refreshing_a_shield_replaces_only_its_remaining_amount() {
             let mut app = app();
             let u = unit(&mut app);
-            send(&mut app, u, StatusChange::Apply(shield_status("shield", 100.0, 10.0)));
-            send(&mut app, u, StatusChange::Apply(shield_status("other", 60.0, 10.0)));
+            send(
+                &mut app,
+                u,
+                StatusChange::Apply(shield_status("shield", 100.0, 10.0)),
+            );
+            send(
+                &mut app,
+                u,
+                StatusChange::Apply(shield_status("other", 60.0, 10.0)),
+            );
             step(&mut app, 0.1);
             absorb(&mut app, u, 70.0);
             assert_eq!(pool(&app, u), 90.0);
-            send(&mut app, u, StatusChange::Apply(shield_status("shield", 100.0, 10.0)));
+            send(
+                &mut app,
+                u,
+                StatusChange::Apply(shield_status("shield", 100.0, 10.0)),
+            );
             step(&mut app, 0.1);
             // "shield" had 30 left and "other" 60: refreshed to 100 gives 100 + 60.
             assert_eq!(pool(&app, u), 160.0);
+        }
+
+        // --- End to end through `combat::apply_damage_events` ---
+
+        fn damage_app() -> App {
+            let mut app = App::new();
+            app.init_resource::<Time>()
+                .add_message::<StatusEffectEvent>()
+                .add_message::<DamageEvent>()
+                .add_systems(
+                    Update,
+                    (
+                        apply_status_effect_events,
+                        crate::combat::apply_damage_events,
+                        tick_status_effects,
+                    )
+                        .chain(),
+                );
+            app
+        }
+
+        fn hit(app: &mut App, unit: Entity, amount: f32) {
+            app.world_mut()
+                .write_message(DamageEvent::new(unit, amount, DamageType::Physical));
+        }
+
+        fn health(app: &App, unit: Entity) -> f32 {
+            app.world().get::<Health>(unit).unwrap().current
+        }
+
+        /// `shield_amount` of every status that carries a shield, in vector order.
+        fn remaining(app: &App, unit: Entity) -> Vec<(&'static str, f32)> {
+            app.world()
+                .get::<StatusEffects>(unit)
+                .unwrap()
+                .effects
+                .iter()
+                .map(|e| (e.id, e.shield_amount))
+                .collect()
+        }
+
+        #[test]
+        fn damage_consumes_two_shields_oldest_first_and_health_is_untouched() {
+            let mut app = damage_app();
+            let u = unit(&mut app);
+            send(
+                &mut app,
+                u,
+                StatusChange::Apply(shield_status("a", 100.0, 30.0)),
+            );
+            send(
+                &mut app,
+                u,
+                StatusChange::Apply(shield_status("b", 80.0, 30.0)),
+            );
+            step(&mut app, 0.01);
+            assert_eq!(pool(&app, u), 180.0);
+
+            hit(&mut app, u, 130.0);
+            step(&mut app, 0.01);
+            assert_eq!(pool(&app, u), 50.0);
+            assert_eq!(remaining(&app, u), vec![("a", 0.0), ("b", 50.0)]);
+            assert_eq!(health(&app, u), 1000.0);
+        }
+
+        #[test]
+        fn overflow_damage_empties_every_shield_and_hurts_health_once() {
+            let mut app = damage_app();
+            let u = unit(&mut app);
+            send(
+                &mut app,
+                u,
+                StatusChange::Apply(shield_status("a", 100.0, 1.0)),
+            );
+            send(
+                &mut app,
+                u,
+                StatusChange::Apply(shield_status("b", 80.0, 30.0)),
+            );
+            step(&mut app, 0.01);
+
+            hit(&mut app, u, 200.0);
+            step(&mut app, 0.01);
+            assert_eq!(pool(&app, u), 0.0);
+            assert_eq!(remaining(&app, u), vec![("a", 0.0), ("b", 0.0)]);
+            assert_eq!(health(&app, u), 980.0);
+
+            // Expiring a spent shield must not take anything out of the (empty) pool, and a new
+            // shield applied afterwards is not shrunk by the old one.
+            step(&mut app, 2.0);
+            assert_eq!(pool(&app, u), 0.0);
+            send(
+                &mut app,
+                u,
+                StatusChange::Apply(shield_status("c", 40.0, 30.0)),
+            );
+            step(&mut app, 0.01);
+            assert_eq!(pool(&app, u), 40.0);
+        }
+
+        #[test]
+        fn fully_consumed_shield_expiring_leaves_the_other_shield_intact() {
+            let mut app = damage_app();
+            let u = unit(&mut app);
+            send(
+                &mut app,
+                u,
+                StatusChange::Apply(shield_status("a", 100.0, 1.0)),
+            );
+            send(
+                &mut app,
+                u,
+                StatusChange::Apply(shield_status("b", 80.0, 30.0)),
+            );
+            step(&mut app, 0.01);
+            hit(&mut app, u, 120.0);
+            step(&mut app, 0.01);
+            assert_eq!(pool(&app, u), 60.0);
+
+            step(&mut app, 2.0); // "a" (empty) expires
+            assert_eq!(remaining(&app, u), vec![("b", 60.0)]);
+            assert_eq!(pool(&app, u), 60.0);
+
+            hit(&mut app, u, 100.0);
+            step(&mut app, 0.01);
+            assert_eq!(pool(&app, u), 0.0);
+            assert_eq!(health(&app, u), 960.0);
+        }
+
+        #[test]
+        fn expiring_the_second_shield_after_damage_only_releases_what_is_left() {
+            let mut app = damage_app();
+            let u = unit(&mut app);
+            send(
+                &mut app,
+                u,
+                StatusChange::Apply(shield_status("a", 100.0, 30.0)),
+            );
+            send(
+                &mut app,
+                u,
+                StatusChange::Apply(shield_status("b", 80.0, 1.0)),
+            );
+            step(&mut app, 0.01);
+            hit(&mut app, u, 110.0); // a: 0, b: 70
+            step(&mut app, 0.01);
+            assert_eq!(pool(&app, u), 70.0);
+
+            step(&mut app, 2.0); // b expires with 70 left
+            assert_eq!(pool(&app, u), 0.0);
+            hit(&mut app, u, 25.0);
+            step(&mut app, 0.01);
+            assert_eq!(health(&app, u), 975.0, "no shield is left to absorb");
+        }
+
+        #[test]
+        fn dispelling_a_damaged_shield_releases_only_its_remainder() {
+            let mut app = damage_app();
+            let u = unit(&mut app);
+            send(
+                &mut app,
+                u,
+                StatusChange::Apply(shield_status("a", 100.0, 30.0)),
+            );
+            step(&mut app, 0.01);
+            hit(&mut app, u, 30.0);
+            step(&mut app, 0.01);
+            assert_eq!(pool(&app, u), 70.0);
+
+            send(
+                &mut app,
+                u,
+                StatusChange::Dispel {
+                    kind: StatusKind::Buff,
+                    strength: DispelStrength::Strong,
+                },
+            );
+            step(&mut app, 0.01);
+            assert_eq!(pool(&app, u), 0.0, "only the 70 that was left is released");
+            hit(&mut app, u, 25.0);
+            step(&mut app, 0.01);
+            assert_eq!(
+                health(&app, u),
+                975.0,
+                "a dispelled shield absorbs no further damage"
+            );
+        }
+
+        #[test]
+        fn removing_one_of_two_damaged_shields_keeps_the_other_absorbing() {
+            let mut app = damage_app();
+            let u = unit(&mut app);
+            send(
+                &mut app,
+                u,
+                StatusChange::Apply(shield_status("a", 100.0, 30.0)),
+            );
+            send(
+                &mut app,
+                u,
+                StatusChange::Apply(shield_status("b", 80.0, 30.0)),
+            );
+            step(&mut app, 0.01);
+            hit(&mut app, u, 130.0); // a: 0, b: 50
+            step(&mut app, 0.01);
+
+            send(&mut app, u, StatusChange::Remove("a"));
+            step(&mut app, 0.01);
+            assert_eq!(pool(&app, u), 50.0, "a was spent, nothing to release");
+
+            hit(&mut app, u, 70.0);
+            step(&mut app, 0.01);
+            assert_eq!(pool(&app, u), 0.0);
+            assert_eq!(health(&app, u), 980.0);
+            assert_eq!(remaining(&app, u), vec![("b", 0.0)]);
+        }
+
+        #[test]
+        fn a_refreshed_shield_becomes_the_newest_and_is_consumed_last() {
+            let mut app = damage_app();
+            let u = unit(&mut app);
+            send(
+                &mut app,
+                u,
+                StatusChange::Apply(shield_status("a", 100.0, 30.0)),
+            );
+            send(
+                &mut app,
+                u,
+                StatusChange::Apply(shield_status("b", 80.0, 30.0)),
+            );
+            step(&mut app, 0.01);
+            send(
+                &mut app,
+                u,
+                StatusChange::Apply(shield_status("a", 100.0, 30.0)),
+            );
+            step(&mut app, 0.01);
+            assert_eq!(remaining(&app, u), vec![("b", 80.0), ("a", 100.0)]);
+            assert_eq!(pool(&app, u), 180.0);
+
+            hit(&mut app, u, 90.0);
+            step(&mut app, 0.01);
+            assert_eq!(remaining(&app, u), vec![("b", 0.0), ("a", 90.0)]);
+            assert_eq!(pool(&app, u), 90.0);
+        }
+
+        #[test]
+        fn each_absorbing_damage_event_is_charged_once() {
+            let mut app = damage_app();
+            let u = unit(&mut app);
+            send(
+                &mut app,
+                u,
+                StatusChange::Apply(shield_status("a", 100.0, 30.0)),
+            );
+            send(
+                &mut app,
+                u,
+                StatusChange::Apply(shield_status("b", 80.0, 30.0)),
+            );
+            step(&mut app, 0.01);
+
+            hit(&mut app, u, 40.0);
+            hit(&mut app, u, 40.0);
+            step(&mut app, 0.01);
+            assert_eq!(remaining(&app, u), vec![("a", 20.0), ("b", 80.0)]);
+            assert_eq!(pool(&app, u), 100.0);
+            assert_eq!(health(&app, u), 1000.0);
+        }
+
+        #[test]
+        fn shield_piercing_damage_does_not_consume_status_shields() {
+            let mut app = damage_app();
+            let u = unit(&mut app);
+            send(
+                &mut app,
+                u,
+                StatusChange::Apply(shield_status("a", 100.0, 30.0)),
+            );
+            step(&mut app, 0.01);
+            app.world_mut().write_message(DamageEvent {
+                pierces_shields: true,
+                ..DamageEvent::new(u, 40.0, DamageType::Physical)
+            });
+            step(&mut app, 0.01);
+            assert_eq!(remaining(&app, u), vec![("a", 100.0)]);
+            assert_eq!(pool(&app, u), 100.0);
+            assert_eq!(health(&app, u), 960.0);
+        }
+
+        #[test]
+        fn status_plugin_ticks_statuses_without_any_other_plugin() {
+            let mut app = App::new();
+            app.init_resource::<Time>()
+                .add_message::<DamageEvent>()
+                .add_plugins(StatusPlugin);
+            let u = unit(&mut app);
+            app.world_mut()
+                .get_mut::<StatusEffects>(u)
+                .unwrap()
+                .effects
+                .push(shield_status("a", 50.0, 1.0));
+            app.world_mut().get_mut::<ShieldPool>(u).unwrap().amount = 50.0;
+            step(&mut app, 0.5);
+            assert_eq!(remaining(&app, u).len(), 1);
+            step(&mut app, 0.6);
+            assert!(remaining(&app, u).is_empty());
+            assert_eq!(pool(&app, u), 0.0);
         }
     }
 }

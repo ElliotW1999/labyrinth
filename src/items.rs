@@ -2622,14 +2622,24 @@ mod tests {
             0,
             CastTarget::Point(Vec3::new(200.0, 0.0, 0.0)),
         );
+        let mut teleports = Vec::new();
         for _ in 0..10 {
             step(&mut app);
+            teleports.extend(
+                app.world()
+                    .resource::<Messages<TeleportEvent>>()
+                    .iter_current_update_messages()
+                    .copied(),
+            );
         }
 
+        assert_eq!(teleports.len(), 1, "the blink must actually have been used");
+        assert_eq!(teleports[0].target, caster);
+        assert_eq!(teleports[0].caster, caster);
+        assert!((teleports[0].destination - Vec3::new(200.0, 0.0, 0.0)).length() < 1.0);
         assert!(
-            app.world().resource::<Messages<TeleportEvent>>().len() > 0
-                || slot(&app, caster, 0).unwrap().cooldown_remaining > 0.0,
-            "the blink must actually have been used"
+            slot(&app, caster, 0).unwrap().cooldown_remaining > 0.0,
+            "the use also paid its cooldown"
         );
         assert_eq!(heal_fx_count(&mut app), 0);
     }
