@@ -2,6 +2,8 @@
 
 Guidance for Claude Code in this repository. Specialist subagents (`architect`, `implementer`, `tester`) are defined in `.claude/agents/`; this file is ported from `.cursor/rules/engineering-workflow.mdc` — keep the two in sync.
 
+A fourth agent, `reviewer`, is **not** part of this workflow. Invoke it only when the user asks for an architecture review. It writes documentation only (Markdown under `docs/`, enforced by `.claude/hooks/docs-only-writes.py`), saving change proposals to `docs/reviews/` for the implementer. Its report ends with open questions; relay them to the user and resume the reviewer with the answers.
+
 ## Engineering Workflow
 
 For substantial gameplay engineering tasks, follow this workflow.
