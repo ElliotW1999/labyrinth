@@ -19,6 +19,7 @@ use bevy::prelude::*;
 
 use crate::components::{Ancient, CollisionRadius, MoveTarget, Obstacle, ObstacleShape, Tower};
 use crate::dimensions::collision_of;
+use crate::status::StatusEffects;
 pub use grid::{DynamicBlocker, NavGrid, NavShape, flat, ground};
 
 /// Requested-goal drift that triggers a full replan.
@@ -191,6 +192,7 @@ pub fn plan_paths(
             &MoveTarget,
             Option<&CollisionRadius>,
             Option<&mut NavPath>,
+            Option<&StatusEffects>,
         ),
         MobileFilter,
     >,
@@ -208,13 +210,47 @@ pub fn plan_paths(
     order.sort_by_key(|e| e.to_bits());
 
     for entity in order {
-        let Ok((_, tf, target, radius, path)) = movers.get_mut(entity) else {
+        let Ok((_, tf, target, radius, path, statuses)) = movers.get_mut(entity) else {
             continue;
         };
         let pos = flat(tf.translation);
         let r = collision_of(radius);
         let requested = Vec3::new(target.position.x, 0.0, target.position.z);
         let req2 = flat(requested);
+
+        // Flyers ignore the ground layer: a straight line inside the map. Buildings are
+        // left to the collision safety net.
+        if statuses.is_some_and(|s| s.is_flying()) {
+            let kept_stuck = path.as_ref().map(|p| p.stuck.clone());
+            if let Some(p) = path.as_ref() {
+                if flat(p.requested).distance(req2) <= 0.5 && !p.replan_requested {
+                    continue;
+                }
+            }
+            let goal = grid.clamp_to_map(req2, r);
+            let new_path = NavPath::from_route(
+                grid::NavRoute {
+                    waypoints: vec![goal],
+                    reached: true,
+                    searched: false,
+                },
+                requested,
+                grid.version,
+                StuckTracker {
+                    count: kept_stuck.map_or(0, |s| s.count),
+                    ..default()
+                },
+            );
+            match movers.get_mut(entity) {
+                Ok((_, _, _, _, Some(mut path), _)) => *path = new_path,
+                _ => {
+                    commands
+                        .entity(entity)
+                        .insert((new_path, NavSteering::default()));
+                }
+            }
+            continue;
+        }
 
         let mut stuck = StuckTracker::default();
         let mut with_blockers = false;
@@ -280,7 +316,7 @@ pub fn plan_paths(
         }
         let new_path = NavPath::from_route(route, requested, grid.version, stuck);
         match movers.get_mut(entity) {
-            Ok((_, _, _, _, Some(mut path))) => *path = new_path,
+            Ok((_, _, _, _, Some(mut path), _)) => *path = new_path,
             _ => {
                 commands
                     .entity(entity)

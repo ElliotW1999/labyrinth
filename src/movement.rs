@@ -117,9 +117,13 @@ pub fn apply_move_targets(
     mut commands: Commands,
 ) {
     let dt = time.delta_secs();
-    let circles: Vec<(Vec3, f32)> = buildings
+    let building_circles: Vec<(Vec3, f32)> = buildings
         .iter()
         .map(|(tf, radius)| (tf.translation, radius.0))
+        .collect();
+    let circles: Vec<(Vec3, f32)> = building_circles
+        .iter()
+        .copied()
         .chain(obstacles.iter().filter_map(|(tf, obs)| match obs.shape {
             ObstacleShape::Circle { radius } => Some((tf.translation, radius)),
             ObstacleShape::Aabb { .. } => None,
@@ -233,6 +237,13 @@ pub fn apply_move_targets(
         let desired = to_waypoint / distance;
 
         let phased = statuses.is_some_and(|s| s.is_phased());
+        // Flyers pass over trees and other props, but buildings still stop them.
+        let flying = statuses.is_some_and(|s| s.is_flying());
+        let (circles, aabbs): (&[(Vec3, f32)], &[(Vec3, f32, f32)]) = if flying {
+            (&building_circles, &[])
+        } else {
+            (&circles, &aabbs)
+        };
         let prev_side = steering.as_deref().map_or(0.0, |s| s.side);
         let avoidance = if phased {
             Default::default()
@@ -273,13 +284,13 @@ pub fn apply_move_targets(
         let travel = if is_final { step.min(distance) } else { step };
         let mut next = pos + dir * travel;
         // Avoidance must never steer into static geometry; fall back to the planned line.
-        if avoidance.side != 0.0 && !grid.point_clear(next, unit_r) {
+        if avoidance.side != 0.0 && !flying && !grid.point_clear(next, unit_r) {
             dir = desired;
             next = pos + dir * travel;
         }
         let mut next3 = Vec3::new(next.x, transform.translation.y, next.y);
-        next3 = separate_from_circles(next3, unit_r, &circles);
-        next3 = separate_from_aabbs(next3, unit_r, &aabbs);
+        next3 = separate_from_circles(next3, unit_r, circles);
+        next3 = separate_from_aabbs(next3, unit_r, aabbs);
 
         let goal = if feared {
             target.position
@@ -287,7 +298,7 @@ pub fn apply_move_targets(
             path.as_deref().map_or(target.position, |p| p.goal)
         };
         if flat_distance(goal, next3) > 0.01
-            && is_blocked(Vec3::new(goal.x, next3.y, goal.z), unit_r, &circles, &aabbs)
+            && is_blocked(Vec3::new(goal.x, next3.y, goal.z), unit_r, circles, aabbs)
             && flat_distance(transform.translation, next3) < 1.5
         {
             commands.entity(entity).remove::<MoveTarget>();
@@ -317,7 +328,7 @@ pub fn apply_move_targets(
 
 fn resolve_obstacle_collisions(
     mut units: Query<
-        (&mut Transform, &CollisionRadius),
+        (&mut Transform, &CollisionRadius, Option<&StatusEffects>),
         (
             With<CollisionRadius>,
             Without<Obstacle>,
@@ -342,7 +353,10 @@ fn resolve_obstacle_collisions(
         })
         .collect();
 
-    for (mut transform, radius) in &mut units {
+    for (mut transform, radius, statuses) in &mut units {
+        if statuses.is_some_and(|s| s.is_flying()) {
+            continue;
+        }
         let mut pos = separate_from_circles(transform.translation, radius.0, &circles);
         pos = separate_from_aabbs(pos, radius.0, &aabbs);
         transform.translation.x = pos.x;

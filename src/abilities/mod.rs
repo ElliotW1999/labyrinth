@@ -36,7 +36,9 @@ use crate::combat::{flat_distance, spawn_requested_projectiles};
 use crate::components::{
     AbilityLoadout, CastTarget, Ground, Lifetime, Mana, PlayerHero, SpellFx, Team,
 };
-use crate::displacement::{DisplacementEvent, apply_displacement_events, tick_forced_movement};
+use crate::displacement::{
+    DisplacementEvent, apply_displacement_events, settle_grounded_units, tick_forced_movement,
+};
 use crate::picking::{PickableUnits, cursor_ground_hit, cursor_ray, ground_hit, pick_under_ray};
 use crate::resources::SharedAssets;
 use crate::scale;
@@ -98,7 +100,7 @@ impl Plugin for AbilitiesPlugin {
                     projectile_hit_triggers,
                     crate::items::item_attack_triggers,
                     // Before trigger resolution, so contact / end triggers fire this frame.
-                    tick_forced_movement,
+                    (tick_forced_movement, settle_grounded_units).chain(),
                     resolve_ability_triggers,
                     spawn_requested_projectiles,
                     (
@@ -648,7 +650,7 @@ mod tests {
                     action_channel_end_triggers,
                     projectile_hit_triggers,
                     crate::items::item_attack_triggers,
-                    tick_forced_movement,
+                    (tick_forced_movement, settle_grounded_units).chain(),
                     resolve_ability_triggers,
                     apply_heal_events,
                     apply_mana_restore_events,

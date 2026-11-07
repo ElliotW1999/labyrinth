@@ -435,6 +435,7 @@ fn status_name(status: StatusSpec) -> &'static str {
         StatusSpec::Disarm => "Disarm",
         StatusSpec::Phased => "Phased",
         StatusSpec::Forceful => "Forceful",
+        StatusSpec::Flying => "Flying",
         StatusSpec::DebuffImmunity => "Debuff immunity",
         StatusSpec::Shield { .. } => "Shield",
         StatusSpec::Burn { .. } => "Burn",

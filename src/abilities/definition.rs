@@ -216,6 +216,8 @@ pub enum StatusSpec {
     Disarm,
     Phased,
     Forceful,
+    /// Flies: trees and other ground obstacles stop blocking (buildings still do).
+    Flying,
     /// Purges existing debuffs on application.
     DebuffImmunity,
     /// Absorbing shield pool (`amount` at rank).
@@ -298,6 +300,7 @@ impl StatusSpec {
             StatusSpec::Disarm => StatusEffect::disarmed(duration),
             StatusSpec::Phased => StatusEffect::phased(duration),
             StatusSpec::Forceful => StatusEffect::forceful(duration),
+            StatusSpec::Flying => StatusEffect::flying(duration),
             StatusSpec::DebuffImmunity => StatusEffect::debuff_immunity(duration),
             StatusSpec::Shield { amount } => StatusEffect::shield(amount.at(rank), duration),
             StatusSpec::Burn { dps, damage_type } => {

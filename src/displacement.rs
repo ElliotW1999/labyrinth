@@ -241,6 +241,7 @@ pub fn apply_displacement_events(
             continue;
         }
         let cyclone = event.kind == DisplacementKind::Cyclone;
+        let flying = target_statuses.is_some_and(|s| s.is_flying());
         let priority = if cyclone {
             MotionPriority::Suspend
         } else if own {
@@ -270,8 +271,8 @@ pub fn apply_displacement_events(
         if priority == MotionPriority::Own {
             motion.source = event.source;
         }
+        motion.ignore_terrain = flying || cyclone;
         if cyclone {
-            motion.ignore_terrain = true;
             motion.bound_status = Some(CYCLONE_STATUS);
             statuses.write(StatusEffectEvent {
                 source: Some(event.caster),
@@ -414,6 +415,39 @@ fn plan_motion(
             };
             Some((path, cap))
         }
+    }
+}
+
+/// Marks a unit that has flown: once it is neither flying nor in forced motion it is
+/// checked against the ground and set down on the nearest walkable spot.
+#[derive(Component, Debug, Clone, Copy, Default)]
+pub struct SettleOnLanding;
+
+pub fn settle_grounded_units(
+    mut commands: Commands,
+    grid: Res<NavGrid>,
+    mut units: Query<
+        (
+            Entity,
+            &mut Transform,
+            Option<&CollisionRadius>,
+            Option<&StatusEffects>,
+            Has<ForcedMovement>,
+        ),
+        With<SettleOnLanding>,
+    >,
+) {
+    for (entity, mut transform, radius, statuses, moving) in &mut units {
+        if moving || statuses.is_some_and(|s| s.is_flying()) {
+            continue;
+        }
+        let landed =
+            reposition_to_valid_terrain(&grid, transform.translation, collision_of(radius));
+        if landed != transform.translation {
+            transform.translation = landed;
+            commands.entity(entity).remove::<(NavPath, NavSteering)>();
+        }
+        commands.entity(entity).remove::<SettleOnLanding>();
     }
 }
 
@@ -627,8 +661,11 @@ pub fn tick_forced_movement(
                 if let MotionPath::Hold { at, .. } = forced.path {
                     transform.translation.y = at.y;
                 }
-                transform.translation =
-                    reposition_to_valid_terrain(&grid, transform.translation, r);
+                // Flyers stay where they are; `settle_grounded_units` handles their landing.
+                if !statuses.is_some_and(|s| s.is_flying()) {
+                    transform.translation =
+                        reposition_to_valid_terrain(&grid, transform.translation, r);
+                }
                 if !dead && let Some(src) = forced.source {
                     triggers.write(AbilityTriggerEvent(
                         src.context(AbilityTrigger::OnMovementEnd, transform.translation)
@@ -679,6 +716,7 @@ mod tests {
                 Update,
                 (
                     tick_forced_movement,
+                    settle_grounded_units,
                     apply_displacement_events,
                     apply_status_effect_events,
                     tick_status_effects,
@@ -1472,5 +1510,58 @@ mod tests {
         assert!(app.world().get::<ForcedMovement>(enemy).is_none());
         assert_eq!(pos(&app, enemy).y, 0.0, "set back down at once");
         assert!(!statuses(&app, enemy).is_stunned());
+    }
+
+    #[test]
+    fn flying_expiry_over_a_tree_lands_on_walkable_ground() {
+        let mut app = sim_app();
+        app.world_mut()
+            .spawn((Transform::from_xyz(0.0, 0.0, 0.0), Obstacle::circle(80.0)));
+        let flyer = spawn_unit(&mut app, Team::Radiant, Vec3::new(500.0, 0.0, 0.0), 30.0);
+        step(&mut app);
+        app.world_mut().write_message(StatusEffectEvent {
+            source: None,
+            target: flyer,
+            change: crate::status::StatusChange::Apply(crate::status::StatusEffect::flying(1.0)),
+        });
+        step(&mut app);
+        assert!(statuses(&app, flyer).is_flying());
+        // Over the tree while flying: nothing moves it off the spot.
+        app.world_mut()
+            .entity_mut(flyer)
+            .insert(Transform::from_xyz(10.0, 0.0, 0.0));
+        run(&mut app, 10);
+        assert_eq!(pos(&app, flyer).x, 10.0, "free to hover over the tree");
+
+        run(&mut app, 30);
+        assert!(!statuses(&app, flyer).is_flying());
+        let p = pos(&app, flyer);
+        assert!(
+            flat(p).distance(Vec2::ZERO) >= 80.0 + 30.0 - 1.0,
+            "set down outside the tree: {p}"
+        );
+        assert!(app.world().get::<SettleOnLanding>(flyer).is_none());
+    }
+
+    #[test]
+    fn forced_motion_of_a_flyer_ignores_terrain() {
+        let mut app = sim_app();
+        app.world_mut()
+            .spawn((Transform::from_xyz(300.0, 0.0, 0.0), Obstacle::circle(50.0)));
+        let caster = spawn_unit(&mut app, Team::Radiant, Vec3::new(-100.0, 0.0, 0.0), 30.0);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::ZERO, 30.0);
+        app.world_mut()
+            .get_mut::<StatusEffects>(enemy)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::flying(10.0));
+        step(&mut app);
+        knock(&mut app, enemy, caster, 600.0);
+        run(&mut app, 30);
+        assert!(
+            (pos(&app, enemy).x - 600.0).abs() < 1.0,
+            "{}",
+            pos(&app, enemy)
+        );
     }
 }

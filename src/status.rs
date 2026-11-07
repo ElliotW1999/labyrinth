@@ -94,6 +94,8 @@ pub struct StatusEffect {
     pub asleep: bool,
     pub invulnerable: bool,
     pub debuff_immune: bool,
+    /// Ignores trees and other ground obstacles while moving (buildings still block).
+    pub flying: bool,
     /// Forced retreat from this entity while feared (`None` if source despawned).
     pub fear_source: Option<Entity>,
 }
@@ -130,6 +132,7 @@ impl StatusEffect {
             asleep: false,
             invulnerable: false,
             debuff_immune: false,
+            flying: false,
             fear_source: None,
         }
     }
@@ -164,6 +167,15 @@ impl StatusEffect {
     }
 
     /// Temporary soft-separation against other units.
+    /// Ground obstacles stop blocking the unit. When it ends over geometry the unit is
+    /// set down on the nearest walkable spot.
+    pub fn flying(duration: f32) -> Self {
+        Self {
+            flying: true,
+            ..Self::buff("flying", duration)
+        }
+    }
+
     pub fn forceful(duration: f32) -> Self {
         Self {
             force_unit_push: true,
@@ -282,6 +294,10 @@ impl StatusEffects {
         self.effects
             .iter()
             .any(|e| e.ignore_unit_collision && e.remaining > 0.0)
+    }
+
+    pub fn is_flying(&self) -> bool {
+        self.effects.iter().any(|e| e.flying && e.remaining > 0.0)
     }
 
     pub fn can_push_units(&self) -> bool {
@@ -651,6 +667,12 @@ pub fn apply_status_effect_events(
                     0.0
                 };
                 let applied = apply_status(&mut statuses, &mut stats, effect.clone(), agility);
+                if applied && effect.flying {
+                    // When the flight ends, check the ground it lands on.
+                    commands
+                        .entity(entity)
+                        .insert(crate::displacement::SettleOnLanding);
+                }
                 if applied && effect.shield_amount > 0.0 {
                     if let Some(pool) = shield.as_deref_mut() {
                         pool.amount = (pool.amount - old_shield).max(0.0) + effect.shield_amount;

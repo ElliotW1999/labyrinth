@@ -763,11 +763,8 @@ fn channelling_hero(app: &mut App) -> Entity {
         .unwrap()
         .slots[3]
         .rank = 1;
-    app.world_mut().write_message(ActivationRequest::ability(
-        hero,
-        3,
-        CastTarget::None,
-    ));
+    app.world_mut()
+        .write_message(ActivationRequest::ability(hero, 3, CastTarget::None));
     for _ in 0..10 {
         step(app);
     }
@@ -806,7 +803,10 @@ fn real_orders_cancel_a_channel_without_any_end_event() {
             step(&mut app);
             ends.extend(channel_end_events(&app));
         }
-        assert!(ends.is_empty(), "{order:?} must cancel silently, got {ends:?}");
+        assert!(
+            ends.is_empty(),
+            "{order:?} must cancel silently, got {ends:?}"
+        );
         assert!(app.world().get::<Activation>(hero).is_none(), "{order:?}");
     }
 }
@@ -815,7 +815,15 @@ fn real_orders_cancel_a_channel_without_any_end_event() {
 fn an_attack_order_cancels_a_channel_without_any_end_event() {
     let mut app = sim_app();
     let hero = channelling_hero(&mut app);
-    let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(120.0, 0.0, 0.0), CREEP_R, 30.0, 0.0, 0.0);
+    let enemy = spawn_unit(
+        &mut app,
+        Team::Dire,
+        Vec3::new(120.0, 0.0, 0.0),
+        CREEP_R,
+        30.0,
+        0.0,
+        0.0,
+    );
     issue(&mut app, hero, UnitCommand::Attack { target: enemy }, false);
     let mut ends = Vec::new();
     for _ in 0..60 {
@@ -851,4 +859,92 @@ fn an_uninterrupted_or_stunned_channel_does_emit_an_end_event() {
     }
     assert_eq!(ends, vec![false]);
     let _ = hero;
+}
+
+#[test]
+fn flying_unit_walks_through_trees_but_not_towers() {
+    let mut app = sim_app();
+    app.world_mut()
+        .spawn((Transform::from_xyz(500.0, 0.0, 0.0), Obstacle::circle(60.0)));
+    let walker = spawn_unit(
+        &mut app,
+        Team::Radiant,
+        Vec3::new(0.0, 0.0, -200.0),
+        HERO_R,
+        36.0,
+        150.0,
+        300.0,
+    );
+    let flyer = spawn_unit(
+        &mut app,
+        Team::Radiant,
+        Vec3::new(0.0, 0.0, 200.0),
+        HERO_R,
+        36.0,
+        150.0,
+        300.0,
+    );
+    app.world_mut()
+        .get_mut::<StatusEffects>(flyer)
+        .unwrap()
+        .effects
+        .push(crate::status::StatusEffect::flying(60.0));
+    // Both aim straight through the tree, at the same z as the tree's center.
+    let _ = walker;
+    let straight = |app: &mut App, unit: Entity, z: f32| {
+        app.world_mut().entity_mut(unit).insert((
+            Transform::from_xyz(0.0, 0.0, z),
+            MoveTarget {
+                position: Vec3::new(1000.0, 0.0, z),
+            },
+        ));
+    };
+    straight(&mut app, flyer, 0.0);
+    let mut closest = f32::MAX;
+    let arrived = run_until(
+        &mut app,
+        8.0,
+        |world| {
+            let p = world.get::<Transform>(flyer).unwrap().translation;
+            closest = closest.min(center_distance(p, Vec3::new(500.0, 0.0, 0.0)));
+        },
+        |world| world.get::<MoveTarget>(flyer).is_none(),
+    );
+    assert!(arrived, "the flyer reached its destination");
+    assert!(
+        closest < 60.0 + HERO_R - 5.0,
+        "flew over the tree instead of around it: {closest}"
+    );
+    let end = app.world().get::<Transform>(flyer).unwrap().translation;
+    assert!((end.x - 1000.0).abs() < 10.0, "{end}");
+
+    // A tower in the way still stops it: it slides around and never overlaps.
+    let tower = app
+        .world_mut()
+        .spawn((
+            Transform::from_xyz(1600.0, 0.0, 0.0),
+            Tower,
+            Team::Dire,
+            Health::new(1800.0),
+            CollisionRadius(100.0),
+        ))
+        .id();
+    let _ = tower;
+    app.world_mut().entity_mut(flyer).insert(MoveTarget {
+        position: Vec3::new(2400.0, 0.0, 0.0),
+    });
+    let mut tower_closest = f32::MAX;
+    run_until(
+        &mut app,
+        10.0,
+        |world| {
+            let p = world.get::<Transform>(flyer).unwrap().translation;
+            tower_closest = tower_closest.min(center_distance(p, Vec3::new(1600.0, 0.0, 0.0)));
+        },
+        |world| world.get::<MoveTarget>(flyer).is_none(),
+    );
+    assert!(
+        tower_closest >= 100.0 + HERO_R - 2.0,
+        "buildings still block flyers: {tower_closest}"
+    );
 }
