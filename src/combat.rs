@@ -86,6 +86,7 @@ pub struct DamageEvent {
 }
 
 impl DamageEvent {
+    #[cfg(test)]
     pub fn new(target: Entity, amount: f32, damage_type: DamageType) -> Self {
         Self {
             source: None,

@@ -213,12 +213,23 @@ pub(crate) fn trigger_tag(trigger: AbilityTrigger) -> &'static str {
 pub(crate) struct EffectRow {
     pub label: String,
     pub value: Option<RankValue>,
+    /// The value is a duration in seconds (item tooltips print a unit; ability tooltips
+    /// keep their bare numbers).
+    pub seconds: bool,
 }
 
 fn row(label: impl Into<String>, value: RankValue) -> EffectRow {
     EffectRow {
         label: label.into(),
         value: Some(value),
+        seconds: false,
+    }
+}
+
+fn seconds_row(label: impl Into<String>, value: RankValue) -> EffectRow {
+    EffectRow {
+        seconds: true,
+        ..row(label, value)
     }
 }
 
@@ -226,6 +237,7 @@ fn text_row(label: impl Into<String>) -> EffectRow {
     EffectRow {
         label: label.into(),
         value: None,
+        seconds: false,
     }
 }
 
@@ -244,14 +256,20 @@ pub(crate) fn describe_effect(entry: &AbilityEffectEntry) -> (Vec<EffectRow>, Ve
     (rows, notes)
 }
 
-/// Where an area effect lands, for item tooltips ("Enemy within 143").
+/// Where an area effect lands, for item tooltips ("enemies within 143").
 pub(crate) fn area_note(target: &EffectTarget) -> Option<String> {
     let EffectTarget::UnitsInRadius { radius, team, .. } = target else {
         return None;
     };
+    let who = match team {
+        TargetTeam::Enemy => "enemies",
+        TargetTeam::Ally => "allies",
+        TargetTeam::Any => "units",
+        TargetTeam::SelfOnly => "self",
+    };
     Some(match radius {
-        AreaRadius::Ability => format!("{team:?} in the area"),
-        AreaRadius::Fixed(value) => format!("{team:?} within {}", fmt_num(value.at(1))),
+        AreaRadius::Ability => format!("{who} in the area"),
+        AreaRadius::Fixed(value) => format!("{who} within {}", fmt_num(value.at(1))),
     })
 }
 
@@ -278,7 +296,7 @@ fn effect_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
             if let Some(distance) = distance {
                 rows.push(row(format!("{name} distance"), distance));
             }
-            rows.push(row(format!("{name} duration"), duration));
+            rows.push(seconds_row(format!("{name} duration"), duration));
             rows
         }
         AbilityEffect::PassiveStat { stat, amount } => vec![row(passive_name(stat), amount)],
@@ -296,7 +314,7 @@ fn effect_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
                 rows.push(row(format!("{id} amount"), amount));
             }
             if duration != RankValue::ZERO {
-                rows.push(row(format!("{id} duration"), duration));
+                rows.push(seconds_row(format!("{id} duration"), duration));
             }
             rows
         }
@@ -309,7 +327,10 @@ fn effect_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
 fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
     match status {
         StatusSpec::Slow { percent } => {
-            vec![row("Slow %", percent), row("Slow duration", duration)]
+            vec![
+                row("Slow %", percent),
+                seconds_row("Slow duration", duration),
+            ]
         }
         StatusSpec::Modifier {
             armor,
@@ -331,10 +352,10 @@ fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
             if attack_damage != RankValue::ZERO {
                 rows.push(row("Attack damage", attack_damage));
             }
-            rows.push(row("Duration", duration));
+            rows.push(seconds_row("Duration", duration));
             rows
         }
-        other => vec![row(status_name(other), duration)],
+        other => vec![seconds_row(status_name(other), duration)],
     }
 }
 

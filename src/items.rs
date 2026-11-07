@@ -3,8 +3,8 @@
 use bevy::prelude::*;
 
 use crate::abilities::definition::{
-    AbilityEffect, AbilityEffectEntry, AbilityTrigger, AreaRadius, Attribute, EffectScaling,
-    EffectTarget, PassiveStat, RankValue,
+    AbilityEffect, AbilityEffectEntry, AbilityTrigger, AreaRadius, Attribute, EffectTarget,
+    PassiveStat,
 };
 use crate::abilities::effects::{AbilityTriggerEvent, EffectSource, TriggerContext};
 use crate::abilities::tooltip;
@@ -869,19 +869,30 @@ fn item_effect_lines(entry: &AbilityEffectEntry) -> Vec<String> {
     }
     let tag = capitalized(tooltip::trigger_tag(entry.trigger));
     let (rows, notes) = tooltip::describe_effect(entry);
+    let area = tooltip::area_note(&entry.target);
     let mut lines: Vec<String> = rows
         .into_iter()
-        .map(|row| match row.value {
-            Some(value) => format!("{tag}: {} {}", row.label, tooltip::fmt_num(value.at(1))),
-            None => format!("{tag}: {}", row.label),
+        .enumerate()
+        .map(|(index, row)| {
+            let mut line = match row.value {
+                Some(value) => {
+                    let unit = if row.seconds { "s" } else { "" };
+                    format!(
+                        "{tag}: {} {}{unit}",
+                        row.label,
+                        tooltip::fmt_num(value.at(1))
+                    )
+                }
+                None => format!("{tag}: {}", row.label),
+            };
+            // The area belongs to the effect, so it rides on the effect's first line.
+            if let (0, Some(area)) = (index, &area) {
+                line.push_str(&format!(" ({area})"));
+            }
+            line
         })
         .collect();
-    lines.extend(
-        tooltip::area_note(&entry.target)
-            .into_iter()
-            .chain(notes)
-            .map(|note| format!("{tag}: {note}")),
-    );
+    lines.extend(notes.into_iter().map(|note| format!("{tag}: {note}")));
     lines
 }
 
@@ -1548,10 +1559,18 @@ fn record_sale(
     if !try_sell_item(wallet, inv, health, mana, stats, attrs, slot, in_range) {
         return false;
     }
-    log.actions.push(ShopAction::Sale {
-        refunded: wallet.gold.saturating_sub(before_gold),
-        item,
-    });
+    // Units already spent at commit are gone for good: `try_sell_item` removed their
+    // passives and paid nothing for them. Only the units actually sold can be undone, so
+    // a sale of an emptied slot leaves nothing to undo.
+    if item.stack > 0 {
+        log.actions.push(ShopAction::Sale {
+            refunded: wallet.gold.saturating_sub(before_gold),
+            item: ItemInstance {
+                spent_units: 0,
+                ..item
+            },
+        });
+    }
     log.notice.clear();
     true
 }
@@ -1621,7 +1640,10 @@ fn undo_sale(
     for _ in 0..item.stack {
         apply_passives(item.id.passives(), health, mana, stats, attrs);
     }
-    inv.slots[slot] = Some(*item);
+    inv.slots[slot] = Some(ItemInstance {
+        spent_units: 0,
+        ..*item
+    });
     true
 }
 
@@ -1731,6 +1753,7 @@ mod tests {
 
     use super::*;
     use crate::abilities::catalog::{AbilityDefinitions, register_loadout_definitions};
+    use crate::abilities::definition::{EffectScaling, RankValue};
     use crate::abilities::effects::{HealEvent, apply_heal_events, resolve_ability_triggers};
     use crate::actions::{
         Activation, ActivationRequest, QueuedActivation, refresh_activation_aims,
@@ -2052,16 +2075,36 @@ mod tests {
         let (mut wallet, mut inv, mut health, mut mana, mut stats, mut attrs) = fresh_hero();
         let mut log = ShopUndoLog::default();
         assert!(record_purchase(
-            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs,
-            ItemId::IronBracer, true,
+            &mut log,
+            &mut wallet,
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            &mut attrs,
+            ItemId::IronBracer,
+            true,
         ));
         inv.slots[0].as_mut().unwrap().cooldown.remaining = 4.0;
         assert!(record_sale(
-            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs, 0,
+            &mut log,
+            &mut wallet,
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            &mut attrs,
+            0,
             true,
         ));
         assert!(try_undo_last(
-            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs,
+            &mut log,
+            &mut wallet,
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            &mut attrs,
         ));
         let restored = inv.slots.iter().flatten().next().unwrap();
         assert_eq!(restored.cooldown.remaining, 4.0);
@@ -2070,13 +2113,19 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "known defect: undo_sale restores spent_units (items.rs undo_sale); remove the ignore once fixed"]
     fn undoing_a_sale_made_between_commit_and_resolve_leaves_no_dangling_spent_units() {
         let (mut wallet, mut inv, mut health, mut mana, mut stats, mut attrs) = fresh_hero();
         let mut log = ShopUndoLog::default();
         assert!(record_purchase(
-            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs,
-            ItemId::IronBracer, true,
+            &mut log,
+            &mut wallet,
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            &mut attrs,
+            ItemId::IronBracer,
+            true,
         ));
         let with_item = health.max;
         // As if committed (unit spent) but not yet resolved.
@@ -2084,25 +2133,56 @@ mod tests {
         item.stack = 0;
         item.spent_units = 1;
         assert!(record_sale(
-            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs, 0,
+            &mut log,
+            &mut wallet,
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            &mut attrs,
+            0,
             true,
         ));
-        assert_eq!(health.max, 720.0, "the spent unit's passives left with the sale");
+        assert_eq!(
+            health.max, 720.0,
+            "the spent unit's passives left with the sale"
+        );
         let _ = try_undo_last(
-            &mut log, &mut wallet, &mut inv, &mut health, &mut mana, &mut stats, &mut attrs,
+            &mut log,
+            &mut wallet,
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            &mut attrs,
         );
         // Whatever undo decides, the slot must not carry a unit that is already spent.
         for item in inv.slots.iter().flatten() {
             assert_eq!(item.spent_units, 0, "dangling spent_units after undo");
             assert!(item.stack > 0, "a ghost slot with no units");
         }
+        assert!(
+            inv.slots.iter().all(Option::is_none),
+            "nothing was left to restore"
+        );
+        assert_eq!(
+            health.max, 720.0,
+            "passives are not applied for a spent unit"
+        );
         assert!(health.max <= with_item);
     }
 
     fn two_unit_consumable(cooldown: f32) -> ItemDefinition {
         let mut def = test_item(
             ItemId::BladeOfAsh,
-            aimed(TargetType::NoTarget, TargetTeam::SelfOnly, 0.0, 0.0, 0.0, 0.0),
+            aimed(
+                TargetType::NoTarget,
+                TargetTeam::SelfOnly,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            ),
         );
         def.consumable = true;
         def.max_charges = None;
@@ -2129,7 +2209,11 @@ mod tests {
                 uses += triggers(&app).len();
             }
             let left = slot(&app, caster, 0).map_or(0, |item| item.stack);
-            assert_eq!(uses as u32, 2 - left, "cooldown {cooldown}: uses == units spent");
+            assert_eq!(
+                uses as u32,
+                2 - left,
+                "cooldown {cooldown}: uses == units spent"
+            );
             assert!(uses >= 1);
             if cooldown > 0.0 {
                 assert_eq!(uses, 1, "the cooldown blocks the second use");
@@ -2299,6 +2383,24 @@ mod tests {
             "{ability_text}"
         );
         assert_eq!(item_effect_lines(&on_use), vec!["Use: Magical damage 50"]);
+    }
+
+    #[test]
+    fn item_tooltip_duration_rows_carry_a_seconds_unit() {
+        let cloak = ItemId::WardstoneCloak.tooltip_body();
+        assert!(cloak.contains("Use: Armor 8"), "{cloak}");
+        assert!(cloak.contains("Use: Duration 5s"), "{cloak}");
+    }
+
+    #[test]
+    fn item_tooltip_area_note_rides_on_the_effect_line() {
+        let rod = ItemId::StormRod.tooltip_body();
+        assert!(rod.contains("damage 140 (enemies within 143)"), "{rod}");
+        assert!(
+            !rod.lines()
+                .any(|line| line.trim_start().starts_with("Use: enemies")),
+            "no standalone area line: {rod}"
+        );
     }
 
     #[test]
