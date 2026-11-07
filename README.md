@@ -270,7 +270,7 @@ Shared pipeline: `ActivationRequest` → `ActionSpec` (`src/actions/`) → cast 
 
 | Phase | Silence / stun | New move / stop / attack | Target dies | Source slot changes |
 | --- | --- | --- | --- | --- |
-| Cast point (before fire) | Cancel, no cost | Cancel, no cost | Queued cast may fail on re-request | Cancel |
+| Cast point (before fire) | Cancel, no cost | Cancel, no cost | The aim follows a living unit target; if it dies or despawns the action still fires at its last known position (costs paid, effects keyed on the target resolve to nothing). A queued cast still walking into range is dropped instead if its unit-only target died | Cancel |
 | After fire, channeling | End channel early and fire `OnChannelInterrupted` (abilities: silence / stun; items: mute / stun). A channel that runs its full time fires `OnChannelEnd` | Cancel channel (no item/ability trigger) | — | Cancel |
 | Backswing | Does not remove backswing by itself | Removes `Activation` | — | Cancel |
 - **Custom mechanics** (`abilities/custom.rs`): `app.register_ability_behavior(id, system)` runs a one-shot system with the `CastContext`. It reports what happened with a trigger such as `AbilityTrigger::Custom("on_skewer_end")`, and the ability's effect entries apply the consequences

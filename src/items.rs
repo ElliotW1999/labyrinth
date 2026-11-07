@@ -1799,12 +1799,10 @@ mod tests {
 
     use super::*;
     use crate::abilities::catalog::{AbilityDefinitions, register_loadout_definitions};
-    use crate::abilities::effects::{
-        HealEvent, apply_heal_events, resolve_ability_triggers,
-    };
+    use crate::abilities::effects::{HealEvent, apply_heal_events, resolve_ability_triggers};
     use crate::actions::{
-        Activation, ActivationRequest, QueuedActivation, resolve_queued_activations,
-        tick_activations, validate_activation_requests,
+        Activation, ActivationRequest, QueuedActivation, refresh_activation_aims,
+        resolve_queued_activations, tick_activations, validate_activation_requests,
     };
     use crate::components::{AbilityId, AbilityLoadout, MoveTarget};
     use crate::displacement::DisplacementEvent;
@@ -2377,6 +2375,7 @@ mod tests {
                     register_loadout_definitions,
                     resolve_queued_activations,
                     validate_activation_requests,
+                    refresh_activation_aims,
                     tick_activations,
                     resolve_item_uses,
                     crate::abilities::casting::action_channel_end_triggers,
@@ -3093,6 +3092,64 @@ mod tests {
         let (fired, health) = channel_with_status(None);
         assert_eq!(fired, vec![AbilityTrigger::OnChannelEnd]);
         assert_eq!(health, 700.0);
+    }
+
+    #[test]
+    fn unit_item_fires_after_target_dies_during_cast_point() {
+        let mut app = item_app();
+        let def = ItemDefinition {
+            activation: aimed(TargetType::Unit, TargetTeam::Enemy, 500.0, 0.3, 0.0, 20.0),
+            effects: heal_effect(),
+            cooldown: 12.0,
+            ..channeled_test_item(ItemId::HeartwoodBand)
+        };
+        let _defs = DefinitionOverride::install([def]);
+        let caster = spawn_caster(&mut app, 200.0);
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 500.0;
+        let target = app
+            .world_mut()
+            .spawn((
+                Transform::from_translation(Vec3::new(100.0, 0.0, 0.0)),
+                Team::Dire,
+                Health::new(1000.0),
+            ))
+            .id();
+        give(&mut app, caster, ItemId::HeartwoodBand);
+
+        request(&mut app, caster, 0, CastTarget::Unit(target));
+        step(&mut app);
+        assert!(
+            !app.world().get::<Activation>(caster).unwrap().fired,
+            "still in the cast point"
+        );
+        app.world_mut().despawn(target);
+
+        let mut fired_targets = Vec::new();
+        let mut contexts = Vec::new();
+        for _ in 0..10 {
+            step(&mut app);
+            fired_targets.extend(
+                app.world()
+                    .resource::<Messages<crate::actions::ActionFiredEvent>>()
+                    .iter_current_update_messages()
+                    .map(|event| (event.target, event.aim)),
+            );
+            contexts.extend(triggers(&app));
+        }
+
+        assert_eq!(
+            fired_targets,
+            vec![(
+                CastTarget::Point(Vec3::new(100.0, 0.0, 0.0)),
+                Vec3::new(100.0, 0.0, 0.0)
+            )],
+            "fires once, at the target's last position"
+        );
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 180.0);
+        assert_eq!(slot(&app, caster, 0).unwrap().cooldown_remaining, 12.0);
+        assert_eq!(health_of(&app, caster), 510.0);
+        assert_eq!(contexts.len(), 1);
+        assert_eq!(contexts[0].cast_target, None);
     }
 
     #[test]

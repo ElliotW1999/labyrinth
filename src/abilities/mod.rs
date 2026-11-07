@@ -29,8 +29,8 @@ use bevy::prelude::*;
 
 use crate::actions::{
     ActionSource, ActionSources, ActionsPlugin, ActivationRequest, DisableRule,
-    check_ready, resolve_queued_activations, team_allows, tick_activations,
-    validate_activation_requests,
+    check_ready, refresh_activation_aims, resolve_queued_activations, team_allows,
+    tick_activations, validate_activation_requests,
 };
 use crate::combat::{flat_distance, spawn_requested_projectiles};
 use crate::components::{
@@ -89,7 +89,7 @@ impl Plugin for AbilitiesPlugin {
                     confirm_or_cancel_targeted_cast,
                     resolve_queued_activations,
                     validate_activation_requests,
-                    tick_activations,
+                    (refresh_activation_aims, tick_activations).chain(),
                     emit_ability_casts,
                     crate::items::resolve_item_uses,
                     execute_ability_casts,
@@ -638,6 +638,7 @@ mod tests {
                     register_loadout_definitions,
                     resolve_queued_activations,
                     validate_activation_requests,
+                    refresh_activation_aims,
                     tick_activations,
                     emit_ability_casts,
                     crate::items::resolve_item_uses,
@@ -889,6 +890,107 @@ mod tests {
                 target,
                 damage: 10.0,
             });
+    }
+
+    fn cast_point_projectile() -> AbilityDefinition {
+        AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::Unit, RankValue::fixed(600.0), RankValue::ZERO)
+            .costs(RankValue::fixed(8.0), RankValue::fixed(100.0))
+            .timing(0.3, 0.0)
+            .mechanic(AbilityMechanic::Projectile {
+                splash_radius: AreaRadius::Fixed(RankValue::fixed(20.0)),
+                speed: None,
+                skillshot: false,
+            })
+    }
+
+    fn fired_events(app: &App) -> Vec<(CastTarget, Vec3)> {
+        app.world()
+            .resource::<Messages<ActionFiredEvent>>()
+            .iter_current_update_messages()
+            .map(|event| (event.target, event.aim))
+            .collect()
+    }
+
+    #[test]
+    fn unit_target_death_during_cast_point_still_fires_at_last_position() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(cast_point_projectile());
+        let caster = spawn_caster(&mut app, KIT);
+        let last_position = Vec3::new(200.0, 0.0, 0.0);
+        let target = spawn_unit(&mut app, Team::Dire, last_position);
+
+        request(&mut app, caster, 3, CastTarget::Unit(target));
+        step(&mut app);
+        assert!(!app.world().get::<Activation>(caster).unwrap().fired);
+        app.world_mut().get_mut::<Health>(target).unwrap().current = 0.0;
+        app.world_mut().entity_mut(target).despawn();
+
+        let mut fired = Vec::new();
+        let mut projectiles = Vec::new();
+        for _ in 0..12 {
+            step(&mut app);
+            fired.extend(fired_events(&app));
+            projectiles.extend(
+                app.world()
+                    .resource::<Messages<SpawnProjectileEvent>>()
+                    .iter_current_update_messages()
+                    .copied(),
+            );
+        }
+
+        assert_eq!(fired, vec![(CastTarget::Point(last_position), last_position)]);
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 900.0);
+        let slot = &app.world().get::<AbilityLoadout>(caster).unwrap().slots[3];
+        assert!(slot.cooldown.remaining > 0.0, "cooldown started");
+        assert_eq!(projectiles.len(), 1);
+        assert_eq!(projectiles[0].target, None);
+        assert_eq!(projectiles[0].target_pos, last_position);
+    }
+
+    #[test]
+    fn dead_but_not_despawned_target_also_fires_at_last_position() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(cast_point_projectile());
+        let caster = spawn_caster(&mut app, KIT);
+        let last_position = Vec3::new(200.0, 0.0, 0.0);
+        let target = spawn_unit(&mut app, Team::Dire, last_position);
+
+        request(&mut app, caster, 3, CastTarget::Unit(target));
+        step(&mut app);
+        app.world_mut().get_mut::<Health>(target).unwrap().current = 0.0;
+        let mut fired = Vec::new();
+        for _ in 0..12 {
+            step(&mut app);
+            fired.extend(fired_events(&app));
+        }
+        assert_eq!(fired, vec![(CastTarget::Point(last_position), last_position)]);
+    }
+
+    #[test]
+    fn cast_point_aim_tracks_a_moving_unit_target() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(cast_point_projectile());
+        let caster = spawn_caster(&mut app, KIT);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(200.0, 0.0, 0.0));
+
+        request(&mut app, caster, 3, CastTarget::Unit(target));
+        step(&mut app);
+        let moved = Vec3::new(260.0, 0.0, 60.0);
+        app.world_mut().get_mut::<Transform>(target).unwrap().translation = moved;
+
+        let mut fired = Vec::new();
+        for _ in 0..12 {
+            step(&mut app);
+            fired.extend(fired_events(&app));
+        }
+        assert_eq!(fired, vec![(CastTarget::Unit(target), moved)]);
     }
 
     #[test]

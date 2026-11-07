@@ -316,6 +316,34 @@ pub fn resolve_queued_activations(
     }
 }
 
+/// Keep the aim of a cast-point activation on its unit target.
+///
+/// While the target lives, `aim` follows it. If it dies or despawns before the action
+/// fires, the target becomes a point at the last known position and the action still
+/// fires there, with costs paid; it is never cancelled for that reason. (The queued
+/// walk-into-range path in [`resolve_queued_activations`] differs: it drops unit-only
+/// casts whose target died before the caster got in range, since nothing has been paid
+/// or started yet.)
+pub fn refresh_activation_aims(
+    mut activations: Query<&mut Activation>,
+    units: Query<(&Transform, &Health)>,
+) {
+    for mut activation in &mut activations {
+        if activation.fired {
+            continue;
+        }
+        let CastTarget::Unit(entity) = activation.target else {
+            continue;
+        };
+        match units.get(entity) {
+            Ok((transform, health)) if health.is_alive() => {
+                activation.aim = transform.translation;
+            }
+            _ => activation.target = CastTarget::Point(activation.aim),
+        }
+    }
+}
+
 /// Turn toward the aim, run the cast point, then commit costs and emit
 /// [`ActionFiredEvent`]; then channel and backswing. Cancelling during the cast point
 /// (new order, silence, stun) is free.

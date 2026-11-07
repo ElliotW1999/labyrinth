@@ -11,7 +11,8 @@ use crate::abilities::casting::{AbilityCastEvent, emit_ability_casts};
 use crate::abilities::catalog::{AbilityDefinitions, register_loadout_definitions};
 use crate::actions::{
     ActionChannelEndEvent, ActionFiredEvent, Activation, ActivationRequest,
-    resolve_queued_activations, tick_activations, validate_activation_requests,
+    refresh_activation_aims, resolve_queued_activations, tick_activations,
+    validate_activation_requests,
 };
 use crate::components::{
     AbilityId, AbilityLoadout, AttackTarget, BoundRadius, CastTarget, CollisionRadius, CombatStats,
@@ -42,6 +43,7 @@ fn sim_app() -> App {
                 register_loadout_definitions,
                 resolve_queued_activations,
                 validate_activation_requests,
+                refresh_activation_aims,
                 tick_activations,
                 emit_ability_casts,
             )
