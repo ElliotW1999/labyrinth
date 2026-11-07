@@ -344,7 +344,7 @@ Re-running overwrites: each owner lives in a `// <ability:id>` / `// <item:id>` 
 - Gold shop near each base; click an item for its build tree (components + recipe scraps); buy from the detail popup. Recipes are hidden from the default shop grid.
 - Six inventory slots; RMB → **Sell (50%)** near shop; actives use ASDZXC through the same activation pipeline as abilities (no target and self fire on the key; unit, point, and direction enter targeting mode)
 - Heroes carry a `StatusEffects` list for buffs / debuffs
-- Heroes and creeps separate by collision size without pushing each other (moving units yield to stationary ones); the **forceful** buff can shove (e.g. Vanguard Shockwave). **Phased** (Dash) ignores unit collision.
+- Heroes and creeps separate by collision size without pushing each other (moving units yield to stationary ones); the **forceful** buff can shove (e.g. Vanguard Shockwave). **Phased** units and units in forced movement (Dash, knockback, pull) ignore unit collision.
 - Every item is an `ItemDefinition` (`src/item_catalog.rs`): price, sell value, tier, rarity, stacking, charges, recipe components, and `AbilityEffectEntry` effects. Passive `PassiveStat` entries fold into stats; `on_use` (hotkeys), `on_attack` and `on_attack_hit` fire `AbilityTriggerEvent`s with `EffectSource::Item`, resolved by the same effect systems as abilities
 
 ### Adding items (ItemGenerator)

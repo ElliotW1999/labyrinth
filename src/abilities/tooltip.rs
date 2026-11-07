@@ -293,6 +293,8 @@ fn effect_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
             let name = match kind {
                 DisplacementKind::Knockback => "Knockback",
                 DisplacementKind::Pull | DisplacementKind::PullToPoint => "Pull",
+                DisplacementKind::Dash => "Dash",
+                DisplacementKind::Charge => "Charge",
             };
             let mut rows = Vec::new();
             if let Some(distance) = distance {

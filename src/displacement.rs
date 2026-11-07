@@ -165,6 +165,7 @@ impl ForcedMovement {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn line(from: Vec3, to: Vec3, duration: f32) -> Self {
         Self::new(MotionPath::Line { from, to }, duration)
     }
@@ -242,66 +243,9 @@ pub fn apply_displacement_events(
         }
 
         let from = target_tf.translation;
-        let duration = event.duration.max(0.05);
-        let path = match event.kind {
-            DisplacementKind::Knockback => {
-                let mut away = flat3(from - event.point);
-                if away.length() < 1.0 {
-                    away = flat3(from - event.origin);
-                }
-                let travel = away.normalize_or_zero() * event.distance.unwrap_or(0.0);
-                MotionPath::Line {
-                    from,
-                    to: from + travel,
-                }
-            }
-            DisplacementKind::PullToPoint => {
-                let toward = flat3(event.point - from);
-                let travel = toward.normalize_or_zero()
-                    * event
-                        .distance
-                        .map_or(toward.length(), |d| d.min(toward.length()));
-                MotionPath::Line {
-                    from,
-                    to: from + travel,
-                }
-            }
-            DisplacementKind::Pull => {
-                let (caster_pos, caster_bound) = units
-                    .get(event.caster)
-                    .map_or((event.origin, None), |(tf, bound, ..)| {
-                        (tf.translation, bound)
-                    });
-                let stop_distance = bounds_of(caster_bound) + bounds_of(target_bound);
-                let contact = (center_distance(caster_pos, from) - stop_distance).max(0.0);
-                let initial = event.distance.map_or(contact, |d| d.min(contact));
-                MotionPath::Toward {
-                    anchor: event.caster,
-                    speed: initial / duration,
-                    stop_distance,
-                    max_travel: event.distance.unwrap_or(f32::INFINITY),
-                    travelled: 0.0,
-                    last_anchor: caster_pos,
-                }
-            }
-        };
-        let (travel, duration) = match &path {
-            MotionPath::Line { from, to } => (center_distance(*from, *to), duration),
-            MotionPath::Toward {
-                speed,
-                last_anchor,
-                stop_distance,
-                ..
-            } => (
-                (center_distance(*last_anchor, from) - stop_distance)
-                    .max(0.0)
-                    .min(*speed * duration),
-                duration * PULL_TIMEOUT_FACTOR,
-            ),
-        };
-        if travel < 1e-3 {
+        let Some((path, duration)) = plan_motion(event, from, target_bound, &units) else {
             continue;
-        }
+        };
         let mut motion = ForcedMovement::new(path, duration);
         motion.priority = priority;
         if own {
@@ -309,6 +253,96 @@ pub fn apply_displacement_events(
         }
         pending.insert(event.target, priority);
         commands.entity(event.target).insert(motion);
+    }
+}
+
+/// The path and duration cap for one request, or `None` when there is nothing to do
+/// (no distance, a missing chase target, no speed).
+fn plan_motion(
+    event: &DisplacementEvent,
+    from: Vec3,
+    target_bound: Option<&BoundRadius>,
+    units: &DisplaceTargets,
+) -> Option<(MotionPath, f32)> {
+    const MIN_TRAVEL: f32 = 1e-3;
+    let duration = event.duration.max(0.05);
+    let line = |travel: Vec3| {
+        (travel.length() >= MIN_TRAVEL).then_some(MotionPath::Line {
+            from,
+            to: from + travel,
+        })
+    };
+    match event.kind {
+        DisplacementKind::Knockback => {
+            let mut away = flat3(from - event.point);
+            if away.length() < 1.0 {
+                away = flat3(from - event.origin);
+            }
+            let travel = away.normalize_or_zero() * event.distance.unwrap_or(0.0);
+            Some((line(travel)?, duration))
+        }
+        DisplacementKind::PullToPoint => {
+            let toward = flat3(event.point - from);
+            let travel = toward.normalize_or_zero()
+                * event
+                    .distance
+                    .map_or(toward.length(), |d| d.min(toward.length()));
+            Some((line(travel)?, duration))
+        }
+        DisplacementKind::Dash => {
+            // Constant speed: `duration` is the time for the full `distance`.
+            let toward = flat3(event.aim - from);
+            let max = event.distance.unwrap_or(toward.length());
+            let travel = toward.normalize_or_zero() * toward.length().min(max);
+            let path = line(travel)?;
+            let share = if max > 0.0 {
+                travel.length() / max
+            } else {
+                1.0
+            };
+            Some((path, (duration * share).max(0.05)))
+        }
+        DisplacementKind::Pull | DisplacementKind::Charge => {
+            let charge = event.kind == DisplacementKind::Charge;
+            let (anchor, speed) = if charge {
+                (event.cast_target?, event.speed.filter(|s| *s > 0.0)?)
+            } else {
+                (event.caster, 0.0)
+            };
+            let (anchor_pos, anchor_bound, alive) = units.get(anchor).map_or(
+                (event.origin, None, !charge),
+                |(tf, bound, _, _, health, _)| {
+                    (tf.translation, bound, health.is_none_or(|h| h.is_alive()))
+                },
+            );
+            if !alive {
+                return None;
+            }
+            let stop_distance = bounds_of(anchor_bound) + bounds_of(target_bound);
+            let contact = (center_distance(anchor_pos, from) - stop_distance).max(0.0);
+            if contact < MIN_TRAVEL {
+                return None;
+            }
+            let path = MotionPath::Toward {
+                anchor,
+                // A hook closes the initial gap in `duration`; a charge has its own speed.
+                speed: if charge {
+                    speed
+                } else {
+                    event.distance.map_or(contact, |d| d.min(contact)) / duration
+                },
+                stop_distance,
+                max_travel: event.distance.unwrap_or(f32::INFINITY),
+                travelled: 0.0,
+                last_anchor: anchor_pos,
+            };
+            let cap = if charge {
+                duration
+            } else {
+                duration * PULL_TIMEOUT_FACTOR
+            };
+            Some((path, cap))
+        }
     }
 }
 
@@ -444,6 +478,11 @@ pub fn tick_forced_movement(
             }
             transform.translation.x = next.x;
             transform.translation.z = next.z;
+            // Self-propelled movers face where they are going.
+            let moved = flat3(next - here3);
+            if forced.priority == MotionPriority::Own && moved.length_squared() > 1e-6 {
+                transform.rotation = Quat::from_rotation_y(moved.x.atan2(moved.z));
+            }
         }
 
         // Self-propelled motion reports each newly touched enemy once.
@@ -1094,5 +1133,43 @@ mod tests {
                 .all(|c| c.trigger != AbilityTrigger::OnMovementEnd),
             "silent ends: {seen:?}"
         );
+    }
+
+    #[test]
+    fn charge_without_living_target_does_nothing() {
+        let mut app = sim_app();
+        let charger = spawn_unit(&mut app, Team::Radiant, Vec3::ZERO, 30.0);
+        let dead = spawn_unit(&mut app, Team::Dire, Vec3::new(500.0, 0.0, 0.0), 30.0);
+        app.world_mut().get_mut::<Health>(dead).unwrap().current = 0.0;
+        let live = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, 500.0), 30.0);
+        step(&mut app);
+        let charge = |cast_target, speed| DisplacementEvent {
+            target: charger,
+            kind: DisplacementKind::Charge,
+            caster: charger,
+            origin: Vec3::ZERO,
+            point: Vec3::ZERO,
+            aim: Vec3::ZERO,
+            cast_target,
+            distance: None,
+            duration: 2.0,
+            speed,
+            source: Some(own_source(charger)),
+        };
+        for event in [
+            charge(None, Some(900.0)),
+            charge(Some(dead), Some(900.0)),
+            charge(Some(live), None),
+        ] {
+            app.world_mut().write_message(event);
+            step(&mut app);
+            assert!(app.world().get::<ForcedMovement>(charger).is_none());
+        }
+        assert_eq!(pos(&app, charger), Vec3::ZERO);
+
+        app.world_mut()
+            .write_message(charge(Some(live), Some(900.0)));
+        step(&mut app);
+        assert!(app.world().get::<ForcedMovement>(charger).is_some());
     }
 }

@@ -46,6 +46,9 @@ pub const HERO_VISION_RANGE: f32 = 1800.0;
 pub const TOWER_VISION_RANGE: f32 = 1900.0;
 pub const CREEP_VISION_RANGE: f32 = 800.0;
 
+/// Speed of a dash (units / second), independent of the dasher's move speed.
+pub const DASH_SPEED: f32 = 1200.0;
+
 // --- Ability geometry ---
 pub const ABILITY_DASH_RANGE: f32 = 350.0;
 pub const ABILITY_UNIT_CAST_RANGE: f32 = 500.0;

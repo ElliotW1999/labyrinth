@@ -373,6 +373,12 @@ pub enum DisplacementKind {
     Pull,
     /// Toward the trigger point, up to the distance.
     PullToPoint,
+    /// The target dashes in a straight line toward the aim point, at most `distance`.
+    /// `duration` is the time for the full distance. Phases through units.
+    Dash,
+    /// The target runs at the cast target at `speed` until contact (or `distance` /
+    /// `duration` run out). Needs a living cast target.
+    Charge,
 }
 
 /// Permanent stat bonus granted by an item's `Passive` entries.
