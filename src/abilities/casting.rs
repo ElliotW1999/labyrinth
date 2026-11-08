@@ -259,6 +259,7 @@ mod tests {
                     position: Vec3::X * 100.0,
                     team,
                     alive,
+                    untargetable: false,
                     bounds: 10.0,
                 })
             }

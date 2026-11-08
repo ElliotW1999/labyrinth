@@ -19,10 +19,10 @@ use bevy::prelude::*;
 
 use crate::components::{AttackMoveOrder, CollisionRadius, CombatStats, Health, MoveTarget};
 use crate::dimensions::collision_of;
-use crate::displacement::ForcedMovement;
-use crate::status::StatusEffects;
+use crate::displacement::{ForcedMovement, MotionPriority};
 use crate::navigation::attack_position::AttackPositionGoal;
 use crate::navigation::{MobileFilter, NavGrid, NavPath, NavSteering, flat};
+use crate::status::{LeashAnchor, StatusEffects};
 
 /// Request to relocate `target` to `destination` (ground plane; Y is ignored).
 /// Emitted for every resolved target of `AbilityEffect::Teleport`.
@@ -63,6 +63,10 @@ pub enum TeleportError {
     Blocked,
     /// Another unit occupies the spot and unit collision would have to separate them.
     Occupied,
+    /// The target is held out of play (cyclone) and cannot be moved by anything else.
+    Suspended,
+    /// The destination lies outside a leash or tether on the target.
+    Leashed,
 }
 
 /// Checks a collision circle of `radius` at `destination` against the map, static
@@ -98,6 +102,7 @@ type TeleportQuery<'w, 's> = Query<
         Option<&'static StatusEffects>,
         Option<&'static Health>,
         Has<CombatStats>,
+        Option<&'static ForcedMovement>,
     ),
     MobileFilter,
 >;
@@ -121,7 +126,7 @@ pub fn apply_teleport_events(
             });
         };
 
-        let Ok((_, _, radius, statuses, health, _)) = units.get(event.target) else {
+        let Ok((_, _, radius, statuses, health, _, motion)) = units.get(event.target) else {
             reject(&mut rejected, TeleportError::InvalidTarget);
             continue;
         };
@@ -129,19 +134,42 @@ pub fn apply_teleport_events(
             reject(&mut rejected, TeleportError::InvalidTarget);
             continue;
         }
+        if motion.is_some_and(|m| m.priority == MotionPriority::Suspend) {
+            reject(&mut rejected, TeleportError::Suspended);
+            continue;
+        }
+        if let Some(statuses) = statuses {
+            let outside = statuses.leashes().any(|leash| {
+                let center = match leash.anchor {
+                    LeashAnchor::Point(p) => Some(p),
+                    LeashAnchor::Unit(anchor) => units
+                        .get(anchor)
+                        .ok()
+                        .map(|(_, tf, ..)| flat(tf.translation)),
+                };
+                center.is_some_and(|c| c.distance(flat(destination)) > leash.radius)
+            });
+            if outside {
+                reject(&mut rejected, TeleportError::Leashed);
+                continue;
+            }
+        }
         let radius = collision_of(radius);
         let phased = statuses.is_some_and(|s| s.is_phased());
 
         // Mirrors the participants of `resolve_unit_collisions`.
         let blockers = units
             .iter()
-            .filter(|(entity, _, other_radius, other_statuses, _, combatant)| {
-                !phased
-                    && *entity != event.target
-                    && *combatant
-                    && collision_of(*other_radius) > 0.0
-                    && !other_statuses.is_some_and(|s| s.is_phased())
-            })
+            .filter(
+                |(entity, _, other_radius, other_statuses, _, combatant, forced)| {
+                    !phased
+                        && *entity != event.target
+                        && *combatant
+                        && forced.is_none()
+                        && collision_of(*other_radius) > 0.0
+                        && !other_statuses.is_some_and(|s| s.is_phased())
+                },
+            )
             .map(|(_, tf, other_radius, ..)| (flat(tf.translation), collision_of(other_radius)));
         if let Err(reason) = validate_destination(&grid, flat(destination), radius, blockers) {
             reject(&mut rejected, reason);
@@ -179,9 +207,9 @@ mod tests {
 
     use super::*;
     use crate::components::{Ancient, Mana, Obstacle, Team, Tower};
-    use crate::status::{StatusEffects, apply_phased};
     use crate::movement::{MovementPlugin, SimSet};
     use crate::scale;
+    use crate::status::{StatusEffects, apply_phased};
 
     const SPEED: f32 = 300.0;
 
@@ -452,12 +480,7 @@ mod tests {
         app.world_mut().entity_mut(unit).insert((
             MoveTarget { position: order },
             AttackMoveOrder { destination: order },
-            ForcedMovement {
-                from: Vec3::ZERO,
-                to: Vec3::new(500.0, 0.0, 0.0),
-                elapsed: 0.0,
-                duration: 5.0,
-            },
+            ForcedMovement::line(Vec3::ZERO, Vec3::new(500.0, 0.0, 0.0), 5.0),
         ));
         for _ in 0..5 {
             step(&mut app);
@@ -539,5 +562,61 @@ mod tests {
         app.world_mut()
             .schedule_scope(Update, |world, schedule| schedule.initialize(world))
             .expect("the update schedule has no ordering cycle");
+    }
+
+    #[test]
+    fn suspended_units_cannot_be_teleported() {
+        let mut app = sim_app();
+        let unit = spawn_unit(&mut app, Vec3::ZERO, 40.0);
+        let mut hold = ForcedMovement::new(
+            crate::displacement::MotionPath::Hold {
+                at: Vec3::ZERO,
+                height: 100.0,
+            },
+            3.0,
+        );
+        hold.priority = MotionPriority::Suspend;
+        app.world_mut().entity_mut(unit).insert(hold);
+        teleport(&mut app, unit, Vec3::new(2000.0, 0.0, 2000.0));
+        assert_eq!(rejections(&app), vec![TeleportError::Suspended]);
+        assert_eq!(pos(&app, unit), Vec3::ZERO);
+        assert!(app.world().get::<ForcedMovement>(unit).is_some());
+    }
+
+    #[test]
+    fn leashed_unit_cannot_teleport_outside() {
+        let mut app = sim_app();
+        let unit = spawn_unit(&mut app, Vec3::ZERO, 40.0);
+        let anchor = spawn_unit(&mut app, Vec3::new(600.0, 0.0, 0.0), 40.0);
+        let mut statuses = StatusEffects::default();
+        statuses.effects.push(crate::status::StatusEffect::leashed(
+            crate::status::Leash {
+                anchor: LeashAnchor::Point(Vec2::ZERO),
+                radius: 500.0,
+            },
+            10.0,
+        ));
+        statuses.effects.push(crate::status::StatusEffect::leashed(
+            crate::status::Leash {
+                anchor: LeashAnchor::Unit(anchor),
+                radius: 700.0,
+            },
+            10.0,
+        ));
+        app.world_mut().entity_mut(unit).insert(statuses);
+
+        // Outside the region around the origin.
+        teleport(&mut app, unit, Vec3::new(1500.0, 0.0, 0.0));
+        assert_eq!(rejections(&app), vec![TeleportError::Leashed]);
+        assert_eq!(pos(&app, unit), Vec3::ZERO);
+
+        // Inside the region but too far from the tethered unit.
+        teleport(&mut app, unit, Vec3::new(-450.0, 0.0, 0.0));
+        assert_eq!(rejections(&app), vec![TeleportError::Leashed]);
+        assert_eq!(pos(&app, unit), Vec3::ZERO);
+
+        // Inside both circles.
+        teleport(&mut app, unit, Vec3::new(400.0, 0.0, 0.0));
+        assert_eq!(pos(&app, unit), Vec3::new(400.0, 0.0, 0.0));
     }
 }

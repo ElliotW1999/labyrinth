@@ -2,11 +2,11 @@
 //! per-hero state lives in [`crate::components::AbilityState`].
 
 pub use crate::actions::{TargetTeam, TargetType};
-use bevy::prelude::Entity;
+use bevy::prelude::{Entity, Vec2, Vec3};
 
 use crate::components::AbilityId;
 use crate::components::DamageType;
-use crate::status::{DispelType, StatusEffect, StatusKind};
+use crate::status::{DispelType, Leash, LeashAnchor, StatusEffect, StatusKind};
 
 /// A value that scales with ability level: `clamp(base + per_rank × rank, min, max)`,
 /// or an explicit per-level table (`75|150|225|300` in the generator CSVs).
@@ -112,7 +112,12 @@ pub enum AbilityTrigger {
     OnCast,
     /// A projectile struck its unit target. Splash units are the affected units.
     OnProjectileHit,
+    /// A self-propelled mover (dash, charge) touched an enemy; trigger unit = that enemy.
     OnUnitContact,
+    /// A self-propelled forced movement ended (arrival, block, timeout, or the mover was
+    /// disabled). Trigger unit = the chased unit if it was reached; affected units =
+    /// every unit contacted on the way. Replacement, teleport and death end silently.
+    OnMovementEnd,
     /// A projectile ended without striking a unit (ground impact or lost target).
     OnImpact,
     OnChannelTick,
@@ -211,12 +216,25 @@ pub enum StatusSpec {
     Disarm,
     Phased,
     Forceful,
+    /// Flies: trees and other ground obstacles stop blocking (buildings still do).
+    Flying,
+    /// Confines the target to `radius` around an anchor: the trigger point or the caster
+    /// (a tether). It clamps and never breaks.
+    Leash {
+        radius: RankValue,
+        anchor: LeashAnchorKind,
+    },
     /// Purges existing debuffs on application.
     DebuffImmunity,
     /// Absorbing shield pool (`amount` at rank).
-    Shield { amount: RankValue },
+    Shield {
+        amount: RankValue,
+    },
     /// Periodic damage while active (`dps` at rank).
-    Burn { dps: RankValue, damage_type: DamageType },
+    Burn {
+        dps: RankValue,
+        damage_type: DamageType,
+    },
     /// Items only; abilities use silence.
     Mute,
     /// Stops acting until damaged or duration ends.
@@ -243,6 +261,10 @@ pub enum StatusSpec {
     TurnRateSlow {
         percent: RankValue,
     },
+    /// `percent` added to base turn rate (a buff; bonuses add up).
+    TurnRateBonus {
+        percent: RankValue,
+    },
     Modifier {
         id: &'static str,
         kind: StatusKind,
@@ -255,12 +277,25 @@ pub enum StatusSpec {
     },
 }
 
+/// Where a [`StatusSpec::Leash`] is anchored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeashAnchorKind {
+    /// The trigger point (a region around where the effect landed).
+    TriggerPoint,
+    /// The caster (a tether that follows it).
+    Caster,
+}
+
 /// Inputs needed to construct a runtime [`StatusEffect`] from a [`StatusSpec`].
 #[derive(Debug, Clone, Copy)]
 pub struct StatusBuildContext {
     pub move_speed: f32,
     pub agility: f32,
     pub fear_source: Option<Entity>,
+    /// The unit that caused the status (the caster).
+    pub source: Option<Entity>,
+    /// Where the trigger happened.
+    pub point: Vec3,
 }
 
 impl StatusSpec {
@@ -288,6 +323,22 @@ impl StatusSpec {
             StatusSpec::Disarm => StatusEffect::disarmed(duration),
             StatusSpec::Phased => StatusEffect::phased(duration),
             StatusSpec::Forceful => StatusEffect::forceful(duration),
+            StatusSpec::Flying => StatusEffect::flying(duration),
+            StatusSpec::Leash { radius, anchor } => {
+                let at_point = LeashAnchor::Point(Vec2::new(ctx.point.x, ctx.point.z));
+                let anchor = match (anchor, ctx.source) {
+                    (LeashAnchorKind::Caster, Some(source)) => LeashAnchor::Unit(source),
+                    // No caster to follow: fall back to the spot where it landed.
+                    _ => at_point,
+                };
+                StatusEffect::leashed(
+                    Leash {
+                        anchor,
+                        radius: radius.at(rank).max(0.0),
+                    },
+                    duration,
+                )
+            }
             StatusSpec::DebuffImmunity => StatusEffect::debuff_immunity(duration),
             StatusSpec::Shield { amount } => StatusEffect::shield(amount.at(rank), duration),
             StatusSpec::Burn { dps, damage_type } => {
@@ -297,7 +348,9 @@ impl StatusSpec {
             StatusSpec::Sleep => StatusEffect::sleep(duration),
             StatusSpec::Invulnerable => StatusEffect::invulnerable(duration),
             StatusSpec::Hex => StatusEffect::hexed(duration),
-            StatusSpec::Blind { miss_chance_percent } => StatusEffect::blind(
+            StatusSpec::Blind {
+                miss_chance_percent,
+            } => StatusEffect::blind(
                 (miss_chance_percent.at(rank) / 100.0).clamp(0.0, 1.0),
                 duration,
             ),
@@ -322,6 +375,11 @@ impl StatusSpec {
                 turn_rate_slow_percent: percent.at(rank).clamp(0.0, 100.0),
                 dispel_type: DispelType::Basic,
                 ..StatusEffect::debuff("turn_rate_slow", duration)
+            },
+            StatusSpec::TurnRateBonus { percent } => StatusEffect {
+                turn_rate_bonus_percent: percent.at(rank).clamp(0.0, 400.0),
+                dispel_type: DispelType::Basic,
+                ..StatusEffect::buff("turn_rate_bonus", duration)
             },
             StatusSpec::Modifier {
                 id,
@@ -357,8 +415,22 @@ impl StatusSpec {
 pub enum DisplacementKind {
     /// Away from the trigger point (or the caster when they coincide).
     Knockback,
-    /// Toward the caster.
+    /// Toward the caster; tracks the caster while pulling.
     Pull,
+    /// Toward the trigger point, up to the distance.
+    PullToPoint,
+    /// The target dashes in a straight line toward the aim point, at most `distance`.
+    /// `duration` is the time for the full distance. Phases through units.
+    Dash,
+    /// The target runs at the cast target at `speed` until contact (or `distance` /
+    /// `duration` run out). Needs a living cast target.
+    Charge,
+    /// The target rides along with the caster's own forced movement (a dash or charge),
+    /// keeping its offset, until that movement ends or `duration` (when above zero) runs out.
+    Drag,
+    /// The target is lifted and held in place for `duration`: stunned, invulnerable,
+    /// untargetable, and immune to other displacement and teleports.
+    Cyclone,
 }
 
 /// Permanent stat bonus granted by an item's `Passive` entries.
@@ -423,6 +495,8 @@ pub enum AbilityEffect {
         kind: DisplacementKind,
         distance: Option<RankValue>,
         duration: RankValue,
+        /// Travel speed; only kinds that chase a unit read it.
+        speed: Option<RankValue>,
     },
     /// Instantly relocates each target to the trigger's aim point, validated against the
     /// map, static obstacles, and unit overlap (see `crate::teleport`). Rejected
@@ -466,11 +540,14 @@ pub enum AbilityMechanic {
     ///
     /// A `skillshot` instead flies the full cast range toward the aim, firing
     /// `OnProjectileHit` for every enemy it passes within `aoe_radius`, then `OnImpact`.
+    /// With `first_hit` it stops at the first enemy it strikes instead (a hook).
     Projectile {
         splash_radius: AreaRadius,
         /// World units per second; `None` uses the default spell projectile speed.
         speed: Option<f32>,
         skillshot: bool,
+        /// Skillshots only: end at the first enemy struck (no `OnImpact` after a hit).
+        first_hit: bool,
     },
     /// Caster follows up with auto-attacks on the unit target.
     AttackUnitTarget,

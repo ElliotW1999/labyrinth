@@ -167,9 +167,32 @@ impl CombatStats {
         self.attack_speed = (ias / 100.0) / self.base_attack_time.max(0.01);
     }
 
-    /// Turn rate after stacking status slow on top of the hero/creep base in `turn_rate`.
+    /// Move speed used for walking: the stat with every status modifier applied, but
+    /// never below [`crate::scale::MIN_MOVE_SPEED`] so stacked slows cannot silently
+    /// root a unit. There is no upper cap. Units whose base speed is zero (wards and
+    /// other stationary units) stay stationary whatever bonuses they receive.
+    pub fn effective_move_speed(&self, statuses: Option<&crate::status::StatusEffects>) -> f32 {
+        let from_statuses: f32 =
+            statuses.map_or(0.0, |s| s.effects.iter().map(|e| e.move_speed).sum());
+        let base = self.move_speed - from_statuses;
+        if base <= 0.0 {
+            return 0.0;
+        }
+        self.move_speed.max(crate::scale::MIN_MOVE_SPEED)
+    }
+
+    /// Turn rate after stacking status bonuses and slow on top of the hero/creep base in
+    /// `turn_rate`: `base × (1 + Σ bonus / 100) × (1 − strongest slow / 100)`.
     pub fn effective_turn_rate(&self, statuses: Option<&crate::status::StatusEffects>) -> f32 {
         let base = self.turn_rate.max(0.01);
+        let bonus_pct: f32 = statuses.map_or(0.0, |s| {
+            s.effects
+                .iter()
+                .filter(|e| e.remaining > 0.0)
+                .map(|e| e.turn_rate_bonus_percent)
+                .sum()
+        });
+        let base = base * (1.0 + bonus_pct.max(0.0) / 100.0);
         let slow_pct = statuses
             .map(|s| {
                 s.effects
@@ -717,5 +740,98 @@ mod ability_generator_tests {
         assert!(AbilityId::Cataclysm.is_ultimate());
         assert_eq!(AbilityId::Cataclysm.max_rank(), 4);
         assert!(!AbilityId::StoneSkin.is_ultimate());
+    }
+}
+
+#[cfg(test)]
+mod movement_stat_tests {
+    use super::*;
+    use crate::status::{StatusEffect, StatusEffects, apply_status};
+
+    fn with_statuses(base_speed: f32, effects: Vec<StatusEffect>) -> (CombatStats, StatusEffects) {
+        let mut stats = CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, base_speed);
+        let mut statuses = StatusEffects::default();
+        for effect in effects {
+            assert!(apply_status(&mut statuses, &mut stats, effect, 0.0));
+        }
+        (stats, statuses)
+    }
+
+    fn flat_speed(id: &'static str, amount: f32) -> StatusEffect {
+        StatusEffect {
+            move_speed: amount,
+            ..StatusEffect::debuff(id, 5.0)
+        }
+    }
+
+    #[test]
+    fn turn_rate_bonus_and_slow_combine() {
+        let mut stats = CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 300.0);
+        stats.turn_rate = 0.5;
+        let mut statuses = StatusEffects::default();
+        assert_eq!(stats.effective_turn_rate(Some(&statuses)), 0.5);
+
+        statuses.effects.push(StatusEffect {
+            turn_rate_bonus_percent: 100.0,
+            ..StatusEffect::buff("turn_rate_bonus", 5.0)
+        });
+        statuses.effects.push(StatusEffect {
+            turn_rate_bonus_percent: 50.0,
+            ..StatusEffect::buff("turn_rate_bonus_2", 5.0)
+        });
+        assert!((stats.effective_turn_rate(Some(&statuses)) - 1.25).abs() < 1e-5);
+
+        statuses.effects.push(StatusEffect {
+            turn_rate_slow_percent: 40.0,
+            ..StatusEffect::debuff("turn_rate_slow", 5.0)
+        });
+        // 0.5 × (1 + 1.5) × (1 − 0.4)
+        assert!((stats.effective_turn_rate(Some(&statuses)) - 0.75).abs() < 1e-5);
+    }
+
+    #[test]
+    fn stacked_slows_respect_the_move_speed_floor() {
+        let (stats, statuses) = with_statuses(
+            300.0,
+            vec![
+                flat_speed("slow_a", -150.0),
+                flat_speed("slow_b", -150.0),
+                flat_speed("slow_c", -200.0),
+            ],
+        );
+        assert!(stats.move_speed < 0.0, "the raw stat went negative");
+        assert_eq!(
+            stats.effective_move_speed(Some(&statuses)),
+            crate::scale::MIN_MOVE_SPEED
+        );
+        let (stats, statuses) = with_statuses(300.0, vec![flat_speed("slow_a", -100.0)]);
+        assert_eq!(stats.effective_move_speed(Some(&statuses)), 200.0);
+    }
+
+    #[test]
+    fn haste_is_not_capped() {
+        let (stats, statuses) = with_statuses(
+            300.0,
+            vec![StatusEffect {
+                move_speed: 700.0,
+                ..StatusEffect::buff("haste", 5.0)
+            }],
+        );
+        assert_eq!(stats.effective_move_speed(Some(&statuses)), 1000.0);
+    }
+
+    #[test]
+    fn zero_base_speed_units_stay_stationary_with_haste() {
+        let (stats, statuses) = with_statuses(
+            0.0,
+            vec![StatusEffect {
+                move_speed: 200.0,
+                ..StatusEffect::buff("haste", 5.0)
+            }],
+        );
+        assert_eq!(stats.move_speed, 200.0);
+        assert_eq!(stats.effective_move_speed(Some(&statuses)), 0.0);
+        let (stats, statuses) = with_statuses(0.0, vec![flat_speed("slow", -50.0)]);
+        assert_eq!(stats.effective_move_speed(Some(&statuses)), 0.0);
     }
 }

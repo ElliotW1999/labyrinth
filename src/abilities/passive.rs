@@ -116,6 +116,8 @@ pub fn tick_toggle_upkeep(
             move_speed: stats.move_speed,
             agility: attrs.map_or(0.0, |a| a.agility),
             fear_source: None,
+            source: Some(entity),
+            point: Vec3::ZERO,
         };
         for slot in &mut loadout.slots {
             let Some(def) = defs.get(slot.id) else {

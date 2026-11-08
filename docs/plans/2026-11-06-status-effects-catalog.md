@@ -47,7 +47,7 @@ Legend: **Implemented** = behaves as named in typical MOBA sense; **Partial** = 
 | **Stun** | Implemented | `items.rs` (`stunned`, `is_stunned`, `can_cast`/`can_move`/`can_attack` via stun) | Reuse boolean on `StatusEffect`; extend if *mini-stun* needs a distinct class | **P0** stable; optional **P1** *stun tier* (full vs mini) via `id` or enum field |
 | **Mini-stun** | Partial | Same as stun (no distinction) | Reuse `stun` + **metadata**: `InterruptOnly` flag or separate `id` (`"mini_stun"`) + systems that only care read it | **P1** after interrupt/channel rules are centralized |
 | **Root** | Implemented | `items.rs` (`rooted`, `is_rooted`); `movement.rs` | Reuse; note **stun counts as rooted** today | **P0** |
-| **Leash** | Missing | — | New: **component or status** with `anchor`, `max_range`, break behavior; hook in `movement.rs` / `apply_move_targets` | **P3** (needs design: snap back vs break vs damage) |
+| **Leash** | **Implemented 2026-11-07** (clamp, never breaks; see `docs/plans/2026-11-07-movement-mechanics.md`) | `status.rs` (`Leash`), `movement.rs::enforce_leashes`, `StatusSpec::Leash` | New: **component or status** with `anchor`, `max_range`, break behavior; hook in `movement.rs` / `apply_move_targets` | **P3** (needs design: snap back vs break vs damage) |
 | **Silence** | Implemented | `items.rs` (`silenced`); `actions/resources.rs` (`DisableRule::SilenceOrStun` for abilities) | Reuse | **P0** |
 | **Mute** | Missing | — | New flag `muted: bool` OR reuse `silenced` with **DisableRule** variant for items | **P2** (pair with `DisableRule` matrix) |
 | **Break** | Missing | — | Typically *disable passive abilities* — needs **`AbilityState` / passive runner** rules; not in `StatusEffects` alone | **P3** (depends on passive architecture) |
@@ -59,9 +59,9 @@ Legend: **Implemented** = behaves as named in typical MOBA sense; **Partial** = 
 | **Hypnosis** | Missing | — | Often *sleep* or *move toward source* — pick one **P2**/**P3** spec | **Defer** until sleep/fear exist |
 | **Slow (move)** | Implemented | `StatusSpec::Slow`, `StatusEffect.move_speed` | Reuse `%` slow from current `CombatStats.move_speed` | **P0** |
 | **Attack speed slow** | Partial | `CombatStats` has `attack_speed_*` but **no status applies it** | Extend `StatusEffect` with `attack_speed_flat` / `attack_speed_mult` **or** map via `Modifier` + recompute in tick | **P2** |
-| **Turn rate slow** | Partial | `facing::turn_toward` + `CombatStats.turn_rate` — **no status modifier** | Add optional delta on `StatusEffect` or `%` slow applied where `turn_toward` reads stats | **P2** |
+| **Turn rate slow** | Partial; **2026-11-07: `StatusSpec::TurnRateBonus` added and the slow/bonus formula lives in `CombatStats::effective_turn_rate`** | `facing::turn_toward` + `CombatStats.turn_rate` — **no status modifier** | Add optional delta on `StatusEffect` or `%` slow applied where `turn_toward` reads stats | **P2** |
 | **Blind** | Missing | — | New: miss chance or **cannot basic attack** subset — hook in `basic_attack` resolution | **P2** (PvE vs RNG) |
-| **Cyclone** | Partial | `Displacement` + stun-like — **no** dedicated cyclone (invuln + disjoint) | Custom mechanic: **untargetable + hover** + purge rules | **P3** |
+| **Cyclone** | **Implemented 2026-11-07**: `DisplacementKind::Cyclone` (hold + lift, stun + invulnerable status, untargetable, immune to other displacement and teleports). Banish / full untargetable semantics beyond targeting remain P3 | `displacement.rs`, `status.rs` (`StatusEffect::cyclone`, `is_untargetable`) | Custom mechanic: **untargetable + hover** + purge rules | **P3** |
 | **Banish / hide** | Missing | — | Overlap with **untargetable** + `Visibility` — hook `picking.rs` / targeting | **P3** |
 | **Ethereal** | Missing | — | New: **immune physical**, **can't attack**, may take magic amp — extend `DamageEvent` handling in `combat.rs` | **P3** |
 | **Invisibility** | Missing | `fog.rs` | New team/stat **vision modifier** + optional `Visibility`; **reveal** counters | **P3** |

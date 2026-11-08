@@ -4,8 +4,8 @@
 #[allow(unused_imports)]
 use crate::abilities::definition::{
     AbilityEffect, AbilityEffectEntry, AbilityTrigger, AreaCenter, AreaRadius, Attribute,
-    DisplacementKind, EffectScaling, EffectTarget, PassiveStat, RankValue, StatusSpec, TargetTeam,
-    TargetType,
+    DisplacementKind, EffectScaling, EffectTarget, LeashAnchorKind, PassiveStat, RankValue,
+    StatusSpec, TargetTeam, TargetType,
 };
 #[allow(unused_imports)]
 use crate::components::DamageType;

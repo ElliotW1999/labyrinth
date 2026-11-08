@@ -12,6 +12,7 @@ use crate::components::{
 use crate::dimensions::{bounds_of, center_distance as flat_distance, edge_distance, within_range};
 use crate::movement::SimSet;
 use crate::navigation::attack_position::assign_attack_positions;
+use crate::status::{StatusEffects, is_untargetable};
 
 /// A lane waypoint counts as passed within this distance, so a wave crowding the
 /// same point doesn't stall on it.
@@ -82,11 +83,12 @@ fn acquire_targets(
         (Without<PlayerHero>, Without<TrainingDummy>),
     >,
     candidates: Query<(Entity, &Transform, &Team, &Health, Option<&BoundRadius>)>,
+    statuses_of: Query<&StatusEffects>,
     mut commands: Commands,
 ) {
     let snaps: Vec<_> = candidates
         .iter()
-        .filter(|(_, _, _, hp, _)| hp.is_alive())
+        .filter(|(e, _, _, hp, _)| hp.is_alive() && !is_untargetable(&statuses_of, *e))
         .map(|(e, t, team, _, radius)| (e, t.translation, *team, bounds_of(radius)))
         .collect();
 
@@ -168,6 +170,7 @@ fn player_attack_move(
         Option<&BoundRadius>,
         &Visibility,
     )>,
+    statuses_of: Query<&StatusEffects>,
     mut commands: Commands,
 ) {
     let Ok((entity, transform, stats, hero_team, self_bound, order, moving)) = hero.single() else {
@@ -177,8 +180,11 @@ fn player_attack_move(
 
     let in_range = enemies
         .iter()
-        .filter(|(_, _, team, hp, _, vis)| {
-            **team == hero_team.enemy() && hp.is_alive() && !matches!(*vis, Visibility::Hidden)
+        .filter(|(e, _, team, hp, _, vis)| {
+            **team == hero_team.enemy()
+                && hp.is_alive()
+                && !matches!(*vis, Visibility::Hidden)
+                && !is_untargetable(&statuses_of, *e)
         })
         .filter(|(_, tf, _, _, radius, _)| {
             within_range(

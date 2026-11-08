@@ -36,7 +36,9 @@ use crate::combat::{flat_distance, spawn_requested_projectiles};
 use crate::components::{
     AbilityLoadout, CastTarget, Ground, Lifetime, Mana, PlayerHero, SpellFx, Team,
 };
-use crate::displacement::{DisplacementEvent, apply_displacement_events, tick_forced_movement};
+use crate::displacement::{
+    DisplacementEvent, apply_displacement_events, settle_grounded_units, tick_forced_movement,
+};
 use crate::picking::{PickableUnits, cursor_ground_hit, cursor_ray, ground_hit, pick_under_ray};
 use crate::resources::SharedAssets;
 use crate::scale;
@@ -97,6 +99,8 @@ impl Plugin for AbilitiesPlugin {
                     action_channel_end_triggers,
                     projectile_hit_triggers,
                     crate::items::item_attack_triggers,
+                    // Before trigger resolution, so contact / end triggers fire this frame.
+                    (tick_forced_movement, settle_grounded_units).chain(),
                     resolve_ability_triggers,
                     spawn_requested_projectiles,
                     (
@@ -107,11 +111,9 @@ impl Plugin for AbilitiesPlugin {
                         // Before the AI and navigation stages, so the orders it drops
                         // are gone before they are replanned or re-issued.
                         apply_teleport_events.before(crate::movement::SimSet::Ai),
-                        tick_forced_movement,
                     )
                         .chain(),
-                    despawn_indicators,
-                    animate_spell_fx,
+                    (despawn_indicators, animate_spell_fx).chain(),
                 )
                     .chain()
                     .run_if(crate::net::is_sim_authority)
@@ -648,13 +650,13 @@ mod tests {
                     action_channel_end_triggers,
                     projectile_hit_triggers,
                     crate::items::item_attack_triggers,
+                    (tick_forced_movement, settle_grounded_units).chain(),
                     resolve_ability_triggers,
                     apply_heal_events,
                     apply_mana_restore_events,
                     apply_displacement_events,
                     apply_status_effect_events,
                     apply_teleport_events,
-                    tick_forced_movement,
                     apply_damage_events,
                 )
                     .chain(),
@@ -900,6 +902,7 @@ mod tests {
                 splash_radius: AreaRadius::Fixed(RankValue::fixed(20.0)),
                 speed: None,
                 skillshot: false,
+                first_hit: false,
             })
     }
 
@@ -1006,10 +1009,7 @@ mod tests {
         let mut app = test_app();
         let caster = spawn_caster_with_inventory(&mut app, KIT);
         give_item(&mut app, caster, ItemId::VialOfLight);
-        app.world_mut()
-            .get_mut::<Inventory>(caster)
-            .unwrap()
-            .slots[0]
+        app.world_mut().get_mut::<Inventory>(caster).unwrap().slots[0]
             .as_mut()
             .unwrap()
             .cooldown
@@ -1045,7 +1045,8 @@ mod tests {
             ],
         );
         let base = *app.world().get::<CombatStats>(caster).unwrap();
-        let toggled = |app: &App| app.world().get::<AbilityLoadout>(caster).unwrap().slots[0].toggled;
+        let toggled =
+            |app: &App| app.world().get::<AbilityLoadout>(caster).unwrap().slots[0].toggled;
         let cooldown = |app: &App| {
             app.world().get::<AbilityLoadout>(caster).unwrap().slots[0]
                 .cooldown
@@ -1060,7 +1061,10 @@ mod tests {
         let on = *app.world().get::<CombatStats>(caster).unwrap();
         assert!((on.move_speed - base.move_speed - 10.0).abs() < 1e-4);
         assert!((on.attack_speed_mult - base.attack_speed_mult - 0.2).abs() < 1e-4);
-        assert!(cooldown(&app).remaining > 0.0, "each flip starts the cooldown");
+        assert!(
+            cooldown(&app).remaining > 0.0,
+            "each flip starts the cooldown"
+        );
         let charges_on = cooldown(&app).charges;
 
         // Wait out the 1s cooldown, then cast again.
@@ -1074,7 +1078,10 @@ mod tests {
         }
         assert!(!toggled(&app), "the second cast turns it off");
         let off = *app.world().get::<CombatStats>(caster).unwrap();
-        assert!((off.move_speed - base.move_speed).abs() < 1e-4, "bonus removed");
+        assert!(
+            (off.move_speed - base.move_speed).abs() < 1e-4,
+            "bonus removed"
+        );
         assert!((off.attack_speed_mult - base.attack_speed_mult).abs() < 1e-4);
         assert!(
             app.world()
@@ -1083,10 +1090,16 @@ mod tests {
                 .effects
                 .is_empty()
         );
-        assert!(cooldown(&app).remaining > 0.0, "the off flip also starts the cooldown");
+        assert!(
+            cooldown(&app).remaining > 0.0,
+            "the off flip also starts the cooldown"
+        );
         assert_eq!(cooldown(&app).charges, charges_on, "no charge anomaly");
         let mana = app.world().get::<Mana>(caster).unwrap().current;
-        assert!(mana < 1000.0 - 2.0 * 15.0 + 1e-3, "two casts paid, got {mana}");
+        assert!(
+            mana < 1000.0 - 2.0 * 15.0 + 1e-3,
+            "two casts paid, got {mana}"
+        );
     }
 
     #[test]
@@ -1409,6 +1422,7 @@ mod tests {
                 splash_radius: AreaRadius::Ability,
                 speed: None,
                 skillshot: false,
+                first_hit: false,
             })
             .on(
                 AbilityTrigger::OnProjectileHit,
@@ -1711,6 +1725,7 @@ mod tests {
                     kind: DisplacementKind::Pull,
                     distance: None,
                     duration: RankValue::fixed(0.3),
+                    speed: None,
                 },
             );
         app.world_mut()
@@ -1723,18 +1738,417 @@ mod tests {
         }
 
         request(&mut app, caster, 3, CastTarget::Unit(enemy));
-        let mut was_rooted = false;
+        let mut was_moving = false;
         for _ in 0..30 {
             step(&mut app);
-            was_rooted |= app.world().get::<StatusEffects>(enemy).unwrap().is_rooted();
+            was_moving |= app.world().get::<ForcedMovement>(enemy).is_some();
         }
         let x = app.world().get::<Transform>(enemy).unwrap().translation.x;
-        assert!(was_rooted, "displaced units are rooted while moving");
+        assert!(
+            was_moving,
+            "displaced units are in forced motion while moving"
+        );
+        assert!(
+            !app.world().get::<StatusEffects>(enemy).unwrap().is_rooted(),
+            "forced motion no longer roots the victim"
+        );
         assert!(
             (x - 48.0).abs() < 1e-2,
             "pulled into contact, not onto the caster: {x}"
         );
         assert!(app.world().get::<ForcedMovement>(enemy).is_none());
+    }
+
+    #[test]
+    fn hook_composition_pulls_the_skillshot_victim_to_the_caster() {
+        let mut app = test_app();
+        let hook = AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::Point, RankValue::fixed(900.0), RankValue::ZERO)
+            .costs(RankValue::fixed(8.0), RankValue::fixed(100.0))
+            .on(
+                AbilityTrigger::OnProjectileHit,
+                EffectTarget::TriggerUnit,
+                AbilityEffect::Displace {
+                    kind: DisplacementKind::Pull,
+                    distance: None,
+                    duration: RankValue::fixed(0.3),
+                    speed: None,
+                },
+            );
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(hook);
+        let caster = spawn_caster(&mut app, KIT);
+        let victim = spawn_unit(&mut app, Team::Dire, Vec3::new(700.0, 0.0, 0.0));
+        let bystander = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, 700.0));
+        for unit in [caster, victim, bystander] {
+            app.world_mut().entity_mut(unit).insert(BoundRadius(24.0));
+        }
+        let payload = ProjectilePayload {
+            caster,
+            ability: AbilityId::Bulwark,
+            rank: 1,
+            cast_target: None,
+            aim: Vec3::new(900.0, 0.0, 0.0),
+        };
+        app.world_mut().write_message(hit(
+            payload,
+            Vec3::new(700.0, 0.0, 0.0),
+            Some(victim),
+            Vec::new(),
+        ));
+        for _ in 0..20 {
+            step(&mut app);
+        }
+        let world = app.world();
+        assert!((world.get::<Transform>(victim).unwrap().translation.x - 48.0).abs() < 1e-2);
+        assert_eq!(
+            world.get::<Transform>(bystander).unwrap().translation,
+            Vec3::new(0.0, 0.0, 700.0)
+        );
+    }
+
+    fn dash_ability(distance: f32) -> AbilityDefinition {
+        AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::Point, RankValue::fixed(2000.0), RankValue::ZERO)
+            .costs(RankValue::fixed(8.0), RankValue::fixed(100.0))
+            .mechanic(AbilityMechanic::Dash {
+                distance: RankValue::fixed(distance),
+            })
+    }
+
+    fn caster_x(app: &App, caster: Entity) -> f32 {
+        app.world().get::<Transform>(caster).unwrap().translation.x
+    }
+
+    /// Steps until the caster's forced movement starts (after the cast point).
+    fn step_until_moving(app: &mut App, caster: Entity) {
+        for _ in 0..20 {
+            if app.world().get::<ForcedMovement>(caster).is_some() {
+                return;
+            }
+            step(app);
+        }
+        panic!("the motion never started");
+    }
+
+    #[test]
+    fn dash_ability_moves_at_dash_speed_and_caps_distance() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(dash_ability(360.0));
+        let caster = spawn_caster(&mut app, KIT);
+        request(
+            &mut app,
+            caster,
+            3,
+            CastTarget::Point(Vec3::new(1000.0, 0.0, 0.0)),
+        );
+        step_until_moving(&mut app, caster);
+        let mut samples = Vec::new();
+        for _ in 0..10 {
+            step(&mut app);
+            samples.push(caster_x(&app, caster));
+        }
+        // 0.05 s frames at 1200 units/s: 60 units per frame, well above the 300 walk speed.
+        assert!((samples[0] - 60.0).abs() < 1.0, "{samples:?}");
+        assert!((samples[1] - 120.0).abs() < 1.0, "{samples:?}");
+        assert!(
+            (samples.last().unwrap() - 360.0).abs() < 1e-2,
+            "capped: {samples:?}"
+        );
+        assert!(app.world().get::<ForcedMovement>(caster).is_none());
+        assert!(app.world().get::<MoveTarget>(caster).is_none());
+    }
+
+    #[test]
+    fn dash_is_not_cancelled_by_a_new_move_order() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(dash_ability(360.0));
+        let caster = spawn_caster(&mut app, KIT);
+        request(
+            &mut app,
+            caster,
+            3,
+            CastTarget::Point(Vec3::new(1000.0, 0.0, 0.0)),
+        );
+        step_until_moving(&mut app, caster);
+        step(&mut app);
+        app.world_mut().entity_mut(caster).insert(MoveTarget {
+            position: Vec3::new(-2000.0, 0.0, 0.0),
+        });
+        for _ in 0..8 {
+            step(&mut app);
+        }
+        assert!((caster_x(&app, caster) - 360.0).abs() < 1e-2);
+        assert!(
+            app.world().get::<MoveTarget>(caster).is_some(),
+            "the new order waits for the dash to finish"
+        );
+    }
+
+    #[test]
+    fn rooted_caster_pays_but_does_not_dash() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(dash_ability(360.0));
+        let caster = spawn_caster(&mut app, KIT);
+        app.world_mut()
+            .get_mut::<StatusEffects>(caster)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::rooted(5.0));
+        request(
+            &mut app,
+            caster,
+            3,
+            CastTarget::Point(Vec3::new(1000.0, 0.0, 0.0)),
+        );
+        for _ in 0..10 {
+            step(&mut app);
+        }
+        assert_eq!(caster_x(&app, caster), 0.0);
+        assert!(app.world().get::<ForcedMovement>(caster).is_none());
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 900.0);
+    }
+
+    #[test]
+    fn stun_mid_dash_ends_it_and_fires_movement_end() {
+        let mut app = test_app();
+        let dash = dash_ability(600.0).on(
+            AbilityTrigger::OnMovementEnd,
+            EffectTarget::Caster,
+            fixed_magical_damage(10.0),
+        );
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(dash);
+        let caster = spawn_caster(&mut app, KIT);
+        request(
+            &mut app,
+            caster,
+            3,
+            CastTarget::Point(Vec3::new(1000.0, 0.0, 0.0)),
+        );
+        step_until_moving(&mut app, caster);
+        step(&mut app);
+        step(&mut app);
+        app.world_mut().write_message(StatusEffectEvent {
+            source: None,
+            target: caster,
+            change: crate::status::StatusChange::Apply(crate::status::StatusEffect::stunned(2.0)),
+        });
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        let x = caster_x(&app, caster);
+        assert!(x > 0.0 && x < 600.0, "stopped part-way: {x}");
+        assert!(app.world().get::<ForcedMovement>(caster).is_none());
+        assert!(
+            health(&app, caster) < 1000.0,
+            "movement end fired its effects"
+        );
+        let after = health(&app, caster);
+        for _ in 0..6 {
+            step(&mut app);
+        }
+        assert_eq!(health(&app, caster), after, "fires once");
+    }
+
+    #[test]
+    fn drag_carries_contacted_units_with_the_dash() {
+        let mut app = test_app();
+        let skewer = dash_ability(600.0).on(
+            AbilityTrigger::OnUnitContact,
+            EffectTarget::TriggerUnit,
+            AbilityEffect::Displace {
+                kind: DisplacementKind::Drag,
+                distance: None,
+                duration: RankValue::ZERO,
+                speed: None,
+            },
+        );
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(skewer);
+        let caster = spawn_caster(&mut app, KIT);
+        let victim = spawn_unit(&mut app, Team::Dire, Vec3::new(200.0, 0.0, 0.0));
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(350.0, 0.0, 0.0));
+        for unit in [caster, victim, ally] {
+            app.world_mut().entity_mut(unit).insert(BoundRadius(30.0));
+        }
+        request(
+            &mut app,
+            caster,
+            3,
+            CastTarget::Point(Vec3::new(1000.0, 0.0, 0.0)),
+        );
+        for _ in 0..30 {
+            step(&mut app);
+        }
+        let dasher = caster_x(&app, caster);
+        assert!((dasher - 600.0).abs() < 1e-2);
+        let lead = caster_x(&app, victim) - dasher;
+        assert!(
+            lead > 0.0 && lead <= 60.0 + 1e-2,
+            "dragged along at the front of the dash: {lead}"
+        );
+        assert!(app.world().get::<ForcedMovement>(victim).is_none());
+        assert_eq!(caster_x(&app, ally), 350.0, "allies are not contacted");
+    }
+
+    #[test]
+    fn unit_cast_on_a_cycloned_target_is_rejected_and_area_effects_skip_it() {
+        let mut app = test_app();
+        let caster = spawn_caster(&mut app, KIT);
+        let hidden = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        let visible = spawn_unit(&mut app, Team::Dire, Vec3::new(-100.0, 0.0, 0.0));
+        app.world_mut()
+            .get_mut::<StatusEffects>(hidden)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect {
+                // Isolate untargetability from the damage block.
+                invulnerable: false,
+                ..crate::status::StatusEffect::cyclone(5.0, true)
+            });
+
+        // Bolt is a unit-targeted spell.
+        request(&mut app, caster, 1, CastTarget::Unit(hidden));
+        step(&mut app);
+        assert!(app.world().get::<Activation>(caster).is_none());
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 1000.0);
+
+        // Shockwave hits everything in its radius except the cycloned unit.
+        request(&mut app, caster, 0, CastTarget::None);
+        for _ in 0..9 {
+            step(&mut app);
+        }
+        assert!(health(&app, visible) < 1000.0, "the visible enemy was hit");
+        assert_eq!(health(&app, hidden), 1000.0);
+    }
+
+    fn dash_item() -> ItemDefinition {
+        static EFFECTS: std::sync::OnceLock<&'static [AbilityEffectEntry]> =
+            std::sync::OnceLock::new();
+        let effects = EFFECTS.get_or_init(|| {
+            Box::leak(Box::new([
+                AbilityEffectEntry {
+                    trigger: AbilityTrigger::OnUse,
+                    target: EffectTarget::Caster,
+                    effect: AbilityEffect::Displace {
+                        kind: DisplacementKind::Dash,
+                        distance: Some(RankValue::fixed(300.0)),
+                        duration: RankValue::fixed(0.25),
+                        speed: None,
+                    },
+                },
+                AbilityEffectEntry {
+                    trigger: AbilityTrigger::OnUnitContact,
+                    target: EffectTarget::TriggerUnit,
+                    effect: fixed_magical_damage(50.0),
+                },
+            ]))
+        });
+        ItemDefinition {
+            effects,
+            name: "Parity Dash",
+            ..teleport_item()
+        }
+    }
+
+    #[test]
+    fn item_dash_uses_the_same_effect() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([dash_item()]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::WardstoneCloak);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(150.0, 0.0, 0.0));
+        for unit in [caster, enemy] {
+            app.world_mut().entity_mut(unit).insert(BoundRadius(30.0));
+        }
+        request_item(
+            &mut app,
+            caster,
+            0,
+            CastTarget::Point(Vec3::new(1000.0, 0.0, 0.0)),
+        );
+        for _ in 0..12 {
+            step(&mut app);
+        }
+        assert!((caster_x(&app, caster) - 300.0).abs() < 1e-2);
+        assert_eq!(
+            health(&app, enemy),
+            950.0,
+            "the item's contact row hit the enemy once"
+        );
+    }
+
+    #[test]
+    fn charge_tracks_target_and_fires_end_with_trigger_unit() {
+        let mut app = test_app();
+        let charge = AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::Unit, RankValue::fixed(2000.0), RankValue::ZERO)
+            .costs(RankValue::fixed(8.0), RankValue::fixed(100.0))
+            .on(
+                AbilityTrigger::OnCast,
+                EffectTarget::Caster,
+                AbilityEffect::Displace {
+                    kind: DisplacementKind::Charge,
+                    distance: None,
+                    duration: RankValue::fixed(3.0),
+                    speed: Some(RankValue::fixed(900.0)),
+                },
+            )
+            .on(
+                AbilityTrigger::OnMovementEnd,
+                EffectTarget::TriggerUnit,
+                fixed_magical_damage(100.0),
+            );
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(charge);
+        let caster = spawn_caster(&mut app, KIT);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(800.0, 0.0, 0.0));
+        for unit in [caster, enemy] {
+            app.world_mut().entity_mut(unit).insert(BoundRadius(30.0));
+        }
+        // The target keeps running away at walking speed.
+        app.world_mut().entity_mut(enemy).insert(MoveTarget {
+            position: Vec3::new(800.0, 0.0, 3000.0),
+        });
+        request(&mut app, caster, 3, CastTarget::Unit(enemy));
+        let mut started = false;
+        let mut gap_at_end = None;
+        for _ in 0..40 {
+            step(&mut app);
+            let moving = app.world().get::<ForcedMovement>(caster).is_some();
+            started |= moving;
+            let world = app.world();
+            let c = world.get::<Transform>(caster).unwrap().translation;
+            let e = world.get::<Transform>(enemy).unwrap().translation;
+            if started && !moving && gap_at_end.is_none() {
+                gap_at_end = Some((c.distance(e), c.z));
+            }
+            // No movement plugin in this app: walk the target by hand at 300 units/s.
+            app.world_mut()
+                .get_mut::<Transform>(enemy)
+                .unwrap()
+                .translation
+                .z += 15.0;
+        }
+        let (gap, z) = gap_at_end.expect("the charge ended");
+        assert!(z > 50.0, "the charge followed the target sideways: {z}");
+        assert!(gap < 70.0, "ended in contact: {gap}");
+        assert_eq!(
+            health(&app, enemy),
+            900.0,
+            "end trigger hit the charged unit once"
+        );
     }
 
     fn blink_ability() -> AbilityDefinition {

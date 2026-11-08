@@ -86,6 +86,8 @@ pub struct UnitInfo {
     pub position: Vec3,
     pub team: Team,
     pub alive: bool,
+    /// Held out of play (cyclone): nobody else may pick this unit.
+    pub untargetable: bool,
     pub bounds: f32,
 }
 
@@ -116,6 +118,7 @@ pub fn resolve_target(
         lookup(entity)
             .filter(|info| {
                 info.alive
+                    && (!info.untargetable || entity == caster.entity)
                     && target_allowed(
                         spec.target_team,
                         caster.entity,
@@ -230,6 +233,7 @@ mod tests {
                 position: Vec3::new(500.0, 0.0, 0.0),
                 team,
                 alive: true,
+                untargetable: false,
                 bounds: 10.0,
             })
         }
@@ -334,5 +338,27 @@ mod tests {
             resolve_target(&unit_only, &c, CastTarget::Point(Vec3::X), unit(Team::Dire)),
             Err(ActionError::InvalidTarget)
         );
+    }
+
+    #[test]
+    fn untargetable_units_cannot_be_picked_except_by_themselves() {
+        let c = caster();
+        let hidden = |_: Entity| {
+            Some(UnitInfo {
+                position: Vec3::new(500.0, 0.0, 0.0),
+                team: Team::Dire,
+                alive: true,
+                untargetable: true,
+                bounds: 10.0,
+            })
+        };
+        let rule = spec(TargetType::Unit, TargetTeam::Enemy, 600.0);
+        let other = CastTarget::Unit(Entity::from_raw_u32(9).unwrap());
+        assert_eq!(
+            resolve_target(&rule, &c, other, hidden),
+            Err(ActionError::InvalidTarget)
+        );
+        let own = spec(TargetType::Unit, TargetTeam::Any, 600.0);
+        assert!(resolve_target(&own, &c, CastTarget::Unit(c.entity), hidden).is_ok());
     }
 }

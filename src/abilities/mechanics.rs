@@ -16,17 +16,15 @@ use bevy::prelude::*;
 
 use super::casting::AbilityCastEvent;
 use super::catalog::AbilityDefinitions;
-use super::definition::{AbilityMechanic, AbilityTrigger, AreaCenter, AreaRadius, RingStyle};
-use super::effects::{
-    AbilityTriggerEvent, EffectSource, TriggerContext,
+use super::definition::{
+    AbilityMechanic, AbilityTrigger, AreaCenter, AreaRadius, DisplacementKind, RingStyle,
 };
-use crate::status::{StatusChange, StatusEffectEvent};
-use crate::combat::{ProjectileHitEvent, ProjectilePayload, SpawnProjectileEvent, flat_distance};
-use crate::components::{
-    AbilityId, AttackMoveOrder, AttackTarget, CombatStats, Health, MoveTarget, Team,
-};
-use crate::status::StatusEffect;
+use super::effects::{AbilityTriggerEvent, EffectSource, TriggerContext};
+use crate::combat::{ProjectileHitEvent, ProjectilePayload, SpawnProjectileEvent};
+use crate::components::{AbilityId, AttackTarget, Health, Team};
+use crate::displacement::DisplacementEvent;
 use crate::resources::SharedAssets;
+use crate::scale::DASH_SPEED;
 
 /// Everything a mechanic or custom behavior needs to know about one cast.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -98,8 +96,7 @@ pub struct MechanicRunner<'w, 's> {
     pub commands: Commands<'w, 's>,
     assets: Res<'w, SharedAssets>,
     units: Query<'w, 's, (&'static Transform, &'static Health)>,
-    stats: Query<'w, 's, &'static CombatStats>,
-    statuses: MessageWriter<'w, StatusEffectEvent>,
+    displacements: MessageWriter<'w, DisplacementEvent>,
     projectiles: MessageWriter<'w, SpawnProjectileEvent>,
 }
 
@@ -133,6 +130,7 @@ impl MechanicRunner<'_, '_> {
                 splash_radius,
                 speed,
                 skillshot,
+                first_hit,
             } => {
                 let unit = ctx
                     .unit_target
@@ -155,6 +153,7 @@ impl MechanicRunner<'_, '_> {
                     target_pos,
                     speed: *speed,
                     skillshot_width: skillshot.then_some(ctx.aoe_radius),
+                    skillshot_max_hits: (*skillshot && *first_hit).then_some(1),
                     splash_radius: if *skillshot {
                         0.0
                     } else {
@@ -196,8 +195,8 @@ impl MechanicRunner<'_, '_> {
         }
     }
 
-    /// The phase lasts exactly as long as the travel, so it is part of the mechanic
-    /// rather than an effect entry.
+    /// The dash itself is forced movement (it phases through units and cannot be
+    /// cancelled by new orders); the mechanic only adds the ghost trail.
     fn dash(&mut self, ctx: &CastContext, max_distance: f32) {
         let from = ctx.origin;
         let flat = Vec3::new(ctx.aim.x - from.x, 0.0, ctx.aim.z - from.z);
@@ -206,19 +205,14 @@ impl MechanicRunner<'_, '_> {
             dest = from + flat.normalize() * max_distance;
         }
         super::spawn_dash_ghosts(&mut self.commands, &self.assets, from, dest);
-        let move_speed = self.stats.get(ctx.caster).map_or(1.0, |s| s.move_speed);
-        let travel = flat_distance(from, dest) / move_speed.max(1.0);
-        self.statuses.write(StatusEffectEvent {
-            source: Some(ctx.caster),
-            target: ctx.caster,
-            change: StatusChange::Apply(StatusEffect::phased(travel + 0.15)),
-        });
-        self.commands
-            .entity(ctx.caster)
-            .insert(MoveTarget {
-                position: Vec3::new(dest.x, 0.0, dest.z),
-            })
-            .remove::<(AttackTarget, AttackMoveOrder)>();
+        self.displacements.write(DisplacementEvent::from_ctx(
+            &ctx.trigger(AbilityTrigger::OnCast, from),
+            ctx.caster,
+            DisplacementKind::Dash,
+            Some(max_distance),
+            max_distance / DASH_SPEED,
+            None,
+        ));
     }
 }
 

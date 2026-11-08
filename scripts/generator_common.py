@@ -54,6 +54,7 @@ ABILITY_TRIGGERS = {
     "on_cast": "OnCast",
     "on_projectile_hit": "OnProjectileHit",
     "on_unit_contact": "OnUnitContact",
+    "on_movement_end": "OnMovementEnd",
     "on_impact": "OnImpact",
     "on_channel_tick": "OnChannelTick",
     "on_channel_end": "OnChannelEnd",
@@ -66,6 +67,8 @@ ABILITY_TRIGGERS = {
 ITEM_TRIGGERS = {
     "passive": "Passive",
     "on_use": "OnUse",
+    "on_unit_contact": "OnUnitContact",
+    "on_movement_end": "OnMovementEnd",
     "on_attack": "OnAttack",
     "on_attack_hit": "OnAttackHit",
     "on_channel_end": "OnChannelEnd",
@@ -112,6 +115,10 @@ STATUSES = {
     "slow": (None, "slow", False),
     "attack_speed_slow": (None, "attack_speed_slow", False),
     "turn_rate_slow": (None, "turn_rate_slow", False),
+    "turn_rate_bonus": (None, "turn_rate_bonus", True),
+    "flying": ("StatusSpec::Flying", "flying", True),
+    "leash": (None, "leash", False),
+    "tether": (None, "tether", False),
     "blind": (None, "blind", False),
     "phased": ("StatusSpec::Phased", "phased", True),
     "forceful": ("StatusSpec::Forceful", "forceful", True),
@@ -123,7 +130,9 @@ STATUSES = {
 
 # Activation targeting shared by abilities and active items.
 TARGET_TYPES = ("unit", "point", "direction", "no_target", "self")
-PROJECTILE_TYPES = ("none", "targeted", "skillshot")
+PROJECTILE_TYPES = ("none", "targeted", "skillshot", "skillshot_single")
+# Skillshots fly the cast range; `skillshot_single` stops at the first enemy it strikes (a hook).
+SKILLSHOT_TYPES = ("skillshot", "skillshot_single")
 
 # Optional activation columns on items.csv (not part of ITEM_COLUMNS required tuple).
 ITEM_ACTIVATION_OPTIONAL = (
@@ -142,9 +151,21 @@ TARGET_TEAMS = {"enemy": "Enemy", "ally": "Ally", "both": "Any", "self": "Ally"}
 # Activation team rule (`TargetTeam` of the action).
 ACTION_TEAMS = {**TARGET_TEAMS, "self": "SelfOnly"}
 
-MOVEMENTS = {"knockback": "Knockback", "pull": "Pull", "teleport": None}
+MOVEMENTS = {
+    "knockback": "Knockback",
+    "pull": "Pull",
+    "pull_point": "PullToPoint",
+    "dash": "Dash",
+    "charge": "Charge",
+    "drag": "Drag",
+    "cyclone": "Cyclone",
+    "teleport": None,
+}
 # Teleport sends every target to the cast's aim point, so only single-target selectors make sense.
 TELEPORT_TARGETS = ("caster", "owner", "cast_target", "trigger_unit")
+# Dash and charge move the unit that uses them.
+SELF_MOVEMENT_TARGETS = ("caster", "owner")
+DEFAULT_DASH_DURATION = 0.3
 DEFAULT_MOVEMENT_DURATION = 0.3
 
 # Timed stat modifiers map onto `StatusSpec::Modifier` fields.
@@ -501,10 +522,10 @@ def validate_activation(
         err("max_charges", "charge-based abilities need a charge_restore_time")
 
     if spec.projectile_speed is not None and spec.projectile_type == "none":
-        err("projectile_speed", "projectile_speed requires projectile_type targeted or skillshot")
+        err("projectile_speed", "projectile_speed requires projectile_type targeted, skillshot, or skillshot_single")
     if spec.projectile_type == "targeted" and spec.target_type != "unit":
         err("projectile_type", f"targeted projectiles home in on a unit; target_type is {spec.target_type}")
-    if spec.projectile_type == "skillshot" and spec.target_type not in ("point", "direction"):
+    if spec.projectile_type in SKILLSHOT_TYPES and spec.target_type not in ("point", "direction"):
         err("projectile_type", f"skillshots fly toward a point or direction; target_type is {spec.target_type}")
 
     if spec.target_team == "self" and spec.target_type not in ("self", "no_target"):
@@ -635,6 +656,8 @@ class EffectContext:
     invalid_trigger: dict[str, str] = field(default_factory=dict)
     #: Known custom effect ids from the Rust codebase (optional warn when authoring custom rows).
     registered_custom: set[str] | None = None
+    #: Activation `target_type` of the owner (None = unknown), for effects that need a cast target.
+    target_type: str | None = None
 
 
 def _levels(e: EffectRow, name: str, ctx: EffectContext, report: Report, **kwargs) -> list[float] | None:
@@ -656,6 +679,82 @@ def _require(e: EffectRow, name: str, report: Report, why: str) -> bool:
         return True
     report.error(e.row.file, e.row.line, name, "", f"required: {why}")
     return False
+
+
+def _displacement_effect(
+    e: EffectRow,
+    effect_id: str,
+    ctx: EffectContext,
+    value: list[float] | None,
+    duration: list[float] | None,
+    amount: list[float] | None,
+    report: Report,
+) -> str | None:
+    """`AbilityEffect::Displace` for the forced-movement kinds, validated per kind.
+
+    Columns: `value` = distance, `duration` = seconds, `amount` = speed (charge only).
+    """
+    row = e.row
+    kind = MOVEMENTS[effect_id]
+    if effect_id in ("dash", "charge") and e.target not in SELF_MOVEMENT_TARGETS:
+        report.error(
+            row.file,
+            row.line,
+            "effect_target",
+            e.target,
+            f"{effect_id} moves the unit that uses it; use one of: {', '.join(SELF_MOVEMENT_TARGETS)}",
+        )
+        return None
+    if effect_id == "drag" and e.target in SELF_MOVEMENT_TARGETS:
+        report.error(
+            row.file,
+            row.line,
+            "effect_target",
+            e.target,
+            "drag carries other units along with the caster's own movement; use trigger_unit, affected_units, or units_in_radius",
+        )
+        return None
+    speed = "None"
+    default_duration = DEFAULT_MOVEMENT_DURATION
+    if effect_id == "knockback" and not _require(e, "value", report, "knockback distance"):
+        return None
+    if effect_id == "dash":
+        if not _require(e, "value", report, "maximum dash distance"):
+            return None
+        default_duration = DEFAULT_DASH_DURATION
+    if effect_id == "charge":
+        if ctx.target_type is not None and ctx.target_type != "unit":
+            report.error(
+                row.file,
+                row.line,
+                "effect_type",
+                "movement",
+                f"charge runs at the cast target and needs target_type unit (got {ctx.target_type})",
+            )
+            return None
+        if not _require(e, "amount", report, "charge speed in world units per second"):
+            return None
+        if not _require(e, "duration", report, "maximum charge time in seconds"):
+            return None
+        if any(s <= 0 for s in amount):
+            report.error(row.file, row.line, "amount", row.get("amount"), "charge speed must be above 0")
+            return None
+        speed = f"Some({rank_value(amount)})"
+    if effect_id == "cyclone" and not _require(e, "duration", report, "cyclone duration in seconds"):
+        return None
+    if effect_id == "drag":
+        default_duration = 0.0  # blank: until the carrying movement ends
+    unused = ["damage_type"]
+    if effect_id != "charge":
+        unused.append("amount")
+    if effect_id in ("cyclone", "drag"):
+        unused.append("value")
+    _unused(e, report, *unused)
+    distance = f"Some({rank_value(value)})" if value and effect_id not in ("cyclone", "drag") else "None"
+    return (
+        f"AbilityEffect::Displace {{ kind: DisplacementKind::{kind}, "
+        f"distance: {distance}, duration: {rank_value(duration or [default_duration])}, speed: {speed} }}"
+    )
 
 
 def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[str, str, str] | None:
@@ -832,6 +931,26 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             spec = f"StatusSpec::TurnRateSlow {{ percent: {rank_value(percent)} }}"
             if amount:
                 _unused(e, report, "value")
+        elif effect_id == "turn_rate_bonus":
+            percent = amount or value
+            if not percent:
+                report.error(row.file, row.line, "amount", "", "required: turn_rate_bonus percentage (e.g. 50)")
+                return None
+            if any(not 0 <= p <= 400 for p in percent):
+                report.error(row.file, row.line, "amount" if amount else "value", row.get("amount") or row.get("value"), "turn_rate_bonus percentage must be within 0..400")
+                return None
+            spec = f"StatusSpec::TurnRateBonus {{ percent: {rank_value(percent)} }}"
+            if amount:
+                _unused(e, report, "value")
+        elif effect_id in ("leash", "tether"):
+            if not _require(e, "value", report, f"{effect_id} radius in world units"):
+                return None
+            if any(r <= 0 for r in value):
+                report.error(row.file, row.line, "value", row.get("value"), f"{effect_id} radius must be above 0")
+                return None
+            anchor = "TriggerPoint" if effect_id == "leash" else "Caster"
+            spec = f"StatusSpec::Leash {{ radius: {rank_value(value)}, anchor: LeashAnchorKind::{anchor} }}"
+            _unused(e, report, "amount")
         elif effect_id == "blind":
             miss = amount or value
             if not miss:
@@ -879,14 +998,9 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             _unused(e, report, "damage_type", "amount", "value", "duration", "radius")
             effect = "AbilityEffect::Teleport"
         else:
-            if effect_id == "knockback" and not _require(e, "value", report, "knockback distance"):
+            effect = _displacement_effect(e, effect_id, ctx, value, duration, amount, report)
+            if effect is None:
                 return None
-            _unused(e, report, "damage_type", "amount")
-            distance = f"Some({rank_value(value)})" if value else "None"
-            effect = (
-                f"AbilityEffect::Displace {{ kind: DisplacementKind::{MOVEMENTS[effect_id]}, "
-                f"distance: {distance}, duration: {rank_value(duration or [DEFAULT_MOVEMENT_DURATION])} }}"
-            )
     elif t == "stat_modifier":
         if not _require(e, "effect_id", report, "stat to modify") or not _require(e, "value", report, "stat bonus") or not no_scaling():
             return None

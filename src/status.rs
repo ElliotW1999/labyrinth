@@ -54,6 +54,22 @@ pub enum DispelType {
     None,
 }
 
+/// What a [`Leash`] is measured from.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LeashAnchor {
+    /// A fixed spot on the ground (x, z).
+    Point(Vec2),
+    /// A unit; the leash does nothing once that unit is gone.
+    Unit(Entity),
+}
+
+/// Keeps the unit inside a circle of `radius` around `anchor` (see `movement::enforce_leashes`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Leash {
+    pub anchor: LeashAnchor,
+    pub radius: f32,
+}
+
 #[derive(Debug, Clone)]
 pub struct StatusEffect {
     pub id: &'static str,
@@ -73,6 +89,8 @@ pub struct StatusEffect {
     pub attack_speed_mult: f32,
     /// Percent slow applied to turn rate (0..100), see [`CombatStats::turn_rate`].
     pub turn_rate_slow_percent: f32,
+    /// Percent added to turn rate (0..=400); bonuses add up.
+    pub turn_rate_bonus_percent: f32,
     /// 0..1 miss chance on basic attack damage resolution (`0` = no blind).
     pub blind_miss_chance: f32,
     pub heal_per_sec: f32,
@@ -94,6 +112,10 @@ pub struct StatusEffect {
     pub asleep: bool,
     pub invulnerable: bool,
     pub debuff_immune: bool,
+    /// Ignores trees and other ground obstacles while moving (buildings still block).
+    pub flying: bool,
+    /// Confines the unit to a circle (region restriction or tether).
+    pub leash: Option<Leash>,
     /// Forced retreat from this entity while feared (`None` if source despawned).
     pub fear_source: Option<Entity>,
 }
@@ -113,6 +135,7 @@ impl StatusEffect {
             attack_speed_flat: 0.0,
             attack_speed_mult: 0.0,
             turn_rate_slow_percent: 0.0,
+            turn_rate_bonus_percent: 0.0,
             blind_miss_chance: 0.0,
             heal_per_sec: 0.0,
             damage_per_sec: 0.0,
@@ -130,6 +153,8 @@ impl StatusEffect {
             asleep: false,
             invulnerable: false,
             debuff_immune: false,
+            flying: false,
+            leash: None,
             fear_source: None,
         }
     }
@@ -164,6 +189,28 @@ impl StatusEffect {
     }
 
     /// Temporary soft-separation against other units.
+    /// Ground obstacles stop blocking the unit. When it ends over geometry the unit is
+    /// set down on the nearest walkable spot.
+    pub fn flying(duration: f32) -> Self {
+        Self {
+            flying: true,
+            ..Self::buff("flying", duration)
+        }
+    }
+
+    /// Confinement to a circle around `leash.anchor`. `id` is `"leash"` for a fixed
+    /// region and `"tether"` for a unit anchor.
+    pub fn leashed(leash: Leash, duration: f32) -> Self {
+        let id = match leash.anchor {
+            LeashAnchor::Point(_) => "leash",
+            LeashAnchor::Unit(_) => "tether",
+        };
+        Self {
+            leash: Some(leash),
+            ..Self::debuff(id, duration)
+        }
+    }
+
     pub fn forceful(duration: f32) -> Self {
         Self {
             force_unit_push: true,
@@ -231,6 +278,24 @@ impl StatusEffect {
         }
     }
 
+    /// Lifted out of play: stunned, invulnerable, and untargetable. `hostile` picks the
+    /// debuff kind (blocked by debuff immunity) over the buff kind (self / ally cast).
+    /// Not purgeable; only expiry or an explicit `remove_status cyclone` ends it.
+    pub fn cyclone(duration: f32, hostile: bool) -> Self {
+        Self {
+            stunned: true,
+            invulnerable: true,
+            kind: if hostile {
+                StatusKind::Debuff
+            } else {
+                StatusKind::Buff
+            },
+            dispel_type: DispelType::None,
+            undispellable: true,
+            ..Self::buff("cyclone", duration)
+        }
+    }
+
     pub fn blind(miss_chance: f32, duration: f32) -> Self {
         Self {
             blind_miss_chance: miss_chance.clamp(0.0, 1.0),
@@ -264,6 +329,18 @@ impl StatusEffects {
         self.effects
             .iter()
             .any(|e| e.ignore_unit_collision && e.remaining > 0.0)
+    }
+
+    /// Active leashes and tethers.
+    pub fn leashes(&self) -> impl Iterator<Item = &Leash> {
+        self.effects
+            .iter()
+            .filter(|e| e.remaining > 0.0)
+            .filter_map(|e| e.leash.as_ref())
+    }
+
+    pub fn is_flying(&self) -> bool {
+        self.effects.iter().any(|e| e.flying && e.remaining > 0.0)
     }
 
     pub fn can_push_units(&self) -> bool {
@@ -339,6 +416,17 @@ impl StatusEffects {
             .any(|e| e.invulnerable && e.remaining > 0.0)
     }
 
+    /// Whether a status with this id is active.
+    pub fn has_status(&self, id: &str) -> bool {
+        self.effects.iter().any(|e| e.id == id && e.remaining > 0.0)
+    }
+
+    /// In a cyclone: no other unit can pick it as a unit target (basic attacks, unit
+    /// casts, auto-acquire, homing projectiles) and area effects skip it.
+    pub fn is_untargetable(&self) -> bool {
+        self.has_status("cyclone")
+    }
+
     pub fn can_move(&self) -> bool {
         !self.is_rooted()
     }
@@ -350,6 +438,14 @@ impl StatusEffects {
     pub fn can_cast(&self) -> bool {
         !self.is_silenced() && !self.is_stunned() && !self.is_asleep()
     }
+}
+
+/// Whether `entity` is held out of play (cyclone) and so cannot be picked as a target.
+/// The one check behind every "can this unit be targeted" filter.
+pub fn is_untargetable(statuses: &Query<&StatusEffects>, entity: Entity) -> bool {
+    statuses
+        .get(entity)
+        .is_ok_and(|statuses| statuses.is_untargetable())
 }
 
 /// Whether `effect` is removed by a dispel of `strength` on `kind`.
@@ -614,6 +710,12 @@ pub fn apply_status_effect_events(
                     0.0
                 };
                 let applied = apply_status(&mut statuses, &mut stats, effect.clone(), agility);
+                if applied && effect.flying {
+                    // When the flight ends, check the ground it lands on.
+                    commands
+                        .entity(entity)
+                        .insert(crate::displacement::SettleOnLanding);
+                }
                 if applied && effect.shield_amount > 0.0 {
                     if let Some(pool) = shield.as_deref_mut() {
                         pool.amount = (pool.amount - old_shield).max(0.0) + effect.shield_amount;
@@ -1233,5 +1335,48 @@ mod tests {
             assert!(remaining(&app, u).is_empty());
             assert_eq!(pool(&app, u), 0.0);
         }
+    }
+
+    #[test]
+    fn leash_is_dispellable_and_blocked_by_debuff_immunity() {
+        let leash = StatusEffect::leashed(
+            Leash {
+                anchor: LeashAnchor::Point(Vec2::ZERO),
+                radius: 300.0,
+            },
+            5.0,
+        );
+        assert_eq!(leash.id, "leash");
+        assert!(status_dispel_matches(
+            &leash,
+            StatusKind::Debuff,
+            DispelStrength::Basic
+        ));
+        let tether = StatusEffect::leashed(
+            Leash {
+                anchor: LeashAnchor::Unit(Entity::PLACEHOLDER),
+                radius: 300.0,
+            },
+            5.0,
+        );
+        assert_eq!(tether.id, "tether");
+
+        let mut stats = CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 300.0);
+        let mut statuses = StatusEffects::default();
+        assert!(apply_status(&mut statuses, &mut stats, leash.clone(), 0.0));
+        assert_eq!(statuses.leashes().count(), 1);
+        remove_statuses(&mut statuses, &mut stats, 0.0, None, |e| {
+            status_dispel_matches(e, StatusKind::Debuff, DispelStrength::Basic)
+        });
+        assert_eq!(
+            statuses.leashes().count(),
+            0,
+            "a basic dispel frees the unit"
+        );
+
+        let mut immune = StatusEffects::default();
+        assert!(apply_debuff_immunity(&mut immune, &mut stats, 5.0, 0.0));
+        assert!(!apply_status(&mut immune, &mut stats, leash, 0.0));
+        assert_eq!(immune.leashes().count(), 0);
     }
 }

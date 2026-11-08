@@ -96,6 +96,7 @@ const PROJECTILE: AbilityMechanic = AbilityMechanic::Projectile {
     splash_radius: AreaRadius::Ability,
     speed: None,
     skillshot: false,
+    first_hit: false,
 };
 
 const fn damage(

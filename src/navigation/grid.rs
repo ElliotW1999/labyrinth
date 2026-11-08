@@ -281,6 +281,12 @@ impl NavGrid {
         p.x.abs().max(p.y.abs()) <= self.half_extent - r
     }
 
+    /// `p` moved inside the playable map for a circle of radius `r`.
+    pub fn clamp_to_map(&self, p: Vec2, r: f32) -> Vec2 {
+        let limit = (self.half_extent - r).max(0.0);
+        p.clamp(Vec2::splat(-limit), Vec2::splat(limit))
+    }
+
     /// Exact test: a circle of radius `r` at `p` overlaps no static blocker and is inside the map.
     pub fn point_clear(&self, p: Vec2, r: f32) -> bool {
         self.contains(p, r) && self.shapes.iter().all(|s| s.distance(p) > r)

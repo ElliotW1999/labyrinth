@@ -136,12 +136,22 @@ pub struct CommandContext<'w, 's> {
     casts: MessageWriter<'w, ActivationRequest>,
     grid: Res<'w, NavGrid>,
     radii: Query<'w, 's, Option<&'static CollisionRadius>>,
-    health: Query<'w, 's, &'static Health>,
+    health: Query<
+        'w,
+        's,
+        (
+            &'static Health,
+            Option<&'static crate::status::StatusEffects>,
+        ),
+    >,
 }
 
 impl CommandContext<'_, '_> {
     fn target_alive(&self, target: Entity) -> bool {
-        self.health.get(target).is_ok_and(|h| h.is_alive())
+        // A cycloned unit cannot be picked as a target.
+        self.health.get(target).is_ok_and(|(h, statuses)| {
+            h.is_alive() && !statuses.is_some_and(|s| s.is_untargetable())
+        })
     }
 
     /// Non-navigable destinations resolve to the closest point the unit fits.

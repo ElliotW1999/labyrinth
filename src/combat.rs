@@ -14,7 +14,7 @@ use crate::components::{
     HeroAttributes, HeroProgress, Lifetime, PlayerHero, PlayerWallet, Projectile, ProjectileHome,
     ProjectileStyle, ShieldPool, Team, XpBounty,
 };
-use crate::status::{StatusEffects, subtract_status_stat_delta};
+use crate::status::{StatusEffects, is_untargetable, subtract_status_stat_delta};
 use crate::dimensions::{area_contains, bounds_of};
 use crate::progression::add_xp;
 use crate::resources::SharedAssets;
@@ -506,6 +506,8 @@ pub struct SpawnProjectileEvent {
     pub speed: Option<f32>,
     /// Set for skillshots: hit every enemy within this distance of the path.
     pub skillshot_width: Option<f32>,
+    /// Skillshots only: the projectile ends once it has struck this many enemies.
+    pub skillshot_max_hits: Option<u32>,
     pub splash_radius: f32,
     pub payload: ProjectilePayload,
 }
@@ -517,27 +519,50 @@ pub const SPELL_PROJECTILE_SPEED: f32 = scale::u(34.0);
 pub struct Skillshot {
     pub width: f32,
     pub hit: Vec<Entity>,
+    /// `Some(n)`: the projectile ends after striking `n` enemies (a hook uses 1).
+    pub max_hits: Option<u32>,
 }
 
 pub fn skillshot_contacts(
+    mut commands: Commands,
     mut hits: MessageWriter<ProjectileHitEvent>,
-    mut projectiles: Query<(&Transform, &Projectile, &ProjectilePayload, &mut Skillshot)>,
+    mut projectiles: Query<(
+        Entity,
+        &Transform,
+        &Projectile,
+        &ProjectilePayload,
+        &mut Skillshot,
+    )>,
     units: Query<(Entity, &Transform, &Team, &Health, Option<&BoundRadius>)>,
+    statuses_of: Query<&StatusEffects>,
 ) {
-    for (proj_tf, projectile, payload, mut skillshot) in &mut projectiles {
+    for (proj_entity, proj_tf, projectile, payload, mut skillshot) in &mut projectiles {
         let impact = proj_tf.translation;
-        for (unit, unit_tf, team, health, bound) in &units {
-            if *team == projectile.team
-                || !health.is_alive()
-                || skillshot.hit.contains(&unit)
-                || !area_contains(
-                    impact,
-                    skillshot.width,
-                    unit_tf.translation,
-                    bounds_of(bound),
-                )
+        let mut touched: Vec<(f32, Entity)> = units
+            .iter()
+            .filter(|(unit, unit_tf, team, health, bound)| {
+                **team != projectile.team
+                    && health.is_alive()
+                    && !is_untargetable(&statuses_of, *unit)
+                    && !skillshot.hit.contains(unit)
+                    && area_contains(
+                        impact,
+                        skillshot.width,
+                        unit_tf.translation,
+                        bounds_of(*bound),
+                    )
+            })
+            .map(|(unit, unit_tf, ..)| (flat_distance(impact, unit_tf.translation), unit))
+            .collect();
+        // The nearest enemy is struck first, which matters when the projectile can only
+        // strike a limited number of them.
+        touched.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        for (_, unit) in touched {
+            if skillshot
+                .max_hits
+                .is_some_and(|max| skillshot.hit.len() >= max as usize)
             {
-                continue;
+                break;
             }
             skillshot.hit.push(unit);
             hits.write(ProjectileHitEvent {
@@ -547,6 +572,13 @@ pub fn skillshot_contacts(
                 primary: Some(unit),
                 splashed: Vec::new(),
             });
+        }
+        if skillshot
+            .max_hits
+            .is_some_and(|max| skillshot.hit.len() >= max as usize)
+        {
+            // It struck what it was after: no impact trigger follows.
+            commands.entity(proj_entity).despawn();
         }
     }
 }
@@ -574,6 +606,7 @@ pub fn apply_projectile_hits(
         Option<&ProjectileReachedTarget>,
     )>,
     units: Query<(Entity, &Transform, &Team, &Health, Option<&BoundRadius>)>,
+    statuses_of: Query<&StatusEffects>,
 ) {
     for (proj_entity, proj_tf, projectile, payload, home, ground_impact, reached) in &projectiles {
         let impact = proj_tf.translation;
@@ -581,7 +614,10 @@ pub fn apply_projectile_hits(
         let mut primary_hit: Option<Entity> = None;
 
         if let Some(home) = home {
-            if let Ok((unit_entity, unit_tf, team, health, radius)) = units.get(home.target) {
+            // A target that is lifted out of play makes the projectile miss where it is.
+            if is_untargetable(&statuses_of, home.target) {
+                despawn = true;
+            } else if let Ok((unit_entity, unit_tf, team, health, radius)) = units.get(home.target) {
                 // Aim point is unit.y + body(1); keep the vertical pad in world units.
                 let vertical = (impact.y - (unit_tf.translation.y + scale::body(1.0))).abs();
                 if *team != projectile.team
@@ -615,6 +651,7 @@ pub fn apply_projectile_hits(
                 .filter(|(unit_entity, unit_tf, team, health, radius)| {
                     **team != projectile.team
                         && health.is_alive()
+                        && !is_untargetable(&statuses_of, *unit_entity)
                         && primary_hit != Some(*unit_entity)
                         && area_contains(
                             impact,
@@ -772,6 +809,7 @@ fn spawn_spell_bolt(
         target_pos,
         speed,
         skillshot_width,
+        skillshot_max_hits,
         splash_radius,
         payload,
     } = *request;
@@ -817,6 +855,7 @@ fn spawn_spell_bolt(
             entity.insert(Skillshot {
                 width,
                 hit: Vec::new(),
+                max_hits: skillshot_max_hits,
             });
         }
     }
@@ -1004,5 +1043,140 @@ mod tests {
         world.run_system_once(apply_damage_events).unwrap();
         let expected = 500.0 - apply_damage(125.0, DamageType::Magical, &defender);
         assert!((world.get::<Health>(target).unwrap().current - expected).abs() < 1e-3);
+    }
+
+    #[test]
+    fn in_flight_projectile_at_cycloned_unit_does_not_hit() {
+        let mut world = World::new();
+        world.init_resource::<Messages<ProjectileHitEvent>>();
+        let mut cycloned = StatusEffects::default();
+        cycloned
+            .effects
+            .push(crate::status::StatusEffect::cyclone(2.0, true));
+        let target = world
+            .spawn((
+                Transform::from_xyz(0.0, 0.0, 0.0),
+                Team::Dire,
+                Health::new(500.0),
+                cycloned,
+            ))
+            .id();
+        let _cycloned_neighbour = world
+            .spawn((
+                Transform::from_xyz(30.0, 0.0, 0.0),
+                Team::Dire,
+                Health::new(500.0),
+                {
+                    let mut s = StatusEffects::default();
+                    s.effects
+                        .push(crate::status::StatusEffect::cyclone(2.0, true));
+                    s
+                },
+            ))
+            .id();
+        let bystander = world
+            .spawn((
+                Transform::from_xyz(-30.0, 0.0, 0.0),
+                Team::Dire,
+                Health::new(500.0),
+            ))
+            .id();
+        let caster = world
+            .spawn((Transform::from_xyz(-500.0, 0.0, 0.0), Team::Radiant, Health::new(500.0)))
+            .id();
+        let payload = ProjectilePayload {
+            caster,
+            ability: AbilityId::Bolt,
+            rank: 1,
+            cast_target: Some(target),
+            aim: Vec3::ZERO,
+        };
+        world.spawn((
+            Transform::from_xyz(0.0, scale::body(1.0), 0.0),
+            Projectile {
+                speed: 1.0,
+                team: Team::Radiant,
+                radius: scale::body(0.85),
+                lifetime: 1.0,
+                splash_radius: 60.0,
+            },
+            payload,
+            ProjectileHome {
+                target,
+                last_pos: Vec3::ZERO,
+            },
+        ));
+        world.run_system_once(apply_projectile_hits).unwrap();
+
+        let hits: Vec<_> = world
+            .resource::<Messages<ProjectileHitEvent>>()
+            .iter_current_update_messages()
+            .cloned()
+            .collect();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].primary, None, "the projectile misses the cycloned unit");
+        assert_eq!(
+            hits[0].splashed,
+            vec![bystander],
+            "splash skips cycloned units too"
+        );
+    }
+
+    #[test]
+    fn first_hit_skillshot_stops_on_first_enemy() {
+        let payload = |caster| ProjectilePayload {
+            caster,
+            ability: AbilityId::Bolt,
+            rank: 1,
+            cast_target: None,
+            aim: Vec3::ZERO,
+        };
+        let run = |max_hits: Option<u32>| {
+            let mut world = World::new();
+            world.init_resource::<Messages<ProjectileHitEvent>>();
+            let unit = |world: &mut World, team: Team, x: f32| {
+                world
+                    .spawn((Transform::from_xyz(x, 0.0, 0.0), team, Health::new(500.0)))
+                    .id()
+            };
+            let caster = unit(&mut world, Team::Radiant, -500.0);
+            let far = unit(&mut world, Team::Dire, 40.0);
+            let near = unit(&mut world, Team::Dire, 10.0);
+            let ally = unit(&mut world, Team::Radiant, 5.0);
+            let bolt = world
+                .spawn((
+                    Transform::from_xyz(0.0, scale::body(1.0), 0.0),
+                    Projectile {
+                        speed: 1.0,
+                        team: Team::Radiant,
+                        radius: scale::body(0.85),
+                        lifetime: 1.0,
+                        splash_radius: 0.0,
+                    },
+                    payload(caster),
+                    Skillshot {
+                        width: 200.0,
+                        hit: Vec::new(),
+                        max_hits,
+                    },
+                ))
+                .id();
+            world.run_system_once(skillshot_contacts).unwrap();
+            let primaries: Vec<_> = world
+                .resource::<Messages<ProjectileHitEvent>>()
+                .iter_current_update_messages()
+                .map(|hit| hit.primary.unwrap())
+                .collect();
+            (primaries, near, far, ally, world.get_entity(bolt).is_ok())
+        };
+
+        let (primaries, near, _, _, alive) = run(Some(1));
+        assert_eq!(primaries, vec![near], "only the nearest enemy is struck");
+        assert!(!alive, "the projectile ends at the first enemy");
+
+        let (primaries, near, far, ally, alive) = run(None);
+        assert_eq!(primaries, vec![near, far], "an ordinary skillshot pierces");
+        assert!(!primaries.contains(&ally));
+        assert!(alive);
     }
 }

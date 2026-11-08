@@ -24,7 +24,7 @@ use crate::components::{AbilityId, BoundRadius, CombatStats, Health, HeroAttribu
 use crate::dimensions::{area_contains, bounds_of};
 use crate::displacement::DisplacementEvent;
 use crate::items::ItemId;
-use crate::status::{StatusChange, StatusEffectEvent};
+use crate::status::{StatusChange, StatusEffectEvent, StatusEffects, is_untargetable};
 use crate::teleport::TeleportEvent;
 
 /// What owns the effect entries a trigger resolves against.
@@ -183,6 +183,7 @@ pub struct EffectRunner<'w, 's> {
     commands: Commands<'w, 's>,
     custom: Res<'w, CustomAbilityEffects>,
     units: UnitQuery<'w, 's>,
+    statuses_of: Query<'w, 's, &'static StatusEffects>,
     stats: Query<'w, 's, &'static CombatStats>,
     attributes: Query<'w, 's, &'static HeroAttributes>,
     damage: MessageWriter<'w, DamageEvent>,
@@ -194,10 +195,12 @@ pub struct EffectRunner<'w, 's> {
 }
 
 impl EffectRunner<'_, '_> {
-    fn living(&self, entity: Entity) -> bool {
+    /// Alive, and not lifted out of play unless it is the caster itself.
+    fn valid_target(&self, ctx: &TriggerContext, entity: Entity) -> bool {
         self.units
             .get(entity)
             .is_ok_and(|(_, _, _, health, _)| health.is_alive())
+            && (entity == ctx.caster || !is_untargetable(&self.statuses_of, entity))
     }
 
     pub fn targets(
@@ -210,19 +213,19 @@ impl EffectRunner<'_, '_> {
             EffectTarget::Caster => vec![ctx.caster],
             EffectTarget::CastTarget => ctx
                 .cast_target
-                .filter(|&e| self.living(e))
+                .filter(|&e| self.valid_target(ctx, e))
                 .into_iter()
                 .collect(),
             EffectTarget::TriggerUnit => ctx
                 .trigger_unit
-                .filter(|&e| self.living(e))
+                .filter(|&e| self.valid_target(ctx, e))
                 .into_iter()
                 .collect(),
             EffectTarget::AffectedUnits => ctx
                 .affected_units
                 .iter()
                 .copied()
-                .filter(|&e| self.living(e))
+                .filter(|&e| self.valid_target(ctx, e))
                 .collect(),
             EffectTarget::UnitsInRadius {
                 center,
@@ -240,8 +243,9 @@ impl EffectRunner<'_, '_> {
                 };
                 self.units
                     .iter()
-                    .filter(|(_, tf, unit_team, health, bound)| {
+                    .filter(|(e, tf, unit_team, health, bound)| {
                         health.is_alive()
+                            && (*e == ctx.caster || !is_untargetable(&self.statuses_of, *e))
                             && team_allows(team, ctx.team, **unit_team)
                             && area_contains(center, radius, tf.translation, bounds_of(*bound))
                     })
@@ -283,9 +287,11 @@ impl EffectRunner<'_, '_> {
                 .ok()
                 .filter(|(_, _, _, hp, _)| hp.current / hp.max.max(1.0) < threshold)
                 .map(|_| base),
-            EffectScaling::TargetMissingHealth(ratio) => self.units.get(target).ok().map(|(_, _, _, hp, _)| {
-                base + ratio * (hp.max - hp.current).max(0.0)
-            }),
+            EffectScaling::TargetMissingHealth(ratio) => self
+                .units
+                .get(target)
+                .ok()
+                .map(|(_, _, _, hp, _)| base + ratio * (hp.max - hp.current).max(0.0)),
             EffectScaling::TargetMaxHealth(ratio) => self
                 .units
                 .get(target)
@@ -297,7 +303,11 @@ impl EffectRunner<'_, '_> {
                 .ok()
                 .map(|(_, _, _, hp, _)| base + ratio * hp.current),
             EffectScaling::DistanceFromCaster { falloff } => {
-                let target_pos = self.units.get(target).ok().map(|(_, tf, ..)| tf.translation)?;
+                let target_pos = self
+                    .units
+                    .get(target)
+                    .ok()
+                    .map(|(_, tf, ..)| tf.translation)?;
                 let dist = crate::combat::flat_distance(ctx.origin, target_pos);
                 let max = cast_range.max(1.0);
                 let t = (dist / max).clamp(0.0, 1.0);
@@ -374,6 +384,8 @@ impl EffectRunner<'_, '_> {
                             move_speed,
                             agility,
                             fear_source,
+                            source,
+                            point: ctx.point,
                         },
                     );
                     built.dot_source = source;
@@ -406,17 +418,17 @@ impl EffectRunner<'_, '_> {
                 kind,
                 distance,
                 duration,
+                speed,
             } => {
                 for target in targets {
-                    self.displacements.write(DisplacementEvent {
+                    self.displacements.write(DisplacementEvent::from_ctx(
+                        ctx,
                         target,
                         kind,
-                        caster: ctx.caster,
-                        origin: ctx.origin,
-                        point: ctx.point,
-                        distance: distance.map(|d| d.at(rank)),
-                        duration: duration.at(rank),
-                    });
+                        distance.map(|d| d.at(rank)),
+                        duration.at(rank),
+                        speed.map(|s| s.at(rank)),
+                    ));
                 }
             }
             AbilityEffect::Teleport => {
@@ -537,4 +549,3 @@ pub fn apply_mana_restore_events(
         }
     }
 }
-
