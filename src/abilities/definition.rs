@@ -155,6 +155,12 @@ pub enum AbilityTrigger {
     OnHealthBelow {
         percent: u8,
     },
+    /// The owner finished casting an ability. Fans out to every other source the owner
+    /// holds (never the cast ability itself); item uses are not spell casts.
+    OnSpellCast,
+    /// An effect of the owner's cast resolved onto an enemy (one per enemy per cast
+    /// context, damage or not). Resolves one frame later.
+    OnSpellHit,
     /// Emitted by a custom mechanic, e.g. `Custom("on_skewer_end")`.
     Custom(&'static str),
 }
@@ -164,6 +170,23 @@ impl AbilityTrigger {
     /// [`super::effects::AttackMeta`] on the context.
     pub fn is_attack(self) -> bool {
         matches!(self, Self::OnAttack | Self::OnAttackHit)
+    }
+
+    /// Fired straight from a cast: the context's effects count as spell hits (see
+    /// [`AbilityTrigger::OnSpellHit`]) when they resolve onto an enemy at depth 0.
+    pub fn is_cast_phase(self) -> bool {
+        matches!(
+            self,
+            Self::OnCast
+                | Self::OnProjectileHit
+                | Self::OnImpact
+                | Self::OnUnitContact
+                | Self::OnMovementEnd
+                | Self::OnChannelTick
+                | Self::OnChannelEnd
+                | Self::OnChannelInterrupted
+                | Self::Custom(_)
+        )
     }
 
     /// Caused by damage or a status change. Contexts rooted in such a trigger are
@@ -710,6 +733,20 @@ pub enum AbilityEffect {
         amount: RankValue,
         duration: RankValue,
     },
+}
+
+impl AbilityEffect {
+    /// Whether the effect does something to its targets, as opposed to gates (which only
+    /// re-fire the context) and passive stat entries.
+    pub fn acts_on_targets(&self) -> bool {
+        !matches!(
+            self,
+            Self::Proc { .. }
+                | Self::Counter { .. }
+                | Self::Accumulate { .. }
+                | Self::PassiveStat { .. }
+        )
+    }
 }
 
 /// One row of an ability's effect table: when `trigger` fires, apply `effect` to `target`.

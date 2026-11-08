@@ -70,6 +70,7 @@ impl Plugin for AbilitiesPlugin {
             .init_resource::<CustomAbilityEffects>()
             .add_message::<AbilityCastEvent>()
             .add_message::<AbilityTriggerEvent>()
+            .add_message::<crate::abilities::effects::SpellHitEvent>()
             .add_message::<HealEvent>()
             .add_message::<ManaRestoreEvent>()
             .add_message::<vitals::ResourceDrainEvent>()
@@ -107,6 +108,7 @@ impl Plugin for AbilitiesPlugin {
                     (
                         attack_triggers::attack_triggers,
                         (tick_forced_movement, settle_grounded_units).chain(),
+                        reactive_triggers::cast_triggers,
                         reactive_triggers::damage_triggers,
                     )
                         .chain(),
@@ -645,6 +647,7 @@ mod tests {
             .add_message::<ActionChannelEndEvent>()
             .add_message::<AbilityCastEvent>()
             .add_message::<AbilityTriggerEvent>()
+            .add_message::<crate::abilities::effects::SpellHitEvent>()
             .add_message::<HealEvent>()
             .add_message::<ManaRestoreEvent>()
             .add_message::<vitals::ResourceDrainEvent>()
@@ -679,6 +682,7 @@ mod tests {
                     (
                         attack_triggers::attack_triggers,
                         (tick_forced_movement, settle_grounded_units).chain(),
+                        reactive_triggers::cast_triggers,
                         reactive_triggers::damage_triggers,
                     )
                         .chain(),
@@ -4130,5 +4134,224 @@ mod tests {
             land_hits(&mut app, caster, target, 1);
             assert_eq!(health(&app, caster), 100.0 + 2.0 * 10.0, "{name}");
         }
+    }
+
+    // --- Cast triggers ---
+
+    /// An instant no-target ability whose `OnCast` entries hit enemies within 500.
+    fn nova(id: AbilityId, effect: AbilityEffect) -> AbilityDefinition {
+        AbilityDefinition::new(id)
+            .targeting(
+                TargetType::NoTarget,
+                RankValue::ZERO,
+                RankValue::fixed(500.0),
+            )
+            .costs(RankValue::ZERO, RankValue::ZERO)
+            .timing(0.0, 0.0)
+            .on(
+                AbilityTrigger::OnCast,
+                EffectTarget::enemies_around(definition::AreaCenter::Caster),
+                effect,
+            )
+    }
+
+    fn with_definitions(app: &mut App, defs: impl IntoIterator<Item = AbilityDefinition>) {
+        let mut registry = app.world_mut().resource_mut::<AbilityDefinitions>();
+        for def in defs {
+            registry.insert(def);
+        }
+    }
+
+    #[test]
+    fn spell_cast_fires_for_other_sources_not_the_cast_ability() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![marker_effect(
+            AbilityTrigger::OnSpellCast,
+        )])]);
+        with_definitions(
+            &mut app,
+            [
+                nova(AbilityId::Bulwark, fixed_magical_damage(1.0)).on(
+                    AbilityTrigger::OnSpellCast,
+                    EffectTarget::Caster,
+                    fixed_magical_damage(1.0),
+                ),
+                AbilityDefinition::new(AbilityId::Shockwave).on(
+                    AbilityTrigger::OnSpellCast,
+                    EffectTarget::Caster,
+                    fixed_magical_damage(1.0),
+                ),
+            ],
+        );
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+
+        request(&mut app, caster, 3, CastTarget::None);
+        let fired = run_collecting(&mut app, 8);
+
+        let casts = of_trigger(&fired, AbilityTrigger::OnSpellCast);
+        let sources: Vec<_> = casts.iter().map(|c| c.source).collect();
+        assert_eq!(
+            sources,
+            vec![
+                EffectSource::Item(ItemId::HeartwoodBand),
+                EffectSource::Ability(AbilityId::Shockwave)
+            ],
+            "the item and the other ability react; the cast ability does not"
+        );
+        assert!(casts.iter().all(|c| c.caster == caster));
+        assert!(health(&app, enemy) < 1000.0, "the cast itself resolved");
+    }
+
+    #[test]
+    fn item_use_is_not_a_spell_cast() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            marker_effect(AbilityTrigger::OnUse),
+            marker_effect(AbilityTrigger::OnSpellCast),
+        ])]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+
+        request_item(&mut app, caster, 0, CastTarget::None);
+        let fired = run_collecting(&mut app, 8);
+        assert_eq!(of_trigger(&fired, AbilityTrigger::OnUse).len(), 1);
+        assert!(of_trigger(&fired, AbilityTrigger::OnSpellCast).is_empty());
+    }
+
+    #[test]
+    fn spell_hit_once_per_enemy_per_cast_context() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![marker_effect(
+            AbilityTrigger::OnSpellHit,
+        )])]);
+        // Two entries hit every enemy in range: still one spell hit per enemy.
+        with_definitions(
+            &mut app,
+            [nova(AbilityId::Bulwark, fixed_magical_damage(5.0)).on(
+                AbilityTrigger::OnCast,
+                EffectTarget::enemies_around(definition::AreaCenter::Caster),
+                fixed_magical_damage(5.0),
+            )],
+        );
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let near = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        let also_near = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, 120.0));
+        let _far = spawn_unit(&mut app, Team::Dire, Vec3::new(4000.0, 0.0, 0.0));
+        let _ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(10.0, 0.0, 0.0));
+
+        request(&mut app, caster, 3, CastTarget::None);
+        let fired = run_collecting(&mut app, 8);
+
+        let hits = of_trigger(&fired, AbilityTrigger::OnSpellHit);
+        let mut hit_units: Vec<_> = hits.iter().filter_map(|c| c.trigger_unit).collect();
+        hit_units.sort();
+        let mut expected = vec![near, also_near];
+        expected.sort();
+        assert_eq!(
+            hit_units, expected,
+            "each enemy once, no allies, nobody out of range"
+        );
+        assert!(
+            hits.iter()
+                .all(|c| c.caster == caster && c.reaction == false)
+        );
+    }
+
+    #[test]
+    fn stun_only_spell_counts_as_hit() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![marker_effect(
+            AbilityTrigger::OnSpellHit,
+        )])]);
+        with_definitions(
+            &mut app,
+            [nova(
+                AbilityId::Bulwark,
+                AbilityEffect::ApplyStatus {
+                    status: StatusSpec::Stun,
+                    duration: RankValue::fixed(1.0),
+                },
+            )],
+        );
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+
+        request(&mut app, caster, 3, CastTarget::None);
+        let fired = run_collecting(&mut app, 8);
+        let hits = of_trigger(&fired, AbilityTrigger::OnSpellHit);
+        assert_eq!(hits.len(), 1, "no damage involved");
+        assert_eq!(hits[0].trigger_unit, Some(enemy));
+        assert_eq!(health(&app, enemy), 1000.0);
+    }
+
+    #[test]
+    fn reactive_and_proc_contexts_never_spell_hit() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            marker_effect(AbilityTrigger::OnSpellHit),
+            // Attack-class item entries are not spells either.
+            entry(
+                AbilityTrigger::OnAttackHit,
+                EffectTarget::TriggerUnit,
+                fixed_magical_damage(1.0),
+            ),
+        ])]);
+        let enemies_around = EffectTarget::enemies_around(definition::AreaCenter::Caster);
+        with_definitions(
+            &mut app,
+            [
+                // The cast only rolls a proc; the damage happens in the derived context.
+                AbilityDefinition::new(AbilityId::Bulwark)
+                    .targeting(
+                        TargetType::NoTarget,
+                        RankValue::ZERO,
+                        RankValue::fixed(500.0),
+                    )
+                    .costs(RankValue::ZERO, RankValue::ZERO)
+                    .timing(0.0, 0.0)
+                    .on(
+                        AbilityTrigger::OnCast,
+                        EffectTarget::Caster,
+                        AbilityEffect::Proc {
+                            chance: RankValue::fixed(1.0),
+                            then: AbilityTrigger::Custom("on_echo"),
+                            pseudo: false,
+                        },
+                    )
+                    .on(
+                        AbilityTrigger::Custom("on_echo"),
+                        enemies_around,
+                        fixed_magical_damage(5.0),
+                    ),
+                // A reaction of an ability source.
+                AbilityDefinition::new(AbilityId::Shockwave).on(
+                    AbilityTrigger::OnDamageTaken,
+                    EffectTarget::TriggerUnit,
+                    fixed_magical_damage(5.0),
+                ),
+            ],
+        );
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+
+        request(&mut app, caster, 3, CastTarget::None);
+        strike(&mut app, Some(enemy), caster, 10.0);
+        write_attack_hit(&mut app, caster, enemy);
+        let fired = run_collecting(&mut app, 10);
+
+        assert!(
+            health(&app, enemy) < 1000.0,
+            "the echo and the thorns landed"
+        );
+        assert!(
+            of_trigger(&fired, AbilityTrigger::OnSpellHit).is_empty(),
+            "{:?}",
+            of_trigger(&fired, AbilityTrigger::OnSpellHit)
+        );
     }
 }

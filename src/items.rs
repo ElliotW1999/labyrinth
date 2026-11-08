@@ -2895,6 +2895,7 @@ mod tests {
             .add_message::<crate::actions::ActionFiredEvent>()
             .add_message::<crate::actions::ActionChannelEndEvent>()
             .add_message::<AbilityTriggerEvent>()
+            .add_message::<crate::abilities::effects::SpellHitEvent>()
             .add_message::<HealEvent>()
             .add_message::<crate::abilities::effects::ManaRestoreEvent>()
             .add_message::<crate::vitals::ResourceDrainEvent>()

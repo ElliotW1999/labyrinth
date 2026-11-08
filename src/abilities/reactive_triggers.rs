@@ -6,9 +6,10 @@
 
 use bevy::prelude::*;
 
+use super::casting::AbilityCastEvent;
 use super::catalog::AbilityDefinitions;
 use super::definition::AbilityTrigger;
-use super::effects::{AbilityTriggerEvent, EffectSource, TriggerContext};
+use super::effects::{AbilityTriggerEvent, EffectSource, SpellHitEvent, TriggerContext};
 use crate::combat::{DamageAppliedEvent, DamageKind};
 use crate::components::{AbilityLoadout, Team};
 use crate::items::{Inventory, ItemId};
@@ -87,6 +88,7 @@ type OwnerQuery<'w, 's> = Query<
 fn fan_out(
     owner: Entity,
     trigger: AbilityTrigger,
+    except: Option<EffectSource>,
     owners: &OwnerQuery,
     defs: &AbilityDefinitions,
     triggers: &mut MessageWriter<AbilityTriggerEvent>,
@@ -96,7 +98,7 @@ fn fan_out(
         return;
     };
     for (source, rank) in owner_sources(inventory, loadout) {
-        if source_has_trigger(source, defs, trigger) {
+        if Some(source) != except && source_has_trigger(source, defs, trigger) {
             let ctx = TriggerContext::new(
                 trigger,
                 source,
@@ -108,6 +110,44 @@ fn fan_out(
             );
             triggers.write(AbilityTriggerEvent(build(ctx)));
         }
+    }
+}
+
+/// `OnSpellCast` from this frame's casts and `OnSpellHit` from last frame's resolved cast
+/// contexts. A cast fans out to every source the owner holds except the cast ability, so an
+/// ability never triggers itself; item uses emit no cast and so never count.
+pub(crate) fn cast_triggers(
+    mut casts: MessageReader<AbilityCastEvent>,
+    mut hits: MessageReader<SpellHitEvent>,
+    defs: Res<AbilityDefinitions>,
+    owners: OwnerQuery,
+    mut triggers: MessageWriter<AbilityTriggerEvent>,
+) {
+    for cast in casts.read() {
+        let unit = cast.target.unit();
+        fan_out(
+            cast.caster,
+            AbilityTrigger::OnSpellCast,
+            Some(EffectSource::Ability(cast.ability)),
+            &owners,
+            &defs,
+            &mut triggers,
+            |mut ctx| {
+                ctx.aim = cast.aim;
+                ctx.cast_target(unit).trigger_unit(unit).at(cast.aim)
+            },
+        );
+    }
+    for hit in hits.read() {
+        fan_out(
+            hit.caster,
+            AbilityTrigger::OnSpellHit,
+            None,
+            &owners,
+            &defs,
+            &mut triggers,
+            |ctx| ctx.trigger_unit(Some(hit.target)).at(hit.point),
+        );
     }
 }
 
@@ -138,6 +178,7 @@ pub(crate) fn damage_triggers(
                 fan_out(
                     source,
                     AbilityTrigger::OnDamageDealt,
+                    None,
                     &owners,
                     &defs,
                     &mut triggers,
@@ -147,6 +188,7 @@ pub(crate) fn damage_triggers(
             fan_out(
                 hit.target,
                 AbilityTrigger::OnDamageTaken,
+                None,
                 &owners,
                 &defs,
                 &mut triggers,
@@ -194,6 +236,7 @@ pub(crate) fn damage_triggers(
                 fan_out(
                     killer,
                     AbilityTrigger::OnKill,
+                    None,
                     &owners,
                     &defs,
                     &mut triggers,
@@ -203,6 +246,7 @@ pub(crate) fn damage_triggers(
             fan_out(
                 hit.target,
                 AbilityTrigger::OnDeath,
+                None,
                 &owners,
                 &defs,
                 &mut triggers,

@@ -282,6 +282,18 @@ impl TriggerContext {
 #[derive(Message, Debug, Clone, PartialEq)]
 pub struct AbilityTriggerEvent(pub TriggerContext);
 
+/// A cast's effects resolved onto an enemy (one per cast context and distinct enemy).
+/// Written by [`resolve_ability_triggers`]; the `OnSpellHit` dispatcher reads it next frame.
+#[derive(Message, Debug, Clone, Copy, PartialEq)]
+pub struct SpellHitEvent {
+    pub caster: Entity,
+    pub team: Team,
+    pub ability: AbilityId,
+    pub target: Entity,
+    /// Where the cast's trigger happened.
+    pub point: Vec3,
+}
+
 #[derive(Message, Debug, Clone, Copy, PartialEq)]
 pub struct HealEvent {
     pub source: Option<Entity>,
@@ -378,6 +390,13 @@ impl EffectRunner<'_, '_> {
             .get(entity)
             .is_ok_and(|(_, _, _, health, _)| health.is_alive())
             && (entity == ctx.caster || !is_untargetable(&self.statuses_of, entity))
+    }
+
+    /// Whether `entity` is a living unit of the team opposing the context's.
+    fn is_enemy(&self, ctx: &TriggerContext, entity: Entity) -> bool {
+        self.units
+            .get(entity)
+            .is_ok_and(|(_, _, team, health, _)| *team == ctx.team.enemy() && health.is_alive())
     }
 
     pub fn targets(
@@ -858,6 +877,7 @@ pub fn resolve_ability_triggers(
     mut triggers: MessageReader<AbilityTriggerEvent>,
     defs: Res<AbilityDefinitions>,
     mut runner: EffectRunner,
+    mut spell_hits: MessageWriter<SpellHitEvent>,
 ) {
     // First in, first out: gates append derived contexts behind everything already queued,
     // so the order (and the RNG draw order) is fixed by message order.
@@ -867,13 +887,39 @@ pub fn resolve_ability_triggers(
         let Some(params) = source_params(ctx.source, &defs, ctx.rank) else {
             continue;
         };
+        // Only a cast's own contexts (not gates' derived ones, not reactions) can hit.
+        let spell = match ctx.source {
+            EffectSource::Ability(ability) if ctx.depth == 0 && ctx.trigger.is_cast_phase() => {
+                Some(ability)
+            }
+            _ => None,
+        };
+        let mut enemies_hit: Vec<Entity> = Vec::new();
         for entry in params
             .entries
             .iter()
             .filter(|entry| entry.trigger == ctx.trigger)
         {
             let targets = runner.targets(&ctx, entry.target, params.aoe_radius);
+            if spell.is_some() && entry.effect.acts_on_targets() {
+                for &target in &targets {
+                    if runner.is_enemy(&ctx, target) && !enemies_hit.contains(&target) {
+                        enemies_hit.push(target);
+                    }
+                }
+            }
             runner.execute(&ctx, &entry.effect, targets, params.cast_range);
+        }
+        if let Some(ability) = spell {
+            for target in enemies_hit {
+                spell_hits.write(SpellHitEvent {
+                    caster: ctx.caster,
+                    team: ctx.team,
+                    ability,
+                    target,
+                    point: ctx.point,
+                });
+            }
         }
         queue.extend(runner.take_derived());
     }
