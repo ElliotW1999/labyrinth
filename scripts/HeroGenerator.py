@@ -111,6 +111,17 @@ def parse_float(row: dict[str, str], key: str, default: float | None = None) -> 
     return float(raw)
 
 
+# Mirrors basic_attack::MAX_ATTACK_SWING.
+MAX_ATTACK_SWING = 1.0
+
+
+def parse_swing(row: dict[str, str], key: str, default: float, line: int) -> float:
+    value = parse_float(row, key, default)
+    if not 0.0 <= value <= MAX_ATTACK_SWING:
+        raise SystemExit(f"Row {line}: {key} must be within 0..{MAX_ATTACK_SWING}, got {value}")
+    return value
+
+
 def infer_primary(base_str: float, base_agi: float, base_int: float, explicit: str) -> str:
     if explicit:
         key = explicit.strip().upper()
@@ -221,8 +232,8 @@ def load_csv(path: Path) -> list[HeroRow]:
                     attack_damage=parse_float(row, "attack_damage", attack_damage_default),
                     attack_range=parse_float(row, "attack_range", attack_range_default),
                     base_attack_time=parse_float(row, "base_attack_time", 1.7),
-                    attack_point=parse_float(row, "attack_point", 0.3),
-                    attack_backswing=parse_float(row, "attack_backswing", 0.35),
+                    attack_point=parse_swing(row, "attack_point", 0.3, i),
+                    attack_backswing=parse_swing(row, "attack_backswing", 0.35, i),
                     armor=parse_float(row, "armor", 2.0 if is_melee else 0.8),
                     magic_resist=parse_float(
                         row, "magic_resist", 0.7 if primary != "INT" else 1.2

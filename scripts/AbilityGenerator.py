@@ -101,6 +101,8 @@ SLOTS = ("q", "w", "e", "r", "innate")
 ABILITY_TYPES = {"active": "Active", "passive": "Passive", "toggle": "Toggle"}
 LEVEL_FIELDS = ("cast_range", "aoe_radius", "cooldown", "mana_cost", "toggle_mana_per_sec")
 EFFECT_LEVEL_FIELDS = ("value", "duration", "amount", "radius")
+# Mirrors abilities::definition::MAX_CAST_BACKSWING.
+MAX_CAST_BACKSWING = 1.0
 DEFAULT_BACKSWING = 0.25
 
 GENERATED_HEADER = """\
@@ -185,6 +187,8 @@ def parse_ability(row: Row, effect_rows: list[EffectRow], report: Report) -> Abi
     cooldown = parse_number(row, "cooldown", report, levels=True, minimum=0)
     mana_cost = parse_number(row, "mana_cost", report, levels=True, minimum=0)
     backswing = parse_scalar(row, "cast_backswing", report, minimum=0)
+    if backswing is not None and backswing > MAX_CAST_BACKSWING:
+        report.warn(row.file, row.line, "cast_backswing", row.get("cast_backswing"), f"exceeds {MAX_CAST_BACKSWING}s; the runtime clamps it to {MAX_CAST_BACKSWING}")
     toggle_upkeep = parse_number(row, "toggle_mana_per_sec", report, levels=True, minimum=0)
     if toggle_upkeep is not None and ability_type != "toggle":
         report.error(row.file, row.line, "toggle_mana_per_sec", row.get("toggle_mana_per_sec"), "only toggle abilities have mana upkeep (ability_type toggle)")

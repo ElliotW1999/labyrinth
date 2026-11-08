@@ -9,6 +9,9 @@ use crate::components::DamageType;
 use crate::status::{DispelType, Leash, LeashAnchor, StatusEffect, StatusKind};
 use crate::vitals::{ManaShield, ResourceKind, ResourceStat};
 
+/// Upper bound (seconds) for an ability's cancellable backswing. The cast point stays capped at 0.5.
+pub const MAX_CAST_BACKSWING: f32 = 1.0;
+
 /// A value that scales with ability level: `clamp(base + per_rank × rank, min, max)`,
 /// or an explicit per-level table (`75|150|225|300` in the generator CSVs).
 /// `rank` is clamped to at least 1 so unlearned abilities report their level-1 value;
@@ -896,7 +899,7 @@ pub struct AbilityDefinition {
     pub aoe_radius: RankValue,
     /// Cast point: delay before the ability fires (0..=0.5).
     pub cast_time: f32,
-    /// Cancellable recovery after the ability fires (0..=0.5).
+    /// Cancellable recovery after the ability fires (0..=`MAX_CAST_BACKSWING`).
     pub backswing: f32,
     pub cooldown: RankValue,
     pub mana_cost: RankValue,
@@ -960,7 +963,7 @@ impl AbilityDefinition {
 
     pub fn timing(mut self, cast_time: f32, backswing: f32) -> Self {
         self.cast_time = cast_time.clamp(0.0, 0.5);
-        self.backswing = backswing.clamp(0.0, 0.5);
+        self.backswing = backswing.clamp(0.0, MAX_CAST_BACKSWING);
         self
     }
 

@@ -30,6 +30,9 @@ use crate::scale;
 use crate::status::{StatusEffects, is_untargetable};
 
 /// Melee hits forgive a target stepping slightly away during the windup.
+/// Upper bound (seconds) for a hero's attack point and attack backswing.
+pub const MAX_ATTACK_SWING: f32 = 1.0;
+
 const MELEE_HIT_RANGE_LENIENCY: f32 = 1.15;
 const RANGED_ATTACK_LIFETIME: f32 = 2.5;
 
@@ -246,7 +249,7 @@ pub fn start_basic_attack_windups(
         commands
             .entity(request.attacker)
             .insert(AttackSwing::Windup {
-                remaining: stats.attack_point.clamp(0.0, 0.5),
+                remaining: stats.attack_point.clamp(0.0, MAX_ATTACK_SWING),
                 target: request.target,
                 damage: stats.attack_damage,
             });
@@ -295,7 +298,7 @@ pub fn tick_attack_swings(
                     extra: false,
                 });
                 cooldown.0 = 1.0 / stats.attack_speed.max(0.05);
-                let back = stats.attack_backswing.clamp(0.0, 0.5);
+                let back = stats.attack_backswing.clamp(0.0, MAX_ATTACK_SWING);
                 if back > 0.0 {
                     *swing = AttackSwing::Backswing { remaining: back };
                 } else {
@@ -883,6 +886,31 @@ mod tests {
         for _ in 0..8 {
             step(&mut world, &mut schedule);
         }
+        assert!((hp(&world, target) - expected_hit()).abs() < 1e-3);
+    }
+
+    #[test]
+    fn windup_honours_attack_point_above_half_a_second() {
+        let (mut world, mut schedule) = world_with_pipeline();
+        let target_pos = Vec3::new(100.0, 0.0, 0.0);
+        let target = spawn_unit(&mut world, Team::Dire, target_pos, passive_stats());
+        let attacker = spawn_attacker(&mut world, scale::MELEE_ATTACK_RANGE, target, target_pos);
+        {
+            let mut stats = world.get_mut::<CombatStats>(attacker).unwrap();
+            stats.attack_point = 0.56;
+            stats.attack_backswing = 0.41;
+        }
+        // 0.56s windup plus the request/turn frames: untouched after 14 steps, which a 0.5s
+        // clamp would not satisfy.
+        for _ in 0..14 {
+            step(&mut world, &mut schedule);
+        }
+        assert_eq!(
+            hp(&world, target),
+            1000.0,
+            "attack point 0.56 must not clamp to 0.5"
+        );
+        step(&mut world, &mut schedule);
         assert!((hp(&world, target) - expected_hit()).abs() < 1e-3);
     }
 

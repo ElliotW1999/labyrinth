@@ -126,9 +126,9 @@ pub struct CombatStats {
     pub base_attack_time: f32,
     /// Cached attacks-per-second after the IAS formula (used by combat/HUD).
     pub attack_speed: f32,
-    /// Foreswing before the projectile/hit fires (0..=0.5s).
+    /// Foreswing before the projectile/hit fires (0..=1.0s, `basic_attack::MAX_ATTACK_SWING`).
     pub attack_point: f32,
-    /// Backswing after the attack (0..=0.5s); cancelled by new player orders.
+    /// Backswing after the attack (0..=1.0s, `basic_attack::MAX_ATTACK_SWING`); cancelled by new player orders.
     pub attack_backswing: f32,
     /// Yaw turn rate in radians per 0.03 seconds.
     pub turn_rate: f32,

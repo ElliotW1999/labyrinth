@@ -2,6 +2,7 @@
 
 use bevy::prelude::*;
 
+use crate::basic_attack::MAX_ATTACK_SWING;
 use crate::components::{
     AbilityId, AbilityLoadout, CombatStats, Health, HeroAttributes, Mana, Team,
 };
@@ -339,8 +340,8 @@ fn hero_combat(
         attack_speed_mult: 0.0,
         base_attack_time,
         attack_speed: 0.0,
-        attack_point: attack_point.clamp(0.0, 0.5),
-        attack_backswing: attack_backswing.clamp(0.0, 0.5),
+        attack_point: attack_point.clamp(0.0, MAX_ATTACK_SWING),
+        attack_backswing: attack_backswing.clamp(0.0, MAX_ATTACK_SWING),
         turn_rate,
         armor,
         magic_resist,
@@ -667,5 +668,15 @@ mod tests {
             assert_eq!(loadout.slots.len(), 4);
             assert_eq!(loadout.slots[3].id.is_ultimate(), true);
         }
+    }
+
+    #[test]
+    fn hero_combat_keeps_attack_point_above_half_a_second() {
+        let c = hero_combat(50.0, 550.0, 1.5, 0.56, 0.41, 0.6, 0.0, 0.0, 290.0);
+        assert_eq!(c.attack_point, 0.56);
+        assert_eq!(c.attack_backswing, 0.41);
+        let c = hero_combat(50.0, 550.0, 1.5, 5.0, 5.0, 0.6, 0.0, 0.0, 290.0);
+        assert_eq!(c.attack_point, MAX_ATTACK_SWING);
+        assert_eq!(c.attack_backswing, MAX_ATTACK_SWING);
     }
 }

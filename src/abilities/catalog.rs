@@ -423,6 +423,16 @@ mod tests {
     use crate::abilities::definition::AbilityBehavior;
 
     #[test]
+    fn timing_clamps_backswing_at_max_cast_backswing_and_cast_point_at_half() {
+        use crate::abilities::definition::MAX_CAST_BACKSWING;
+        let d = builtin(AbilityId::Dash).timing(0.9, 0.9);
+        assert_eq!(d.cast_time, 0.5);
+        assert_eq!(d.backswing, 0.9);
+        let d = builtin(AbilityId::Dash).timing(0.1, 7.0);
+        assert_eq!(d.backswing, MAX_CAST_BACKSWING);
+    }
+
+    #[test]
     fn rank_values_match_legacy_formulas() {
         let dash = builtin(AbilityId::Dash);
         assert_eq!(dash.target_type, TargetType::Point);
