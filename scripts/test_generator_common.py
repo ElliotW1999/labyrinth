@@ -1478,5 +1478,45 @@ class ExampleCatalogTests(unittest.TestCase):
             self.assertIn("validation error", result.stderr + result.stdout)
 
 
+class HeroGeneratorTests(unittest.TestCase):
+    HEADER = (
+        "Hero_name,is_melee,Ability_Q_Name,Ability_W_Name,Ability_E_Name,Ability_R_Name,"
+        "base_STR,base_AGI,base_INT,STR_per_level,AGI_per_level,INT_per_level,primary,"
+        "attack_range{extra_header}"
+    )
+
+    def _load(self, is_melee: str, attack_range: str, extra_header: str = "", extra: str = ""):
+        import tempfile
+
+        import HeroGenerator
+
+        text = (
+            self.HEADER.format(extra_header=extra_header)
+            + "\nTest Hero,"
+            + is_melee
+            + ",A,B,C,D,20,15,10,2,1.5,1,STR,"
+            + attack_range
+            + extra
+            + "\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "heroes.csv"
+            path.write_text(text, encoding="utf-8")
+            return HeroGenerator.load_csv(path)
+
+    def test_long_reach_melee_hero_is_accepted(self) -> None:
+        self.assertEqual(self._load("true", "200")[0].attack_range, 200.0)
+        self.assertEqual(self._load("true", "250")[0].attack_range, 250.0)
+        self.assertEqual(self._load("true", "")[0].attack_range, 128.0)
+        self.assertEqual(self._load("false", "550")[0].attack_range, 550.0)
+
+    def test_is_melee_must_match_attack_range(self) -> None:
+        with self.assertRaises(SystemExit) as ctx:
+            self._load("true", "400")
+        self.assertIn("disagrees with attack_range", str(ctx.exception))
+        with self.assertRaises(SystemExit):
+            self._load("false", "200")
+
+
 if __name__ == "__main__":
     unittest.main()

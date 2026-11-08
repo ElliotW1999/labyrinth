@@ -1289,6 +1289,22 @@ mod tests {
     }
 
     #[test]
+    fn long_reach_melee_attacker_hits_instantly_and_cleaves() {
+        // Base range 200 classifies as melee: an instant hit (no projectile) with cleave.
+        let (mut world, mut schedule) = world_with_pipeline();
+        let target_pos = Vec3::new(180.0, 0.0, 0.0);
+        let target = spawn_unit(&mut world, Team::Dire, target_pos, passive_stats());
+        let attacker = spawn_attacker(&mut world, 200.0, target, target_pos);
+        assert!(world.get::<CombatStats>(attacker).unwrap().is_melee());
+        with_ratios(&mut world, attacker, 0.5, 0.0);
+        let beside = bystander(&mut world, Vec3::new(180.0, 0.0, 100.0));
+        run_frames(&mut world, &mut schedule, 12);
+        assert!(hp(&world, target) < 1000.0);
+        assert!((hp(&world, beside) - secondary_hit()).abs() < 1e-3);
+        assert!(!CombatStats::simple(50.0, 500.0, 1.0, 0.0, 0.0, 300.0).is_melee());
+    }
+
+    #[test]
     fn cleave_radius_stat_overrides_the_default() {
         let (mut world, mut schedule) = world_with_pipeline();
         let (attacker, _) = melee_duel(&mut world);

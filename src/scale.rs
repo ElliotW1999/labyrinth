@@ -24,6 +24,10 @@ pub const SHORT_ATTACK_RANGE: f32 = 150.0;
 pub const RANGED_ATTACK_RANGE: f32 = 500.0;
 /// Tower auto-attack range.
 pub const TOWER_ATTACK_RANGE: f32 = 700.0;
+/// Largest base attack range still classified as melee (instant slash, cleave eligible).
+/// Wider than [`MELEE_ATTACK_RANGE`] so a melee hero can carry a longer reach (e.g. 200). No
+/// unit's base range lies between this value and [`RANGED_ATTACK_RANGE`].
+pub const MELEE_CLASSIFICATION_MAX_RANGE: f32 = 250.0;
 /// Cleave reach around a melee attacker when its `cleave_radius` stat is unset. Twice the
 /// melee hero range: wide enough to catch the units standing beside the target.
 pub const ATTACK_CLEAVE_RADIUS: f32 = 300.0;
@@ -126,10 +130,11 @@ pub const fn body(legacy: f32) -> f32 {
     legacy * (TREE_MODEL_RADIUS / TREE_LEGACY_RADIUS)
 }
 
-/// True when an auto-attack should use a melee slash instead of a projectile.
+/// True when an auto-attack should use a melee slash instead of a projectile: a positive base
+/// range up to [`MELEE_CLASSIFICATION_MAX_RANGE`].
 #[inline]
 pub fn is_melee_attack_range(range: f32) -> bool {
-    range > 0.0 && range <= MELEE_ATTACK_RANGE + 0.5
+    range > 0.0 && range <= MELEE_CLASSIFICATION_MAX_RANGE
 }
 
 /// Scale an XZ map position (Y uses [`body`] for prop height).
@@ -178,6 +183,10 @@ mod tests {
     fn melee_range_helper() {
         assert!(is_melee_attack_range(CREEP_MELEE_ATTACK_RANGE));
         assert!(is_melee_attack_range(MELEE_ATTACK_RANGE));
+        assert!(is_melee_attack_range(200.0), "a long-reach melee hero");
+        assert!(is_melee_attack_range(MELEE_CLASSIFICATION_MAX_RANGE));
+        assert!(!is_melee_attack_range(MELEE_CLASSIFICATION_MAX_RANGE + 1.0));
+        assert!(!is_melee_attack_range(0.0));
         assert!(!is_melee_attack_range(RANGED_ATTACK_RANGE));
         assert!(!is_melee_attack_range(TOWER_ATTACK_RANGE));
     }
