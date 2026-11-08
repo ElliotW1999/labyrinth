@@ -2719,8 +2719,10 @@ mod tests {
         use super::definition::StatusSpec;
         use crate::status::{DispelType, StatusEffect};
         let spec = StatusSpec::Burn {
-            dps: RankValue::fixed(12.0),
+            id: "burn",
+            amount: RankValue::fixed(12.0),
             damage_type: DamageType::Magical,
+            tick_interval: RankValue::ZERO,
         };
         let healing = StatusSpec::Modifier {
             id: "twin_bonus",
@@ -6584,8 +6586,10 @@ mod tests {
             target: EffectTarget::Caster,
             effect: AbilityEffect::ApplyStatus {
                 status: StatusSpec::Burn {
-                    dps: RankValue::fixed(12.0),
+                    id: "burn",
+                    amount: RankValue::fixed(12.0),
                     damage_type: DamageType::Magical,
+                    tick_interval: RankValue::ZERO,
                 },
                 duration: RankValue::ZERO,
             },

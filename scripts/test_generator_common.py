@@ -20,6 +20,7 @@ from generator_common import (  # noqa: E402
     NOT_EMITTED_TRIGGERS,
     effect_to_rust,
     held_status_id,
+    runtime_status_id,
     chain_fed_triggers,
     reaction_triggers,
     warn_duplicate_held_statuses,
@@ -576,6 +577,47 @@ class HealStatusTests(unittest.TestCase):
         effect, ctx = _effect("apply_status", "stun", target="caster", trigger="while_toggled", duration="2")
         self.assertIsNone(effect_to_rust(effect, ctx, report))
         self.assertEqual(report.errors[0].field, "effect_type")
+
+
+class BurnStatusTests(unittest.TestCase):
+    def _burn(self, **cells: str):
+        base = {"damage_type": "magical", "duration": "16"}
+        base.update(cells)
+        report = Report()
+        effect, ctx = _effect("apply_status", "burn", **base)
+        return effect_to_rust(effect, ctx, report), report
+
+    def test_continuous_burn_keeps_a_zero_interval_and_per_owner_id(self) -> None:
+        result, report = self._burn(value="12")
+        self.assertFalse(report.errors)
+        self.assertIn('id: "tester_burn"', result[2])
+        self.assertIn("tick_interval: RankValue::ZERO", result[2])
+
+    def test_ticking_burn_emits_the_interval(self) -> None:
+        result, report = self._burn(value="20", amount="3")
+        self.assertFalse(report.errors)
+        self.assertIn("amount: RankValue::fixed(20.0)", result[2])
+        self.assertIn("tick_interval: RankValue::fixed(3.0)", result[2])
+
+    def test_burn_requires_value_and_no_longer_falls_back_to_amount(self) -> None:
+        result, report = self._burn(amount="3")
+        self.assertIsNone(result)
+        self.assertEqual(report.errors[0].field, "value")
+
+    def test_burn_interval_must_be_above_zero(self) -> None:
+        result, report = self._burn(value="20", amount="0")
+        self.assertIsNone(result)
+        self.assertEqual(report.errors[0].field, "amount")
+        self.assertIn("above 0", report.errors[0].message)
+
+    def test_burn_interval_cannot_exceed_the_duration(self) -> None:
+        result, report = self._burn(value="20", amount="17")
+        self.assertIsNone(result)
+        self.assertIn("exceeds", report.errors[0].message)
+
+    def test_owner_burn_ids_are_valid_trigger_arguments(self) -> None:
+        self.assertEqual(runtime_status_id("shadow_strike_burn"), "shadow_strike_burn")
+        self.assertEqual(runtime_status_id("burn"), "burn")
 
 
 class ResourceStatModifierTests(unittest.TestCase):

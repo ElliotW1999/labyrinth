@@ -1049,16 +1049,30 @@ def _number(text: str) -> float | None:
         return None
 
 
+def _tick_interval_ok(interval: list[float], duration: list[float], row, report: Report) -> bool:
+    """A burn's tick interval (`amount`) must be above 0 and at most the duration at every rank."""
+    ok = True
+    for rank, seconds in enumerate(interval):
+        lasts = duration[min(rank, len(duration) - 1)] if duration else 0.0
+        if seconds <= 0:
+            report.error(row.file, row.line, "amount", row.get("amount"), "burn tick interval (seconds) must be above 0; leave blank for damage per second")
+            ok = False
+        elif seconds > lasts:
+            report.error(row.file, row.line, "amount", row.get("amount"), f"burn tick interval {seconds:g}s exceeds the {lasts:g}s duration")
+            ok = False
+    return ok
+
+
 def runtime_status_id(text: str) -> str | None:
     """Runtime id for a status named in a trigger argument, or None when it is unknown.
 
     Accepts CSV status ids (`stun`), runtime ids (`spell_immunity`) and the per-owner ids that
-    timed `stat_modifier` rows create (`<owner>_<stat>`)."""
+    timed `stat_modifier` rows create (`<owner>_<stat>`) and the ones burns create (`<owner>_burn`)."""
     if text in STATUSES:
         return STATUSES[text][1]
     if text in {runtime for _, runtime, _ in STATUSES.values()}:
         return text
-    for stat in (*TIMED_STATS, *RESOURCE_STATS):
+    for stat in (*TIMED_STATS, *RESOURCE_STATS, "burn"):
         suffix = "_" + stat
         if text.endswith(suffix) and ID_PATTERN.match(text[: -len(suffix)]):
             return text
@@ -1166,6 +1180,8 @@ def trigger_to_rust(e: EffectRow, variant: str, report: Report) -> str | None:
 def held_status_id(e: EffectRow) -> str | None:
     """Runtime id of the status a `while` row holds, or None when it cannot be told."""
     effect_id = e.row.get("effect_id").lower()
+    if e.effect_type == "apply_status" and effect_id == "burn":
+        return f"{e.owner}_burn"
     if e.effect_type == "apply_status" and effect_id in STATUSES:
         return STATUSES[effect_id][1]
     if e.effect_type == "stat_modifier" and effect_id:
@@ -1450,20 +1466,23 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             spec = f"StatusSpec::Shield {{ amount: {rank_value(pool)} }}"
             _unused(e, report, "value")
         elif effect_id == "burn":
-            dps = value or amount
-            if not dps:
-                report.error(row.file, row.line, "value", "", "required: burn damage per second")
+            if not value:
+                report.error(row.file, row.line, "value", "", "required: burn damage (per second, or per tick when amount sets a tick interval)")
                 return None
             if not _require(e, "damage_type", report, "physical, magical, or pure"):
                 return None
             damage_type = parse_enum(row, "damage_type", list(DAMAGE_TYPES), report, required=False)
             if damage_type is None:
                 return None
+            tick_interval = "RankValue::ZERO"
+            if amount:
+                if not _tick_interval_ok(amount, duration, row, report):
+                    return None
+                tick_interval = rank_value(amount)
             spec = (
-                f"StatusSpec::Burn {{ dps: {rank_value(dps)}, "
-                f"damage_type: DamageType::{DAMAGE_TYPES[damage_type]} }}"
+                f'StatusSpec::Burn {{ id: "{ctx.owner_id}_burn", amount: {rank_value(value)}, '
+                f"damage_type: DamageType::{DAMAGE_TYPES[damage_type]}, tick_interval: {tick_interval} }}"
             )
-            _unused(e, report, "amount")
         elif effect_id == "attack_speed_slow":
             percent = amount or value
             if not percent:

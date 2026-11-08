@@ -387,6 +387,19 @@ fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
                 seconds_row("Slow duration", duration),
             ]
         }
+        StatusSpec::Burn {
+            amount,
+            tick_interval,
+            ..
+        } => {
+            let label = if tick_interval == RankValue::ZERO {
+                "Burn damage per second".to_string()
+            } else {
+                // Intervals are constant across ranks in practice; show rank 1's.
+                format!("Burn damage per {}s", tick_interval.at(1))
+            };
+            vec![row(label, amount), seconds_row("Burn duration", duration)]
+        }
         StatusSpec::HealOverTime { hps } => vec![
             row("Heal per second", hps),
             seconds_row("Heal duration", duration),

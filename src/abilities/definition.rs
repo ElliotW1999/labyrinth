@@ -370,10 +370,15 @@ pub enum StatusSpec {
     Shield {
         amount: RankValue,
     },
-    /// Periodic damage while active (`dps` at rank).
+    /// Periodic damage while active. `amount` is damage per second when `tick_interval` is 0
+    /// (continuous), otherwise damage per tick, one tick every `tick_interval` seconds. `id` is
+    /// the status id: hand-written burns use `"burn"`, generated ones `<owner>_burn` so
+    /// burns from different sources coexist.
     Burn {
-        dps: RankValue,
+        id: &'static str,
+        amount: RankValue,
         damage_type: DamageType,
+        tick_interval: RankValue,
     },
     /// Items only; abilities use silence.
     Mute,
@@ -517,8 +522,21 @@ impl StatusSpec {
             }
             StatusSpec::DebuffImmunity => StatusEffect::debuff_immunity(duration),
             StatusSpec::Shield { amount } => StatusEffect::shield(amount.at(rank), duration),
-            StatusSpec::Burn { dps, damage_type } => {
-                StatusEffect::burn(dps.at(rank), damage_type, duration)
+            StatusSpec::Burn {
+                id,
+                amount,
+                damage_type,
+                tick_interval,
+            } => {
+                let interval = tick_interval.at(rank);
+                if interval > 0.0 {
+                    StatusEffect::burn_ticking(id, amount.at(rank), interval, damage_type, duration)
+                } else {
+                    StatusEffect {
+                        id,
+                        ..StatusEffect::burn(amount.at(rank), damage_type, duration)
+                    }
+                }
             }
             StatusSpec::Mute => StatusEffect::mute(duration),
             StatusSpec::Sleep => StatusEffect::sleep(duration),
