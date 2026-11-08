@@ -3,6 +3,7 @@
 **Date:** 2026-11-08
 **Status:** Approved by the coordinator with the recommended defaults for every decision in §7 (D1 b, D2 keep spell, D3 yes, D4 defer, D5 include Step 6, D6 defer, D7 start unit not re-fired, D8 custom `then` trigger).
 **Based on:** `2026-11-06-activation-targeting-mechanics.md`, `2026-11-06-shared-effects-pipeline.md`, `2026-11-06-damage-mechanics.md`, `2026-11-06-status-effects-catalog.md`, `2026-11-06-generator-shared-architecture.md`, `2026-11-07-item-ability-architecture-cleanup.md` (its invariants and the **V** verification commands), `2026-11-07-movement-mechanics.md`, `2026-11-08-healing-resource-mechanics.md`, `2026-11-08-attack-modifiers.md`.
+**Merged with #58:** reactive and conditional triggers (`2026-11-08-reactive-triggers.md`) were merged into these layers; see `2026-11-08-merge-reactive-triggers-into-composition-layers.md`. It adds the `Accumulate` and reaction-aware `Chain` gates, invariants I10 to I12, and amends I1, I4 and I6. The permanent summary is `docs/architecture/composition.md`.
 **Scope:** one PR on one branch, one commit per step. Every step compiles and passes **V** on its own.
 
 Line references were taken at commit `6d82702` and may drift as steps land.
