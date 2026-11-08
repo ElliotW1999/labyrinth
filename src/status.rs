@@ -1142,6 +1142,25 @@ mod tests {
         }
 
         #[test]
+        fn clamped_max_debuff_restores_the_original_max_on_expiry() {
+            let mut app = app();
+            let u = unit(&mut app, 100.0, 100.0);
+            let debuff = StatusEffect::resource_modifier(
+                "curse",
+                StatusKind::Debuff,
+                ResourceStat::MaxHealth,
+                -500.0,
+                2.0,
+            );
+            send(&mut app, u, StatusChange::Apply(debuff));
+            step(&mut app, 0.0);
+            assert_eq!(hp(&app, u).1, 1.0, "max floors at 1");
+            step(&mut app, 2.5);
+            step(&mut app, 0.0);
+            assert_eq!(hp(&app, u).1, 100.0, "expiry must not leak extra max");
+        }
+
+        #[test]
         fn a_dead_unit_stays_dead_when_max_changes() {
             let mut app = app();
             let u = unit(&mut app, 0.0, 1000.0);

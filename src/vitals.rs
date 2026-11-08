@@ -297,17 +297,23 @@ fn fold_caps(
     want_health: f32,
     want_mana: f32,
 ) {
+    // `applied` records the change `max` actually took (it floors at 1 / 0), so a debuff
+    // that was clamped gives back exactly what it took when it ends.
     let d_health = want_health - applied.health;
     if d_health != 0.0 {
+        let before = health.max;
         health.change_max(d_health, MaxChangeRule::PreserveRatio);
-        applied.health = want_health;
+        applied.health += health.max - before;
     }
     let d_mana = want_mana - applied.mana;
     if d_mana != 0.0 {
         if let Some(mut mana) = mana {
+            let before = mana.max;
             mana.change_max(d_mana, MaxChangeRule::PreserveRatio);
+            applied.mana += mana.max - before;
+        } else {
+            applied.mana = want_mana;
         }
-        applied.mana = want_mana;
     }
 }
 
