@@ -1686,6 +1686,117 @@ mod tests {
         );
     }
 
+    fn costed_self_cast(mana_cost: f32, cast_time: f32) -> AbilityDefinition {
+        AbilityDefinition::new(AbilityId::Bulwark)
+            .costs(RankValue::ZERO, RankValue::fixed(mana_cost))
+            .timing(cast_time, 0.0)
+    }
+
+    fn cost_buff(amount: f32) -> crate::status::StatusEffect {
+        crate::status::StatusEffect::resource_modifier(
+            "cost_buff",
+            crate::status::StatusKind::Buff,
+            crate::vitals::ResourceStat::ManaCostAmp,
+            amount,
+            60.0,
+        )
+    }
+
+    #[test]
+    fn mana_cost_amp_reduces_ability_costs() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(costed_self_cast(100.0, 0.0));
+        let caster = spawn_caster(&mut app, KIT);
+        app.world_mut()
+            .get_mut::<CombatStats>(caster)
+            .unwrap()
+            .mana_cost_amp = -0.25;
+        app.world_mut()
+            .get_mut::<StatusEffects>(caster)
+            .unwrap()
+            .effects
+            .push(cost_buff(-0.25));
+        request(&mut app, caster, 3, CastTarget::Point(Vec3::ZERO));
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        assert_eq!(
+            app.world().get::<Mana>(caster).unwrap().current,
+            1000.0 - 50.0,
+            "permanent and timed modifiers add: 100 x (1 - 0.5)"
+        );
+    }
+
+    #[test]
+    fn cost_is_reevaluated_when_the_cast_fires() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(costed_self_cast(100.0, 0.3));
+        let caster = spawn_caster(&mut app, KIT);
+        app.world_mut()
+            .get_mut::<StatusEffects>(caster)
+            .unwrap()
+            .effects
+            .push(cost_buff(-0.5));
+        request(&mut app, caster, 3, CastTarget::Point(Vec3::ZERO));
+        step(&mut app);
+        step(&mut app);
+        assert_eq!(
+            app.world().get::<Mana>(caster).unwrap().current,
+            1000.0,
+            "nothing is paid during the cast point"
+        );
+        // The buff ends before the cast point does.
+        app.world_mut()
+            .get_mut::<StatusEffects>(caster)
+            .unwrap()
+            .effects
+            .clear();
+        for _ in 0..10 {
+            step(&mut app);
+        }
+        assert_eq!(
+            app.world().get::<Mana>(caster).unwrap().current,
+            900.0,
+            "the full cost is paid at fire time"
+        );
+    }
+
+    #[test]
+    fn cost_buff_expiring_makes_an_unaffordable_cast_cancel_for_free() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(costed_self_cast(100.0, 0.3));
+        let caster = spawn_caster(&mut app, KIT);
+        app.world_mut().get_mut::<Mana>(caster).unwrap().current = 60.0;
+        app.world_mut()
+            .get_mut::<StatusEffects>(caster)
+            .unwrap()
+            .effects
+            .push(cost_buff(-0.5));
+        request(&mut app, caster, 3, CastTarget::Point(Vec3::ZERO));
+        step(&mut app);
+        app.world_mut()
+            .get_mut::<StatusEffects>(caster)
+            .unwrap()
+            .effects
+            .clear();
+        for _ in 0..10 {
+            step(&mut app);
+        }
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 60.0);
+        assert_eq!(
+            app.world().get::<AbilityLoadout>(caster).unwrap().slots[3]
+                .cooldown
+                .remaining,
+            0.0
+        );
+    }
+
     #[test]
     fn mana_burn_deals_damage_equal_to_removed_mana() {
         let ability = AbilityDefinition::new(AbilityId::Bulwark)

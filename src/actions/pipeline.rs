@@ -17,6 +17,7 @@ use crate::components::{
 use crate::dimensions::bounds_of;
 use crate::items::{Inventory, commit_item, item_action_spec};
 use crate::status::StatusEffects;
+use crate::vitals::effective_mana_cost;
 
 /// Resolves an [`ActionSource`] to its [`ActionSpec`] and commits it, delegating the
 /// source-specific rules to the owning layer.
@@ -25,10 +26,24 @@ pub struct ActionSources<'w, 's> {
     ability_defs: Res<'w, AbilityDefinitions>,
     loadouts: Query<'w, 's, &'static mut AbilityLoadout>,
     inventories: Query<'w, 's, &'static mut Inventory>,
+    /// Read-only: the caster's mana-cost modifiers (see [`effective_mana_cost`]).
+    cost_modifiers: Query<'w, 's, (Option<&'static CombatStats>, Option<&'static StatusEffects>)>,
 }
 
 impl ActionSources<'_, '_> {
+    /// The action's spec with the caster's mana-cost modifiers applied. Every consumer
+    /// (validation, hotkeys, queued activations and the re-check at the end of the cast
+    /// point) goes through here, so the cost is evaluated when it is paid.
     pub fn spec(&self, caster: Entity, source: ActionSource) -> Result<ActionSpec, ActionError> {
+        let mut spec = self.base_spec(caster, source)?;
+        if spec.cost.mana > 0.0 {
+            let (stats, statuses) = self.cost_modifiers.get(caster).unwrap_or((None, None));
+            spec.cost.mana = effective_mana_cost(spec.cost.mana, stats, statuses);
+        }
+        Ok(spec)
+    }
+
+    fn base_spec(&self, caster: Entity, source: ActionSource) -> Result<ActionSpec, ActionError> {
         match source {
             ActionSource::Ability(slot) => {
                 let state = self

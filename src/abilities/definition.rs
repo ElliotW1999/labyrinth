@@ -507,6 +507,8 @@ pub enum PassiveStat {
     Lifesteal,
     /// Fraction of spell damage dealt returned as health.
     SpellLifesteal,
+    /// Additive change to mana costs (-0.25 = 25% cheaper).
+    ManaCostAmp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

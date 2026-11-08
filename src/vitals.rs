@@ -91,6 +91,15 @@ pub fn resource_stat(
     permanent + statuses.map(|s| s.resource_sum(stat)).unwrap_or(0.0)
 }
 
+/// `base x (1 + ManaCostAmp)`, never below zero (-0.25 = 25% cheaper).
+pub fn effective_mana_cost(
+    base: f32,
+    stats: Option<&CombatStats>,
+    statuses: Option<&StatusEffects>,
+) -> f32 {
+    base * (1.0 + resource_stat(stats, statuses, ResourceStat::ManaCostAmp)).max(0.0)
+}
+
 /// Display name for tooltips.
 pub fn stat_label(stat: ResourceStat) -> &'static str {
     match stat {

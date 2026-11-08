@@ -755,6 +755,7 @@ pub struct ItemPassives {
     pub heal_received_amp: f32,
     pub lifesteal: f32,
     pub spell_lifesteal: f32,
+    pub mana_cost_amp: f32,
 }
 
 impl ItemPassives {
@@ -783,6 +784,7 @@ impl ItemPassives {
             PassiveStat::HealReceivedAmp => &mut self.heal_received_amp,
             PassiveStat::Lifesteal => &mut self.lifesteal,
             PassiveStat::SpellLifesteal => &mut self.spell_lifesteal,
+            PassiveStat::ManaCostAmp => &mut self.mana_cost_amp,
         };
         *field += amount;
     }
@@ -813,6 +815,7 @@ impl std::ops::AddAssign for ItemPassives {
             heal_received_amp,
             lifesteal,
             spell_lifesteal,
+            mana_cost_amp,
         } = rhs;
         self.max_health += max_health;
         self.health_regen += health_regen;
@@ -835,6 +838,7 @@ impl std::ops::AddAssign for ItemPassives {
         self.heal_received_amp += heal_received_amp;
         self.lifesteal += lifesteal;
         self.spell_lifesteal += spell_lifesteal;
+        self.mana_cost_amp += mana_cost_amp;
     }
 }
 
@@ -954,6 +958,7 @@ fn adjust_passives(
     stats.heal_received_amp += passives.heal_received_amp * count;
     stats.lifesteal += passives.lifesteal * count;
     stats.spell_lifesteal += passives.spell_lifesteal * count;
+    stats.mana_cost_amp += passives.mana_cost_amp * count;
     stats.recompute_attack_speed(attrs.agility);
 }
 
@@ -2271,7 +2276,7 @@ mod tests {
         assert_eq!(health.max, 720.0);
     }
 
-    fn passive_fields(p: &ItemPassives) -> [f32; 21] {
+    fn passive_fields(p: &ItemPassives) -> [f32; 22] {
         let ItemPassives {
             max_health,
             health_regen,
@@ -2294,6 +2299,7 @@ mod tests {
             heal_received_amp,
             lifesteal,
             spell_lifesteal,
+            mana_cost_amp,
         } = *p;
         [
             max_health,
@@ -2317,6 +2323,7 @@ mod tests {
             heal_received_amp,
             lifesteal,
             spell_lifesteal,
+            mana_cost_amp,
         ]
     }
 
@@ -2384,6 +2391,7 @@ mod tests {
             PassiveStat::HealReceivedAmp,
             PassiveStat::Lifesteal,
             PassiveStat::SpellLifesteal,
+            PassiveStat::ManaCostAmp,
         ];
         let mut seen = Vec::new();
         for stat in stats {
@@ -2399,7 +2407,7 @@ mod tests {
             assert!(!seen.contains(&changed[0]), "{stat:?} shares a field");
             seen.push(changed[0]);
         }
-        assert_eq!(seen.len(), 21, "every field is reachable");
+        assert_eq!(seen.len(), 22, "every field is reachable");
     }
 
     #[test]
@@ -3111,6 +3119,31 @@ mod tests {
         assert_eq!(slot(&app, caster, 0).unwrap().cooldown.remaining, 0.0);
         assert_eq!(slot(&app, caster, 1).unwrap().cooldown.remaining, 0.0);
         assert!(triggers(&app).is_empty());
+    }
+
+    #[test]
+    fn mana_cost_amp_reduces_item_costs() {
+        let mut app = item_app();
+        let _defs = DefinitionOverride::install([test_item(
+            ItemId::StormRod,
+            aimed(
+                TargetType::SelfTarget,
+                TargetTeam::SelfOnly,
+                0.0,
+                0.0,
+                0.0,
+                40.0,
+            ),
+        )]);
+        let caster = spawn_caster(&mut app, 100.0);
+        app.world_mut()
+            .get_mut::<CombatStats>(caster)
+            .unwrap()
+            .mana_cost_amp = -0.5;
+        give(&mut app, caster, ItemId::StormRod);
+        request(&mut app, caster, 0, CastTarget::Point(Vec3::ZERO));
+        step(&mut app);
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 80.0);
     }
 
     #[test]

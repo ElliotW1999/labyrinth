@@ -541,6 +541,7 @@ pub(crate) fn passive_name(stat: super::definition::PassiveStat) -> &'static str
         PassiveStat::HealReceivedAmp => "Heal received amp",
         PassiveStat::Lifesteal => "Lifesteal",
         PassiveStat::SpellLifesteal => "Spell lifesteal",
+        PassiveStat::ManaCostAmp => "Mana cost",
     }
 }
 

@@ -7,6 +7,7 @@ use super::definition::{AbilityBehavior, AbilityEffect, AbilityTrigger, StatusBu
 use crate::components::{AbilityId, AbilityLoadout, CombatStats, Health, HeroAttributes, Mana};
 use crate::items::{ItemPassives, apply_passives, remove_passives};
 use crate::status::{DispelType, StatusChange, StatusEffectEvent, StatusEffects};
+use crate::vitals::effective_mana_cost;
 
 /// Net passive stat bonuses currently applied from ranked passive abilities.
 #[derive(Component, Clone, Default, PartialEq)]
@@ -127,7 +128,12 @@ pub fn tick_toggle_upkeep(
                 continue;
             }
             if slot.toggled && slot.rank > 0 {
-                mana.current -= def.toggle_mana_per_sec.at(slot.rank) * dt;
+                let upkeep = effective_mana_cost(
+                    def.toggle_mana_per_sec.at(slot.rank),
+                    Some(stats),
+                    Some(statuses),
+                );
+                mana.current -= upkeep * dt;
                 if mana.current <= 0.0 {
                     mana.current = 0.0;
                     slot.toggled = false;
@@ -319,6 +325,23 @@ mod tests {
                     .len(),
                 2,
                 "both bonus statuses are still there"
+            );
+        }
+
+        #[test]
+        fn toggle_upkeep_uses_effective_cost() {
+            let mut app = app();
+            let hero = hero(&mut app, 100.0);
+            app.world_mut()
+                .get_mut::<CombatStats>(hero)
+                .unwrap()
+                .mana_cost_amp = -0.5;
+            set_toggled(&mut app, hero, true);
+            step(&mut app, 1.0);
+            let mana = app.world().get::<Mana>(hero).unwrap().current;
+            assert!(
+                (mana - (100.0 - 4.0)).abs() < 1e-4,
+                "8 mana per second at half cost, got {mana}"
             );
         }
 
