@@ -78,9 +78,9 @@ Gates feed back: `Proc` / `Counter` / `Accumulate` / `Chain` push derived `Trigg
 
 ## 3. Frame order
 
-All systems below run in `Update`.
+All systems below run in `Update`. The two plugin chains interleave: the abilities chain (2) runs after `apply_projectile_hits` and before `apply_damage_events`, both of which belong to the combat chain (1).
 
-1. **Combat chain** (`CombatPlugin`): attack cooldowns, basic attack requests and windups, releases, impacts, projectile flight (`fly_projectiles`, `skillshot_contacts`), `apply_projectile_hits`, **`apply_damage_events`**, lifetimes, `despawn_dead`.
+1. **Combat chain** (`CombatPlugin`): attack cooldowns, basic attack requests and windups, releases, impacts, projectile flight (`fly_projectiles`, `skillshot_contacts`), `apply_projectile_hits`, *[abilities chain runs here]*, **`apply_damage_events`**, lifetimes, `despawn_dead`.
 2. **Abilities chain** (`AbilitiesPlugin`), ordered `.after(SimSet::Commands)`, `.after(apply_projectile_hits)` and `.before(apply_damage_events)`:
    1. cooldown, mana regen, `tick_toggle_upkeep`, `sync_ability_passives`
    2. activation: `resolve_queued_activations`, `validate_activation_requests`, `refresh_activation_aims`, `tick_activations` (emits `ActionFiredEvent`)
@@ -400,7 +400,7 @@ storm_mail,3,on_overload,trigger_unit,damage,,80,magical,,,,,
 storm_mail,4,on_storm_arc,trigger_unit,damage,,80,magical,,,,,
 ```
 
-As a passive ability the same rows are written with the ability id as the owner and `caster` in place of `owner`; the effects are identical. Test: `storm_mail_item_and_passive_ability_emit_identical_damage`; the accumulate-then-chain depth bound is checked by `accumulate_then_chain_under_damage_taken_resolves_within_depth_cap` and the no-ping-pong property by `reactive_chain_between_two_holders_does_not_ping_pong`. Under a derived custom trigger, `trigger_unit` is still the attacker, so the damage rows target `trigger_unit`.
+As a passive ability the same rows are written with the ability id as the owner and `caster` in place of `owner`; the effects are identical. Test: `storm_mail_item_and_passive_ability_emit_identical_damage`; the accumulate-then-chain depth bound is checked by `accumulate_then_chain_under_damage_taken_resolves_within_depth_cap` and the no-ping-pong property by `reactive_chain_between_holders_does_not_ping_pong`. Under a derived custom trigger, `trigger_unit` is still the attacker, so the damage rows target `trigger_unit`.
 
 Two sibling reactions use the same path without a gate:
 
