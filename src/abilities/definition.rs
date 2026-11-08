@@ -7,7 +7,7 @@ use bevy::prelude::{Entity, Vec2, Vec3};
 use crate::components::AbilityId;
 use crate::components::DamageType;
 use crate::status::{DispelType, Leash, LeashAnchor, StatusEffect, StatusKind};
-use crate::vitals::ResourceStat;
+use crate::vitals::{ManaShield, ResourceStat};
 
 /// A value that scales with ability level: `clamp(base + per_rank × rank, min, max)`,
 /// or an explicit per-level table (`75|150|225|300` in the generator CSVs).
@@ -276,6 +276,12 @@ pub enum StatusSpec {
     },
     /// Prevents all healing.
     HealBlock,
+    /// Diverts `absorb_percent` (0–100) of post-mitigation damage to mana, at
+    /// `damage_per_mana` damage per point of mana.
+    ManaShield {
+        absorb_percent: RankValue,
+        damage_per_mana: RankValue,
+    },
     /// A timed resource modifier (regen, max, lifesteal, heal amp, cost) summed when read.
     ResourceModifier {
         id: &'static str,
@@ -406,6 +412,16 @@ impl StatusSpec {
                 StatusEffect::heal_reduction((percent.at(rank) / 100.0).clamp(0.0, 1.0), duration)
             }
             StatusSpec::HealBlock => StatusEffect::heal_block(duration),
+            StatusSpec::ManaShield {
+                absorb_percent,
+                damage_per_mana,
+            } => StatusEffect::mana_shield(
+                ManaShield {
+                    absorb: (absorb_percent.at(rank) / 100.0).clamp(0.0, 1.0),
+                    damage_per_mana: damage_per_mana.at(rank).max(f32::EPSILON),
+                },
+                duration,
+            ),
             StatusSpec::ResourceModifier {
                 id,
                 kind,

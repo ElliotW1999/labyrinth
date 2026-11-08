@@ -323,6 +323,56 @@ mod tests {
         }
 
         #[test]
+        fn mana_shield_toggle_applies_and_removes() {
+            use crate::abilities::definition::{
+                AbilityDefinition, EffectTarget, RankValue, StatusSpec,
+            };
+            let mut app = app();
+            let shield = AbilityDefinition::new(AbilityId::Overcharge)
+                .behavior(AbilityBehavior::Toggle)
+                .toggle_upkeep(RankValue::fixed(1.0))
+                .on(
+                    AbilityTrigger::WhileToggled,
+                    EffectTarget::Caster,
+                    AbilityEffect::ApplyStatus {
+                        status: StatusSpec::ManaShield {
+                            absorb_percent: RankValue::fixed(50.0),
+                            damage_per_mana: RankValue::fixed(2.0),
+                        },
+                        duration: RankValue::ZERO,
+                    },
+                );
+            app.world_mut()
+                .resource_mut::<AbilityDefinitions>()
+                .insert(shield);
+            let hero = hero(&mut app, 100.0);
+            let shield_of = |app: &App| {
+                app.world()
+                    .get::<StatusEffects>(hero)
+                    .unwrap()
+                    .mana_shield()
+            };
+            assert!(shield_of(&app).is_none());
+            set_toggled(&mut app, hero, true);
+            step(&mut app, 0.1);
+            let on = shield_of(&app).expect("shield while toggled");
+            assert_eq!((on.absorb, on.damage_per_mana), (0.5, 2.0));
+            step(&mut app, 0.1);
+            assert_eq!(
+                app.world()
+                    .get::<StatusEffects>(hero)
+                    .unwrap()
+                    .effects
+                    .len(),
+                1,
+                "applied once"
+            );
+            set_toggled(&mut app, hero, false);
+            step(&mut app, 0.1);
+            assert!(shield_of(&app).is_none());
+        }
+
+        #[test]
         fn toggle_off_cast_removes_the_bonus() {
             let mut app = app();
             let hero = hero(&mut app, 100.0);

@@ -103,7 +103,6 @@ pub struct StatusEffect {
     /// Prevents all healing while active.
     pub heal_blocked: bool,
     /// Diverts incoming damage to mana while active.
-    #[allow(dead_code)] // consumed by the damage pipeline in a later step
     pub mana_shield: Option<crate::vitals::ManaShield>,
     pub damage_per_sec: f32,
     pub dot_damage_type: DamageType,
@@ -218,6 +217,13 @@ impl StatusEffect {
         Self {
             resource: Some((stat, value)),
             ..base
+        }
+    }
+
+    pub fn mana_shield(shield: crate::vitals::ManaShield, duration: f32) -> Self {
+        Self {
+            mana_shield: Some(shield),
+            ..Self::buff("mana_shield", duration)
         }
     }
 
@@ -398,7 +404,6 @@ impl StatusEffects {
     }
 
     /// The active mana shield with the highest absorb fraction.
-    #[allow(dead_code)]
     pub fn mana_shield(&self) -> Option<crate::vitals::ManaShield> {
         self.effects
             .iter()

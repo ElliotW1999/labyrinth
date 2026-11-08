@@ -354,6 +354,14 @@ fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
             row("Heal reduction %", percent),
             seconds_row("Heal reduction duration", duration),
         ],
+        StatusSpec::ManaShield {
+            absorb_percent,
+            damage_per_mana,
+        } => vec![
+            row("Mana shield absorb %", absorb_percent),
+            row("Damage per mana", damage_per_mana),
+            seconds_row("Mana shield duration", duration),
+        ],
         StatusSpec::ResourceModifier { stat, amount, .. } => vec![
             row(crate::vitals::stat_label(stat), amount),
             seconds_row("Duration", duration),
@@ -481,6 +489,7 @@ fn status_name(status: StatusSpec) -> &'static str {
         StatusSpec::HealOverTime { .. } => "Heal over time",
         StatusSpec::HealReduction { .. } => "Heal reduction",
         StatusSpec::HealBlock => "Heal block",
+        StatusSpec::ManaShield { .. } => "Mana shield",
         StatusSpec::ResourceModifier { .. } => "Modifier",
         StatusSpec::Modifier { .. } => "Modifier",
     }

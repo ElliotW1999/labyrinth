@@ -11,12 +11,12 @@ use crate::basic_attack::{
 };
 use crate::components::{
     AbilityId, AttackCooldown, BoundRadius, CombatStats, DamageType, GoldBounty, Health,
-    HeroAttributes, HeroProgress, Lifetime, PlayerHero, PlayerWallet, Projectile, ProjectileHome,
-    ProjectileStyle, ShieldPool, Team, XpBounty,
+    HeroAttributes, HeroProgress, Lifetime, Mana, PlayerHero, PlayerWallet, Projectile,
+    ProjectileHome, ProjectileStyle, ShieldPool, Team, XpBounty,
 };
 use crate::status::{StatusEffects, is_untargetable, subtract_status_stat_delta};
 use crate::vitals::{
-    HealKind, ResourceStat, apply_heal, heal_factor, outgoing_heal_amp, resource_stat,
+    HealKind, ManaShield, ResourceStat, apply_heal, heal_factor, outgoing_heal_amp, resource_stat,
 };
 use crate::dimensions::{area_contains, bounds_of};
 use crate::progression::add_xp;
@@ -274,6 +274,17 @@ pub fn resolve_incoming_damage(
     }
 }
 
+/// Divert damage to mana: `min(damage x absorb, mana x damage_per_mana)` is absorbed and
+/// mana is spent for it. Returns the damage absorbed.
+pub fn absorb_with_mana_shield(damage: f32, mana: &mut Mana, shield: ManaShield) -> f32 {
+    let per_mana = shield.damage_per_mana.max(f32::EPSILON);
+    let absorbed = (damage * shield.absorb)
+        .min(mana.current.max(0.0) * per_mana)
+        .max(0.0);
+    mana.current -= absorbed / per_mana;
+    absorbed
+}
+
 pub fn apply_damage_events(
     mut damage: ParamSet<(
         MessageReader<DamageEvent>,
@@ -289,6 +300,7 @@ pub fn apply_damage_events(
             Option<&mut ShieldPool>,
             Option<&mut StatusEffects>,
             Option<&HeroAttributes>,
+            Option<&mut Mana>,
         )>,
     )>,
 ) {
@@ -310,7 +322,7 @@ pub fn apply_damage_events(
         });
         let source_stats_snapshot = source_snapshot.map(|(stats, _, _)| stats);
         let mut target_query = unit_stats.p1();
-        let Ok((mut health, mut target_stats, mut shield, mut statuses, attrs)) =
+        let Ok((mut health, mut target_stats, mut shield, mut statuses, attrs, mut mana)) =
             target_query.get_mut(event.target)
         else {
             continue;
@@ -351,7 +363,7 @@ pub fn apply_damage_events(
             rng,
             &hooks,
         );
-        let resolved = resolve_incoming_damage(
+        let mut resolved = resolve_incoming_damage(
             outgoing,
             event.damage_type,
             &target_stats,
@@ -364,6 +376,13 @@ pub fn apply_damage_events(
             if let Some(st) = statuses.as_deref_mut() {
                 crate::status::consume_shields(st, resolved.shield_absorbed);
             }
+        }
+        // Mana shield: pays for post-mitigation damage, after any ShieldPool.
+        if let (Some(shield), Some(mana)) = (
+            statuses.as_ref().and_then(|s| s.mana_shield()),
+            mana.as_deref_mut(),
+        ) {
+            resolved.health_delta -= absorb_with_mana_shield(resolved.health_delta, mana, shield);
         }
         let health_before = health.current;
         health.current -= resolved.health_delta;
@@ -406,7 +425,7 @@ pub fn apply_damage_events(
         }
     }
     for (source, amount) in leeches {
-        if let Ok((mut health, stats, _, statuses, _)) = unit_stats.p1().get_mut(source) {
+        if let Ok((mut health, stats, _, statuses, _, _)) = unit_stats.p1().get_mut(source) {
             let outgoing = outgoing_heal_amp(Some(&stats), statuses.as_deref());
             let factor = heal_factor(HealKind::Leech, outgoing, Some(&stats), statuses.as_deref());
             apply_heal(&mut health, amount, factor);
@@ -1406,6 +1425,112 @@ mod tests {
             run(&mut world);
             let dealt = 1000.0 - hp(&world, t);
             assert!((hp(&world, a) - (500.0 + dealt * 0.25)).abs() < 1e-3);
+        }
+    }
+
+    mod mana_shield {
+        use super::*;
+        use crate::status::StatusEffect;
+
+        fn shielded(mana: f32, absorb: f32, per_mana: f32) -> (World, Entity) {
+            let mut world = World::new();
+            world.init_resource::<Messages<DamageEvent>>();
+            world.init_resource::<CombatRng>();
+            let mut statuses = StatusEffects::default();
+            statuses.effects.push(StatusEffect::mana_shield(
+                ManaShield {
+                    absorb,
+                    damage_per_mana: per_mana,
+                },
+                10.0,
+            ));
+            let mut stats = CombatStats::simple(0.0, 0.0, 1.0, 10.0, 0.0, 0.0);
+            stats.damage_block = 0.0;
+            let target = world
+                .spawn((Health::new(1000.0), stats, statuses, Mana::new(mana, 0.0)))
+                .id();
+            (world, target)
+        }
+
+        #[test]
+        fn mana_shield_absorbs_post_mitigation_and_spends_mana() {
+            let (mut world, t) = shielded(100.0, 0.5, 2.0);
+            world.write_message(DamageEvent::new(t, 100.0, DamageType::Physical));
+            world.run_system_once(apply_damage_events).unwrap();
+            let armor = CombatStats::simple(0.0, 0.0, 1.0, 10.0, 0.0, 0.0);
+            let mitigated = apply_damage(100.0, DamageType::Physical, &armor);
+            assert!(mitigated < 100.0);
+            let health = world.get::<Health>(t).unwrap().current;
+            assert!((health - (1000.0 - mitigated * 0.5)).abs() < 1e-3);
+            let mana = world.get::<Mana>(t).unwrap().current;
+            assert!(
+                (mana - (100.0 - mitigated * 0.5 / 2.0)).abs() < 1e-3,
+                "mana pays for the mitigated damage at 2 damage per mana"
+            );
+        }
+
+        #[test]
+        fn mana_shield_runs_out_and_overflow_hits_health() {
+            let (mut world, t) = shielded(10.0, 1.0, 2.0);
+            world.write_message(DamageEvent::new(t, 100.0, DamageType::Pure));
+            world.run_system_once(apply_damage_events).unwrap();
+            assert_eq!(world.get::<Mana>(t).unwrap().current, 0.0);
+            assert_eq!(
+                world.get::<Health>(t).unwrap().current,
+                1000.0 - (100.0 - 20.0),
+                "10 mana absorbs 20 damage, the rest lands"
+            );
+            // No mana left: nothing is absorbed and the status stays.
+            let mut again = World::new();
+            again.init_resource::<Messages<DamageEvent>>();
+            again.init_resource::<CombatRng>();
+            let mut statuses = StatusEffects::default();
+            statuses.effects.push(StatusEffect::mana_shield(
+                ManaShield {
+                    absorb: 1.0,
+                    damage_per_mana: 2.0,
+                },
+                10.0,
+            ));
+            let t = again
+                .spawn((
+                    Health::new(1000.0),
+                    CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
+                    statuses,
+                    Mana::new(0.0, 0.0),
+                ))
+                .id();
+            again.write_message(DamageEvent::new(t, 50.0, DamageType::Pure));
+            again.run_system_once(apply_damage_events).unwrap();
+            assert_eq!(again.get::<Health>(t).unwrap().current, 950.0);
+            assert_eq!(again.get::<StatusEffects>(t).unwrap().effects.len(), 1);
+        }
+
+        #[test]
+        fn pool_absorbs_first_then_mana_shield_takes_the_rest() {
+            let (mut world, t) = shielded(100.0, 1.0, 1.0);
+            world.entity_mut(t).insert(ShieldPool { amount: 30.0 });
+            world.get_mut::<CombatStats>(t).unwrap().armor = 0.0;
+            world.write_message(DamageEvent::new(t, 100.0, DamageType::Pure));
+            world.run_system_once(apply_damage_events).unwrap();
+            assert_eq!(world.get::<ShieldPool>(t).unwrap().amount, 0.0);
+            assert_eq!(world.get::<Mana>(t).unwrap().current, 30.0);
+            assert_eq!(world.get::<Health>(t).unwrap().current, 1000.0);
+        }
+
+        #[test]
+        fn absorbed_damage_does_not_leech_or_reflect() {
+            let (mut world, t) = shielded(1000.0, 1.0, 1.0);
+            let mut stats = CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 0.0);
+            stats.lifesteal = 1.0;
+            let mut hp = Health::new(1000.0);
+            hp.current = 500.0;
+            let attacker = world.spawn((hp, stats)).id();
+            world.get_mut::<CombatStats>(t).unwrap().damage_reflect = 0.5;
+            world.write_message(DamageEvent::basic_attack(attacker, t, 100.0));
+            world.run_system_once(apply_damage_events).unwrap();
+            assert_eq!(world.get::<Health>(attacker).unwrap().current, 500.0);
+            assert_eq!(world.get::<Health>(t).unwrap().current, 1000.0);
         }
     }
 }
