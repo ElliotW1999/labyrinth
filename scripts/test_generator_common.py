@@ -28,6 +28,7 @@ from generator_common import (  # noqa: E402
     warn_unemitted_triggers,
     warn_unreachable_custom_triggers,
     parse_activation_spec,
+    projectile_mechanic_rust,
     validate_activation,
 )
 
@@ -460,6 +461,43 @@ class ProjectileTypeTests(unittest.TestCase):
             validate_activation(row(cells), spec, kind="ability", ability_type="active", report=report)
             self.assertEqual(not report.errors, ok, target_type)
             self.assertEqual(spec.projectile_type, "skillshot_single")
+
+    def _end_radius(self, kind: str = "ability", **overrides: str):
+        cells = {
+            "target_type": "point",
+            "target_team": "enemy",
+            "cast_range": "900",
+            "aoe_radius": "100",
+            "projectile_type": "skillshot",
+            "projectile_end_radius": "450",
+        }
+        cells.update(overrides)
+        report = Report()
+        spec = parse_activation_spec(row(cells), kind=kind, has_active_effects=True, report=report, levels=kind == "ability")
+        validate_activation(row(cells), spec, kind=kind, ability_type="active", report=report)
+        return spec, report
+
+    def test_end_radius_emits_into_the_projectile_mechanic(self) -> None:
+        spec, report = self._end_radius()
+        self.assertFalse(report.errors)
+        rust = projectile_mechanic_rust(spec.projectile_type, 642.857, spec.projectile_end_radius)
+        self.assertIn("end_radius: Some(RankValue::fixed(450.0))", rust)
+        self.assertIn("end_radius: None", projectile_mechanic_rust("skillshot", None))
+
+    def test_end_radius_is_rejected_on_non_skillshots_and_without_aoe_radius(self) -> None:
+        for overrides in (
+            {"target_type": "unit", "projectile_type": "targeted"},
+            {"projectile_type": "none"},
+            {"aoe_radius": ""},
+            {"projectile_end_radius": "0"},
+        ):
+            _, report = self._end_radius(**overrides)
+            self.assertTrue(report.errors, overrides)
+            self.assertEqual(report.errors[0].field, "projectile_end_radius", overrides)
+
+    def test_items_reject_end_radius_until_they_have_an_aoe_radius(self) -> None:
+        _, report = self._end_radius(kind="item", aoe_radius="")
+        self.assertIn("items have no aoe_radius", report.errors[0].message)
 
 
 def _effect(
@@ -996,7 +1034,7 @@ class ItemProjectileTests(unittest.TestCase):
         self.assertFalse([w for w in report.warnings if w.field == "projectile_type"])
         rendered = module.item_static(items[0])
         self.assertIn(
-            "mechanics: &[AbilityMechanic::Projectile { splash_radius: AreaRadius::Ability, speed: Some(1200.0), skillshot: false, first_hit: false }],",
+            "mechanics: &[AbilityMechanic::Projectile { splash_radius: AreaRadius::Ability, speed: Some(1200.0), skillshot: false, first_hit: false, end_radius: None }],",
             rendered,
         )
         self.assertIn("AbilityTrigger::OnProjectileHit", rendered)

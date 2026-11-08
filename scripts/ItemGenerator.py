@@ -68,6 +68,7 @@ from generator_common import (  # noqa: E402
     warn_unreachable_custom_triggers,
     parse_bool,
     parse_activation_spec,
+    projectile_mechanic_rust,
     parse_effect_rows,
     parse_enum,
     parse_scalar,
@@ -399,14 +400,7 @@ def item_static(item: Item) -> str:
         lines.append(f"        AbilityEffectEntry {{ trigger: {trigger}, target: {target}, effect: {effect} }},")
     lines.append("    ],")
     if item.projectile != "none":
-        speed = f"Some({f32(item.projectile_speed)})" if item.projectile_speed else "None"
-        skillshot = "true" if item.projectile in SKILLSHOT_TYPES else "false"
-        first_hit = "true" if item.projectile == "skillshot_single" else "false"
-        lines.append(
-            "    mechanics: &[AbilityMechanic::Projectile { "
-            f"splash_radius: AreaRadius::Ability, speed: {speed}, skillshot: {skillshot}, "
-            f"first_hit: {first_hit} }}],"
-        )
+        lines.append(f"    mechanics: &[{projectile_mechanic_rust(item.projectile, item.projectile_speed)}],")
     else:
         lines.append("    mechanics: &[],")
     lines += ["};", f"// </item:{item.id}>"]

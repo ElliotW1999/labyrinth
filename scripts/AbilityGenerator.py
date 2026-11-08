@@ -58,6 +58,7 @@ from generator_common import (  # noqa: E402
     warn_unemitted_triggers,
     warn_unreachable_custom_triggers,
     parse_activation_spec,
+    projectile_mechanic_rust,
     parse_effect_rows,
     parse_enum,
     parse_number,
@@ -95,11 +96,12 @@ ABILITY_COLUMNS = (
     "description",
 )
 # Optional extras: cast_backswing (default 0.25), max_rank (default from level counts / slot),
-# toggle_mana_per_sec (toggle abilities only; level list allowed).
+# toggle_mana_per_sec (toggle abilities only; level list allowed), projectile_end_radius
+# (skillshots only; level list allowed; the width the wave widens to, needs aoe_radius).
 
 SLOTS = ("q", "w", "e", "r", "innate")
 ABILITY_TYPES = {"active": "Active", "passive": "Passive", "toggle": "Toggle"}
-LEVEL_FIELDS = ("cast_range", "aoe_radius", "cooldown", "mana_cost", "toggle_mana_per_sec")
+LEVEL_FIELDS = ("cast_range", "aoe_radius", "cooldown", "mana_cost", "toggle_mana_per_sec", "projectile_end_radius")
 EFFECT_LEVEL_FIELDS = ("value", "duration", "amount", "radius")
 # Mirrors abilities::definition::MAX_CAST_BACKSWING.
 MAX_CAST_BACKSWING = 1.0
@@ -156,6 +158,7 @@ class Ability:
     description: str
     max_rank: int
     toggle_mana_per_sec: list[float] | None = None
+    projectile_end_radius: list[float] | None = None
     effects: list[str] = field(default_factory=list)
 
 
@@ -237,6 +240,7 @@ def parse_ability(row: Row, effect_rows: list[EffectRow], report: Report) -> Abi
         description=row.get("description"),
         max_rank=max_rank,
         toggle_mana_per_sec=toggle_upkeep,
+        projectile_end_radius=activation.projectile_end_radius,
     )
 
 
@@ -315,14 +319,7 @@ def ability_fn(a: Ability) -> str:
     if a.max_charges:
         lines.append(f"        .charges({a.max_charges}, {f32(a.charge_restore_time or 0.0)})")
     if a.projectile != "none":
-        speed = f"Some({f32(a.projectile_speed)})" if a.projectile_speed else "None"
-        skillshot = "true" if a.projectile in SKILLSHOT_TYPES else "false"
-        first_hit = "true" if a.projectile == "skillshot_single" else "false"
-        lines.append(
-            "        .mechanic(AbilityMechanic::Projectile { "
-            f"splash_radius: AreaRadius::Ability, speed: {speed}, skillshot: {skillshot}, "
-            f"first_hit: {first_hit} }})"
-        )
+        lines.append(f"        .mechanic({projectile_mechanic_rust(a.projectile, a.projectile_speed, a.projectile_end_radius)})")
     elif a.behavior == "Active" and a.aoe_radius and any(a.aoe_radius):
         if a.rust_target_type in ("NoTarget", "SelfTarget"):
             lines.append("        .mechanic(shockwave_ring())")

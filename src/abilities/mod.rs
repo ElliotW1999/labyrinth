@@ -1006,6 +1006,7 @@ mod tests {
                 speed: None,
                 skillshot: false,
                 first_hit: false,
+                end_radius: None,
             })
     }
 
@@ -2904,6 +2905,7 @@ mod tests {
             speed: None,
             skillshot: false,
             first_hit: false,
+            end_radius: None,
         }];
         let effects: &'static [AbilityEffectEntry] = Box::leak(entries.into_boxed_slice());
         ItemDefinition {
@@ -2999,6 +3001,7 @@ mod tests {
                 speed: None,
                 skillshot: false,
                 first_hit: false,
+                end_radius: None,
             })
             .on(
                 AbilityTrigger::OnProjectileHit,

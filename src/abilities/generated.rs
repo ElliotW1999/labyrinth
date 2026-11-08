@@ -103,6 +103,7 @@ fn arcane_lance() -> AbilityDefinition {
             speed: None,
             skillshot: false,
             first_hit: false,
+            end_radius: None,
         })
         .on(
             AbilityTrigger::OnProjectileHit,

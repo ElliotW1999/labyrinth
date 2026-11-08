@@ -49,6 +49,16 @@ pub fn ability_tooltip_bits(def: &AbilityDefinition, learned_rank: u32) -> Vec<T
         learned_rank,
     );
     push_value(&mut bits, "Radius", def.aoe_radius, max_rank, learned_rank);
+    for mechanic in &def.mechanics {
+        if let AbilityMechanic::Projectile {
+            skillshot: true,
+            end_radius: Some(end_radius),
+            ..
+        } = mechanic
+        {
+            push_value(&mut bits, "End radius", *end_radius, max_rank, learned_rank);
+        }
+    }
     push_value(&mut bits, "Cooldown", def.cooldown, max_rank, learned_rank);
     push_value(&mut bits, "Mana", def.mana_cost, max_rank, learned_rank);
     if def.cast_time > 0.0 {

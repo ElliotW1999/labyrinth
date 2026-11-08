@@ -899,6 +899,9 @@ pub enum AbilityMechanic {
         skillshot: bool,
         /// Skillshots only: end at the first enemy struck (no `OnImpact` after a hit).
         first_hit: bool,
+        /// Skillshots only: the width (like `aoe_radius`, per rank) the wave widens to by the
+        /// end of its flight. `None` keeps the width constant.
+        end_radius: Option<RankValue>,
     },
     /// Caster follows up with auto-attacks on the unit target.
     AttackUnitTarget,

@@ -245,6 +245,7 @@ ITEM_ACTIVATION_OPTIONAL = (
     "mana_cost",
     "projectile_type",
     "projectile_speed",
+    "projectile_end_radius",
 )
 # Effect-polarity teams (`units_in_radius` defaults); "self" areas still mean allies.
 TARGET_TEAMS = {"enemy": "Enemy", "ally": "Ally", "both": "Any", "self": "Ally"}
@@ -567,6 +568,8 @@ class ActivationSpec:
     charge_restore_time: float | None = None
     projectile_type: str = "none"
     projectile_speed: float | None = None
+    # Skillshots only: the width (per rank) the wave widens to by the end of its flight.
+    projectile_end_radius: list[float] | None = None
 
     def has_cast_range(self, kind: str) -> bool:
         if kind == "ability":
@@ -620,6 +623,7 @@ def parse_activation_spec(
     restore = parse_scalar(row, "charge_restore_time", report, minimum=0)
     projectile = parse_enum(row, "projectile_type", PROJECTILE_TYPES, report, required=False) or "none"
     speed = parse_scalar(row, "projectile_speed", report, minimum=1)
+    end_radius = parse_number(row, "projectile_end_radius", report, levels=levels, minimum=0)
 
     if kind == "ability" and None in (target_type, target_team):
         return None
@@ -641,6 +645,7 @@ def parse_activation_spec(
         charge_restore_time=restore,
         projectile_type=projectile,
         projectile_speed=speed,
+        projectile_end_radius=end_radius,
     )
 
 
@@ -671,6 +676,16 @@ def validate_activation(
     if spec.projectile_type in SKILLSHOT_TYPES and spec.target_type not in ("point", "direction"):
         err("projectile_type", f"skillshots fly toward a point or direction; target_type is {spec.target_type}")
 
+    if spec.projectile_end_radius:
+        if spec.projectile_type not in SKILLSHOT_TYPES:
+            err("projectile_end_radius", f"only skillshots widen; projectile_type is {spec.projectile_type}")
+        elif any(v <= 0 for v in spec.projectile_end_radius):
+            err("projectile_end_radius", "projectile_end_radius must be above 0")
+        elif kind == "item":
+            err("projectile_end_radius", "items have no aoe_radius to widen from; leave projectile_end_radius blank")
+        elif not (spec.aoe_radius and any(spec.aoe_radius)):
+            err("projectile_end_radius", "requires aoe_radius (the starting width)")
+
     if spec.target_team == "self" and spec.target_type not in ("self", "no_target"):
         err("target_team", f"target_team self requires target_type self or no_target (got {spec.target_type})")
     if spec.target_type == "self" and spec.target_team != "self":
@@ -694,6 +709,23 @@ def validate_activation(
                 report.warn(row.file, row.line, fld, row.get(fld), "ignored: passive abilities are never cast")
     if kind == "ability" and ability_type == "toggle" and spec.target_type not in ("no_target", "self"):
         err("target_type", "toggle abilities use no_target or self")
+
+
+def projectile_mechanic_rust(
+    projectile_type: str,
+    projectile_speed: float | None,
+    end_radius: list[float] | None = None,
+) -> str:
+    """`AbilityMechanic::Projectile { ... }` for a non-"none" projectile_type (abilities and items)."""
+    speed = f"Some({f32(projectile_speed)})" if projectile_speed else "None"
+    skillshot = "true" if projectile_type in SKILLSHOT_TYPES else "false"
+    first_hit = "true" if projectile_type == "skillshot_single" else "false"
+    end = f"Some({rank_value(end_radius)})" if end_radius else "None"
+    return (
+        "AbilityMechanic::Projectile { "
+        f"splash_radius: AreaRadius::Ability, speed: {speed}, skillshot: {skillshot}, "
+        f"first_hit: {first_hit}, end_radius: {end} }}"
+    )
 
 
 def ability_rust_target_type(target_type: str, projectile: str, aoe_radius: list[float] | None) -> str:
