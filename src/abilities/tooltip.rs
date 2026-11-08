@@ -291,6 +291,30 @@ fn effect_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
         )],
         AbilityEffect::Heal { amount, .. } => vec![row("Heal", amount)],
         AbilityEffect::RestoreMana { amount } => vec![row("Mana restore", amount)],
+        AbilityEffect::DrainMana {
+            amount,
+            burn_ratio,
+            transfer_ratio,
+            ..
+        } => {
+            let mut label = String::from("Mana removed");
+            if burn_ratio > 0.0 {
+                label.push_str(" (burned)");
+            }
+            if transfer_ratio > 0.0 {
+                label.push_str(" (drained)");
+            }
+            vec![row(label, amount)]
+        }
+        AbilityEffect::SpendResource {
+            resource, amount, ..
+        } => vec![row(
+            match resource {
+                crate::vitals::ResourceKind::Health => "Health cost",
+                crate::vitals::ResourceKind::Mana => "Mana spent",
+            },
+            amount,
+        )],
         AbilityEffect::ApplyStatus { status, duration } => status_rows(status, duration),
         AbilityEffect::Displace {
             kind,

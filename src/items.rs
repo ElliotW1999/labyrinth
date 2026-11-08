@@ -2822,6 +2822,7 @@ mod tests {
             .add_message::<AbilityTriggerEvent>()
             .add_message::<HealEvent>()
             .add_message::<crate::abilities::effects::ManaRestoreEvent>()
+            .add_message::<crate::vitals::ResourceDrainEvent>()
             .add_message::<crate::status::StatusEffectEvent>()
             .add_message::<crate::combat::DamageEvent>()
             .add_message::<DisplacementEvent>()

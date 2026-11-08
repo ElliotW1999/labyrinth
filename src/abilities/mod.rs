@@ -47,6 +47,7 @@ use crate::teleport::{
     TeleportCompletedEvent, TeleportEvent, TeleportRejectedEvent, apply_teleport_events,
 };
 use crate::unit_commands::{IssueCommand, UnitCommand};
+use crate::vitals;
 use casting::{AbilityCastEvent, action_channel_end_triggers, emit_ability_casts};
 use catalog::{AbilityDefinitions, register_loadout_definitions, restore_ability_charges};
 use definition::{TargetTeam, TargetType};
@@ -69,6 +70,7 @@ impl Plugin for AbilitiesPlugin {
             .add_message::<AbilityTriggerEvent>()
             .add_message::<HealEvent>()
             .add_message::<ManaRestoreEvent>()
+            .add_message::<vitals::ResourceDrainEvent>()
             .add_message::<StatusEffectEvent>()
             .add_message::<DisplacementEvent>()
             .add_message::<TeleportEvent>()
@@ -106,6 +108,7 @@ impl Plugin for AbilitiesPlugin {
                     (
                         apply_heal_events,
                         apply_mana_restore_events,
+                        vitals::apply_resource_drain_events,
                         apply_displacement_events,
                         apply_status_effect_events,
                         crate::vitals::sync_status_resource_caps,
@@ -636,6 +639,7 @@ mod tests {
             .add_message::<AbilityTriggerEvent>()
             .add_message::<HealEvent>()
             .add_message::<ManaRestoreEvent>()
+            .add_message::<vitals::ResourceDrainEvent>()
             .add_message::<StatusEffectEvent>()
             .add_message::<DisplacementEvent>()
             .add_message::<TeleportEvent>()
@@ -665,7 +669,11 @@ mod tests {
                     (tick_forced_movement, settle_grounded_units).chain(),
                     resolve_ability_triggers,
                     apply_heal_events,
-                    apply_mana_restore_events,
+                    (
+                        apply_mana_restore_events,
+                        crate::vitals::apply_resource_drain_events,
+                    )
+                        .chain(),
                     apply_displacement_events,
                     (
                         apply_status_effect_events,
@@ -1676,6 +1684,50 @@ mod tests {
             health(&ability_app, ability_target),
             health(&item_app, item_target)
         );
+    }
+
+    #[test]
+    fn mana_burn_deals_damage_equal_to_removed_mana() {
+        let ability = AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::Unit, RankValue::fixed(500.0), RankValue::ZERO)
+            .costs(RankValue::ZERO, RankValue::ZERO)
+            .timing(0.0, 0.0)
+            .on(
+                AbilityTrigger::OnCast,
+                EffectTarget::CastTarget,
+                AbilityEffect::DrainMana {
+                    amount: RankValue::fixed(80.0),
+                    burn_ratio: 1.0,
+                    damage_type: DamageType::Pure,
+                    transfer_ratio: 0.0,
+                },
+            );
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(ability);
+        let caster = spawn_caster(&mut app, KIT);
+        let rich = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        let poor = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, 80.0));
+        for (unit, mana) in [(rich, 200.0), (poor, 30.0)] {
+            app.world_mut()
+                .entity_mut(unit)
+                .insert(Mana::new(mana, 0.0));
+        }
+        for target in [rich, poor] {
+            request(&mut app, caster, 3, CastTarget::Unit(target));
+            for _ in 0..6 {
+                step(&mut app);
+            }
+        }
+        assert_eq!(
+            health(&app, rich),
+            920.0,
+            "80 mana removed, 80 damage dealt"
+        );
+        assert_eq!(app.world().get::<Mana>(rich).unwrap().current, 120.0);
+        assert_eq!(health(&app, poor), 970.0, "capped by the 30 mana it had");
+        assert_eq!(app.world().get::<Mana>(poor).unwrap().current, 0.0);
     }
 
     #[test]

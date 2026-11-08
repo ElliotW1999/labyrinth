@@ -4,7 +4,7 @@
 //! AbilityTriggerEvent(TriggerContext)
 //!   → the source's (ability or item) entries whose trigger matches
 //!   → resolve EffectTarget against the context (caster, trigger unit, affected units, …)
-//!   → AbilityEffect → DamageEvent / HealEvent / ManaRestoreEvent / StatusEffectEvent /
+//!   → AbilityEffect → DamageEvent / HealEvent / ManaRestoreEvent / ResourceDrainEvent / StatusEffectEvent /
 //!                     DisplacementEvent / TeleportEvent (or a custom effect system)
 //! ```
 
@@ -26,7 +26,7 @@ use crate::displacement::DisplacementEvent;
 use crate::items::ItemId;
 use crate::status::{StatusChange, StatusEffectEvent, StatusEffects, is_untargetable};
 use crate::teleport::TeleportEvent;
-use crate::vitals::{self, HealKind};
+use crate::vitals::{self, HealKind, ResourceDrainEvent, ResourceKind};
 
 /// What owns the effect entries a trigger resolves against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -190,6 +190,7 @@ pub struct EffectRunner<'w, 's> {
     damage: MessageWriter<'w, DamageEvent>,
     heals: MessageWriter<'w, HealEvent>,
     mana: MessageWriter<'w, ManaRestoreEvent>,
+    drains: MessageWriter<'w, ResourceDrainEvent>,
     statuses: MessageWriter<'w, StatusEffectEvent>,
     displacements: MessageWriter<'w, DisplacementEvent>,
     teleports: MessageWriter<'w, TeleportEvent>,
@@ -373,6 +374,41 @@ impl EffectRunner<'_, '_> {
                             amount,
                         });
                     }
+                }
+            }
+            AbilityEffect::DrainMana {
+                amount,
+                burn_ratio,
+                damage_type,
+                transfer_ratio,
+            } => {
+                for target in targets {
+                    self.drains.write(ResourceDrainEvent {
+                        source,
+                        target,
+                        resource: ResourceKind::Mana,
+                        amount: amount.at(rank),
+                        burn: (burn_ratio > 0.0).then_some((burn_ratio, damage_type)),
+                        to_source: (transfer_ratio > 0.0).then_some(transfer_ratio),
+                        convert_to: None,
+                    });
+                }
+            }
+            AbilityEffect::SpendResource {
+                resource,
+                amount,
+                convert_to,
+            } => {
+                for target in targets {
+                    self.drains.write(ResourceDrainEvent {
+                        source,
+                        target,
+                        resource,
+                        amount: amount.at(rank),
+                        burn: None,
+                        to_source: None,
+                        convert_to,
+                    });
                 }
             }
             AbilityEffect::RestoreMana { amount } => {

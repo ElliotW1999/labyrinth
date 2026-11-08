@@ -7,7 +7,7 @@ use bevy::prelude::{Entity, Vec2, Vec3};
 use crate::components::AbilityId;
 use crate::components::DamageType;
 use crate::status::{DispelType, Leash, LeashAnchor, StatusEffect, StatusKind};
-use crate::vitals::{ManaShield, ResourceStat};
+use crate::vitals::{ManaShield, ResourceKind, ResourceStat};
 
 /// A value that scales with ability level: `clamp(base + per_rank × rank, min, max)`,
 /// or an explicit per-level table (`75|150|225|300` in the generator CSVs).
@@ -539,6 +539,21 @@ pub enum AbilityEffect {
     },
     RestoreMana {
         amount: RankValue,
+    },
+    /// Remove mana from each target. `burn_ratio x removed` is dealt as spell damage (mana
+    /// burn) and `transfer_ratio x removed` is given to the caster (mana drain).
+    DrainMana {
+        amount: RankValue,
+        burn_ratio: f32,
+        damage_type: DamageType,
+        transfer_ratio: f32,
+    },
+    /// The target spends its own resource (health never drops below 1), optionally gaining
+    /// `ratio x spent` of another (sacrifice / conversion).
+    SpendResource {
+        resource: ResourceKind,
+        amount: RankValue,
+        convert_to: Option<(ResourceKind, f32)>,
     },
     ApplyStatus {
         status: StatusSpec,
