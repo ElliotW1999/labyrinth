@@ -2574,6 +2574,66 @@ mod tests {
     }
 
     #[test]
+    fn ally_chain_skips_enemies_and_scales_heal_by_falloff() {
+        let mut app = test_app();
+        let entries = vec![
+            AbilityEffectEntry {
+                trigger: AbilityTrigger::OnUse,
+                target: EffectTarget::CastTarget,
+                effect: AbilityEffect::Chain {
+                    jumps: 2,
+                    radius: RankValue::fixed(scale::u(450.0)),
+                    falloff: 0.5,
+                    team: TargetTeam::Ally,
+                    then: AbilityTrigger::Custom("on_chain_hit"),
+                },
+            },
+            AbilityEffectEntry {
+                trigger: AbilityTrigger::Custom("on_chain_hit"),
+                target: EffectTarget::TriggerUnit,
+                effect: AbilityEffect::Heal {
+                    amount: RankValue::fixed(100.0),
+                    scaling: EffectScaling::None,
+                },
+            },
+        ];
+        let effects: &'static [AbilityEffectEntry] = Box::leak(entries.into_boxed_slice());
+        let _defs = install_test_item_definitions([item_with(
+            effects,
+            TargetType::Unit,
+            TargetTeam::Ally,
+            scale::u(5000.0),
+        )]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let ally_at = |app: &mut App, x: f32| {
+            let unit = spawn_unit(app, Team::Radiant, Vec3::new(scale::u(x), 0.0, 0.0));
+            app.world_mut().get_mut::<Health>(unit).unwrap().current = 500.0;
+            unit
+        };
+        let start = ally_at(&mut app, 2000.0);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(scale::u(2100.0), 0.0, 0.0));
+        let first = ally_at(&mut app, 2200.0);
+        let second = ally_at(&mut app, 2500.0);
+
+        request_item(&mut app, caster, 0, CastTarget::Unit(start));
+        for _ in 0..6 {
+            step(&mut app);
+        }
+
+        assert_eq!(health(&app, start), 500.0, "the start unit is not re-fired");
+        assert_eq!(health(&app, enemy), 1000.0, "enemies are never healed");
+        assert!(
+            (health(&app, first) - 550.0).abs() < 1e-3,
+            "first hop heals 50%"
+        );
+        assert!(
+            (health(&app, second) - 525.0).abs() < 1e-3,
+            "second hop heals 25%"
+        );
+    }
+
+    #[test]
     fn magnitude_defaults_to_one_for_non_chain_triggers() {
         let ctx = TriggerContext::new(
             AbilityTrigger::OnCast,

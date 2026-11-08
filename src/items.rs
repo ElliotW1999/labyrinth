@@ -1941,6 +1941,33 @@ mod tests {
     }
 
     #[test]
+    fn has_active_matches_use_effects_for_every_catalog_item() {
+        for &id in ItemId::all() {
+            let def = id.definition();
+            if !def.mechanics.is_empty() {
+                assert!(id.has_active(), "{id:?} has mechanics so it is an active");
+                continue;
+            }
+            let uses = def.effects_for(AbilityTrigger::OnUse).next().is_some();
+            let channel = def.activation.channel_time > 0.0
+                && (def
+                    .effects_for(AbilityTrigger::OnChannelEnd)
+                    .next()
+                    .is_some()
+                    || def
+                        .effects_for(AbilityTrigger::OnChannelInterrupted)
+                        .next()
+                        .is_some());
+            if !uses && !channel {
+                assert!(
+                    !id.has_active(),
+                    "passive-only {id:?} must not be an active"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn item_data_comes_from_definitions() {
         let bracer = ItemId::IronBracer.passives();
         assert_eq!(bracer.max_health, 100.0);
