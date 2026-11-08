@@ -201,7 +201,19 @@ pub(crate) fn trigger_tag(trigger: AbilityTrigger) -> &'static str {
         AbilityTrigger::OnUse => "use",
         AbilityTrigger::OnAttack => "on attack",
         AbilityTrigger::OnAttackHit => "on attack hit",
+        AbilityTrigger::OnDamageDealt => "on dealing damage",
         AbilityTrigger::OnDamageTaken => "when damaged",
+        AbilityTrigger::OnHealthBelow { .. } => "at low health",
+        AbilityTrigger::OnStatusApplied(_) => "when afflicted",
+        AbilityTrigger::OnStatusRemoved(_) => "when a status ends",
+        AbilityTrigger::While(_) => "while active",
+        AbilityTrigger::OnMove => "while moving",
+        AbilityTrigger::OnEnemyEnter { .. } => "when an enemy approaches",
+        AbilityTrigger::OnEnemyLeave { .. } => "when an enemy leaves",
+        AbilityTrigger::OnCooldownReady => "when ready",
+        AbilityTrigger::OnInterval { .. } => "periodically",
+        AbilityTrigger::OnSpellCast => "on spell cast",
+        AbilityTrigger::OnSpellHit => "on spell hit",
         AbilityTrigger::OnKill => "on kill",
         AbilityTrigger::OnDeath => "on death",
         AbilityTrigger::Custom(_) => "custom",
@@ -361,6 +373,7 @@ fn effect_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
         | AbilityEffect::Teleport
         | AbilityEffect::Proc { .. }
         | AbilityEffect::Counter { .. }
+        | AbilityEffect::Accumulate { .. }
         | AbilityEffect::PerformAttack { .. } => Vec::new(),
     }
 }
@@ -450,9 +463,10 @@ fn effect_text_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
             }
         }
         AbilityEffect::RemoveStatus { id } => vec![text_row(format!("Remove {id}"))],
-        AbilityEffect::Proc { chance, .. } => vec![text_row(format!(
-            "{}% chance to proc",
-            fmt_num(chance.at(1) * 100.0)
+        AbilityEffect::Proc { chance, pseudo, .. } => vec![text_row(format!(
+            "{}% chance to proc{}",
+            fmt_num(chance.at(1) * 100.0),
+            if pseudo { " (pseudo-random)" } else { "" }
         ))],
         AbilityEffect::PerformAttack {
             damage_ratio,
@@ -472,6 +486,10 @@ fn effect_text_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
         AbilityEffect::Counter { every, .. } => {
             vec![text_row(format!("Every {every} attacks"))]
         }
+        AbilityEffect::Accumulate { threshold, .. } => vec![text_row(format!(
+            "Each time {} builds up",
+            fmt_num(threshold.at(1))
+        ))],
         AbilityEffect::Teleport => vec![text_row("Teleports to the target point")],
         AbilityEffect::Displace {
             distance: None,

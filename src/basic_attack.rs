@@ -805,6 +805,8 @@ mod tests {
         world.init_resource::<Messages<BasicAttackImpactEvent>>();
         world.init_resource::<Messages<BasicAttackLandedEvent>>();
         world.init_resource::<Messages<DamageEvent>>();
+        world.init_resource::<Messages<crate::combat::DamageAppliedEvent>>();
+        world.init_resource::<Messages<crate::status::StatusLifecycleEvent>>();
         world.init_resource::<CombatRng>();
         world.init_resource::<DamageTestHooks>();
         let mut schedule = Schedule::default();

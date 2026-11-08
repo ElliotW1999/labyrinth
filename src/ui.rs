@@ -15,10 +15,10 @@ use crate::items::{
     Inventory, InventoryContextMenu, ItemId, ItemShop, PurchaseItemRequest, SellItemRequest,
     ShopTab, ShopUiState, ShopUndoLog, UndoShopRequest,
 };
-use crate::status::{StatusEffects, StatusKind};
 use crate::menu::MainMenuState;
 use crate::net::NetStatus;
 use crate::resources::MatchConfig;
+use crate::status::{StatusEffects, StatusKind};
 use crate::unit_commands::{IssueCommand, UnitCommand};
 
 pub struct UiPlugin;

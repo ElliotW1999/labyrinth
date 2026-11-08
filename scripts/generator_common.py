@@ -50,6 +50,47 @@ RUST_KEYWORDS = {
     "final", "macro", "override", "priv", "typeof", "unsized", "virtual", "yield", "try",
 }
 
+# Reactive triggers (see `AbilityTrigger` in src/abilities/definition.rs). Parameterised
+# ones are written `name:arg[:arg]` in the CSV; the base name keys every table below.
+REACTIVE_PLAIN_TRIGGERS = {
+    "on_damage_dealt": "OnDamageDealt",
+    "on_damage_taken": "OnDamageTaken",
+    "on_kill": "OnKill",
+    "on_death": "OnDeath",
+    "on_spell_cast": "OnSpellCast",
+    "on_spell_hit": "OnSpellHit",
+    "on_cooldown_ready": "OnCooldownReady",
+    "on_move": "OnMove",
+}
+REACTIVE_PARAM_TRIGGERS = {
+    "on_health_below": "OnHealthBelow",
+    "on_status_applied": "OnStatusApplied",
+    "on_status_removed": "OnStatusRemoved",
+    "on_interval": "OnInterval",
+    "on_enemy_enter": "OnEnemyEnter",
+    "on_enemy_leave": "OnEnemyLeave",
+    "while": "While",
+}
+REACTIVE_TRIGGER_NAMES = (*REACTIVE_PLAIN_TRIGGERS, *REACTIVE_PARAM_TRIGGERS)
+# Reactive triggers that cannot name a cast target / have no trigger unit at all.
+REACTIVE_NO_CAST_TARGET = tuple(t for t in REACTIVE_TRIGGER_NAMES if t != "on_spell_cast")
+REACTIVE_NO_TRIGGER_UNIT = ("on_cooldown_ready", "on_interval", "on_move", "while")
+# Damage- or status-caused triggers: effects under them run as reactions (they never start
+# attacks and their damage / statuses fire no damage or status triggers).
+REACTION_TRIGGERS = {
+    "on_damage_dealt",
+    "on_damage_taken",
+    "on_health_below",
+    "on_kill",
+    "on_death",
+    "on_status_applied",
+    "on_status_removed",
+}
+# Effect types that re-fire the row's context under a custom `on_<name>` trigger.
+GATE_TYPES = ("proc", "pseudo_proc", "counter", "accumulate")
+# Triggers whose resolved target is the unit that caused them (the `attacker` target).
+ATTACKER_TRIGGERS = ("on_damage_taken", "on_death")
+
 ABILITY_TRIGGERS = {
     "on_cast": "OnCast",
     "on_projectile_hit": "OnProjectileHit",
@@ -64,6 +105,8 @@ ABILITY_TRIGGERS = {
     "passive": "Passive",
     "on_attack": "OnAttack",
     "on_attack_hit": "OnAttackHit",
+    **REACTIVE_PLAIN_TRIGGERS,
+    **REACTIVE_PARAM_TRIGGERS,
 }
 
 ITEM_TRIGGERS = {
@@ -75,9 +118,8 @@ ITEM_TRIGGERS = {
     "on_attack_hit": "OnAttackHit",
     "on_channel_end": "OnChannelEnd",
     "on_channel_interrupted": "OnChannelInterrupted",
-    "on_damage_taken": "OnDamageTaken",
-    "on_kill": "OnKill",
-    "on_death": "OnDeath",
+    **REACTIVE_PLAIN_TRIGGERS,
+    **REACTIVE_PARAM_TRIGGERS,
 }
 
 EFFECT_TARGETS = {
@@ -100,9 +142,12 @@ EFFECT_TYPES = {
     "stat_modifier",
     "resource",
     "custom",
-    # Gates: re-fire the row's context under a custom trigger (see AbilityEffect::Proc/Counter).
+    # Gates: re-fire the row's context under a custom trigger (see AbilityEffect::Proc / Counter /
+    # Accumulate). `pseudo_proc` is a proc with a pseudo-random distribution.
     "proc",
+    "pseudo_proc",
     "counter",
+    "accumulate",
     # Extra basic attacks (instant / double / multi-target attack).
     "perform_attack",
 }
@@ -659,7 +704,7 @@ def find_emitted_custom_triggers(repo_root: Path) -> set[str]:
 
 def warn_unreachable_custom_triggers(effects: list["EffectRow"], emitted: set[str] | None, report: Report) -> None:
     """A custom trigger only fires when a proc / counter row names it or Rust emits it."""
-    fed = {e.row.get("effect_id").lower() for e in effects if e.effect_type in ("proc", "counter")}
+    fed = {e.row.get("effect_id").lower() for e in effects if e.effect_type in GATE_TYPES}
     for e in effects:
         if e.trigger in ABILITY_TRIGGERS or e.trigger in ITEM_TRIGGERS:
             continue
@@ -670,7 +715,7 @@ def warn_unreachable_custom_triggers(effects: list["EffectRow"], emitted: set[st
             e.row.line,
             "trigger",
             e.trigger,
-            "custom trigger is never fired: no proc / counter row names it and no Rust code emits it",
+            "custom trigger is never fired: no proc / counter / accumulate row names it and no Rust code emits it",
         )
 
 
@@ -707,6 +752,8 @@ class EffectRow:
     trigger: str
     target: str
     effect_type: str
+    #: Colon arguments of the trigger cell (`on_interval:5` -> `("5",)`); `trigger` is the base name.
+    trigger_args: tuple[str, ...] = ()
 
 
 def parse_effect_rows(rows: list[Row], owner_column: str, owners: set[str], report: Report) -> dict[str, list[EffectRow]]:
@@ -718,7 +765,7 @@ def parse_effect_rows(rows: list[Row], owner_column: str, owners: set[str], repo
         index = parse_scalar(row, "effect_index", report, integer=True, minimum=0)
         if row.get("effect_index") == "":
             report.error(row.file, row.line, "effect_index", "", "required")
-        trigger = row.get("trigger").lower()
+        trigger, *trigger_args = row.get("trigger").lower().split(":")
         if not trigger:
             report.error(row.file, row.line, "trigger", "", "required")
         elif trigger not in ABILITY_TRIGGERS and trigger not in ITEM_TRIGGERS and not CUSTOM_TRIGGER_PATTERN.match(trigger):
@@ -737,7 +784,9 @@ def parse_effect_rows(rows: list[Row], owner_column: str, owners: set[str], repo
             report.error(row.file, row.line, "effect_index", row.get("effect_index"), f"duplicate effect_index for {owner!r} (first used on line {seen[key]})")
             continue
         seen[key] = row.line
-        by_owner.setdefault(owner, []).append(EffectRow(row, owner, int(index), trigger, target, effect_type))
+        by_owner.setdefault(owner, []).append(
+            EffectRow(row, owner, int(index), trigger, target, effect_type, tuple(trigger_args))
+        )
     for effects in by_owner.values():
         effects.sort(key=lambda e: e.index)
     return by_owner
@@ -767,6 +816,8 @@ class EffectContext:
     target_type: str | None = None
     #: Every trigger used by the owner's rows (lets `proc` / `counter` check their target).
     owner_triggers: set[str] | None = None
+    #: Triggers whose effects run as reactions (see `reaction_triggers`); None = just the built-ins.
+    reaction: set[str] | None = None
 
 
 def _levels(e: EffectRow, name: str, ctx: EffectContext, report: Report, **kwargs) -> list[float] | None:
@@ -975,15 +1026,187 @@ def _displacement_effect(
     )
 
 
+def _number(text: str) -> float | None:
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def runtime_status_id(text: str) -> str | None:
+    """Runtime id for a status named in a trigger argument, or None when it is unknown.
+
+    Accepts CSV status ids (`stun`), runtime ids (`spell_immunity`) and the per-owner ids that
+    timed `stat_modifier` rows create (`<owner>_<stat>`)."""
+    if text in STATUSES:
+        return STATUSES[text][1]
+    if text in {runtime for _, runtime, _ in STATUSES.values()}:
+        return text
+    for stat in (*TIMED_STATS, *RESOURCE_STATS):
+        suffix = "_" + stat
+        if text.endswith(suffix) and ID_PATTERN.match(text[: -len(suffix)]):
+            return text
+    return None
+
+
+def trigger_to_rust(e: EffectRow, variant: str, report: Report) -> str | None:
+    """`AbilityTrigger::...` for the row's trigger cell, validating its colon arguments."""
+    row = e.row
+    args = list(e.trigger_args)
+
+    def bad(message: str) -> None:
+        report.error(row.file, row.line, "trigger", row.get("trigger"), message)
+
+    def integer(text: str, what: str, low: int, high: int) -> int | None:
+        value = _number(text)
+        if value is None or not value.is_integer() or not low <= value <= high:
+            bad(f"{what} must be a whole number from {low} to {high} (got {text!r})")
+            return None
+        return int(value)
+
+    def radius(text: str) -> int | None:
+        value = _number(text)
+        if value is None or value <= 0 or value > 100000:
+            bad(f"radius must be a number above 0 (got {text!r})")
+            return None
+        return max(1, round(value))
+
+    name = e.trigger
+    if name not in REACTIVE_PARAM_TRIGGERS:
+        if args:
+            bad(f"{name} takes no argument (write just {name})")
+            return None
+        return f"AbilityTrigger::{variant}"
+    if name == "on_health_below":
+        if len(args) != 1:
+            bad("on_health_below needs a percent: on_health_below:30")
+            return None
+        percent = integer(args[0], "health percent", 1, 99)
+        return None if percent is None else f"AbilityTrigger::OnHealthBelow {{ percent: {percent} }}"
+    if name == "on_interval":
+        seconds = _number(args[0]) if len(args) == 1 else None
+        if seconds is None or seconds < 0.1 or seconds > 86400:
+            bad("on_interval needs a period in seconds of at least 0.1: on_interval:5")
+            return None
+        return f"AbilityTrigger::OnInterval {{ millis: {round(seconds * 1000)} }}"
+    if name in ("on_enemy_enter", "on_enemy_leave"):
+        if len(args) != 1:
+            bad(f"{name} needs a radius: {name}:600")
+            return None
+        value = radius(args[0])
+        return None if value is None else f"AbilityTrigger::{variant} {{ radius: {value} }}"
+    if name in ("on_status_applied", "on_status_removed"):
+        if len(args) > 1:
+            bad(f"{name} takes at most one filter: buff, debuff or a status id")
+            return None
+        if not args or args[0] == "any":
+            return f"AbilityTrigger::{variant}(StatusFilter::Any)"
+        if args[0] in ("buff", "debuff"):
+            return f"AbilityTrigger::{variant}(StatusFilter::{args[0].capitalize()})"
+        status = runtime_status_id(args[0])
+        if status is None:
+            bad(f"unknown status {args[0]!r}; use buff, debuff, a status id ({', '.join(STATUSES)}) or a <owner>_<stat> modifier id")
+            return None
+        return f'AbilityTrigger::{variant}(StatusFilter::Id("{status}"))'
+    # while:<condition>[:arg[:arg]]
+    condition = args[0] if args else ""
+    rest = args[1:]
+    if condition in ("moving", "stationary"):
+        if rest:
+            bad(f"while:{condition} takes no argument")
+            return None
+        return f"AbilityTrigger::While(Condition::{condition.capitalize()})"
+    if condition == "health_below":
+        if len(rest) != 1:
+            bad("while:health_below needs a percent: while:health_below:50")
+            return None
+        percent = integer(rest[0], "health percent", 1, 99)
+        return None if percent is None else f"AbilityTrigger::While(Condition::HealthBelow {{ percent: {percent} }})"
+    if condition in ("enemies_near", "allies_near"):
+        if len(rest) != 2:
+            bad(f"while:{condition} needs a radius and a count: while:{condition}:600:2")
+            return None
+        value, count = radius(rest[0]), integer(rest[1], "unit count", 1, 255)
+        if value is None or count is None:
+            return None
+        variant_name = "EnemiesNear" if condition == "enemies_near" else "AlliesNear"
+        return f"AbilityTrigger::While(Condition::{variant_name} {{ radius: {value}, at_least: {count} }})"
+    if condition == "has_status":
+        if len(rest) != 1:
+            bad("while:has_status needs a status id: while:has_status:stun")
+            return None
+        status = runtime_status_id(rest[0])
+        if status is None:
+            bad(f"unknown status {rest[0]!r}; use a status id ({', '.join(STATUSES)}) or a <owner>_<stat> modifier id")
+            return None
+        return f'AbilityTrigger::While(Condition::HasStatus("{status}"))'
+    bad(
+        "while needs a condition: health_below:<percent>, moving, stationary, "
+        "enemies_near:<radius>:<count>, allies_near:<radius>:<count> or has_status:<id>"
+    )
+    return None
+
+
+def held_status_id(e: EffectRow) -> str | None:
+    """Runtime id of the status a `while` row holds, or None when it cannot be told."""
+    effect_id = e.row.get("effect_id").lower()
+    if e.effect_type == "apply_status" and effect_id in STATUSES:
+        return STATUSES[effect_id][1]
+    if e.effect_type == "stat_modifier" and effect_id:
+        return f"{e.owner}_{effect_id}"
+    return None
+
+
+def reaction_triggers(effects: list[EffectRow]) -> set[str]:
+    """Reaction triggers plus the custom triggers that reaction rows feed through gates."""
+    reaction = set(REACTION_TRIGGERS)
+    changed = True
+    while changed:
+        changed = False
+        for e in effects:
+            fed = e.row.get("effect_id").lower()
+            if e.effect_type in GATE_TYPES and e.trigger in reaction and fed not in reaction:
+                reaction.add(fed)
+                changed = True
+    return reaction
+
+
+def warn_duplicate_held_statuses(effects: list[EffectRow], report: Report) -> None:
+    """Two `while` rows of one owner holding the same status id would fight over it."""
+    seen: dict[str, int] = {}
+    for e in effects:
+        if e.trigger != "while":
+            continue
+        status = held_status_id(e)
+        if status is None:
+            continue
+        if status in seen:
+            report.warn(
+                e.row.file,
+                e.row.line,
+                "effect_id",
+                e.row.get("effect_id"),
+                f"holds status {status!r} like line {seen[status]}: held statuses share one id, so they fight; give each a unique id",
+            )
+        else:
+            seen[status] = e.row.line
+
+
 def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[str, str, str] | None:
     """Translate one effect row into Rust `(trigger, target, effect)` expressions, or None on error."""
     row = e.row
     errors_before = len(report.errors)
 
+    if e.trigger_args and e.trigger not in ABILITY_TRIGGERS and e.trigger not in ITEM_TRIGGERS:
+        report.error(row.file, row.line, "trigger", row.get("trigger"), f"custom trigger {e.trigger} takes no argument (write just {e.trigger})")
+        return None
+
     # --- trigger (resolve per owner kind so shared names like `passive` work for both)
     if ctx.kind == "ability":
         if e.trigger in ABILITY_TRIGGERS:
-            trigger = f"AbilityTrigger::{ABILITY_TRIGGERS[e.trigger]}"
+            trigger = trigger_to_rust(e, ABILITY_TRIGGERS[e.trigger], report)
+            if trigger is None:
+                return None
         elif CUSTOM_TRIGGER_PATTERN.match(e.trigger):
             trigger = f'AbilityTrigger::Custom("{e.trigger}")'
         else:
@@ -996,7 +1219,9 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             )
             return None
     elif e.trigger in ITEM_TRIGGERS:
-        trigger = f"AbilityTrigger::{ITEM_TRIGGERS[e.trigger]}"
+        trigger = trigger_to_rust(e, ITEM_TRIGGERS[e.trigger], report)
+        if trigger is None:
+            return None
     elif CUSTOM_TRIGGER_PATTERN.match(e.trigger):
         trigger = f'AbilityTrigger::Custom("{e.trigger}")'
     else:
@@ -1025,6 +1250,56 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
         if e.target != "caster":
             report.error(row.file, row.line, "effect_target", e.target, "while_toggled bonuses apply to the caster")
             return None
+
+    if e.trigger == "on_move" and e.effect_type != "accumulate":
+        report.error(
+            row.file,
+            row.line,
+            "effect_type",
+            e.effect_type,
+            "on_move fires every frame the owner moves, so its rows must be accumulate (e.g. every 1000 units)",
+        )
+        return None
+    if e.trigger == "while":
+        if e.effect_type not in ("apply_status", "stat_modifier"):
+            report.error(
+                row.file,
+                row.line,
+                "effect_type",
+                e.effect_type,
+                "while holds a permanent status: use apply_status or a timed-stat stat_modifier",
+            )
+            return None
+        if e.target not in ("caster", "owner"):
+            report.error(row.file, row.line, "effect_target", e.target, "while bonuses apply to the owner: use owner or caster")
+            return None
+        if row.get("duration"):
+            report.error(row.file, row.line, "duration", row.get("duration"), "while statuses last while the condition holds; leave blank")
+            return None
+        held = held_status_id(e)
+        if (
+            len(e.trigger_args) == 2
+            and e.trigger_args[0] == "has_status"
+            and held is not None
+            and runtime_status_id(e.trigger_args[1]) == held
+        ):
+            report.error(
+                row.file,
+                row.line,
+                "trigger",
+                row.get("trigger"),
+                f"the condition checks status {held!r}, which this row holds: it would keep itself on forever",
+            )
+            return None
+    if e.effect_type == "perform_attack" and e.trigger in (ctx.reaction or REACTION_TRIGGERS):
+        report.error(
+            row.file,
+            row.line,
+            "effect_type",
+            e.effect_type,
+            f"{e.trigger} reacts to damage or statuses, and reactions never start attacks",
+        )
+        return None
 
     combo = ctx.invalid_combo.get((e.trigger, e.target))
     if combo:
@@ -1098,7 +1373,9 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
         if effect_id not in STATUSES:
             report.error(row.file, row.line, "effect_id", row.get("effect_id"), f"unknown status; expected one of: {', '.join(STATUSES)}")
             return None
-        if e.trigger == "while_toggled":
+        if e.trigger == "while":
+            duration = [0.0]
+        elif e.trigger == "while_toggled":
             if duration:
                 report.error(row.file, row.line, "duration", row.get("duration"), "while_toggled statuses last while toggled; leave blank")
                 return None
@@ -1298,7 +1575,7 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             if effect_id not in TIMED_STATS and effect_id not in RESOURCE_STATS:
                 report.error(row.file, row.line, "effect_id", row.get("effect_id"), f"timed stat modifiers support: {', '.join([*TIMED_STATS, *RESOURCE_STATS])}")
                 return None
-            toggled = e.trigger == "while_toggled"
+            toggled = e.trigger in ("while_toggled", "while")
             if toggled:
                 if duration:
                     report.error(row.file, row.line, "duration", row.get("duration"), "while_toggled bonuses last while toggled; leave blank")
@@ -1334,7 +1611,7 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
         effect = _resource_effect(e, effect_id, scaling, scaling_type, value, amount, report)
         if effect is None:
             return None
-    elif t in ("proc", "counter"):
+    elif t in GATE_TYPES:
         if not _require(e, "effect_id", report, "the custom trigger to fire (on_<name>)"):
             return None
         if not CUSTOM_TRIGGER_PATTERN.match(effect_id) or effect_id in ABILITY_TRIGGERS or effect_id in ITEM_TRIGGERS:
@@ -1352,14 +1629,22 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
         if not no_scaling():
             return None
         _unused(e, report, "damage_type", "duration", "amount", "radius")
-        if t == "proc":
+        if t in ("proc", "pseudo_proc"):
             if not _require(e, "value", report, "proc chance percent (above 0, at most 100)"):
                 return None
             if any(not 0 < p <= 100 for p in value):
                 report.error(row.file, row.line, "value", row.get("value"), "proc chance percent must be above 0 and at most 100")
                 return None
             chance = rank_value([p / 100 for p in value])
-            effect = f"AbilityEffect::Proc {{ chance: {chance}, then: AbilityTrigger::Custom(\"{effect_id}\") }}"
+            pseudo = "true" if t == "pseudo_proc" else "false"
+            effect = f"AbilityEffect::Proc {{ chance: {chance}, then: AbilityTrigger::Custom(\"{effect_id}\"), pseudo: {pseudo} }}"
+        elif t == "accumulate":
+            if not _require(e, "value", report, "threshold to reach (above 0), e.g. 1000 units or 300 damage"):
+                return None
+            if any(v <= 0 for v in value):
+                report.error(row.file, row.line, "value", row.get("value"), "accumulate threshold must be above 0")
+                return None
+            effect = f"AbilityEffect::Accumulate {{ threshold: {rank_value(value)}, then: AbilityTrigger::Custom(\"{effect_id}\") }}"
         else:
             if not _require(e, "value", report, "attacks between firings (integer, at least 2)"):
                 return None
@@ -1426,12 +1711,12 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
     elif target_name == "affected_units":
         target = "EffectTarget::AffectedUnits"
     elif target_name == "attacker":
-        if e.trigger == "on_damage_taken":
+        if e.trigger in ATTACKER_TRIGGERS:
             target = "EffectTarget::TriggerUnit"
         elif e.trigger in ("on_attack", "on_attack_hit"):
             target = "EffectTarget::Caster"
         else:
-            report.error(row.file, row.line, "effect_target", target_name, "attacker is only defined for on_attack, on_attack_hit, and on_damage_taken")
+            report.error(row.file, row.line, "effect_target", target_name, "attacker is only defined for on_attack, on_attack_hit, on_damage_taken, and on_death")
             return None
     else:  # units_in_radius
         if radius:

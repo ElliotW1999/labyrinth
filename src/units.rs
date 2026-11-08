@@ -9,10 +9,10 @@ use crate::components::{
 use crate::dimensions::UnitDimensions;
 use crate::heroes::{HeroId, HeroKind};
 use crate::items::Inventory;
-use crate::status::StatusEffects;
 use crate::net::{NetworkId, NetworkedHero};
 use crate::resources::SharedAssets;
 use crate::scale;
+use crate::status::StatusEffects;
 
 pub struct UnitsPlugin;
 

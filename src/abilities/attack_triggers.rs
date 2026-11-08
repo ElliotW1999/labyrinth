@@ -11,9 +11,10 @@ use bevy::prelude::*;
 use super::catalog::AbilityDefinitions;
 use super::definition::AbilityTrigger;
 use super::effects::{AbilityTriggerEvent, AttackMeta, EffectSource, TriggerContext};
+use super::reactive_triggers::{owner_sources, source_has_trigger};
 use crate::basic_attack::{BasicAttackLandedEvent, BasicAttackReleaseEvent};
 use crate::components::{AbilityLoadout, Team};
-use crate::items::{Inventory, ItemId};
+use crate::items::Inventory;
 
 pub(crate) fn attack_triggers(
     mut releases: MessageReader<BasicAttackReleaseEvent>,
@@ -35,16 +36,22 @@ pub(crate) fn attack_triggers(
                 extra: e.extra,
                 crit: false,
             };
-            (AbilityTrigger::OnAttack, e.attacker, e.target, meta)
+            (AbilityTrigger::OnAttack, e.attacker, e.target, meta, 1.0)
         })
         .chain(landed.read().map(|e| {
             let meta = AttackMeta {
                 extra: e.extra,
                 crit: e.crit,
             };
-            (AbilityTrigger::OnAttackHit, e.attacker, e.target, meta)
+            (
+                AbilityTrigger::OnAttackHit,
+                e.attacker,
+                e.target,
+                meta,
+                e.damage,
+            )
         }));
-    for (trigger, attacker, target, meta) in fired {
+    for (trigger, attacker, target, meta, amount) in fired {
         debug_assert!(trigger.is_attack());
         let Ok((owner_tf, team, inventory, loadout)) = owners.get(attacker) else {
             continue;
@@ -64,30 +71,15 @@ pub(crate) fn attack_triggers(
                     point,
                 )
                 .trigger_unit(Some(target))
-                .attack(meta),
+                .attack(meta)
+                .amount(amount),
             ));
         };
 
-        // Items in slot order, one trigger per distinct item however many copies are held.
-        let mut seen: Vec<ItemId> = Vec::new();
-        for item in inventory.into_iter().flat_map(|i| i.slots.iter().flatten()) {
-            if seen.contains(&item.id) || item.id.definition().effects_for(trigger).next().is_none()
-            {
-                continue;
+        for (source, rank) in owner_sources(inventory, loadout) {
+            if source_has_trigger(source, &defs, trigger) {
+                fire(source, rank);
             }
-            seen.push(item.id);
-            fire(EffectSource::Item(item.id), 1);
-        }
-        // Then learned abilities (rank 0 is unlearned and never triggers).
-        for slot in loadout.into_iter().flat_map(|l| l.slots.iter()) {
-            if slot.rank == 0
-                || !defs
-                    .get(slot.id)
-                    .is_some_and(|def| def.effects_for(trigger).next().is_some())
-            {
-                continue;
-            }
-            fire(EffectSource::Ability(slot.id), slot.rank);
         }
     }
 }

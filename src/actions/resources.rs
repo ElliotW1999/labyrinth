@@ -43,8 +43,12 @@ impl ActionCooldown {
         }
     }
 
-    pub fn tick(&mut self, dt: f32) {
+    /// Advance the cooldown by `dt`. True on the tick that brings it from running to
+    /// finished (never for a cooldown that was already zero).
+    pub fn tick(&mut self, dt: f32) -> bool {
+        let was_running = self.remaining > 0.0;
         self.remaining = (self.remaining - dt).max(0.0);
+        was_running && self.remaining <= 0.0
     }
 
     /// Give a charge-based action its charges the first time it is seen.

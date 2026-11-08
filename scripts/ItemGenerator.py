@@ -46,6 +46,8 @@ from generator_common import (  # noqa: E402
     ACTION_TEAMS,
     EFFECT_COLUMNS,
     ITEM_ACTIVATION_OPTIONAL,
+    REACTIVE_NO_TRIGGER_UNIT,
+    REACTIVE_TRIGGER_NAMES,
     TARGET_TYPES,
     EffectContext,
     EffectRow,
@@ -56,6 +58,8 @@ from generator_common import (  # noqa: E402
     f32,
     find_emitted_custom_triggers,
     find_registered_custom_effects,
+    reaction_triggers,
+    warn_duplicate_held_statuses,
     warn_unreachable_custom_triggers,
     parse_bool,
     parse_activation_spec,
@@ -115,12 +119,6 @@ RUST_TARGET_TYPES = {
 }
 RARITIES = {r: r.capitalize() for r in ("common", "uncommon", "rare", "epic", "legendary")}
 MAX_COMPONENTS = 5
-NOT_EMITTED = {
-    "on_damage_taken": "not emitted by the game yet; the effect will never fire",
-    "on_kill": "not emitted by the game yet; the effect will never fire",
-    "on_death": "not emitted by the game yet; the effect will never fire",
-}
-
 STAT_LABELS = {
     "max_health": "HP",
     "health": "HP",
@@ -150,8 +148,8 @@ GENERATED_HEADER = """\
 #[allow(unused_imports)]
 use crate::abilities::definition::{
     AbilityEffect, AbilityEffectEntry, AbilityTrigger, AreaCenter, AreaRadius, Attribute,
-    DisplacementKind, EffectScaling, EffectTarget, LeashAnchorKind, PassiveStat, RankValue,
-    StatusSpec, TargetTeam, TargetType,
+    Condition, DisplacementKind, EffectScaling, EffectTarget, LeashAnchorKind, PassiveStat,
+    RankValue, StatusFilter, StatusSpec, TargetTeam, TargetType,
 };
 #[allow(unused_imports)]
 use crate::components::DamageType;
@@ -332,7 +330,7 @@ def effect_context(item: Item) -> EffectContext:
     if not item.activation.channel_time:
         for trigger in ("on_channel_end", "on_channel_interrupted"):
             ctx.invalid_trigger[trigger] = "the item is not channelled (channel_time blank)"
-    for trigger in ("passive", "on_use", "on_unit_contact", "on_movement_end", "on_attack", "on_attack_hit", "on_channel_end", "on_channel_interrupted", "on_damage_taken", "on_kill", "on_death"):
+    for trigger in ("passive", "on_use", "on_unit_contact", "on_movement_end", "on_attack", "on_attack_hit", "on_channel_end", "on_channel_interrupted", *REACTIVE_TRIGGER_NAMES):
         if trigger in ("on_use", "on_unit_contact", "on_movement_end") and target_type in ("unit", "self"):
             continue
         reason = (
@@ -346,8 +344,10 @@ def effect_context(item: Item) -> EffectContext:
     for target in ("trigger_unit", "affected_units", "attacker"):
         ctx.invalid_combo[("on_use", target)] = f"on_use has no {target.replace('_', ' ')}; use owner or units_in_radius"
     ctx.invalid_combo[("on_unit_contact", "affected_units")] = "on_unit_contact reports one unit at a time; use trigger_unit"
-    for trigger in ("on_attack", "on_attack_hit", "on_damage_taken", "on_kill", "on_death"):
+    for trigger in ("on_attack", "on_attack_hit", *REACTIVE_TRIGGER_NAMES):
         ctx.invalid_combo[(trigger, "affected_units")] = f"{trigger} has no affected units; use units_in_radius"
+    for trigger in REACTIVE_NO_TRIGGER_UNIT:
+        ctx.invalid_combo[(trigger, "trigger_unit")] = f"{trigger} has no trigger unit"
     return ctx
 
 
@@ -460,7 +460,11 @@ def load(items_csv: Path, effects_csv: Path, existing_ids: set[str], *, repo_roo
         ctx = effect_context(item)
         ctx.registered_custom = registered_custom
         ctx.owner_triggers = {e.trigger for e in effects}
+        ctx.reaction = reaction_triggers(effects)
+        if not any(e.trigger in ("on_use", "on_channel_end", "on_channel_interrupted") for e in effects):
+            ctx.invalid_trigger["on_cooldown_ready"] = "the item has no active (no on_use effect), so it has no cooldown to finish"
         warn_unreachable_custom_triggers(effects, emitted_triggers, report)
+        warn_duplicate_held_statuses(effects, report)
         for effect in effects:
             if effect.trigger == "passive" and effect.effect_type != "stat_modifier":
                 report.error(effect.row.file, effect.row.line, "effect_type", effect.effect_type, "passive item effects must be stat_modifier (use on_use / on_attack_hit for the rest)")
@@ -479,8 +483,6 @@ def load(items_csv: Path, effects_csv: Path, existing_ids: set[str], *, repo_roo
                     "teleport items need a destination: set target_type point or direction (and a cast_range) in the items CSV",
                 )
                 continue
-            if effect.trigger in NOT_EMITTED:
-                report.warn(effect.row.file, effect.row.line, "trigger", effect.trigger, NOT_EMITTED[effect.trigger])
             rendered = effect_to_rust(effect, ctx, report)
             if rendered:
                 item.effects.append(rendered)

@@ -17,6 +17,9 @@ from generator_common import (  # noqa: E402
     ABILITY_TRIGGERS,
     ITEM_TRIGGERS,
     effect_to_rust,
+    held_status_id,
+    reaction_triggers,
+    warn_duplicate_held_statuses,
     warn_unreachable_custom_triggers,
     parse_activation_spec,
     validate_activation,
@@ -385,7 +388,8 @@ def _effect(
         "effect_id": effect_id,
     }
     base.update(cells)
-    effect = EffectRow(row(base), "tester", 0, trigger, target, effect_type)
+    name, *trigger_args = trigger.split(":")
+    effect = EffectRow(row(base), "tester", 0, name, target, effect_type, tuple(trigger_args))
     ctx = EffectContext(
         kind=kind,
         owner_id="tester",
@@ -752,6 +756,294 @@ class AttackModifierTests(unittest.TestCase):
         report = Report()
         warn_unreachable_custom_triggers([make("on_attack_hit", "proc", "on_bash"), make("on_bash", "heal", "")], set(), report)
         self.assertFalse(report.warnings)
+
+
+def _gate_row(effect_type: str, effect_id: str, trigger: str, value: str, owner_triggers: set[str]):
+    effect, ctx = _effect(effect_type, effect_id, target="owner", trigger=trigger, kind="item", value=value)
+    ctx.owner_triggers = owner_triggers
+    return effect, ctx
+
+
+class ReactiveTriggerTests(unittest.TestCase):
+    @staticmethod
+    def _render(trigger: str, kind: str = "item", **cells: str):
+        cells.setdefault("value", "10")
+        cells.setdefault("damage_type", "magical")
+        effect, ctx = _effect("damage", "", target="owner", trigger=trigger, kind=kind, **cells)
+        report = Report()
+        return effect_to_rust(effect, ctx, report), report
+
+    def test_trigger_args_parsed_and_emitted(self) -> None:
+        expected = {
+            "on_health_below:25": "AbilityTrigger::OnHealthBelow { percent: 25 }",
+            "on_interval:3": "AbilityTrigger::OnInterval { millis: 3000 }",
+            "on_interval:0.5": "AbilityTrigger::OnInterval { millis: 500 }",
+            "on_enemy_enter:600": "AbilityTrigger::OnEnemyEnter { radius: 600 }",
+            "on_enemy_leave:450": "AbilityTrigger::OnEnemyLeave { radius: 450 }",
+            "on_status_applied": "AbilityTrigger::OnStatusApplied(StatusFilter::Any)",
+            "on_status_applied:debuff": "AbilityTrigger::OnStatusApplied(StatusFilter::Debuff)",
+            "on_status_removed:buff": "AbilityTrigger::OnStatusRemoved(StatusFilter::Buff)",
+            "on_status_applied:stun": 'AbilityTrigger::OnStatusApplied(StatusFilter::Id("stun"))',
+            "on_status_removed:debuff_immunity": 'AbilityTrigger::OnStatusRemoved(StatusFilter::Id("spell_immunity"))',
+            "on_status_applied:frost_hammer_armor": 'AbilityTrigger::OnStatusApplied(StatusFilter::Id("frost_hammer_armor"))',
+        }
+        for trigger, rust in expected.items():
+            for kind in ("item", "ability"):
+                result, report = self._render(trigger, kind)
+                self.assertFalse(report.errors, (trigger, [e.message for e in report.errors]))
+                self.assertEqual(result[0], rust, trigger)
+
+        plain = {
+            "on_damage_dealt": "OnDamageDealt",
+            "on_damage_taken": "OnDamageTaken",
+            "on_kill": "OnKill",
+            "on_death": "OnDeath",
+            "on_spell_cast": "OnSpellCast",
+            "on_spell_hit": "OnSpellHit",
+        }
+        for trigger, variant in plain.items():
+            for kind in ("item", "ability"):
+                result, report = self._render(trigger, kind)
+                self.assertFalse(report.errors, trigger)
+                self.assertEqual(result[0], f"AbilityTrigger::{variant}")
+
+    def test_while_conditions_emitted(self) -> None:
+        expected = {
+            "while:health_below:50": "Condition::HealthBelow { percent: 50 }",
+            "while:moving": "Condition::Moving",
+            "while:stationary": "Condition::Stationary",
+            "while:enemies_near:600:2": "Condition::EnemiesNear { radius: 600, at_least: 2 }",
+            "while:allies_near:600:1": "Condition::AlliesNear { radius: 600, at_least: 1 }",
+            "while:has_status:stun": 'Condition::HasStatus("stun")',
+        }
+        for trigger, condition in expected.items():
+            effect, ctx = _effect("apply_status", "evasion", target="owner", trigger=trigger, kind="item", value="30")
+            report = Report()
+            result = effect_to_rust(effect, ctx, report)
+            self.assertFalse(report.errors, (trigger, [e.message for e in report.errors]))
+            self.assertEqual(result[0], f"AbilityTrigger::While({condition})")
+            self.assertIn("duration: RankValue::fixed(0.0)", result[2])
+
+    def test_trigger_arg_ranges(self) -> None:
+        bad = [
+            "on_health_below",  # missing
+            "on_health_below:0",
+            "on_health_below:100",
+            "on_health_below:30.5",
+            "on_health_below:abc",
+            "on_interval",
+            "on_interval:0.05",
+            "on_interval:fast",
+            "on_enemy_enter",
+            "on_enemy_enter:0",
+            "on_enemy_leave:-5",
+            "on_status_applied:not_a_status",
+            "on_status_applied:buff:debuff",
+            "on_kill:3",  # takes no argument
+            "on_spell_cast:1",
+            "on_move:5",
+        ]
+        for trigger in bad:
+            result, report = self._render(trigger)
+            self.assertIsNone(result, trigger)
+            self.assertEqual(report.errors[0].field, "trigger", trigger)
+        for trigger in ("while", "while:fast", "while:health_below", "while:health_below:100", "while:moving:1", "while:enemies_near:600", "while:enemies_near:0:2", "while:enemies_near:600:0", "while:has_status", "while:has_status:nope"):
+            effect, ctx = _effect("apply_status", "evasion", target="owner", trigger=trigger, kind="item", value="30")
+            report = Report()
+            self.assertIsNone(effect_to_rust(effect, ctx, report), trigger)
+            self.assertEqual(report.errors[0].field, "trigger", trigger)
+
+    def test_damage_kill_death_triggers_accepted_for_abilities(self) -> None:
+        for trigger in ("on_damage_taken", "on_kill", "on_death", "on_damage_dealt"):
+            self.assertIn(trigger, ABILITY_TRIGGERS)
+            self.assertIn(trigger, ITEM_TRIGGERS)
+            result, report = self._render(trigger, "ability")
+            self.assertFalse(report.errors, trigger)
+        # `attacker` is the unit that caused it: the attacker for damage taken, the killer on death.
+        for trigger in ("on_damage_taken", "on_death"):
+            effect, ctx = _effect("damage", "", target="attacker", trigger=trigger, kind="item", value="10", damage_type="magical")
+            report = Report()
+            self.assertIn("EffectTarget::TriggerUnit", effect_to_rust(effect, ctx, report)[1])
+        effect, ctx = _effect("damage", "", target="attacker", trigger="on_kill", kind="item", value="10", damage_type="magical")
+        self.assertIsNone(effect_to_rust(effect, ctx, Report()))
+
+    def test_on_move_requires_accumulate(self) -> None:
+        effect, ctx = _effect("heal", "", target="owner", trigger="on_move", kind="item", value="10")
+        report = Report()
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertIn("accumulate", report.errors[0].message)
+        effect, ctx = _gate_row("accumulate", "on_far", "on_move", "1000", {"on_move", "on_far"})
+        report = Report()
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors)
+        self.assertEqual(result[0], "AbilityTrigger::OnMove")
+
+    def test_while_requires_permanent_owner_apply_status(self) -> None:
+        def run(effect_type: str = "apply_status", effect_id: str = "evasion", target: str = "owner", **cells: str):
+            cells = {"value": "30", **cells}
+            effect, ctx = _effect(effect_type, effect_id, target=target, trigger="while:moving", kind="item", **cells)
+            report = Report()
+            return effect_to_rust(effect, ctx, report), report
+
+        result, report = run()
+        self.assertFalse(report.errors)
+        self.assertIn("StatusSpec::Evasion", result[2])
+        result, report = run(effect_type="damage", effect_id="", damage_type="magical", value="10")
+        self.assertIsNone(result)
+        self.assertEqual(report.errors[0].field, "effect_type")
+        result, report = run(target="trigger_unit")
+        self.assertIsNone(result)
+        self.assertEqual(report.errors[0].field, "effect_target")
+        result, report = run(duration="5")
+        self.assertIsNone(result)
+        self.assertEqual(report.errors[0].field, "duration")
+        # Timed stat modifiers are statuses too; they are held while the condition is true.
+        result, report = run(effect_type="stat_modifier", effect_id="armor", value="10")
+        self.assertFalse(report.errors)
+        self.assertIn('id: "tester_armor"', result[2])
+
+    def test_while_has_status_self_reference_rejected(self) -> None:
+        effect, ctx = _effect("apply_status", "evasion", target="owner", trigger="while:has_status:evasion", kind="item", value="30")
+        report = Report()
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertIn("keep itself on", report.errors[0].message)
+        effect, ctx = _effect("apply_status", "evasion", target="owner", trigger="while:has_status:stun", kind="item", value="30")
+        self.assertIsNotNone(effect_to_rust(effect, ctx, Report()))
+
+    def test_cooldown_ready_invalid_for_passive_and_non_use_items(self) -> None:
+        import tempfile
+
+        import AbilityGenerator
+        import ItemGenerator
+
+        effect_header = "{owner}_id,effect_index,trigger,effect_target,effect_type,effect_id,value,damage_type,duration,radius,amount,scaling_type,scaling_value\n"
+        ability_header = "id,name,slot,ability_type,target_type,target_team,cast_range,aoe_radius,cast_time,channel_time,cooldown,mana_cost,max_charges,charge_restore_time,projectile_type,projectile_speed,description\n"
+        item_header = "id,name,item_type,cost,sell_value,tier,rarity,stackable,max_stack,consumable,max_charges,description,cooldown\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+
+            def ability_errors(ability_type: str) -> list[str]:
+                (tmp / "a.csv").write_text(
+                    ability_header + f"tester,Tester,q,{ability_type},no_target,self,,,0.1,,10,50,,,none,,x\n"
+                )
+                (tmp / "ae.csv").write_text(
+                    effect_header.format(owner="ability") + "tester,0,on_cooldown_ready,owner,heal,,10,,,,,,\n"
+                )
+                _, report = AbilityGenerator.load(tmp / "a.csv", tmp / "ae.csv")
+                return [e.message for e in report.errors]
+
+            self.assertEqual(ability_errors("active"), [])
+            self.assertTrue(any("no cooldown" in m for m in ability_errors("passive")))
+
+            def item_errors(use_row: bool) -> list[str]:
+                (tmp / "i.csv").write_text(item_header + "tester,Tester,weapon,100,50,1,common,false,,false,,x,5\n")
+                rows = "tester,0,on_cooldown_ready,owner,heal,,10,,,,,,\n"
+                if use_row:
+                    rows += "tester,1,on_use,owner,heal,,10,,,,,,\n"
+                (tmp / "ie.csv").write_text(effect_header.format(owner="item") + rows)
+                _, report = ItemGenerator.load(tmp / "i.csv", tmp / "ie.csv", set())
+                return [e.message for e in report.errors]
+
+            self.assertEqual(item_errors(True), [])
+            self.assertTrue(any("no active" in m for m in item_errors(False)))
+
+    def test_perform_attack_rejected_under_reaction_triggers(self) -> None:
+        for trigger in ("on_damage_taken", "on_damage_dealt", "on_kill", "on_death", "on_health_below:30", "on_status_applied:debuff", "on_status_removed"):
+            effect, ctx = _effect("perform_attack", "", target="owner", trigger=trigger, kind="item")
+            report = Report()
+            self.assertIsNone(effect_to_rust(effect, ctx, report), trigger)
+            self.assertIn("never start attacks", report.errors[0].message)
+        for trigger in ("on_attack", "on_attack_hit", "on_spell_cast", "on_interval:5"):
+            effect, ctx = _effect("perform_attack", "", target="owner", trigger=trigger, kind="item")
+            self.assertIsNotNone(effect_to_rust(effect, ctx, Report()), trigger)
+
+    def test_perform_attack_rejected_under_custom_trigger_fed_by_a_reaction(self) -> None:
+        def make(trigger: str, effect_type: str, effect_id: str) -> EffectRow:
+            cells = {"item_id": "t", "effect_index": "0", "trigger": trigger, "effect_target": "owner", "effect_type": effect_type, "effect_id": effect_id}
+            return EffectRow(row(cells), "t", 0, trigger, "owner", effect_type)
+
+        rows = [make("on_damage_taken", "proc", "on_echo"), make("on_echo", "perform_attack", "")]
+        self.assertIn("on_echo", reaction_triggers(rows))
+        effect, ctx = _effect("perform_attack", "", target="owner", trigger="on_echo", kind="item")
+        ctx.reaction = reaction_triggers(rows)
+        self.assertIsNone(effect_to_rust(effect, ctx, Report()))
+
+    def test_pseudo_proc_and_accumulate_columns(self) -> None:
+        effect, ctx = _gate_row("pseudo_proc", "on_bash", "on_attack_hit", "25", {"on_bash"})
+        report = Report()
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors)
+        self.assertIn("AbilityEffect::Proc { chance: RankValue::fixed(0.25)", result[2])
+        self.assertIn("pseudo: true", result[2])
+        effect, ctx = _gate_row("proc", "on_bash", "on_attack_hit", "25", {"on_bash"})
+        self.assertIn("pseudo: false", effect_to_rust(effect, ctx, Report())[2])
+        effect, ctx = _gate_row("pseudo_proc", "on_bash", "on_attack_hit", "0", {"on_bash"})
+        self.assertIsNone(effect_to_rust(effect, ctx, Report()))
+
+        effect, ctx = _gate_row("accumulate", "on_full", "on_damage_taken", "300", {"on_full"})
+        result = effect_to_rust(effect, ctx, Report())
+        self.assertIn("AbilityEffect::Accumulate { threshold: RankValue::fixed(300.0)", result[2])
+        self.assertIn('then: AbilityTrigger::Custom("on_full")', result[2])
+        for value in ("", "0", "-5"):
+            effect, ctx = _gate_row("accumulate", "on_full", "on_damage_taken", value, {"on_full"})
+            self.assertIsNone(effect_to_rust(effect, ctx, Report()), value)
+        # Levels are allowed on ability thresholds.
+        effect, ctx = _effect("accumulate", "on_full", target="caster", trigger="on_damage_taken", kind="ability", value="100|200|300")
+        ctx.levels = 3
+        ctx.owner_triggers = {"on_full"}
+        report = Report()
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors)
+        self.assertIn("threshold: RankValue::from_level_1(100.0, 100.0)", result[2])
+
+    def test_accumulate_feeds_custom_trigger(self) -> None:
+        def make(trigger: str, effect_type: str, effect_id: str) -> EffectRow:
+            cells = {"item_id": "t", "effect_index": "0", "trigger": trigger, "effect_target": "owner", "effect_type": effect_type, "effect_id": effect_id}
+            return EffectRow(row(cells), "t", 0, trigger, "owner", effect_type)
+
+        for gate in ("accumulate", "pseudo_proc"):
+            report = Report()
+            warn_unreachable_custom_triggers([make("on_move", gate, "on_far"), make("on_far", "heal", "")], set(), report)
+            self.assertFalse(report.warnings, gate)
+        report = Report()
+        warn_unreachable_custom_triggers([make("on_far", "heal", "")], set(), report)
+        self.assertEqual(len(report.warnings), 1)
+
+    def test_duplicate_held_status_ids_warn(self) -> None:
+        def make(index: int, trigger_cell: str, effect_id: str) -> EffectRow:
+            cells = {"item_id": "t", "effect_index": str(index), "trigger": trigger_cell, "effect_target": "owner", "effect_type": "apply_status", "effect_id": effect_id}
+            name, *args = trigger_cell.split(":")
+            return EffectRow(row(cells, line=index + 2), "t", index, name, "owner", "apply_status", tuple(args))
+
+        report = Report()
+        warn_duplicate_held_statuses([make(0, "while:moving", "evasion"), make(1, "while:stationary", "evasion")], report)
+        self.assertEqual(len(report.warnings), 1)
+        report = Report()
+        warn_duplicate_held_statuses([make(0, "while:moving", "evasion"), make(1, "while:stationary", "accuracy")], report)
+        self.assertFalse(report.warnings)
+
+    def test_custom_trigger_with_arguments_is_rejected(self) -> None:
+        # A custom trigger such as `on_bash:5` must not silently lose its argument.
+        result, report = self._render("on_bash:5")
+        self.assertIsNone(result)
+        self.assertEqual(report.errors[0].field, "trigger")
+
+    def test_while_stat_modifier_holds_a_permanent_status_with_the_owner_scoped_id(self) -> None:
+        # The deviation: `while` accepts timed stat_modifier rows. They must emit a blank
+        # (zero) duration, and the status id the duplicate-id warning and the `has_status`
+        # self-reference rule reason about must be the id the emitted status really has.
+        effect, ctx = _effect("stat_modifier", "armor", target="owner", trigger="while:moving", kind="item", value="5")
+        report = Report()
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors, [e.message for e in report.errors])
+        self.assertIn("duration: RankValue::fixed(0.0)", result[2])
+        self.assertIn(f'id: "{ctx.owner_id}_armor"', result[2])
+        self.assertEqual(held_status_id(effect), f"{effect.owner}_armor")
+
+        # A passive-only stat still cannot be held.
+        effect, ctx = _effect("stat_modifier", "strength", target="owner", trigger="while:moving", kind="item", value="5")
+        report = Report()
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
 
 
 if __name__ == "__main__":

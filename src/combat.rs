@@ -35,6 +35,7 @@ impl Plugin for CombatPlugin {
             .add_message::<BasicAttackLandedEvent>()
             .add_message::<ExtraAttackEvent>()
             .add_message::<DamageEvent>()
+            .add_message::<DamageAppliedEvent>()
             .add_message::<SpawnProjectileEvent>()
             .add_message::<ProjectileHitEvent>()
             .add_systems(
@@ -99,6 +100,9 @@ pub struct DamageEvent {
     pub reflects: bool,
     /// Fraction of health actually removed that heals the source (health transfer).
     pub drain_ratio: f32,
+    /// Caused by a reaction (a damage- or status-class trigger): never fires damage or
+    /// status triggers itself, so reactions cannot ping-pong.
+    pub reactive: bool,
 }
 
 impl DamageEvent {
@@ -116,6 +120,7 @@ impl DamageEvent {
             pierces_shields: false,
             reflects: true,
             drain_ratio: 0.0,
+            reactive: false,
         }
     }
 
@@ -132,6 +137,7 @@ impl DamageEvent {
             pierces_shields: false,
             reflects: true,
             drain_ratio: 0.0,
+            reactive: false,
         }
     }
 
@@ -148,6 +154,7 @@ impl DamageEvent {
             pierces_shields: false,
             reflects: true,
             drain_ratio: 0.0,
+            reactive: false,
         }
     }
 
@@ -169,6 +176,7 @@ impl DamageEvent {
             pierces_shields: false,
             reflects: false,
             drain_ratio: 0.0,
+            reactive: false,
         }
     }
 
@@ -200,6 +208,7 @@ impl DamageEvent {
             pierces_shields: false,
             reflects: true,
             drain_ratio: 0.0,
+            reactive: false,
         }
     }
 
@@ -217,11 +226,36 @@ impl DamageEvent {
         self
     }
 
+    /// Marks the damage as caused by a reaction (see [`DamageEvent::reactive`]).
+    pub fn reactive(mut self, reactive: bool) -> Self {
+        self.reactive = reactive;
+        self
+    }
+
     /// Marks the damage as a health transfer: the source heals `ratio` of the health removed.
     pub fn drained(mut self, ratio: f32) -> Self {
         self.drain_ratio = ratio;
         self
     }
+}
+
+/// What one [`DamageEvent`] did, reported by [`apply_damage_events`] (the only place health
+/// goes down and so the only writer). The reactive-trigger dispatchers read it one frame
+/// later. Events that never reach the target (dead, invulnerable) are not reported.
+#[derive(Message, Debug, Clone, Copy, PartialEq)]
+pub struct DamageAppliedEvent {
+    pub source: Option<Entity>,
+    pub target: Entity,
+    pub kind: DamageKind,
+    pub is_spell: bool,
+    /// The damage was caused by a reaction (see [`DamageEvent::reactive`]).
+    pub reactive: bool,
+    /// Health removed plus shield absorbed (post-mitigation).
+    pub amount: f32,
+    pub health_before: f32,
+    pub health_after: f32,
+    pub max_health: f32,
+    pub target_pos: Vec3,
 }
 
 /// Deterministic combat RNG (seed with [`CombatRng::seed`] in tests).
@@ -341,6 +375,9 @@ pub fn absorb_with_mana_shield(damage: f32, mana: &mut Mana, shield: ManaShield)
 
 pub fn apply_damage_events(
     mut damage: ParamSet<(MessageReader<DamageEvent>, MessageWriter<DamageEvent>)>,
+    mut applied: MessageWriter<DamageAppliedEvent>,
+    mut lifecycle: MessageWriter<crate::status::StatusLifecycleEvent>,
+    positions: Query<&Transform>,
     mut unit_stats: ParamSet<(
         Query<(&CombatStats, Option<&StatusEffects>)>,
         Query<(
@@ -391,6 +428,14 @@ pub fn apply_damage_events(
                 {
                     let ef = st.effects.remove(i);
                     subtract_status_stat_delta(&ef, &mut target_stats, agi);
+                    crate::status::report_removed(
+                        &mut lifecycle,
+                        event.target,
+                        event.source,
+                        event.reactive,
+                        crate::status::StatusLifecycle::Removed,
+                        [crate::status::RemovedStatus::of(&ef)],
+                    );
                 }
             }
         }
@@ -421,6 +466,20 @@ pub fn apply_damage_events(
         }
         let health_before = health.current;
         health.current -= resolved.health_delta;
+        applied.write(DamageAppliedEvent {
+            source: event.source,
+            target: event.target,
+            kind: event.kind,
+            is_spell: event.is_spell,
+            reactive: event.reactive,
+            amount: resolved.health_delta.max(0.0) + resolved.shield_absorbed,
+            health_before,
+            health_after: health.current,
+            max_health: health.max,
+            target_pos: positions
+                .get(event.target)
+                .map_or(Vec3::ZERO, |tf| tf.translation),
+        });
 
         // Leech: only health actually removed counts (no overkill, nothing a shield soaked).
         // Dots, reflection and cleave carry neither a drain ratio nor a leech-eligible kind.
@@ -458,6 +517,7 @@ pub fn apply_damage_events(
                     pierces_shields: false,
                     reflects: false,
                     drain_ratio: 0.0,
+                    reactive: true,
                 });
             }
         }
@@ -485,6 +545,7 @@ pub fn emit_chain_damage(
     jumps: u32,
     radius: f32,
     falloff: f32,
+    reactive: bool,
     units: &Query<(Entity, &Transform, &Team, &Health, Option<&BoundRadius>)>,
 ) {
     let mut hit = vec![primary];
@@ -512,12 +573,9 @@ pub fn emit_chain_damage(
             break;
         };
         current_amount *= falloff;
-        damage.write(DamageEvent::spell(
-            source,
-            next,
-            current_amount,
-            damage_type,
-        ));
+        damage.write(
+            DamageEvent::spell(source, next, current_amount, damage_type).reactive(reactive),
+        );
         hit.push(next);
         current = next;
     }
@@ -1075,9 +1133,50 @@ mod tests {
     }
 
     #[test]
+    fn damage_applied_event_reports_shield_and_health() {
+        let mut world = World::new();
+        world.init_resource::<Messages<DamageEvent>>();
+        world.init_resource::<Messages<DamageAppliedEvent>>();
+        world.init_resource::<Messages<crate::status::StatusLifecycleEvent>>();
+        let stats = CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 0.0);
+        let pos = Vec3::new(3.0, 0.0, 4.0);
+        let target = world
+            .spawn((
+                Health::new(500.0),
+                stats,
+                ShieldPool { amount: 30.0 },
+                Transform::from_translation(pos),
+            ))
+            .id();
+        let source = world.spawn_empty().id();
+        world.write_message(
+            DamageEvent::spell(source, target, 100.0, DamageType::Pure).reactive(true),
+        );
+        world.run_system_once(apply_damage_events).unwrap();
+
+        let events: Vec<DamageAppliedEvent> = world
+            .resource::<Messages<DamageAppliedEvent>>()
+            .iter_current_update_messages()
+            .copied()
+            .collect();
+        assert_eq!(events.len(), 1);
+        let applied = events[0];
+        assert_eq!((applied.source, applied.target), (Some(source), target));
+        assert_eq!(applied.kind, DamageKind::Ability);
+        assert!(applied.is_spell && applied.reactive);
+        assert_eq!(applied.amount, 100.0, "70 health plus 30 absorbed");
+        assert_eq!(applied.health_before, 500.0);
+        assert_eq!(applied.health_after, 430.0);
+        assert_eq!(applied.max_health, 500.0);
+        assert_eq!(applied.target_pos, pos);
+    }
+
+    #[test]
     fn damage_events_apply_mitigation_and_skip_dead_targets() {
         let mut world = World::new();
         world.init_resource::<Messages<DamageEvent>>();
+        world.init_resource::<Messages<crate::combat::DamageAppliedEvent>>();
+        world.init_resource::<Messages<crate::status::StatusLifecycleEvent>>();
         let stats = CombatStats::simple(0.0, 0.0, 1.0, 10.0, 0.0, 0.0);
         let alive = world.spawn((Health::new(500.0), stats)).id();
         let mut dead_hp = Health::new(500.0);
@@ -1096,6 +1195,8 @@ mod tests {
     fn shield_absorbs_before_health() {
         let mut world = World::new();
         world.init_resource::<Messages<DamageEvent>>();
+        world.init_resource::<Messages<crate::combat::DamageAppliedEvent>>();
+        world.init_resource::<Messages<crate::status::StatusLifecycleEvent>>();
         world.init_resource::<CombatRng>();
         let stats = CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 0.0);
         let target = world
@@ -1121,6 +1222,8 @@ mod tests {
         // Crit is decided in the attack-hit stage; the damage step only applies amplifiers.
         let mut world = World::new();
         world.init_resource::<Messages<DamageEvent>>();
+        world.init_resource::<Messages<crate::combat::DamageAppliedEvent>>();
+        world.init_resource::<Messages<crate::status::StatusLifecycleEvent>>();
         let mut attacker_stats = CombatStats::simple(50.0, 0.0, 1.0, 0.0, 0.0, 0.0);
         attacker_stats.crit_chance = 1.0;
         attacker_stats.crit_multiplier = 3.0;
@@ -1137,6 +1240,8 @@ mod tests {
     fn spell_amp_increases_magical_spell_damage() {
         let mut world = World::new();
         world.init_resource::<Messages<DamageEvent>>();
+        world.init_resource::<Messages<crate::combat::DamageAppliedEvent>>();
+        world.init_resource::<Messages<crate::status::StatusLifecycleEvent>>();
         world.init_resource::<CombatRng>();
         let mut caster_stats = CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 0.0);
         caster_stats.outgoing_spell_amp = 0.25;
@@ -1303,6 +1408,8 @@ mod tests {
         fn world() -> World {
             let mut world = World::new();
             world.init_resource::<Messages<DamageEvent>>();
+            world.init_resource::<Messages<crate::combat::DamageAppliedEvent>>();
+            world.init_resource::<Messages<crate::status::StatusLifecycleEvent>>();
             world.init_resource::<CombatRng>();
             world
         }
@@ -1491,6 +1598,8 @@ mod tests {
         fn shielded(mana: f32, absorb: f32, per_mana: f32) -> (World, Entity) {
             let mut world = World::new();
             world.init_resource::<Messages<DamageEvent>>();
+            world.init_resource::<Messages<crate::combat::DamageAppliedEvent>>();
+            world.init_resource::<Messages<crate::status::StatusLifecycleEvent>>();
             world.init_resource::<CombatRng>();
             let mut statuses = StatusEffects::default();
             statuses.effects.push(StatusEffect::mana_shield(
@@ -1539,6 +1648,8 @@ mod tests {
             // No mana left: nothing is absorbed and the status stays.
             let mut again = World::new();
             again.init_resource::<Messages<DamageEvent>>();
+            again.init_resource::<Messages<crate::combat::DamageAppliedEvent>>();
+            again.init_resource::<Messages<crate::status::StatusLifecycleEvent>>();
             again.init_resource::<CombatRng>();
             let mut statuses = StatusEffects::default();
             statuses.effects.push(StatusEffect::mana_shield(

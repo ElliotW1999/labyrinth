@@ -18,3 +18,4 @@ mana_leech,Mana Leech,E,active,unit,enemy,600,,0.2,,16,40,,,none,,Drains mana fr
 arcane_ward,Arcane Ward,E,toggle,no_target,self,,,0,,1,15,,,none,,"While on, half of the damage taken is paid with mana",0,,6
 cursed_touch,Cursed Touch,W,active,unit,enemy,500,,0.2,,18,70,,,none,,Halves healing received by an enemy and prevents it for a short time
 vitality_surge,Vitality Surge,R,active,self,self,,,0.1,,45,90,,,none,,Grants maximum health and regenerates health over time
+thornskin,Thornskin,innate,passive,no_target,self,,,,,,,,,none,,Reflects part of the damage taken back at the attacker,,3,
