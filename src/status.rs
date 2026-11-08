@@ -89,6 +89,8 @@ pub struct StatusEffect {
     pub attack_speed_mult: f32,
     /// Percent slow applied to turn rate (0..100), see [`CombatStats::turn_rate`].
     pub turn_rate_slow_percent: f32,
+    /// Percent added to turn rate (0..=400); bonuses add up.
+    pub turn_rate_bonus_percent: f32,
     /// 0..1 miss chance on basic attack damage resolution (`0` = no blind).
     pub blind_miss_chance: f32,
     pub heal_per_sec: f32,
@@ -133,6 +135,7 @@ impl StatusEffect {
             attack_speed_flat: 0.0,
             attack_speed_mult: 0.0,
             turn_rate_slow_percent: 0.0,
+            turn_rate_bonus_percent: 0.0,
             blind_miss_chance: 0.0,
             heal_per_sec: 0.0,
             damage_per_sec: 0.0,

@@ -338,6 +338,10 @@ fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
                 seconds_row("Slow duration", duration),
             ]
         }
+        StatusSpec::Leash { radius, .. } => vec![
+            row(format!("{} radius", status_name(status)), radius),
+            seconds_row(format!("{} duration", status_name(status)), duration),
+        ],
         StatusSpec::Modifier {
             armor,
             magic_resist,
@@ -453,6 +457,7 @@ fn status_name(status: StatusSpec) -> &'static str {
         StatusSpec::Slow { .. } => "Slow",
         StatusSpec::AttackSpeedSlow { .. } => "Attack speed slow",
         StatusSpec::TurnRateSlow { .. } => "Turn rate slow",
+        StatusSpec::TurnRateBonus { .. } => "Turn rate bonus",
         StatusSpec::Modifier { .. } => "Modifier",
     }
 }

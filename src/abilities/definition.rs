@@ -261,6 +261,10 @@ pub enum StatusSpec {
     TurnRateSlow {
         percent: RankValue,
     },
+    /// `percent` added to base turn rate (a buff; bonuses add up).
+    TurnRateBonus {
+        percent: RankValue,
+    },
     Modifier {
         id: &'static str,
         kind: StatusKind,
@@ -371,6 +375,11 @@ impl StatusSpec {
                 turn_rate_slow_percent: percent.at(rank).clamp(0.0, 100.0),
                 dispel_type: DispelType::Basic,
                 ..StatusEffect::debuff("turn_rate_slow", duration)
+            },
+            StatusSpec::TurnRateBonus { percent } => StatusEffect {
+                turn_rate_bonus_percent: percent.at(rank).clamp(0.0, 400.0),
+                dispel_type: DispelType::Basic,
+                ..StatusEffect::buff("turn_rate_bonus", duration)
             },
             StatusSpec::Modifier {
                 id,

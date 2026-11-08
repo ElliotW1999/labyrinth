@@ -159,7 +159,8 @@ pub fn apply_move_targets(
     for (entity, mut transform, stats, target, radius, statuses, mut path, mut steering) in
         &mut units.p0()
     {
-        if stats.move_speed <= 0.0 {
+        let move_speed = stats.effective_move_speed(statuses);
+        if move_speed <= 0.0 {
             continue;
         }
         if statuses.is_some_and(|s| !s.can_move()) {
@@ -169,7 +170,7 @@ pub fn apply_move_targets(
 
         let unit_r = collision_of(radius);
         let pos = flat(transform.translation);
-        let step = stats.move_speed * dt;
+        let step = move_speed * dt;
 
         // Fear: each frame steer toward a point away from the source (`MoveTarget`-like order).
         let fear_waypoint = if statuses.is_some_and(|s| s.is_feared()) {
