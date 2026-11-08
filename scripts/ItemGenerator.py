@@ -56,6 +56,7 @@ from generator_common import (  # noqa: E402
     f32,
     find_emitted_custom_triggers,
     find_registered_custom_effects,
+    warn_unemitted_triggers,
     warn_unreachable_custom_triggers,
     parse_bool,
     parse_activation_spec,
@@ -115,11 +116,6 @@ RUST_TARGET_TYPES = {
 }
 RARITIES = {r: r.capitalize() for r in ("common", "uncommon", "rare", "epic", "legendary")}
 MAX_COMPONENTS = 5
-NOT_EMITTED = {
-    "on_damage_taken": "not emitted by the game yet; the effect will never fire",
-    "on_kill": "not emitted by the game yet; the effect will never fire",
-    "on_death": "not emitted by the game yet; the effect will never fire",
-}
 
 STAT_LABELS = {
     "max_health": "HP",
@@ -461,6 +457,7 @@ def load(items_csv: Path, effects_csv: Path, existing_ids: set[str], *, repo_roo
         ctx.registered_custom = registered_custom
         ctx.owner_triggers = {e.trigger for e in effects}
         warn_unreachable_custom_triggers(effects, emitted_triggers, report)
+        warn_unemitted_triggers(effects, report)
         for effect in effects:
             if effect.trigger == "passive" and effect.effect_type != "stat_modifier":
                 report.error(effect.row.file, effect.row.line, "effect_type", effect.effect_type, "passive item effects must be stat_modifier (use on_use / on_attack_hit for the rest)")
@@ -479,8 +476,6 @@ def load(items_csv: Path, effects_csv: Path, existing_ids: set[str], *, repo_roo
                     "teleport items need a destination: set target_type point or direction (and a cast_range) in the items CSV",
                 )
                 continue
-            if effect.trigger in NOT_EMITTED:
-                report.warn(effect.row.file, effect.row.line, "trigger", effect.trigger, NOT_EMITTED[effect.trigger])
             rendered = effect_to_rust(effect, ctx, report)
             if rendered:
                 item.effects.append(rendered)

@@ -49,6 +49,7 @@ from generator_common import (  # noqa: E402
     f32,
     find_emitted_custom_triggers,
     find_registered_custom_effects,
+    warn_unemitted_triggers,
     warn_unreachable_custom_triggers,
     parse_activation_spec,
     parse_effect_rows,
@@ -454,6 +455,7 @@ def load(abilities_csv: Path, effects_csv: Path, *, repo_root: Path | None = Non
         ctx.registered_custom = registered_custom
         ctx.owner_triggers = {e.trigger for e in by_owner.get(ability.id, [])}
         warn_unreachable_custom_triggers(by_owner.get(ability.id, []), emitted_triggers, report)
+        warn_unemitted_triggers(by_owner.get(ability.id, []), report)
         for effect in by_owner.get(ability.id, []):
             rendered = effect_to_rust(effect, ctx, report)
             if rendered:

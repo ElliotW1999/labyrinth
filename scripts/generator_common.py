@@ -80,6 +80,15 @@ ITEM_TRIGGERS = {
     "on_death": "OnDeath",
 }
 
+# Triggers that parse but that no game system emits yet; rows using them never fire.
+NOT_EMITTED_TRIGGERS = {
+    "on_channel_tick": "not emitted by the game yet; the effect will never fire",
+    "on_expire": "not emitted by the game yet; the effect will never fire",
+    "on_damage_taken": "not emitted by the game yet; the effect will never fire",
+    "on_kill": "not emitted by the game yet; the effect will never fire",
+    "on_death": "not emitted by the game yet; the effect will never fire",
+}
+
 EFFECT_TARGETS = {
     "caster",
     "owner",
@@ -672,6 +681,14 @@ def warn_unreachable_custom_triggers(effects: list["EffectRow"], emitted: set[st
             e.trigger,
             "custom trigger is never fired: no proc / counter row names it and no Rust code emits it",
         )
+
+
+def warn_unemitted_triggers(effects: list["EffectRow"], report: Report) -> None:
+    """Warn on rows whose (valid) trigger no game system emits. Shared by both generators."""
+    for e in effects:
+        message = NOT_EMITTED_TRIGGERS.get(e.trigger)
+        if message:
+            report.warn(e.row.file, e.row.line, "trigger", e.trigger, message)
 
 
 def find_registered_custom_effects(repo_root: Path) -> set[str]:

@@ -16,7 +16,9 @@ from generator_common import (  # noqa: E402
     Row,
     ABILITY_TRIGGERS,
     ITEM_TRIGGERS,
+    NOT_EMITTED_TRIGGERS,
     effect_to_rust,
+    warn_unemitted_triggers,
     warn_unreachable_custom_triggers,
     parse_activation_spec,
     validate_activation,
@@ -751,6 +753,30 @@ class AttackModifierTests(unittest.TestCase):
         self.assertEqual(len(report.warnings), 1)
         report = Report()
         warn_unreachable_custom_triggers([make("on_attack_hit", "proc", "on_bash"), make("on_bash", "heal", "")], set(), report)
+        self.assertFalse(report.warnings)
+
+    @staticmethod
+    def _trigger_row(owner_column: str, trigger: str) -> EffectRow:
+        cells = {owner_column: "t", "effect_index": "0", "trigger": trigger, "effect_target": "caster", "effect_type": "heal", "effect_id": ""}
+        return EffectRow(row(cells), "t", 0, trigger, "caster", "heal")
+
+    def test_unemitted_ability_trigger_warns(self) -> None:
+        for trigger in ("on_channel_tick", "on_expire"):
+            report = Report()
+            warn_unemitted_triggers([self._trigger_row("ability_id", trigger)], report)
+            self.assertEqual(len(report.warnings), 1, trigger)
+            self.assertIn("never fire", report.warnings[0].message)
+
+    def test_unemitted_item_trigger_still_warns(self) -> None:
+        for trigger in ("on_damage_taken", "on_kill", "on_death"):
+            report = Report()
+            warn_unemitted_triggers([self._trigger_row("item_id", trigger)], report)
+            self.assertEqual(len(report.warnings), 1, trigger)
+
+    def test_emitted_triggers_do_not_warn(self) -> None:
+        emitted = [t for t in {**ABILITY_TRIGGERS, **ITEM_TRIGGERS} if t not in NOT_EMITTED_TRIGGERS]
+        report = Report()
+        warn_unemitted_triggers([self._trigger_row("item_id", t) for t in emitted], report)
         self.assertFalse(report.warnings)
 
 
