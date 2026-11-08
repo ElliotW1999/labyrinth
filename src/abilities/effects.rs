@@ -345,6 +345,23 @@ impl EffectRunner<'_, '_> {
                     }
                 }
             }
+            AbilityEffect::DrainHealth {
+                amount,
+                damage_type,
+                scaling,
+                transfer_ratio,
+            } => {
+                for target in targets {
+                    if let Some(amount) =
+                        self.scaled_amount(ctx, amount.at(rank), scaling, target, cast_range)
+                    {
+                        self.damage.write(
+                            DamageEvent::spell(ctx.caster, target, amount, damage_type)
+                                .drained(transfer_ratio),
+                        );
+                    }
+                }
+            }
             AbilityEffect::Heal { amount, scaling } => {
                 for target in targets {
                     if let Some(amount) =

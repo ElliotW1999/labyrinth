@@ -501,7 +501,7 @@ pub fn resolve_basic_attack_impacts(
             ) {
                 continue;
             }
-            damage.write(DamageEvent::basic_attack(
+            damage.write(DamageEvent::cleave(
                 impact.attacker,
                 entity,
                 cleave_amount,

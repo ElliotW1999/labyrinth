@@ -753,6 +753,8 @@ pub struct ItemPassives {
     pub damage_reflect: f32,
     pub heal_amp: f32,
     pub heal_received_amp: f32,
+    pub lifesteal: f32,
+    pub spell_lifesteal: f32,
 }
 
 impl ItemPassives {
@@ -779,6 +781,8 @@ impl ItemPassives {
             PassiveStat::DamageReflect => &mut self.damage_reflect,
             PassiveStat::HealAmp => &mut self.heal_amp,
             PassiveStat::HealReceivedAmp => &mut self.heal_received_amp,
+            PassiveStat::Lifesteal => &mut self.lifesteal,
+            PassiveStat::SpellLifesteal => &mut self.spell_lifesteal,
         };
         *field += amount;
     }
@@ -807,6 +811,8 @@ impl std::ops::AddAssign for ItemPassives {
             damage_reflect,
             heal_amp,
             heal_received_amp,
+            lifesteal,
+            spell_lifesteal,
         } = rhs;
         self.max_health += max_health;
         self.health_regen += health_regen;
@@ -827,6 +833,8 @@ impl std::ops::AddAssign for ItemPassives {
         self.damage_reflect += damage_reflect;
         self.heal_amp += heal_amp;
         self.heal_received_amp += heal_received_amp;
+        self.lifesteal += lifesteal;
+        self.spell_lifesteal += spell_lifesteal;
     }
 }
 
@@ -944,6 +952,8 @@ fn adjust_passives(
     stats.damage_reflect += passives.damage_reflect * count;
     stats.heal_amp += passives.heal_amp * count;
     stats.heal_received_amp += passives.heal_received_amp * count;
+    stats.lifesteal += passives.lifesteal * count;
+    stats.spell_lifesteal += passives.spell_lifesteal * count;
     stats.recompute_attack_speed(attrs.agility);
 }
 
@@ -2261,7 +2271,7 @@ mod tests {
         assert_eq!(health.max, 720.0);
     }
 
-    fn passive_fields(p: &ItemPassives) -> [f32; 19] {
+    fn passive_fields(p: &ItemPassives) -> [f32; 21] {
         let ItemPassives {
             max_health,
             health_regen,
@@ -2282,6 +2292,8 @@ mod tests {
             damage_reflect,
             heal_amp,
             heal_received_amp,
+            lifesteal,
+            spell_lifesteal,
         } = *p;
         [
             max_health,
@@ -2303,6 +2315,8 @@ mod tests {
             damage_reflect,
             heal_amp,
             heal_received_amp,
+            lifesteal,
+            spell_lifesteal,
         ]
     }
 
@@ -2368,6 +2382,8 @@ mod tests {
             PassiveStat::DamageReflect,
             PassiveStat::HealAmp,
             PassiveStat::HealReceivedAmp,
+            PassiveStat::Lifesteal,
+            PassiveStat::SpellLifesteal,
         ];
         let mut seen = Vec::new();
         for stat in stats {
@@ -2383,7 +2399,7 @@ mod tests {
             assert!(!seen.contains(&changed[0]), "{stat:?} shares a field");
             seen.push(changed[0]);
         }
-        assert_eq!(seen.len(), 19, "every field is reachable");
+        assert_eq!(seen.len(), 21, "every field is reachable");
     }
 
     #[test]

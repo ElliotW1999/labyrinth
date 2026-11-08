@@ -487,6 +487,10 @@ pub enum PassiveStat {
     HealAmp,
     /// Healing the holder receives (fraction).
     HealReceivedAmp,
+    /// Fraction of basic-attack damage dealt returned as health.
+    Lifesteal,
+    /// Fraction of spell damage dealt returned as health.
+    SpellLifesteal,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -508,6 +512,14 @@ pub enum AbilityEffect {
     Heal {
         amount: RankValue,
         scaling: EffectScaling,
+    },
+    /// Spell damage that heals the caster for `transfer_ratio` of the health actually
+    /// removed (health transfer).
+    DrainHealth {
+        amount: RankValue,
+        damage_type: DamageType,
+        scaling: EffectScaling,
+        transfer_ratio: f32,
     },
     RestoreMana {
         amount: RankValue,

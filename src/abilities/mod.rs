@@ -1679,6 +1679,44 @@ mod tests {
     }
 
     #[test]
+    fn drain_health_ability_damages_and_heals_caster_same_frame() {
+        let ability = AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::Unit, RankValue::fixed(500.0), RankValue::ZERO)
+            .costs(RankValue::ZERO, RankValue::ZERO)
+            .timing(0.0, 0.0)
+            .on(
+                AbilityTrigger::OnCast,
+                EffectTarget::CastTarget,
+                AbilityEffect::DrainHealth {
+                    amount: RankValue::fixed(100.0),
+                    damage_type: DamageType::Pure,
+                    scaling: EffectScaling::None,
+                    transfer_ratio: 0.5,
+                },
+            );
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(ability);
+        let caster = spawn_caster(&mut app, KIT);
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 400.0;
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        request(&mut app, caster, 3, CastTarget::Unit(enemy));
+        for _ in 0..8 {
+            step(&mut app);
+            if health(&app, enemy) < 1000.0 {
+                break;
+            }
+        }
+        assert_eq!(health(&app, enemy), 900.0);
+        assert_eq!(
+            health(&app, caster),
+            450.0,
+            "the heal lands in the frame the damage does"
+        );
+    }
+
+    #[test]
     fn heal_over_time_takes_the_casters_heal_amp_once_at_application() {
         let ability = AbilityDefinition::new(AbilityId::Bulwark)
             .targeting(TargetType::Unit, RankValue::fixed(500.0), RankValue::ZERO)
