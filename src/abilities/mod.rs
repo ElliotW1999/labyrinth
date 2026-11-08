@@ -2958,6 +2958,7 @@ mod tests {
             attack_speed_flat: RankValue::ZERO,
             attack_speed_mult: RankValue::fixed(0.1),
             attack_range: RankValue::ZERO,
+            attack_damage_pct: RankValue::ZERO,
         };
         let mut app = test_app();
         let toggle = AbilityDefinition::new(AbilityId::Overcharge)
@@ -6323,6 +6324,7 @@ mod tests {
                     attack_speed_flat: RankValue::fixed(20.0),
                     attack_speed_mult: RankValue::fixed(0.35),
                     attack_range: RankValue::fixed(100.0),
+                    attack_damage_pct: RankValue::ZERO,
                 },
                 duration: RankValue::ZERO,
             },
@@ -7057,5 +7059,86 @@ mod tests {
             "the blink happened"
         );
         assert!(of_trigger(&fired, AbilityTrigger::OnMove).is_empty());
+    }
+
+    /// A unit-targeted ally buff applying `status` for `duration` seconds from slot 3.
+    fn ally_buff_ability(status: StatusSpec, duration: f32) -> AbilityDefinition {
+        AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::Unit, RankValue::fixed(800.0), RankValue::ZERO)
+            .team(TargetTeam::Ally)
+            .costs(RankValue::fixed(8.0), RankValue::fixed(10.0))
+            .on(
+                AbilityTrigger::OnCast,
+                EffectTarget::CastTarget,
+                AbilityEffect::ApplyStatus {
+                    status,
+                    duration: RankValue::fixed(duration),
+                },
+            )
+    }
+
+    fn pct_modifier(id: &'static str, pct: f32) -> StatusSpec {
+        StatusSpec::Modifier {
+            id,
+            kind: crate::status::StatusKind::Buff,
+            armor: RankValue::ZERO,
+            magic_resist: RankValue::ZERO,
+            move_speed: RankValue::ZERO,
+            attack_damage: RankValue::ZERO,
+            attack_speed_flat: RankValue::ZERO,
+            attack_speed_mult: RankValue::ZERO,
+            attack_range: RankValue::ZERO,
+            attack_damage_pct: RankValue::fixed(pct),
+        }
+    }
+
+    fn attack_damage(app: &App, unit: Entity) -> f32 {
+        app.world().get::<CombatStats>(unit).unwrap().attack_damage
+    }
+
+    #[test]
+    fn attack_damage_pct_snapshots_hero_def_damage_and_ignores_item_bonuses() {
+        let mut app = qop_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(ally_buff_ability(pct_modifier("empower_test", 50.0), 1.0));
+        let caster = spawn_caster(&mut app, KIT);
+        let hero_base = crate::heroes::HeroId::Vanguard.def().combat.attack_damage;
+
+        // A hero holding +100 damage from items: the bonus is 50% of the definition's damage.
+        let hero = spawn_unit(&mut app, Team::Radiant, Vec3::new(100.0, 0.0, 0.0));
+        app.world_mut()
+            .entity_mut(hero)
+            .insert(crate::heroes::HeroKind(crate::heroes::HeroId::Vanguard));
+        app.world_mut()
+            .get_mut::<CombatStats>(hero)
+            .unwrap()
+            .attack_damage = hero_base + 100.0;
+        request(&mut app, caster, 3, CastTarget::Unit(hero));
+        for _ in 0..12 {
+            step(&mut app);
+        }
+        assert!(has_status(&app, hero, "empower_test"));
+        assert!((attack_damage(&app, hero) - (hero_base + 100.0 + 0.5 * hero_base)).abs() < 1e-3);
+
+        // Expiry reverts the snapshot exactly.
+        for _ in 0..40 {
+            step(&mut app);
+        }
+        assert!(!has_status(&app, hero, "empower_test"));
+        assert!((attack_damage(&app, hero) - (hero_base + 100.0)).abs() < 1e-3);
+
+        // A unit without a hero definition uses its current damage.
+        let caster = spawn_caster(&mut app, KIT);
+        let creep = spawn_unit(&mut app, Team::Radiant, Vec3::new(150.0, 0.0, 0.0));
+        app.world_mut()
+            .get_mut::<CombatStats>(creep)
+            .unwrap()
+            .attack_damage = 40.0;
+        request(&mut app, caster, 3, CastTarget::Unit(creep));
+        for _ in 0..12 {
+            step(&mut app);
+        }
+        assert!((attack_damage(&app, creep) - 60.0).abs() < 1e-3);
     }
 }

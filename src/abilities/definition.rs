@@ -454,6 +454,10 @@ pub enum StatusSpec {
         attack_speed_mult: RankValue,
         /// Flat attack range change (does not change melee / ranged classification).
         attack_range: RankValue,
+        /// Percent (0..=1000) of the target's base attack damage, snapshotted when the status
+        /// is built (see [`StatusBuildContext::base_attack_damage`]) and added to the flat
+        /// `attack_damage` bonus.
+        attack_damage_pct: RankValue,
     },
 }
 
@@ -476,6 +480,10 @@ pub struct StatusBuildContext {
     pub source: Option<Entity>,
     /// Where the trigger happened.
     pub point: Vec3,
+    /// The target's base attack damage, excluding item bonuses and other statuses: the hero
+    /// definition's damage for heroes, the unit's current damage otherwise. Percentage attack
+    /// damage modifiers are a snapshot of this at build time.
+    pub base_attack_damage: f32,
 }
 
 impl StatusSpec {
@@ -490,6 +498,7 @@ impl StatusSpec {
             attack_speed_flat: RankValue::ZERO,
             attack_speed_mult: RankValue::ZERO,
             attack_range: RankValue::ZERO,
+            attack_damage_pct: RankValue::ZERO,
         }
     }
 
@@ -620,6 +629,7 @@ impl StatusSpec {
                 attack_speed_flat,
                 attack_speed_mult,
                 attack_range,
+                attack_damage_pct,
             } => {
                 let base = match kind {
                     StatusKind::Buff => StatusEffect::buff(id, duration),
@@ -629,7 +639,8 @@ impl StatusSpec {
                     armor: armor.at(rank),
                     magic_resist: magic_resist.at(rank),
                     move_speed: move_speed.at(rank),
-                    attack_damage: attack_damage.at(rank),
+                    attack_damage: attack_damage.at(rank)
+                        + attack_damage_pct.at(rank) / 100.0 * ctx.base_attack_damage,
                     attack_speed_flat: attack_speed_flat.at(rank),
                     attack_speed_mult: attack_speed_mult.at(rank),
                     attack_range: attack_range.at(rank),

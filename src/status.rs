@@ -1249,6 +1249,7 @@ mod tests {
                 fear_source: None,
                 source: None,
                 point: Vec3::ZERO,
+                base_attack_damage: 0.0,
             },
         );
         assert_eq!(evasion.kind, StatusKind::Buff);

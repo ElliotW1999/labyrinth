@@ -1536,6 +1536,31 @@ class CastBackswingTests(unittest.TestCase):
         self.assertTrue(any(w.field == "cast_backswing" and "1.5" in w.message for w in report.warnings))
 
 
+class TimedStatModifierTests(unittest.TestCase):
+    @staticmethod
+    def _stat(effect_id: str, value: str, **cells: str):
+        effect = {"effect_type": "stat_modifier", "effect_id": effect_id, "value": value, "duration": "5"}
+        effect.update(cells)
+        return load_test_ability(effects=[effect])
+
+    def test_attack_damage_pct_is_a_percentage_of_base_damage(self) -> None:
+        abilities, report = self._stat("attack_damage_pct", "16")
+        self.assertEqual(report.errors, [])
+        self.assertIn("attack_damage_pct: RankValue::fixed(16.0)", str(abilities[0].effects))
+        self.assertIn('id: "tester_attack_damage_pct"', str(abilities[0].effects))
+        # The flat attack_damage field stays zero.
+        self.assertIn("attack_damage: RankValue::ZERO", str(abilities[0].effects))
+
+    def test_attack_damage_pct_rejects_negative_and_huge_values(self) -> None:
+        for bad in ("-10", "1001", "2000"):
+            _, report = self._stat("attack_damage_pct", bad)
+            self.assertTrue(
+                any("must be within 0..1000" in e.message for e in report.errors), bad
+            )
+        _, report = self._stat("attack_damage_pct", "1000")
+        self.assertEqual(report.errors, [])
+
+
 class HeroGeneratorTests(unittest.TestCase):
     HEADER = (
         "Hero_name,is_melee,Ability_Q_Name,Ability_W_Name,Ability_E_Name,Ability_R_Name,"

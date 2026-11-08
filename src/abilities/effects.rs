@@ -25,6 +25,7 @@ use crate::combat::{CombatRng, DamageEvent};
 use crate::components::{AbilityId, BoundRadius, CombatStats, Health, HeroAttributes, Mana, Team};
 use crate::dimensions::{area_contains, bounds_of};
 use crate::displacement::DisplacementEvent;
+use crate::heroes::HeroKind;
 use crate::items::ItemId;
 use crate::status::{
     StatusChange, StatusEffect, StatusEffectEvent, StatusEffects, StatusKind, is_untargetable,
@@ -433,6 +434,7 @@ pub struct EffectRunner<'w, 's> {
     statuses_of: Query<'w, 's, &'static StatusEffects>,
     stats: Query<'w, 's, &'static CombatStats>,
     attributes: Query<'w, 's, &'static HeroAttributes>,
+    hero_kinds: Query<'w, 's, &'static HeroKind>,
     damage: MessageWriter<'w, DamageEvent>,
     heals: MessageWriter<'w, HealEvent>,
     mana: MessageWriter<'w, ManaRestoreEvent>,
@@ -727,6 +729,10 @@ impl EffectRunner<'_, '_> {
                         ctx.point,
                         self.stats.get(target).ok(),
                         self.attributes.get(target).ok(),
+                        base_attack_damage(
+                            self.hero_kinds.get(target).ok(),
+                            self.stats.get(target).ok(),
+                        ),
                         healer_amp,
                     );
                     built.reactive = ctx.reaction;
@@ -947,6 +953,16 @@ impl EffectRunner<'_, '_> {
     }
 }
 
+/// The base attack damage a percentage attack damage status is a snapshot of: the hero
+/// definition's damage for heroes (item bonuses and other statuses excluded), the unit's
+/// current damage for everything else.
+pub(crate) fn base_attack_damage(kind: Option<&HeroKind>, stats: Option<&CombatStats>) -> f32 {
+    match kind {
+        Some(kind) => kind.0.def().combat.attack_damage,
+        None => stats.map_or(0.0, |s| s.attack_damage),
+    }
+}
+
 /// The one place a [`super::definition::StatusSpec`] becomes a runtime [`StatusEffect`], for
 /// timed effects (`ApplyStatus`) and toggle upkeep (`WhileToggled`) alike. `caster` is the unit
 /// that causes the status (damage-over-time source, fear origin); `healer_amp` is the caster's
@@ -960,6 +976,7 @@ pub(crate) fn build_status_effect(
     point: Vec3,
     target_stats: Option<&CombatStats>,
     target_attrs: Option<&HeroAttributes>,
+    target_base_attack_damage: f32,
     healer_amp: f32,
 ) -> StatusEffect {
     let fear_source = match spec {
@@ -975,6 +992,7 @@ pub(crate) fn build_status_effect(
             fear_source,
             source: caster,
             point,
+            base_attack_damage: target_base_attack_damage,
         },
     );
     built.dot_source = caster;

@@ -457,6 +457,7 @@ fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
             move_speed,
             attack_damage,
             attack_range,
+            attack_damage_pct,
             ..
         } => {
             let mut rows = Vec::new();
@@ -471,6 +472,9 @@ fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
             }
             if attack_damage != RankValue::ZERO {
                 rows.push(row("Attack damage", attack_damage));
+            }
+            if attack_damage_pct != RankValue::ZERO {
+                rows.push(row("Attack damage %", attack_damage_pct));
             }
             if attack_range != RankValue::ZERO {
                 rows.push(row("Attack range", attack_range));

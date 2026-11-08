@@ -424,6 +424,7 @@ static WARDSTONE_CLOAK: ItemDefinition = ItemDefinition {
                     attack_speed_flat: RankValue::ZERO,
                     attack_speed_mult: RankValue::ZERO,
                     attack_range: RankValue::ZERO,
+                    attack_damage_pct: RankValue::ZERO,
                 },
                 duration: RankValue::fixed(5.0),
             },
