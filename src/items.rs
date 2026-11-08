@@ -2889,6 +2889,7 @@ mod tests {
             .init_resource::<SharedAssets>()
             .init_resource::<AbilityDefinitions>()
             .init_resource::<crate::abilities::effects::CustomAbilityEffects>()
+            .init_resource::<crate::combat::CombatRng>()
             .add_message::<ActivationRequest>()
             .add_message::<crate::actions::ActionFiredEvent>()
             .add_message::<crate::actions::ActionChannelEndEvent>()

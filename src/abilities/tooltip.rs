@@ -358,7 +358,9 @@ fn effect_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
         }
         AbilityEffect::Dispel { .. }
         | AbilityEffect::RemoveStatus { .. }
-        | AbilityEffect::Teleport => Vec::new(),
+        | AbilityEffect::Teleport
+        | AbilityEffect::Proc { .. }
+        | AbilityEffect::Counter { .. } => Vec::new(),
     }
 }
 
@@ -447,6 +449,13 @@ fn effect_text_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
             }
         }
         AbilityEffect::RemoveStatus { id } => vec![text_row(format!("Remove {id}"))],
+        AbilityEffect::Proc { chance, .. } => vec![text_row(format!(
+            "{}% chance to proc",
+            fmt_num(chance.at(1) * 100.0)
+        ))],
+        AbilityEffect::Counter { every, .. } => {
+            vec![text_row(format!("Every {every} attacks"))]
+        }
         AbilityEffect::Teleport => vec![text_row("Teleports to the target point")],
         AbilityEffect::Displace {
             distance: None,

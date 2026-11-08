@@ -631,6 +631,7 @@ mod tests {
         app.init_resource::<Time>()
             .init_resource::<SharedAssets>()
             .init_resource::<AbilityDefinitions>()
+            .init_resource::<crate::combat::CombatRng>()
             .init_resource::<CustomAbilityBehaviors>()
             .init_resource::<CustomAbilityEffects>()
             .add_message::<ActivationRequest>()
@@ -1337,6 +1338,163 @@ mod tests {
                 crit: false
             })
         );
+    }
+
+    fn heal_entry(trigger: AbilityTrigger, amount: f32) -> AbilityEffectEntry {
+        AbilityEffectEntry {
+            trigger,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::Heal {
+                amount: RankValue::fixed(amount),
+                scaling: EffectScaling::None,
+            },
+        }
+    }
+
+    fn proc_entry(chance: f32, then: &'static str) -> AbilityEffectEntry {
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::OnAttackHit,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::Proc {
+                chance: RankValue::fixed(chance),
+                then: AbilityTrigger::Custom(then),
+            },
+        }
+    }
+
+    fn counter_entry(every: u32, then: &'static str) -> AbilityEffectEntry {
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::OnAttackHit,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::Counter {
+                every,
+                then: AbilityTrigger::Custom(then),
+            },
+        }
+    }
+
+    /// Land `hits` attacks, one per frame.
+    fn land_hits(app: &mut App, attacker: Entity, target: Entity, hits: usize) {
+        for _ in 0..hits {
+            write_attack_hit(app, attacker, target);
+            step(app);
+        }
+    }
+
+    fn attack_duel(app: &mut App) -> (Entity, Entity) {
+        let caster = spawn_caster_with_inventory(app, KIT);
+        give_item(app, caster, ItemId::HeartwoodBand);
+        let target = spawn_unit(app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 100.0;
+        (caster, target)
+    }
+
+    #[test]
+    fn proc_chance_one_always_and_zero_never() {
+        for (chance, healed) in [(1.0_f32, 50.0_f32), (0.0, 0.0)] {
+            let mut app = test_app();
+            let _defs = install_test_item_definitions([item_with_effects(vec![
+                proc_entry(chance, "on_bash"),
+                heal_entry(AbilityTrigger::Custom("on_bash"), 1.0),
+            ])]);
+            let (caster, target) = attack_duel(&mut app);
+            app.world_mut().get_mut::<Health>(caster).unwrap().current = 1.0;
+            land_hits(&mut app, caster, target, 50);
+            assert_eq!(health(&app, caster), 1.0 + healed, "chance {chance}");
+        }
+    }
+
+    #[test]
+    fn proc_rolls_once_for_all_derived_entries() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<crate::combat::CombatRng>()
+            .seed(99);
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            proc_entry(0.5, "on_bash"),
+            AbilityEffectEntry {
+                trigger: AbilityTrigger::Custom("on_bash"),
+                target: EffectTarget::TriggerUnit,
+                effect: fixed_magical_damage(10.0),
+            },
+            heal_entry(AbilityTrigger::Custom("on_bash"), 10.0),
+        ])]);
+        let (caster, target) = attack_duel(&mut app);
+        let (mut procs, mut dry) = (0, 0);
+        for _ in 0..40 {
+            app.world_mut().get_mut::<Health>(caster).unwrap().current = 100.0;
+            app.world_mut().get_mut::<Health>(target).unwrap().current = 1000.0;
+            land_hits(&mut app, caster, target, 1);
+            let damaged = health(&app, target) < 1000.0;
+            let healed = health(&app, caster) > 100.0;
+            assert_eq!(damaged, healed, "one roll decides every derived entry");
+            if damaged {
+                procs += 1;
+            } else {
+                dry += 1;
+            }
+        }
+        assert!(procs > 0 && dry > 0, "a 50% proc both fires and misses");
+    }
+
+    #[test]
+    fn counter_fires_every_nth_landed_attack() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            counter_entry(3, "on_third"),
+            heal_entry(AbilityTrigger::Custom("on_third"), 50.0),
+        ])]);
+        let (caster, target) = attack_duel(&mut app);
+        land_hits(&mut app, caster, target, 2);
+        assert_eq!(health(&app, caster), 100.0);
+        land_hits(&mut app, caster, target, 1);
+        assert_eq!(health(&app, caster), 150.0, "the third landed attack");
+        land_hits(&mut app, caster, target, 3);
+        assert_eq!(health(&app, caster), 200.0, "and the sixth");
+    }
+
+    #[test]
+    fn counters_are_per_source() {
+        let mut app = test_app();
+        let every_two = item_with_effects(vec![
+            counter_entry(2, "on_second"),
+            heal_entry(AbilityTrigger::Custom("on_second"), 10.0),
+        ]);
+        let every_three = ItemDefinition {
+            id: ItemId::SparkPendant,
+            ..item_with_effects(vec![
+                counter_entry(3, "on_third"),
+                heal_entry(AbilityTrigger::Custom("on_third"), 100.0),
+            ])
+        };
+        let _defs = install_test_item_definitions([every_two, every_three]);
+        let (caster, target) = attack_duel(&mut app);
+        give_item(&mut app, caster, ItemId::SparkPendant);
+        land_hits(&mut app, caster, target, 6);
+        // 3 x 10 from the first item, 2 x 100 from the second.
+        assert_eq!(health(&app, caster), 100.0 + 30.0 + 200.0);
+    }
+
+    #[test]
+    fn derived_trigger_depth_is_capped() {
+        let mut app = test_app();
+        let looping = |name: &'static str| AbilityEffectEntry {
+            trigger: AbilityTrigger::Custom(name),
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::Proc {
+                chance: RankValue::fixed(1.0),
+                then: AbilityTrigger::Custom(name),
+            },
+        };
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            proc_entry(1.0, "on_loop"),
+            looping("on_loop"),
+            heal_entry(AbilityTrigger::Custom("on_loop"), 10.0),
+        ])]);
+        let (caster, target) = attack_duel(&mut app);
+        land_hits(&mut app, caster, target, 1);
+        // Depth 1 and depth 2 run their entries; the proc at depth 2 stops the chain.
+        assert_eq!(health(&app, caster), 100.0 + 2.0 * 10.0);
     }
 
     #[test]
@@ -2210,6 +2368,7 @@ mod tests {
                 trigger_unit: None,
                 affected_units: Vec::new(),
                 attack: None,
+                depth: 0,
             }));
         step(&mut app);
         assert!((health(&app, near) - 910.0).abs() < 1e-3);

@@ -8,7 +8,7 @@
 //!                     DisplacementEvent / TeleportEvent (or a custom effect system)
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use bevy::ecs::system::{SystemId, SystemParam};
 use bevy::prelude::*;
@@ -19,7 +19,7 @@ use super::definition::{
     EffectScaling, EffectTarget, StatusBuildContext,
 };
 use crate::actions::{ActionId, team_allows};
-use crate::combat::DamageEvent;
+use crate::combat::{CombatRng, DamageEvent};
 use crate::components::{AbilityId, BoundRadius, CombatStats, Health, HeroAttributes, Mana, Team};
 use crate::dimensions::{area_contains, bounds_of};
 use crate::displacement::DisplacementEvent;
@@ -33,6 +33,35 @@ use crate::vitals::{self, HealKind, ResourceDrainEvent, ResourceKind};
 pub enum EffectSource {
     Ability(AbilityId),
     Item(ItemId),
+}
+
+/// Derived triggers (`Proc` / `Counter`) may chain at most this deep; the gates beyond it do
+/// nothing. A trigger straight from a mechanic has depth 0.
+pub const MAX_TRIGGER_DEPTH: u8 = 2;
+
+/// How many times each `Counter` gate has run, per (source, `then` trigger).
+#[derive(Component, Debug, Clone, Default, PartialEq)]
+pub struct TriggerCounters(pub Vec<((EffectSource, AbilityTrigger), u32)>);
+
+impl TriggerCounters {
+    /// Count one execution; true (and the count restarts) on every `every`th.
+    fn bump(&mut self, key: (EffectSource, AbilityTrigger), every: u32) -> bool {
+        let index = match self.0.iter().position(|(k, _)| *k == key) {
+            Some(index) => index,
+            None => {
+                self.0.push((key, 0));
+                self.0.len() - 1
+            }
+        };
+        let count = &mut self.0[index].1;
+        *count += 1;
+        if *count >= every.max(1) {
+            *count = 0;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 /// What an attack-derived trigger knows about the attack that caused it.
@@ -70,6 +99,8 @@ pub struct TriggerContext {
     /// Set for triggers caused by a basic attack. Damage dealt under such a context is
     /// attack bonus damage rather than spell damage.
     pub attack: Option<AttackMeta>,
+    /// How many `Proc` / `Counter` hops produced this context (0 = straight from a mechanic).
+    pub depth: u8,
 }
 
 impl TriggerContext {
@@ -97,6 +128,16 @@ impl TriggerContext {
             trigger_unit: None,
             affected_units: Vec::new(),
             attack: None,
+            depth: 0,
+        }
+    }
+
+    /// The same context re-fired under `trigger` one hop deeper (by `Proc` / `Counter`).
+    fn derived(&self, trigger: AbilityTrigger) -> Self {
+        Self {
+            trigger,
+            depth: self.depth + 1,
+            ..self.clone()
         }
     }
 
@@ -212,6 +253,10 @@ pub struct EffectRunner<'w, 's> {
     statuses: MessageWriter<'w, StatusEffectEvent>,
     displacements: MessageWriter<'w, DisplacementEvent>,
     teleports: MessageWriter<'w, TeleportEvent>,
+    rng: ResMut<'w, CombatRng>,
+    counters: Query<'w, 's, &'static mut TriggerCounters>,
+    /// Contexts produced by gates since the last [`Self::take_derived`].
+    derived: Local<'s, Vec<TriggerContext>>,
 }
 
 impl EffectRunner<'_, '_> {
@@ -334,6 +379,23 @@ impl EffectRunner<'_, '_> {
                 Some(base * (1.0 - falloff * t))
             }
         }
+    }
+
+    /// Contexts that `Proc` / `Counter` gates fired since the last call, in order.
+    fn take_derived(&mut self) -> Vec<TriggerContext> {
+        std::mem::take(&mut *self.derived)
+    }
+
+    /// Whether a gate at `ctx` may fire a derived trigger (one warning at the cap).
+    fn gate_open(&self, ctx: &TriggerContext) -> bool {
+        if ctx.depth >= MAX_TRIGGER_DEPTH {
+            warn!(
+                "{:?} {:?}: derived trigger chain stopped at depth {}",
+                ctx.source, ctx.trigger, ctx.depth
+            );
+            return false;
+        }
+        true
     }
 
     pub fn execute(
@@ -522,6 +584,24 @@ impl EffectRunner<'_, '_> {
             }
             // Applied when the item is acquired, not when a trigger fires.
             AbilityEffect::PassiveStat { .. } => {}
+            AbilityEffect::Proc { chance, then } => {
+                if self.gate_open(ctx) && self.rng.roll(chance.at(rank)) {
+                    self.derived.push(ctx.derived(then));
+                }
+            }
+            AbilityEffect::Counter { every, then } => {
+                if !self.gate_open(ctx) {
+                    return;
+                }
+                let key = (ctx.source, then);
+                let fired = self
+                    .counters
+                    .get_mut(ctx.caster)
+                    .is_ok_and(|mut counters| counters.bump(key, every));
+                if fired {
+                    self.derived.push(ctx.derived(then));
+                }
+            }
             AbilityEffect::Custom {
                 id,
                 value,
@@ -596,7 +676,11 @@ pub fn resolve_ability_triggers(
     defs: Res<AbilityDefinitions>,
     mut runner: EffectRunner,
 ) {
-    for AbilityTriggerEvent(ctx) in triggers.read() {
+    // First in, first out: gates append derived contexts behind everything already queued,
+    // so the order (and the RNG draw order) is fixed by message order.
+    let mut queue: VecDeque<TriggerContext> =
+        triggers.read().map(|event| event.0.clone()).collect();
+    while let Some(ctx) = queue.pop_front() {
         let Some(params) = source_params(ctx.source, &defs, ctx.rank) else {
             continue;
         };
@@ -605,9 +689,10 @@ pub fn resolve_ability_triggers(
             .iter()
             .filter(|entry| entry.trigger == ctx.trigger)
         {
-            let targets = runner.targets(ctx, entry.target, params.aoe_radius);
-            runner.execute(ctx, &entry.effect, targets, params.cast_range);
+            let targets = runner.targets(&ctx, entry.target, params.aoe_radius);
+            runner.execute(&ctx, &entry.effect, targets, params.cast_range);
         }
+        queue.extend(runner.take_derived());
     }
 }
 

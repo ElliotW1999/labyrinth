@@ -638,6 +638,19 @@ pub enum AbilityEffect {
         stat: PassiveStat,
         amount: RankValue,
     },
+    /// Gate: with probability `chance` (0..=1, one [`CombatRng`](crate::combat::CombatRng)
+    /// draw per execution) re-fires this trigger's context under the custom trigger `then`.
+    /// Entries tagged `then` hold the consequences, so one roll covers all of them.
+    Proc {
+        chance: RankValue,
+        then: AbilityTrigger,
+    },
+    /// Gate: every `every`th execution (counted per source and `then`) re-fires this
+    /// trigger's context under the trigger `then`.
+    Counter {
+        every: u32,
+        then: AbilityTrigger,
+    },
     /// Escape hatch: runs the system registered under `id` with
     /// `effects::AbilityEffectAppExt::register_custom_effect`. It still receives
     /// resolved targets and should emit the shared gameplay events.

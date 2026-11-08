@@ -108,6 +108,7 @@ impl Mana {
 }
 
 #[derive(Component, Debug, Clone, Copy)]
+#[require(crate::abilities::effects::TriggerCounters)]
 pub struct CombatStats {
     /// Auto-attack damage (physical).
     pub attack_damage: f32,
