@@ -94,6 +94,15 @@ pub struct StatusEffect {
     /// 0..1 miss chance on basic attack damage resolution (`0` = no blind).
     pub blind_miss_chance: f32,
     pub heal_per_sec: f32,
+    /// Timed resource modifier, summed when read (see [`crate::vitals::resource_stat`]).
+    pub resource: Option<(crate::vitals::ResourceStat, f32)>,
+    /// Fraction (0..1) of healing received that is negated. The strongest one applies.
+    pub heal_reduction: f32,
+    /// Prevents all healing while active.
+    pub heal_blocked: bool,
+    /// Diverts incoming damage to mana while active.
+    #[allow(dead_code)] // consumed by the damage pipeline in a later step
+    pub mana_shield: Option<crate::vitals::ManaShield>,
     pub damage_per_sec: f32,
     pub dot_damage_type: DamageType,
     pub dot_source: Option<Entity>,
@@ -138,6 +147,10 @@ impl StatusEffect {
             turn_rate_bonus_percent: 0.0,
             blind_miss_chance: 0.0,
             heal_per_sec: 0.0,
+            resource: None,
+            heal_reduction: 0.0,
+            heal_blocked: false,
+            mana_shield: None,
             damage_per_sec: 0.0,
             dot_damage_type: DamageType::Magical,
             dot_source: None,
@@ -325,6 +338,44 @@ impl StatusEffect {
 }
 
 impl StatusEffects {
+    /// True while any active effect prevents healing.
+    pub fn is_heal_blocked(&self) -> bool {
+        self.effects
+            .iter()
+            .any(|e| e.heal_blocked && e.remaining > 0.0)
+    }
+
+    /// Strongest active healing reduction (0..1); reductions do not stack.
+    pub fn heal_reduction(&self) -> f32 {
+        self.effects
+            .iter()
+            .filter(|e| e.remaining > 0.0)
+            .map(|e| e.heal_reduction)
+            .fold(0.0, f32::max)
+            .clamp(0.0, 1.0)
+    }
+
+    /// The active mana shield with the highest absorb fraction.
+    #[allow(dead_code)]
+    pub fn mana_shield(&self) -> Option<crate::vitals::ManaShield> {
+        self.effects
+            .iter()
+            .filter(|e| e.remaining > 0.0)
+            .filter_map(|e| e.mana_shield)
+            .max_by(|a, b| a.absorb.total_cmp(&b.absorb))
+    }
+
+    /// Sum of every active timed modifier for `stat`.
+    pub fn resource_sum(&self, stat: crate::vitals::ResourceStat) -> f32 {
+        self.effects
+            .iter()
+            .filter(|e| e.remaining > 0.0)
+            .filter_map(|e| e.resource)
+            .filter(|(s, _)| *s == stat)
+            .map(|(_, v)| v)
+            .sum()
+    }
+
     pub fn is_phased(&self) -> bool {
         self.effects
             .iter()
@@ -502,11 +553,18 @@ pub fn tick_status_effects(
     let dt = time.delta_secs();
     for (entity, mut statuses, mut stats, mut health, mut shield, attrs) in &mut units {
         let agi = attrs.map(|a| a.agility).unwrap_or(0.0);
+        let hot_factor = crate::vitals::heal_factor(
+            crate::vitals::HealKind::OverTime,
+            0.0,
+            Some(&*stats),
+            Some(&*statuses),
+        );
         let mut i = 0;
         while i < statuses.effects.len() {
             let effect = &mut statuses.effects[i];
             if effect.heal_per_sec > 0.0 {
-                health.current = (health.current + effect.heal_per_sec * dt).min(health.max);
+                // The healer's amp was folded into `heal_per_sec` when the status was applied.
+                crate::vitals::apply_heal(&mut health, effect.heal_per_sec * dt, hot_factor);
             }
             if effect.damage_per_sec > 0.0 {
                 damage.write(DamageEvent::dot(
@@ -855,6 +913,37 @@ mod tests {
         app.update();
         let st = app.world().get::<StatusEffects>(victim).unwrap();
         assert!(!st.effects.iter().any(|e| e.id == "hex"));
+    }
+
+    #[test]
+    fn heal_does_not_revive_dead_units_via_heal_over_time() {
+        use std::time::Duration;
+        let mut app = App::new();
+        app.init_resource::<Time>()
+            .add_message::<DamageEvent>()
+            .add_systems(Update, tick_status_effects);
+        let mut statuses = StatusEffects::default();
+        statuses.effects.push(StatusEffect {
+            heal_per_sec: 50.0,
+            ..StatusEffect::buff("hot", 5.0)
+        });
+        let dead = app
+            .world_mut()
+            .spawn((
+                statuses,
+                CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 300.0),
+                Health {
+                    current: 0.0,
+                    max: 100.0,
+                    regen_per_sec: 0.0,
+                },
+            ))
+            .id();
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_secs(1));
+        app.update();
+        assert_eq!(app.world().get::<Health>(dead).unwrap().current, 0.0);
     }
 
     mod shields {

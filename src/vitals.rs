@@ -1,0 +1,185 @@
+//! Health and mana rules shared by every heal, regeneration, leech and conversion path.
+//!
+//! This module owns the *rules* (heal factor, resource-modifier lookup, overheal clamp).
+//! Effects only emit messages and `combat::apply_damage_events` stays the one place where
+//! damage changes health; every health *increase* goes through [`apply_heal`].
+
+// Some items are consumed only by later pipeline stages.
+#![allow(dead_code)]
+
+use crate::components::{CombatStats, Health};
+use crate::status::StatusEffects;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResourceKind {
+    Health,
+    Mana,
+}
+
+/// Timed (status) or permanent (`CombatStats`) resource modifiers. Amps and ratios are fractions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResourceStat {
+    Lifesteal,
+    SpellLifesteal,
+    /// Healing provided.
+    HealAmp,
+    /// Healing received.
+    HealReceivedAmp,
+    HealthRegen,
+    ManaRegen,
+    MaxHealth,
+    MaxMana,
+    /// -0.25 means 25% cheaper.
+    ManaCostAmp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ManaShield {
+    /// Fraction (0..1) of post-mitigation damage diverted to mana.
+    pub absorb: f32,
+    /// Damage absorbed per point of mana spent (> 0).
+    pub damage_per_mana: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HealKind {
+    Direct,
+    OverTime,
+    Leech,
+    Regen,
+    Conversion,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct HealOutcome {
+    pub applied: f32,
+    pub overheal: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaxChangeRule {
+    /// Existing item rule: a gain also adds to current, a loss only clamps.
+    KeepMissing,
+    /// Current keeps its fraction of max.
+    PreserveRatio,
+}
+
+/// Permanent (`CombatStats`) plus the sum of active statuses carrying `stat`.
+/// The one lookup for every resource modifier.
+pub fn resource_stat(
+    stats: Option<&CombatStats>,
+    statuses: Option<&StatusEffects>,
+    stat: ResourceStat,
+) -> f32 {
+    let permanent = stats
+        .map(|s| match stat {
+            ResourceStat::Lifesteal => s.lifesteal,
+            ResourceStat::SpellLifesteal => s.spell_lifesteal,
+            ResourceStat::HealAmp => s.heal_amp,
+            ResourceStat::HealReceivedAmp => s.heal_received_amp,
+            ResourceStat::ManaCostAmp => s.mana_cost_amp,
+            // Regen and max live on `Health`/`Mana`, not on `CombatStats`.
+            ResourceStat::HealthRegen
+            | ResourceStat::ManaRegen
+            | ResourceStat::MaxHealth
+            | ResourceStat::MaxMana => 0.0,
+        })
+        .unwrap_or(0.0);
+    permanent + statuses.map(|s| s.resource_sum(stat)).unwrap_or(0.0)
+}
+
+/// Healing the unit provides (additive bucket).
+pub fn outgoing_heal_amp(stats: Option<&CombatStats>, statuses: Option<&StatusEffects>) -> f32 {
+    resource_stat(stats, statuses, ResourceStat::HealAmp)
+}
+
+/// Multiplier applied to a raw heal on the target.
+///
+/// Order: prevention, then amplification (additive: healer's amp + target's received amp,
+/// none for regeneration), then the strongest reduction (multiplicative).
+pub fn heal_factor(
+    kind: HealKind,
+    outgoing_amp: f32,
+    target_stats: Option<&CombatStats>,
+    target_statuses: Option<&StatusEffects>,
+) -> f32 {
+    if target_statuses.is_some_and(|s| s.is_heal_blocked()) {
+        return 0.0;
+    }
+    let amp = if kind == HealKind::Regen {
+        0.0
+    } else {
+        outgoing_amp + resource_stat(target_stats, target_statuses, ResourceStat::HealReceivedAmp)
+    };
+    let reduction = target_statuses
+        .map(|s| s.heal_reduction())
+        .unwrap_or(0.0)
+        .clamp(0.0, 1.0);
+    (1.0 + amp).max(0.0) * (1.0 - reduction)
+}
+
+/// The only place health is increased. Dead units are never healed.
+pub fn apply_heal(health: &mut Health, raw: f32, factor: f32) -> HealOutcome {
+    if !health.is_alive() || raw <= 0.0 || factor <= 0.0 {
+        return HealOutcome::default();
+    }
+    let amount = raw * factor;
+    let applied = amount.min(health.max - health.current).max(0.0);
+    health.current += applied;
+    HealOutcome {
+        applied,
+        overheal: amount - applied,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::status::StatusEffect;
+
+    fn hp(current: f32, max: f32) -> Health {
+        Health {
+            current,
+            max,
+            regen_per_sec: 0.0,
+        }
+    }
+
+    #[test]
+    fn heal_does_not_revive_dead_units() {
+        let mut dead = hp(0.0, 100.0);
+        let out = apply_heal(&mut dead, 50.0, 1.0);
+        assert_eq!(out, HealOutcome::default());
+        assert_eq!(dead.current, 0.0);
+    }
+
+    #[test]
+    fn heal_clamps_at_max_and_reports_overheal() {
+        let mut h = hp(90.0, 100.0);
+        let out = apply_heal(&mut h, 30.0, 1.0);
+        assert_eq!(h.current, 100.0);
+        assert_eq!(out.applied, 10.0);
+        assert_eq!(out.overheal, 20.0);
+    }
+
+    #[test]
+    fn heal_block_is_factor_zero() {
+        let mut statuses = StatusEffects::default();
+        statuses.effects.push(StatusEffect {
+            heal_blocked: true,
+            ..StatusEffect::debuff("heal_block", 5.0)
+        });
+        assert_eq!(
+            heal_factor(HealKind::Direct, 1.0, None, Some(&statuses)),
+            0.0
+        );
+        let mut h = hp(10.0, 100.0);
+        apply_heal(&mut h, 50.0, 0.0);
+        assert_eq!(h.current, 10.0);
+    }
+
+    #[test]
+    fn plain_factor_is_one() {
+        assert_eq!(heal_factor(HealKind::Direct, 0.0, None, None), 1.0);
+    }
+}

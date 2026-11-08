@@ -354,6 +354,11 @@ fn hero_combat(
         damage_reflect: 0.0,
         cleave_radius: 0.0,
         cleave_damage_ratio: 0.0,
+        lifesteal: 0.0,
+        spell_lifesteal: 0.0,
+        heal_amp: 0.0,
+        heal_received_amp: 0.0,
+        mana_cost_amp: 0.0,
     }
 }
 

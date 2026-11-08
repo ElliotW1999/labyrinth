@@ -26,6 +26,7 @@ use crate::displacement::DisplacementEvent;
 use crate::items::ItemId;
 use crate::status::{StatusChange, StatusEffectEvent, StatusEffects, is_untargetable};
 use crate::teleport::TeleportEvent;
+use crate::vitals::{self, HealKind};
 
 /// What owns the effect entries a trigger resolves against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -531,10 +532,21 @@ pub fn resolve_ability_triggers(
     }
 }
 
-pub fn apply_heal_events(mut heals: MessageReader<HealEvent>, mut targets: Query<&mut Health>) {
+pub fn apply_heal_events(
+    mut heals: MessageReader<HealEvent>,
+    healers: Query<(Option<&CombatStats>, Option<&StatusEffects>)>,
+    mut targets: Query<(&mut Health, Option<&CombatStats>, Option<&StatusEffects>)>,
+) {
     for heal in heals.read() {
-        if let Ok(mut health) = targets.get_mut(heal.target) {
-            health.current = (health.current + heal.amount).min(health.max);
+        // The healer's amp is read before the target is borrowed (the healer may be the target).
+        let outgoing = heal
+            .source
+            .and_then(|source| healers.get(source).ok())
+            .map(|(stats, statuses)| vitals::outgoing_heal_amp(stats, statuses))
+            .unwrap_or(0.0);
+        if let Ok((mut health, stats, statuses)) = targets.get_mut(heal.target) {
+            let factor = vitals::heal_factor(HealKind::Direct, outgoing, stats, statuses);
+            vitals::apply_heal(&mut health, heal.amount, factor);
         }
     }
 }

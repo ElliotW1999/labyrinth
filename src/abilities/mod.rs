@@ -34,7 +34,7 @@ use crate::actions::{
 };
 use crate::combat::{flat_distance, spawn_requested_projectiles};
 use crate::components::{
-    AbilityLoadout, CastTarget, Ground, Lifetime, Mana, PlayerHero, SpellFx, Team,
+    AbilityLoadout, CastTarget, Ground, Health, Lifetime, Mana, PlayerHero, SpellFx, Team,
 };
 use crate::displacement::{
     DisplacementEvent, apply_displacement_events, settle_grounded_units, tick_forced_movement,
@@ -166,9 +166,12 @@ fn tick_ability_cooldowns(time: Res<Time>, mut query: Query<&mut AbilityLoadout>
     }
 }
 
-fn regen_mana(time: Res<Time>, mut query: Query<&mut Mana>) {
+fn regen_mana(time: Res<Time>, mut query: Query<(&mut Mana, Option<&Health>)>) {
     let dt = time.delta_secs();
-    for mut mana in &mut query {
+    for (mut mana, health) in &mut query {
+        if health.is_some_and(|h| !h.is_alive()) {
+            continue;
+        }
         mana.current = (mana.current + mana.regen_per_sec * dt).min(mana.max);
     }
 }
@@ -1338,6 +1341,42 @@ mod tests {
 
     fn health(app: &App, entity: Entity) -> f32 {
         app.world().get::<Health>(entity).unwrap().current
+    }
+
+    #[test]
+    fn heal_event_does_not_revive_dead_units() {
+        let mut app = test_app();
+        let dead = spawn_unit(&mut app, Team::Radiant, Vec3::ZERO);
+        let alive = spawn_unit(&mut app, Team::Radiant, Vec3::X);
+        app.world_mut().get_mut::<Health>(dead).unwrap().current = 0.0;
+        app.world_mut().get_mut::<Health>(alive).unwrap().current = 100.0;
+        for target in [dead, alive] {
+            app.world_mut().write_message(HealEvent {
+                source: None,
+                target,
+                amount: 250.0,
+            });
+        }
+        app.update();
+        assert_eq!(health(&app, dead), 0.0);
+        assert_eq!(health(&app, alive), 350.0);
+    }
+
+    #[test]
+    fn dead_units_do_not_regenerate_mana() {
+        let mut app = test_app();
+        let unit = spawn_unit(&mut app, Team::Radiant, Vec3::ZERO);
+        app.world_mut().get_mut::<Health>(unit).unwrap().current = 0.0;
+        app.world_mut().entity_mut(unit).insert(Mana {
+            current: 0.0,
+            max: 100.0,
+            regen_per_sec: 10.0,
+        });
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(std::time::Duration::from_secs(1));
+        bevy::ecs::system::RunSystemOnce::run_system_once(app.world_mut(), regen_mana).unwrap();
+        assert_eq!(app.world().get::<Mana>(unit).unwrap().current, 0.0);
     }
 
     fn cast_and_collect_projectiles(

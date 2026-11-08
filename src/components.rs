@@ -106,6 +106,16 @@ pub struct CombatStats {
     /// Enemies within this radius take cleave_damage_ratio × attack damage.
     pub cleave_radius: f32,
     pub cleave_damage_ratio: f32,
+    /// Fraction of basic-attack damage dealt that heals the attacker.
+    pub lifesteal: f32,
+    /// Fraction of spell damage dealt that heals the caster.
+    pub spell_lifesteal: f32,
+    /// Additive bonus to healing this unit provides.
+    pub heal_amp: f32,
+    /// Additive bonus to healing this unit receives.
+    pub heal_received_amp: f32,
+    /// Additive change to mana costs (-0.25 = 25% cheaper).
+    pub mana_cost_amp: f32,
 }
 
 /// Unified HP shield consumed before health (all damage types unless pierced).
@@ -149,6 +159,11 @@ impl CombatStats {
             damage_reflect: 0.0,
             cleave_radius: 0.0,
             cleave_damage_ratio: 0.0,
+            lifesteal: 0.0,
+            spell_lifesteal: 0.0,
+            heal_amp: 0.0,
+            heal_received_amp: 0.0,
+            mana_cost_amp: 0.0,
         };
         stats.recompute_attack_speed(0.0);
         stats
