@@ -2606,6 +2606,131 @@ mod tests {
     }
 
     #[test]
+    fn while_toggled_and_on_cast_build_the_same_status() {
+        use super::definition::StatusSpec;
+        use crate::status::{DispelType, StatusEffect};
+        let spec = StatusSpec::Burn {
+            dps: RankValue::fixed(12.0),
+            damage_type: DamageType::Magical,
+        };
+        let healing = StatusSpec::Modifier {
+            id: "twin_bonus",
+            kind: crate::status::StatusKind::Buff,
+            armor: RankValue::fixed(3.0),
+            magic_resist: RankValue::ZERO,
+            move_speed: RankValue::fixed(15.0),
+            attack_damage: RankValue::ZERO,
+            attack_speed_flat: RankValue::ZERO,
+            attack_speed_mult: RankValue::fixed(0.1),
+            attack_range: RankValue::ZERO,
+        };
+        let mut app = test_app();
+        let toggle = AbilityDefinition::new(AbilityId::Overcharge)
+            .behavior(super::definition::AbilityBehavior::Toggle)
+            .toggle_upkeep(RankValue::fixed(1.0))
+            .on(
+                AbilityTrigger::WhileToggled,
+                EffectTarget::Caster,
+                AbilityEffect::ApplyStatus {
+                    status: spec,
+                    duration: RankValue::ZERO,
+                },
+            )
+            .on(
+                AbilityTrigger::WhileToggled,
+                EffectTarget::Caster,
+                AbilityEffect::ApplyStatus {
+                    status: healing,
+                    duration: RankValue::ZERO,
+                },
+            );
+        let cast = AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::NoTarget, RankValue::ZERO, RankValue::ZERO)
+            .costs(RankValue::fixed(1.0), RankValue::fixed(1.0))
+            .on(
+                AbilityTrigger::OnCast,
+                EffectTarget::Caster,
+                AbilityEffect::ApplyStatus {
+                    status: spec,
+                    duration: RankValue::fixed(f32::INFINITY),
+                },
+            )
+            .on(
+                AbilityTrigger::OnCast,
+                EffectTarget::Caster,
+                AbilityEffect::ApplyStatus {
+                    status: healing,
+                    duration: RankValue::fixed(f32::INFINITY),
+                },
+            );
+        {
+            let mut defs = app.world_mut().resource_mut::<AbilityDefinitions>();
+            defs.insert(toggle);
+            defs.insert(cast);
+        }
+        let toggler = spawn_caster(
+            &mut app,
+            [
+                AbilityId::Overcharge,
+                AbilityId::Shockwave,
+                AbilityId::Execute,
+                AbilityId::Dash,
+            ],
+        );
+        let caster = spawn_caster(
+            &mut app,
+            [
+                AbilityId::Bulwark,
+                AbilityId::Shockwave,
+                AbilityId::Execute,
+                AbilityId::Dash,
+            ],
+        );
+        for unit in [toggler, caster] {
+            app.world_mut()
+                .entity_mut(unit)
+                .insert(crate::components::HeroAttributes::starter());
+        }
+        app.world_mut()
+            .get_mut::<AbilityLoadout>(toggler)
+            .unwrap()
+            .slots[0]
+            .toggled = true;
+        request(&mut app, caster, 0, CastTarget::None);
+        for _ in 0..12 {
+            bevy::ecs::system::RunSystemOnce::run_system_once(
+                app.world_mut(),
+                passive::tick_toggle_upkeep,
+            )
+            .unwrap();
+            step(&mut app);
+        }
+
+        let status_of = |app: &App, unit: Entity| -> Vec<StatusEffect> {
+            let mut effects = app
+                .world()
+                .get::<StatusEffects>(unit)
+                .unwrap()
+                .effects
+                .clone();
+            effects.sort_by_key(|e| e.id);
+            effects
+        };
+        let (toggled, cast) = (status_of(&app, toggler), status_of(&app, caster));
+        assert_eq!(toggled.len(), 2);
+        assert_eq!(cast.len(), 2);
+        for (mut a, mut b) in toggled.into_iter().zip(cast) {
+            // The toggle keeps its bonus through dispels; nothing else differs.
+            assert!(a.undispellable && a.dispel_type == DispelType::None);
+            a.undispellable = b.undispellable;
+            a.dispel_type = b.dispel_type;
+            a.dot_source = a.dot_source.map(|_| Entity::PLACEHOLDER);
+            b.dot_source = b.dot_source.map(|_| Entity::PLACEHOLDER);
+            assert_eq!(format!("{a:?}"), format!("{b:?}"));
+        }
+    }
+
+    #[test]
     fn data_only_ability_resolves_on_hit_effects() {
         let mut app = test_app();
         let fireball = AbilityDefinition::new(AbilityId::Bulwark)

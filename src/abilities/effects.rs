@@ -26,7 +26,9 @@ use crate::components::{AbilityId, BoundRadius, CombatStats, Health, HeroAttribu
 use crate::dimensions::{area_contains, bounds_of};
 use crate::displacement::DisplacementEvent;
 use crate::items::ItemId;
-use crate::status::{StatusChange, StatusEffectEvent, StatusEffects, is_untargetable};
+use crate::status::{
+    StatusChange, StatusEffect, StatusEffectEvent, StatusEffects, is_untargetable,
+};
 use crate::teleport::TeleportEvent;
 use crate::vitals::{self, HealKind, ResourceDrainEvent, ResourceKind};
 
@@ -510,36 +512,22 @@ impl EffectRunner<'_, '_> {
                 }
             }
             AbilityEffect::ApplyStatus { status, duration } => {
+                // The healer's amp is taken once, here; the tick applies none.
+                let healer_amp = vitals::outgoing_heal_amp(
+                    source.and_then(|s| self.stats.get(s).ok()),
+                    source.and_then(|s| self.statuses_of.get(s).ok()),
+                );
                 for target in targets {
-                    let move_speed = self.stats.get(target).map_or(0.0, |s| s.move_speed);
-                    let agility = self
-                        .attributes
-                        .get(target)
-                        .map(|a| a.agility)
-                        .unwrap_or(0.0);
-                    let fear_source = match status {
-                        super::definition::StatusSpec::Fear => Some(ctx.caster),
-                        _ => None,
-                    };
-                    let mut built = status.build(
+                    let built = build_status_effect(
+                        status,
                         rank,
                         duration.at(rank),
-                        StatusBuildContext {
-                            move_speed,
-                            agility,
-                            fear_source,
-                            source,
-                            point: ctx.point,
-                        },
+                        source,
+                        ctx.point,
+                        self.stats.get(target).ok(),
+                        self.attributes.get(target).ok(),
+                        healer_amp,
                     );
-                    built.dot_source = source;
-                    if built.heal_per_sec > 0.0 {
-                        // The healer's amp is taken once, here; the tick applies none.
-                        let healer_stats = source.and_then(|s| self.stats.get(s).ok());
-                        let healer_statuses = source.and_then(|s| self.statuses_of.get(s).ok());
-                        let amp = vitals::outgoing_heal_amp(healer_stats, healer_statuses);
-                        built.heal_per_sec *= (1.0 + amp).max(0.0);
-                    }
                     self.statuses.write(StatusEffectEvent {
                         source,
                         target,
@@ -709,6 +697,43 @@ impl EffectRunner<'_, '_> {
             }
         }
     }
+}
+
+/// The one place a [`super::definition::StatusSpec`] becomes a runtime [`StatusEffect`], for
+/// timed effects (`ApplyStatus`) and toggle upkeep (`WhileToggled`) alike. `caster` is the unit
+/// that causes the status (damage-over-time source, fear origin); `healer_amp` is the caster's
+/// outgoing heal amplification, applied once to heal-over-time statuses. Callers set whatever
+/// only they know (for example the undispellable flags of a toggle).
+pub(crate) fn build_status_effect(
+    spec: super::definition::StatusSpec,
+    rank: u32,
+    duration: f32,
+    caster: Option<Entity>,
+    point: Vec3,
+    target_stats: Option<&CombatStats>,
+    target_attrs: Option<&HeroAttributes>,
+    healer_amp: f32,
+) -> StatusEffect {
+    let fear_source = match spec {
+        super::definition::StatusSpec::Fear => caster,
+        _ => None,
+    };
+    let mut built = spec.build(
+        rank,
+        duration,
+        StatusBuildContext {
+            move_speed: target_stats.map_or(0.0, |s| s.move_speed),
+            agility: target_attrs.map_or(0.0, |a| a.agility),
+            fear_source,
+            source: caster,
+            point,
+        },
+    );
+    built.dot_source = caster;
+    if built.heal_per_sec > 0.0 {
+        built.heal_per_sec *= (1.0 + healer_amp).max(0.0);
+    }
+    built
 }
 
 impl From<ActionId> for EffectSource {

@@ -3,11 +3,12 @@
 use bevy::prelude::*;
 
 use super::catalog::AbilityDefinitions;
-use super::definition::{AbilityBehavior, AbilityEffect, AbilityTrigger, StatusBuildContext};
+use super::definition::{AbilityBehavior, AbilityEffect, AbilityTrigger};
+use super::effects::build_status_effect;
 use crate::components::{AbilityId, AbilityLoadout, CombatStats, Health, HeroAttributes, Mana};
 use crate::items::{ItemPassives, apply_passives, remove_passives};
 use crate::status::{DispelType, StatusChange, StatusEffectEvent, StatusEffects};
-use crate::vitals::effective_mana_cost;
+use crate::vitals::{effective_mana_cost, outgoing_heal_amp};
 
 /// Net passive stat bonuses currently applied from ranked passive abilities.
 #[derive(Component, Clone, Default, PartialEq)]
@@ -108,18 +109,14 @@ pub fn tick_toggle_upkeep(
         &StatusEffects,
         &CombatStats,
         Option<&HeroAttributes>,
+        Option<&Transform>,
     )>,
     mut status_events: MessageWriter<StatusEffectEvent>,
 ) {
     let dt = time.delta_secs();
-    for (entity, mut loadout, mut mana, statuses, stats, attrs) in &mut heroes {
-        let ctx = StatusBuildContext {
-            move_speed: stats.move_speed,
-            agility: attrs.map_or(0.0, |a| a.agility),
-            fear_source: None,
-            source: Some(entity),
-            point: Vec3::ZERO,
-        };
+    for (entity, mut loadout, mut mana, statuses, stats, attrs, transform) in &mut heroes {
+        let point = transform.map_or(Vec3::ZERO, |tf| tf.translation);
+        let healer_amp = outgoing_heal_amp(Some(stats), Some(statuses));
         for slot in &mut loadout.slots {
             let Some(def) = defs.get(slot.id) else {
                 continue;
@@ -144,7 +141,16 @@ pub fn tick_toggle_upkeep(
                 let AbilityEffect::ApplyStatus { status, .. } = entry.effect else {
                     continue;
                 };
-                let mut built = status.build(rank, f32::INFINITY, ctx);
+                let mut built = build_status_effect(
+                    status,
+                    rank,
+                    f32::INFINITY,
+                    Some(entity),
+                    point,
+                    Some(stats),
+                    attrs,
+                    healer_amp,
+                );
                 let present = statuses.effects.iter().any(|e| e.id == built.id);
                 if slot.toggled && !present {
                     built.undispellable = true;
@@ -293,7 +299,11 @@ mod tests {
             assert!(speed.undispellable);
             assert_eq!(speed.dispel_type, DispelType::None);
             assert!((speed.attack_speed_mult - 0.2).abs() < 1e-6);
-            assert_eq!(speed.dot_source, None);
+            assert_eq!(
+                speed.dot_source,
+                Some(hero),
+                "toggle statuses are sourced like cast ones"
+            );
             assert_eq!(speed.heal_per_sec, 0.0);
             assert_eq!(statuses.effects.len(), 2);
             let ids: Vec<_> = statuses.effects.iter().map(|e| e.id).collect();
