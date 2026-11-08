@@ -4,15 +4,14 @@
 //! Effects only emit messages and `combat::apply_damage_events` stays the one place where
 //! damage changes health; every health *increase* goes through [`apply_heal`].
 
-// Some items are consumed only by later pipeline stages.
-#![allow(dead_code)]
-
 use bevy::prelude::*;
 
 use crate::combat::DamageEvent;
 use crate::components::{CombatStats, DamageType, Health, Mana};
 use crate::status::StatusEffects;
 
+/// Variants are constructed by generated definitions, so an unused one is not dead code.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResourceKind {
     Health,

@@ -480,3 +480,39 @@ Also run `--check` on `data/examples/*.csv`, which must pass, and on `data/examp
 ## Out of scope
 
 `OnHeal` / `OnDamageTaken` trigger emission, healing numbers or VFX, overheal-to-shield, percent-based max-resource scaling for burn (`TargetMaxMana`), tooltips showing the modified cost, and netcode replication of mana.
+
+---
+
+## Implemented
+
+Steps 0 to 9 landed as one commit each on `claude/gracious-albattani-90iorv` (PR 56). Every step compiled and passed **V**. `cargo test` went from **276** (Step 0 baseline) to **330** passing Rust tests, and the generator unittest from 21 to 38. Production `data/*.csv` is untouched; regeneration only adds the `ResourceKind` / `ResourceStat` imports to the two generated headers.
+
+| Step | Commit subject |
+|---|---|
+| 1 | Central heal resolution and dead-unit heal fix |
+| 2 | Heal modifiers and heal over time |
+| 3 | Timed regen and max modifiers |
+| 4 | Lifesteal, spell lifesteal and health transfer |
+| 5 | Mana shield |
+| 6 | Mana burn, mana drain, sacrifice and conversion |
+| 7 | Mana cost modification |
+| 8 | Generator support and examples |
+| 9 | Documentation (this note and the README tables) |
+
+### Deviations and clarifications
+
+- **`HeroAttributes::apply_to` / `apply_delta` still use their own arithmetic.** Step 3 said to route them through `KeepMissing`. They do not match it: `apply_to` raises max without adding to current, and `apply_delta` also lowers current on a negative delta (for example selling a Strength item), whereas `KeepMissing` only clamps on a loss. Routing them through it would have changed behavior, so only `adjust_passives` (items and passive abilities) uses `change_max`.
+- **A dead unit is no longer revived by a max-health or max-mana-style gain.** `Health::change_max` keeps a dead unit dead under both rules (the same bug family as the heal fix). The old `adjust_passives` code added the gain to `current` even at 0 HP. Mana is unaffected (it has no alive state).
+- **Cleave keeps `can_crit: true`.** `DamageEvent::cleave` is exactly `basic_attack` with `DamageKind::Cleave`, so cleave behavior is unchanged apart from never leeching.
+- **Two timed-regen tests live in `progression.rs` and `abilities/mod.rs`**, not `status.rs`, because `regen_health` and `regen_mana` are private to those modules. The max-cap tests are in `status.rs` as planned.
+- **Test names are split in places**: `mana_cost_amp_reduces_ability_costs` (abilities/mod.rs) and `mana_cost_amp_reduces_item_costs` (items.rs); `heal_over_time_ticks_total_over_duration` (status.rs) and `heal_over_time_takes_the_casters_heal_amp_once_at_application` (abilities/mod.rs). `existing_item_heal_tests_unchanged` is the existing heal tests staying green, and `real_schedule_builds_without_conflicts` is the existing `teleport_is_ordered_consistently_in_the_real_schedule`, run at every step. Extra tests were added for dead-unit mana regen, refresh and remove not leaking max, heal block on leech, the toggle shield, and `invalid` generator rows.
+- **Test apps.** The abilities `test_app` system tuple hit Bevy's 20-system limit, so the status and sync systems and the mana restore and drain systems are nested `.chain()` tuples. The `items.rs` item app only needed the `ResourceDrainEvent` message registered, not the applier system.
+- **Optional HUD regen text (`ui.rs`) was not changed.** It still shows the base `regen_per_sec`, not the effective value with timed modifiers.
+- **`ResourceDrainEvent.to_source` is mana-only.** Giving health back to the source is not exposed by any generator row. `SpendResource` is limited to `caster` / `owner` by the generator only; the runtime accepts any target.
+- **`while_toggled` was widened in the generator** to allow `apply_status,mana_shield` next to `stat_modifier`, which the runtime already supported (`tick_toggle_upkeep` applies any `ApplyStatus`).
+- **Pre-existing formatting debt.** `cargo fmt --check` already failed at the Step 0 baseline on `abilities/custom.rs`, `basic_attack.rs`, `combat.rs`, `ui.rs`, `units.rs` and the generated region in `components.rs`. Those files were not reformatted (to keep the diff reviewable); the new code was kept rustfmt-clean, and the fmt hunk count in those files did not grow.
+
+### Verification notes
+
+- The example CSVs were run through both generators in a scratch copy of the repository and the generated Rust compiled with `cargo build`. The scratch tests that failed there only failed because the examples replace the production definitions with the same ids; the real files are not touched by examples.
+- Not run: any in-game manual check (the environment has no display). Netcode replication of mana, `OnHeal` / `OnDamageTaken` triggers, healing VFX and tooltip display of modified costs remain out of scope, as planned.
