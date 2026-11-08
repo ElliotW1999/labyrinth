@@ -1,168 +1,307 @@
-# Plan: Queen of Pain hero (existing features only)
+# Queen of Pain hero — implementation spec
 
-Status: **draft — awaiting user decisions (section 5)**. INT confirmed by user: base 25, gain 3.4.
+Status: **approved by user 2026-11-08, pending confirmation of §12**. Replaces the draft of the same name.
 
-## 0. Summary
+Related plans: `docs/architecture/composition.md`, `2026-11-08-mechanic-composition-layers.md`, `2026-11-07-movement-mechanics.md`, `2026-11-06-status-effects-catalog.md`, `2026-11-06-activation-targeting-mechanics.md`, `2026-11-06-damage-mechanics.md`, `2026-11-06-generator-shared-architecture.md`.
 
-The kit can be built from CSV rows alone: a hero row, 4 ability rows and 7 effect rows, with no new Rust or generator code. Several requested behaviours can only be approximated with existing features; section 5 lists every gap together with the existing-only approximation. Two items block validation:
+## 1. Scope and decisions
 
-- **Q rank-7 cooldown extrapolates to -1.** The generator rejects negative cooldowns.
-- **Sonic Wave has no cooldown in the spec.**
+| Item | Decision |
+|---|---|
+| Attributes | STR 20 + 2.4, AGI 20 + 2.5, INT 25 + 3.4. Primary INT |
+| Hero stats | Variant B: bases are back-solved so the level-1 totals equal the spec (HP 560, HP regen 2.25, mana 375, mana regen 1.25, armor 0, MR 27.5%). See §9 |
+| Cooldowns | Q `11\|9\|7\|5\|3\|3\|3`. W `12\|10\|8\|6\|4\|2\|1`. R `110\|95\|80\|65` |
+| W | Display name "QoP Blink", id `queen_of_pain_blink` (naming in §8) |
+| Shadow Strike projectile speed | Default (`SPELL_PROJECTILE_SPEED`, ~884) |
+| Magnus | Skipped. HeroGenerator runs on a scratch CSV holding only the Queen of Pain row |
+| Hero example | `data/heroes.example.csv` |
+| Approved features | C1, G4, G5, G6, G8, G11, G13, G14, G16 |
+| Rejected | G15: `cast_range` = travel distance = 900. G18: knockback stays "away from contact point" |
 
-Background: `docs/architecture/composition.md` and the plans `2026-11-08-mechanic-composition-layers`, `2026-11-07-movement-mechanics`, `2026-11-06-status-effects-catalog`, `2026-11-06-activation-targeting-mechanics`, `2026-11-06-damage-mechanics` and `2026-11-06-generator-shared-architecture`.
+Rank counts: basics 7, ultimates 4. Values are extrapolated arithmetically, except the cooldowns the user overrode.
 
-## 1. Project facts that drive the design
-
-| Topic | Finding | Source |
-|---|---|---|
-| Rank counts | Basic abilities have 7 ranks and ultimates 4. Ultimates unlock at hero level 6/12/18/24 | `src/components.rs` `max_rank`; `src/progression.rs`; `scripts/AbilityGenerator.py` |
-| Hero generator | Writes `src/heroes.rs` (HeroId, `def`), `components.rs` AbilityId stubs and the README table. No `--check` and no rustfmt | `scripts/HeroGenerator.py` |
-| Hero ↔ ability link | HeroGenerator names each AbilityId as the PascalCase of the ability's display name. If that name is taken it adds the hero name as a prefix (Blink becomes `QueenOfPainBlink`). **Run HeroGenerator first**, then AbilityGenerator with ids `shadow_strike`, `queen_of_pain_blink`, `scream_of_pain`, `sonic_wave` | `HeroGenerator.unique_ability_id` |
-| Blink collision | `AbilityId::Blink` and the display name "Blink" already exist (Skirmisher). Display names must be unique within a CSV | `AbilityGenerator.load` |
-| Cast point / backswing | Both silently clamped to 0..0.5 | `src/abilities/definition.rs` `timing` |
-| Attack point / backswing | Both clamped to 0..0.5 | `src/heroes.rs` `hero_combat` |
-| Magic resist | Stored as resistance points: `factor = 1 - 0.06R/(1+0.06R)`. 27.5% = 6.3218 R. Each point of INT adds 0.12 R | `src/combat.rs` |
-| Attributes | +18 HP/STR, +0.12 HP regen/STR, +0.14 armor/AGI, +12 mana/INT, +0.05 mana regen/INT, +0.12 MR/INT. APS = (100+AGI)/100/BAT | `components.rs` `HeroAttributes::apply_to` |
-| Attack projectile speed | Derived from range: `clamp(500+1.2*range, 700, 1500)`, which gives 1160 at range 550 | `src/basic_attack.rs` |
-| Turn rate | Hard-coded 0.6, which matches the spec | `src/facing.rs` |
-| Burn (DoT) | Continuous `dps*dt`; no tick interval. The status id `"burn"` is shared | `src/status.rs` |
-| Skillshot | Travels exactly `cast_range`, with constant width `aoe_radius`. Hits each enemy once | `abilities/mechanics.rs`, `combat.rs` |
-| Knockback | Pushes away from the trigger point, which is the projectile's position at contact | `src/displacement.rs` |
-| Point targeting | Clicking beyond `cast_range` makes the hero walk into range | `actions/targeting.rs` |
-| Pending Magnus row | `data/heroes.csv` contains a Magnus row that has not been generated yet | `data/heroes.csv` |
-
-## 2. Hero stats: column coverage
-
-| Stat | Value | Column | Status |
-|---|---|---|---|
-| HP / mana | 560 / 375 | `base_health` / `base_mana` | Column exists |
-| HP / mana regen | 2.25 / 1.25 | `base_health_regen` / `base_mana_regen` | The generator supports both, but they are missing from the CSV header (C1) |
-| Armor | 0 | `armor` | Column exists |
-| Magic resist | 27.5% | `magic_resist` | Column exists; value converted to 6.32 R |
-| Attack damage / range | 54 / 550 ranged | `attack_damage` / `attack_range` / `is_melee=FALSE` | Columns exist |
-| BAT | 1.5 | `base_attack_time` | Generator-supported; header column missing (C1) |
-| Attack point / backswing | 0.56 / 0.41 | `attack_point` / `attack_backswing` | Generator-supported; header columns missing (C1). 0.56 is clamped to 0.5 (G5) |
-| Attack projectile speed | 1500 | none | **Gap G4** (derived speed would be 1160) |
-| Move speed | 290 | `move_speed` | Column exists |
-| Turn rate | 0.6 | constant | Matches the hard-coded value |
-| STR / AGI / INT | 20+2.4 / 20+2.5 / 25+3.4 | `base_*`, `*_per_level` | Columns exist |
-| Primary attribute | not given | `primary` | Proposed: `INT` (G2) |
-
-Variant A enters the values literally as bases, so the attribute bonuses stack on top. Variant B back-solves the bases so the level-1 totals equal the spec (G3):
-
-| Field | Variant A (literal) | Level-1 result under A | Variant B (back-solved) |
-|---|---|---|---|
-| base_health | 560 | 920 | 200 |
-| base_health_regen | 2.25 | 4.65 | -0.15 |
-| base_mana | 375 | 675 | 75 |
-| base_mana_regen | 1.25 | 2.5 | 0 |
-| armor | 0 | 2.8 | -2.8 |
-| magic_resist | 6.32 | ≈35.9% | 3.32 |
-
-## 3. Extrapolated values (arithmetic progression, no clamping)
-
-| Ability | Field | Values by rank |
+| Ability | Field | Ranks |
 |---|---|---|
 | Q | cast range | 450, 500, 550, 600, 650, 700, 750 |
-| Q | cooldown | 11, 9, 7, 5, 3, 1, **-1** (G10) |
+| Q | cooldown | 11, 9, 7, 5, 3, 3, 3 |
 | Q | mana | 100, 105, 110, 115, 120, 125, 130 |
-| Q | hit damage | 50, 80, 110, 140, 170, 200, 230 |
-| Q | slow % | 25, 35, 45, 55, 65, 75, 85 |
-| Q | DoT per tick | 20, 40, 60, 80, 100, 120, 140 |
-| W | max distance | 1075, 1150, 1225, 1300, 1375, 1450, 1525 |
-| W | cooldown | 12, 10, 8, 6, 4, 2, **0** (G10) |
-| W | mana | 65 at every rank |
-| E | damage | 90, 175, 260, 345, 430, 515, 600 |
-| E | cooldown | 7.5, 7, 6.5, 6, 5.5, 5, 4.5 |
-| E | mana | 120 at every rank |
+| Q | hit damage (magical) | 50, 80, 110, 140, 170, 200, 230 |
+| Q | slow % (16 s) | 25, 35, 45, 55, 65, 75, 85 |
+| Q | DoT per 3 s tick (16 s → 5 ticks) | 20, 40, 60, 80, 100, 120, 140 |
+| W | max distance (min 200, global cast range) | 1075, 1150, 1225, 1300, 1375, 1450, 1525 |
+| W | cooldown / mana | 12, 10, 8, 6, 4, 2, 1 / 65 |
+| E | damage (magical, radius 600) | 90, 175, 260, 345, 430, 515, 600 |
+| E | cooldown / mana | 7.5, 7, 6.5, 6, 5.5, 5, 4.5 / 120 |
 | R | mana | 250, 400, 550, 700 |
-| R | damage per instance | 23, 34, 45, 56 (×14 = 322, 476, 630, 784) |
-| R | cooldown | **not given** (G17) |
+| R | pure damage per instance (×14, 0.1 s apart) | 23, 34, 45, 56 (totals 322, 476, 630, 784) |
+| R | cooldown | 110, 95, 80, 65 |
 
-## 4. Proposed CSV rows (existing features only)
+## 2. New CSV surface
 
-### 4.1 `data/heroes.csv`
-Append `base_health_regen,base_mana_regen,base_attack_time,attack_point,attack_backswing` to the header (C1). The row below uses Variant A:
+Anything not listed here reuses existing columns with their existing meaning.
+
+| Kind | Name | Where | Feature |
+|---|---|---|---|
+| Header columns (already parsed by HeroGenerator) | `base_health_regen`, `base_mana_regen`, `base_attack_time`, `attack_point`, `attack_backswing` | `data/heroes.csv`, `data/heroes.example.csv` | C1 |
+| New column | `attack_projectile_speed` (optional, ranged heroes only) | Heroes CSVs | G4 |
+| New column | `projectile_end_radius` (optional, level list, skillshots only) | `abilities.csv` (and items, as an optional activation field) | G14 |
+| New enum value | `projectile_type=targeted_each` | Abilities. Items reject it until they have an `aoe_radius` column | G13 |
+| New keyword | `cast_range=global` | Abilities and items (shared `parse_activation_spec`) | G11 |
+| Existing columns, new meaning | `movement,teleport`: `value` = max distance, `amount` = min distance. Both blank keeps today's behaviour | Effect CSVs | G11 |
+| Existing columns, new meaning | `apply_status,burn`: `amount` = tick interval in seconds. When set, `value` is damage per tick; when blank, `value` is damage per second as today | Effect CSVs | G8 |
+
+## 3. Feature designs, in implementation order
+
+Each step must build and pass tests before the next one starts. Regenerate after every generator change. Generated files (`generated.rs`, `item_catalog.rs`) may only show the diffs a step names (I8).
+
+### Step 1 — G5/G6: raise timing caps
+- `src/basic_attack.rs`: add `pub const MAX_ATTACK_SWING: f32 = 1.0`. Use it in `heroes.rs::hero_combat` to clamp `attack_point` and `attack_backswing`, and in the basic-attack windup clamp.
+- `src/abilities/definition.rs`: add `pub const MAX_CAST_BACKSWING: f32 = 1.0`. `AbilityDefinition::timing` clamps backswing to it; the cast point cap stays at 0.5.
+- Update the doc comments on `CombatStats` and `AbilityDefinition`.
+- AbilityGenerator warns when `cast_backswing > 1.0`. HeroGenerator rejects `attack_point` or `attack_backswing` outside 0..1.0.
+- Existing data is unaffected, since every current value is ≤ 0.5.
+- Tests:
+  - A hero combat test keeps an attack point of 0.56.
+  - A timing test clamps backswing at `MAX_CAST_BACKSWING`.
+  - The basic-attack windup honours 0.56.
+  - Find and update any existing test that asserts the old 0.5 clamp.
+
+### Step 2 — C1 + G4: hero attack projectile speed
+- `hero_combat` gains an `attack_projectile_speed: Option<f32>` parameter.
+  - `Some(s)` sets `attack_projectile_speed_bonus = s - basic_attack::projectile_speed_for(attack_range)`. For range 550 that is 1160 + 340 = 1500.
+  - The five hand-written hero arms pass `None`.
+  - Document that heroes may carry a base offset in this field.
+- HeroGenerator:
+  - Adds `HeroRow.attack_projectile_speed` (optional, > 0). It warns and ignores the value on melee heroes.
+  - Emits `Some(x)` or `None`.
+  - Update the generator docstring and the README section on adding heroes.
+- CSV: add the 5 C1 columns plus `attack_projectile_speed` to the headers of `data/heroes.csv` and `data/heroes.example.csv`. Short rows parse as blank.
+- Test: a hero with `Some(1500.0)` and range 550 has an attack projectile speed of 1500.
+
+### Step 3 — G8: ticking burns with per-owner ids
+- `StatusSpec::Burn` becomes `{ id, amount: RankValue, damage_type, tick_interval: RankValue }`.
+  - `amount` is per second when the interval is 0, and per tick otherwise.
+  - A new constructor, `StatusEffect::burn_ticking(id, per_tick, interval, damage_type, duration)`, builds the ticking form.
+- `StatusEffect` gains `dot_interval`, `dot_per_tick`, `dot_timer` and `dot_ticks_left`, all defaulting to 0.
+  - `ticks = floor(duration / interval + 1e-4)`, so 16 s / 3 s = 5 and 1.4 s / 0.1 s = 14.
+- `tick_status_effects`, for ticking effects:
+  - Accumulate the timer. While the timer has reached the interval and ticks remain, emit `DamageEvent::dot` and decrement.
+  - On natural expiry, flush any owed ticks, so the count is exact whatever the frame rate. Dispel or refresh does not flush.
+  - The first tick lands one interval after application.
+  - Continuous DoT is unchanged.
+- Ids: generated burns use `<owner>_burn` (the same pattern as timed stat modifiers), so DoTs from different sources coexist. Hand-written burns keep `"burn"`, and `runtime_status_id` accepts `<owner>_burn`. No current CSV row uses burn.
+- Generator burn branch:
+  - `value` is required.
+  - Optional `amount` must be > 0 and ≤ duration for every rank. It is emitted as `tick_interval`, and as `RankValue::ZERO` when blank.
+  - Drop the old "amount as dps" fallback.
+- Tooltip: "X per Ys" for ticking burns, "X per second" otherwise.
+- Ticks are `DamageKind::Dot`. As with existing DoT rules, they fire no damage-dealt or damage-taken triggers; kill, death and health-below still fire.
+- Tests:
+  - Exact tick counts (5 × 20 over 16 s; 14 ticks with uneven `dt`).
+  - First tick lands after one interval.
+  - Dispel stops the ticks.
+  - Two burns from different owners coexist.
+  - Unittests for the generator rules.
+- Add an invalid example: a burn with `amount=0`.
+
+### Step 4 — G11: bounded teleport + global cast range
+- `AbilityEffect::Teleport` becomes `Teleport { min_distance: RankValue, max_distance: Option<RankValue> }`.
+  - Update every match: `effects.rs`, `tooltip.rs`, the item path and tests.
+  - The existing `blink` and `blink_dagger` regenerate with bounds `ZERO` / `None`, so their behaviour is unchanged. This is the step's only allowed generated diff.
+- `EffectRunner` computes the destination:
+  - `v = flat(aim - origin)` and `d = |v|.clamp(min, max)`.
+  - If `|v|` ≈ 0 and min > 0, the direction falls back to the caster's facing.
+  - With no bounds the destination is exactly `aim`.
+  - `teleport.rs` is unchanged: it still validates the map, terrain, occupancy, leash and immunity.
+- `scale.rs` gets `GLOBAL_CAST_RANGE = 25_000.0`, which is larger than the 21,496 map diagonal.
+  - `parse_activation_spec` accepts `global`, case-insensitive and without a level list, for point, unit and direction abilities.
+  - The cast indicator hides the range ring when the range is ≥ `GLOBAL_CAST_RANGE`.
+- Generator teleport branch:
+  - `value` (max) is optional and > 0.
+  - `amount` (min) is optional, ≥ 0 and ≤ max.
+  - Bounds are allowed only on the caster/owner target.
+- Items get the same behaviour; Blink Dagger keeps blank bounds.
+- Tests:
+  - A far click (3000) clamps to 1075.
+  - A near click (50) is pushed out to 200.
+  - A click on herself uses her facing.
+  - Unbounded teleport is unchanged.
+  - Global range never makes the hero walk into range.
+  - Unittests for `global` and for min > max.
+- Add an invalid example: a teleport with `amount > value`.
+
+### Step 5 — G14: expanding skillshot width
+- `AbilityMechanic::Projectile` gains `end_radius: Option<RankValue>`.
+  - Update the `catalog.rs` `PROJECTILE` const, the test constructors, the tooltip and both generator templates.
+  - Move the template into a shared `generator_common.projectile_mechanic_rust(...)`.
+- `combat.rs`:
+  - `SpawnProjectileEvent` gains `skillshot_end_width`.
+  - `Skillshot` gains `start`, `range` and `end_width`.
+  - Contact width is `lerp(width, end_width, clamp(dist(start, pos) / range, 0, 1))`.
+  - `mechanics.rs` fills these from `aoe_radius`, `end_radius` and `cast_range`.
+- Generator: the optional `projectile_end_radius` column takes levels. It applies only to `skillshot` and `skillshot_single`, must be > 0, and requires `aoe_radius`.
+- Existing rows get `end_radius: None` (an allowed generated diff), so their width stays constant.
+- Tests:
+  - An expanding wave hits an off-path unit near the end of its travel but not near the start.
+  - A constant-width skillshot is unchanged.
+- Add an invalid example: an end radius on a targeted ability.
+
+### Step 6 — G13: one homing projectile per unit in an area
+- Add `AbilityMechanic::ProjectileToEach { center: AreaCenter, team: TargetTeam, speed: Option<f32> }`.
+- `MechanicRunner`:
+  - Selects living, targetable units of the allowed team inside the area, excluding the caster.
+  - Spawns one homing `SpawnProjectileEvent` per unit, with splash 0, the same payload and `cast_target` set to that unit.
+  - Each hit fires `OnProjectileHit` with `trigger_unit` set to the struck unit.
+- Extract the `UnitsInRadius` predicate into a shared `pub(crate) fn unit_in_area(...)` used by both the effect and the mechanic runner.
+- Source attribution comes from `ctx.source`. Items get this through `ItemDefinition::mechanics`.
+- Generator, `projectile_type=targeted_each`:
+  - Requires a `no_target` ability (centred on the caster) or a `point` ability (centred on the aim), with a non-zero `aoe_radius`.
+  - The team comes from `target_team`.
+  - `on_projectile_hit` with `affected_units` is invalid.
+  - Emits `shockwave_ring()` FX for `no_target`.
+  - ItemGenerator rejects it.
+- Tooltip: "Projectile at each enemy in radius".
+- Tests:
+  - One projectile per valid enemy: 3 inside, 1 outside, 1 ally and 1 cycloned unit gives 3.
+  - `OnProjectileHit` fires once per unit.
+  - Unittest: missing `aoe_radius`.
+- Add an invalid example: `targeted_each` without `aoe_radius`.
+
+### Step 7 — G16: Sonic Wave's 14 instances
+**Recommended design (pending user confirmation, §12.1): the interval mechanism.**
+- Sonic Wave is one expanding skillshot (G14) moving at 900 / 1.4 s ≈ 642.857 u/s, and it hits each enemy once.
+- On hit it applies:
+  - a per-owner pure burn: 23/34/45/56 per tick, interval 0.1 s, 1.4 s duration, which is exactly 14 instances;
+  - one knockback of 350 over 1.4 s, away from the contact point.
+- No code beyond Steps 3 and 5.
+
+Alternative, the pulse model: 14 timed area pulses at increasing distance and radius. It would need:
+- a projectile re-hit interval with per-pulse hit lists;
+- a once-per-unit knockback rule;
+- and a unit's damage would depend on how many pulses it stood in (1–14).
+
+### Step 8 — Queen of Pain data
+1. Add the rows in §4–§6.
+2. Run HeroGenerator **first**, on a scratch CSV holding the header and the Queen of Pain row. Use `--dry-run` to confirm `ShadowStrike/QueenOfPainBlink/ScreamOfPain/SonicWave`, then run it for real.
+3. Run AbilityGenerator: expect 4 additions with ranks 7/7/7/4.
+4. Run `cargo fmt`.
+5. Edit the README hero row: `| Queen of Pain | Intelligence | Shadow Strike, QoP Blink, Scream of Pain, Sonic Wave |`.
+
+### Step 9 — Docs
+- `docs/architecture/composition.md`:
+  - Mechanics: add `ProjectileToEach`.
+  - Effects: teleport bounds.
+  - Rules: ticking burns.
+  - Add §6.11 "Queen of Pain" compositions.
+- `README.md`: generator column docs for each §2 entry, and the hero columns.
+- This plan: append implementation notes and any deviations.
+
+## 4. `data/heroes.csv` and `data/heroes.example.csv`
+
+Header:
 ```csv
-Queen of Pain,FALSE,Shadow Strike,Blink,Scream of Pain,Sonic Wave,20,20,25,2.4,2.5,3.4,INT,"Int assassin — Shadow Strike, Blink, Scream of Pain, Sonic Wave",560,375,54,550,290,0,6.32,2.25,1.25,1.5,0.56,0.41
+Hero_name,is_melee,Ability_Q_Name,Ability_W_Name,Ability_E_Name,Ability_R_Name,base_STR,base_AGI,base_INT,STR_per_level,AGI_per_level,INT_per_level,primary,blurb,base_health,base_mana,attack_damage,attack_range,move_speed,armor,magic_resist,base_health_regen,base_mana_regen,base_attack_time,attack_point,attack_backswing,attack_projectile_speed
 ```
 
-### 4.2 `data/abilities.csv`
+`data/heroes.csv`:
 ```csv
-shadow_strike,Shadow Strike,Q,active,unit,enemy,450|500|550|600|650|700|750,,0.3,,11|9|7|5|3|1|-1,100|105|110|115|120|125|130,,,targeted,,"Hurls a dagger that deals magical damage, then slows the target and deals magical damage over time for 16s",0.77,,
-queen_of_pain_blink,<NAME G12>,W,active,point,enemy,1075|1150|1225|1300|1375|1450|1525,,0.33,,12|10|8|6|4|2|0,65,,,none,,Teleport to the target point,0.07,,
-scream_of_pain,Scream of Pain,E,active,no_target,enemy,,600,0,,7.5|7|6.5|6|5.5|5|4.5,120,,,none,,Deals magical damage to all nearby enemies,0.63,,
-sonic_wave,Sonic Wave,R,active,point,enemy,900,275,0.452,,<COOLDOWN G17>,250|400|550|700,,,skillshot,<SPEED G17>,"Sends out a wave that deals pure damage and knocks enemies back",0.9,,
+Queen of Pain,FALSE,Shadow Strike,Queen of Pain Blink,Scream of Pain,Sonic Wave,20,20,25,2.4,2.5,3.4,INT,"Int assassin — Shadow Strike, QoP Blink, Scream of Pain, Sonic Wave",200,75,54,550,290,-2.8,3.321839,-0.15,0,1.5,0.56,0.41,1500
 ```
-- Blink uses `target_team enemy` because point + self fails validation, matching the existing `blink` row.
-- Shadow Strike's projectile speed is left blank, so the default spell speed (~884) applies (G9).
 
-### 4.3 `data/ability_effects.csv`
+`data/heroes.example.csv` is the same row with `false` in place of `FALSE`.
+
+## 5. `data/abilities.csv` and `data/examples/abilities.csv`
+
+Append `,projectile_end_radius` to the header.
+```csv
+shadow_strike,Shadow Strike,Q,active,unit,enemy,450|500|550|600|650|700|750,,0.3,,11|9|7|5|3|3|3,100|105|110|115|120|125|130,,,targeted,,"Hurls a dagger that deals magical damage, then slows the target and deals magical damage every 3s for 16s",0.77,,,
+queen_of_pain_blink,QoP Blink,W,active,point,enemy,global,,0.33,,12|10|8|6|4|2|1,65,,,none,,"Teleports toward the target point, at least 200 and at most the maximum blink distance away",0.07,,,
+scream_of_pain,Scream of Pain,E,active,no_target,enemy,,600,0,,7.5|7|6.5|6|5.5|5|4.5,120,,,targeted_each,,"Sends a projectile at every nearby enemy, each dealing magical damage",0.63,,,
+sonic_wave,Sonic Wave,R,active,point,enemy,900,100,0.452,,110|95|80|65,250|400|550|700,,,skillshot,642.857143,"Sends out a widening wave; each enemy struck takes pure damage 14 times over 1.4s and is knocked back",0.9,,,450
+```
+- W uses `target_team enemy`, the same as the existing `blink` row; point targeting with team `self` is rejected.
+- Scream of Pain's projectile speed is left at the default.
+
+## 6. `data/ability_effects.csv` and `data/examples/ability_effects.csv`
 ```csv
 shadow_strike,0,on_projectile_hit,trigger_unit,damage,,50|80|110|140|170|200|230,magical,,,,,
 shadow_strike,1,on_projectile_hit,trigger_unit,apply_status,slow,,,16,,25|35|45|55|65|75|85,,
-shadow_strike,2,on_projectile_hit,trigger_unit,apply_status,burn,<DPS G8>,magical,16,,,,
-queen_of_pain_blink,0,on_cast,caster,movement,teleport,,,,,,,
-scream_of_pain,0,on_cast,units_in_radius,damage,,90|175|260|345|430|515|600,magical,,,,,
-sonic_wave,0,on_projectile_hit,trigger_unit,damage,,322|476|630|784,pure,,,,,
+shadow_strike,2,on_projectile_hit,trigger_unit,apply_status,burn,20|40|60|80|100|120|140,magical,16,,3,,
+queen_of_pain_blink,0,on_cast,caster,movement,teleport,1075|1150|1225|1300|1375|1450|1525,,,,200,,
+scream_of_pain,0,on_projectile_hit,trigger_unit,damage,,90|175|260|345|430|515|600,magical,,,,,
+sonic_wave,0,on_projectile_hit,trigger_unit,apply_status,burn,23|34|45|56,pure,1.4,,0.1,,
 sonic_wave,1,on_projectile_hit,trigger_unit,movement,knockback,350,,1.4,,,,
 ```
 
-### 4.4 Example CSVs
-- Add the same ability and effect rows to `data/examples/abilities.csv` and `data/examples/ability_effects.csv`. `test_valid_examples_pass` validates these files.
-- There is no hero example in `data/examples/`. Recommendation: add the hero row to `data/heroes.example.csv`, with the same header extension.
+## 7. Invalid examples (`data/examples/invalid/`)
 
-## 5. Gaps and ambiguities (user decisions)
+Add one row per new rule:
+- a burn with `amount=0`;
+- a teleport with `amount > value`;
+- `projectile_end_radius` on a targeted ability;
+- `targeted_each` without `aoe_radius`.
 
-Data:
-- **G1 (resolved).** INT base 25, gain 3.4.
-- **G2.** Primary attribute: proposed `INT`.
-- **G3.** Variant A or B (section 2).
-- **G9.** Shadow Strike projectile speed: proposed default.
-- **G10.** Q rank 7 cooldown is -1 and W rank 7 cooldown is 0. Need rank-7 values or acceptance.
-- **G12.** Blink display name must differ from "Blink".
-- **G17.** Sonic Wave cooldown, projectile speed and damage interval.
-- **G20.** Exclude the pending Magnus row from generation (scratch CSV) or generate it too.
+The invalid examples must still be rejected.
 
-Features (a = minimal new feature; b = existing-only approximation):
+## 8. Naming
+- HeroGenerator names variants with `to_pascal_case(display name)`. AbilityGenerator names them with the PascalCase of the `id`.
+- In the hero CSV, `Ability_W_Name = Queen of Pain Blink` gives `QueenOfPainBlink`, which matches the id `queen_of_pain_blink`.
+- The ability CSV's `name = QoP Blink` then becomes the display name. "QoP Blink" in the hero CSV would give `QoPBlink`, which no sane id maps to.
+- Skirmisher's `AbilityId::Blink` is untouched.
 
-| # | Behaviour | (a) | (b) |
-|---|---|---|---|
-| C1 | Regen / BAT / attack timing columns | Add 5 generator-supported header columns (no code) | Defaults apply |
-| G4 | Attack projectile speed 1500 | New hero column `attack_projectile_speed` | Derived 1160 |
-| G5 | Attack point 0.56 | Raise the 0.5 clamp | 0.5 |
-| G6 | Cast backswing 0.77 / 0.63 / 0.9 | Raise the 0.5 clamp | 0.5 |
-| G8 | DoT ticks every 3 s | Tick interval on Burn | Continuous burn at per-tick/3 dps, or 5 ticks spread over 16 s (6.25/12.5/…/43.75) |
-| G11 | Global range, max distance, 200 minimum | Max/min distance on Teleport | `cast_range` = max distance and the hero walks in; no minimum |
-| G13 | One projectile per enemy | Per-unit homing projectile | Instant AoE damage |
-| G14 | Wave width 100→450 | Skillshot `end_width` | Constant width 275 |
-| G15 | Cast range 700 + travel 900 | Separate travel distance | `cast_range` 900 |
-| G16 | 14 damage instances | Interval damage (shared with G8) | One hit for the full total |
-| G18 | Knockback along the wave direction | Directional knockback option | Push away from the contact point |
-| G21 | README kit text | none | Hand-edit after generation |
+## 9. Variant B values
 
-## 6. Implementation sequence
-1. Check the baseline: `python3 scripts/AbilityGenerator.py` should leave no diff.
-2. Edit the CSVs, including the examples.
-3. Run `AbilityGenerator.py --check` on both the data CSVs and the example CSVs.
-4. Run HeroGenerator **first** (with `--dry-run`, then for real). Use a scratch CSV if Magnus is excluded.
-5. Run AbilityGenerator. Expect 4 additions with ranks 7/7/7/4.
-6. Run `cargo fmt`, then hand-fix the README row.
+| Field | Formula | Value |
+|---|---|---|
+| base_health | 560 − 20×18 | 200 |
+| base_health_regen | 2.25 − 20×0.12 | −0.15 |
+| base_mana | 375 − 25×12 | 75 |
+| base_mana_regen | 1.25 − 25×0.05 | 0 |
+| armor | 0 − 20×0.14 | −2.8 |
+| magic_resist | (0.275/0.725)/0.06 − 25×0.12 | 3.321839 |
 
-## 7. Invariants
-- Generated files change only through the generators, plus `cargo fmt`.
-- No new effect, trigger, status, mechanic or CSV column unless the user approves it.
-- `SonicWave.is_ultimate()` holds.
-- Skirmisher's Blink is untouched.
+Negative bases are accepted by the generator (`parse_float` has no minimum) and by the runtime (`mitigate` handles negative resistance with `abs()`).
 
-## 8. Tests
-- `src/heroes.rs`: `queen_of_pain_def_matches_csv` covers abilities, range, BAT, attack timing and level-1 vitals.
-- `src/abilities/catalog.rs` covers the target type, effects, rank values and the `max_rank` of each of the four abilities.
-- Commands: `cargo fmt --check`, `cargo build`, `cargo test`, the generator `--check` runs (data and examples), `python3 -m unittest test_generator_common`, and a regenerate step that should produce no diff.
+## 10. Tests
 
-## 9. Risks
-- Generator order: running AbilityGenerator first creates duplicate stubs.
-- Shared `slow` and `burn` status ids: other sources replace Shadow Strike's debuffs.
-- A failed Blink teleport still spends mana and cooldown, as the existing Blink does.
-- The hero-select row may overflow on narrow windows.
-- Magnus's `magic_resist 27` is probably a percent-vs-points mistake (out of scope).
+- `heroes.rs` `queen_of_pain_matches_spec` checks:
+  - the CLI lookup, the primary attribute and the abilities;
+  - level-1 vitals: 560, 2.25, 375, 1.25, armor ≈ 0, MR ≈ 27.5%;
+  - range 550, BAT 1.5, attack point 0.56, backswing 0.41, turn rate 0.6, move speed 290, projectile speed 1500, APS 0.8.
+- `catalog.rs` `queen_of_pain_abilities_generate_expected_definitions` checks the cooldowns, burn intervals, global range, teleport bounds, `ProjectileToEach`, end radius, ultimate rank count and the "QoP Blink" display name.
+- Integration tests:
+  - `sonic_wave_deals_fourteen_instances_and_one_knockback`;
+  - `shadow_strike_and_sonic_wave_dots_coexist`.
+
+Commands:
+```bash
+cargo fmt --check
+cargo build
+cargo test
+python3 scripts/AbilityGenerator.py --check
+python3 scripts/ItemGenerator.py --check
+python3 scripts/AbilityGenerator.py data/examples/abilities.csv data/examples/ability_effects.csv --check
+python3 scripts/ItemGenerator.py data/examples/items.csv data/examples/item_effects.csv --check
+(cd scripts && python3 -m unittest test_generator_common)
+python3 scripts/AbilityGenerator.py && python3 scripts/ItemGenerator.py && git diff --stat src/abilities/generated.rs src/item_catalog.rs
+python3 scripts/HeroGenerator.py data/heroes.example.csv --dry-run
+```
+
+## 11. Invariants and risks
+- Teleport clamping lives in `EffectRunner`.
+- `ProjectileToEach` only emits projectiles, and its source comes from `ctx.source`.
+- Ticks are written only by `tick_status_effects`.
+- Generated files change only through the generators, with the diffs named in Steps 4–6.
+- Ticks are written before `apply_damage_events` in the same frame, and the final-tick flush happens on expiry.
+- A bounded teleport still drops stale move orders through `teleport.rs`.
+- A rejected teleport destination still spends mana and cooldown, as the existing Blink does.
+- A global cast range must hide the range ring.
+- Generated burns now use per-owner ids, so `remove_status,burn` no longer matches them. No current data is affected.
+- The hero-select UI may overflow with 6 heroes (cosmetic).
+
+## 12. Points to confirm with the user
+1. Sonic Wave: the interval design (recommended) or the pulse model (needs more new machinery).
+2. Shadow Strike's first tick lands 3 s after impact, giving 5 ticks. Ticking on impact would give 6.
+3. A Blink click on herself moves 200 in her facing direction.
+4. Scream of Pain's projectile speed defaults to ~884.
+5. Generated burns switch to per-owner status ids, so different sources' DoTs stack instead of replacing each other.
