@@ -362,3 +362,24 @@ Listed per step in §3. The key regressions to protect: the no-ping-pong thorn t
    - Aura statuses applied to others.
    - Cooldown-ready on charge restore.
    - `OnExpire` and `OnChannelTick` emission.
+
+---
+
+## Deviations (recorded during implementation)
+
+Small departures from the text above, with the reason:
+
+1. **`while` accepts timed `stat_modifier` rows as well as `apply_status`** (§2.7). `apply_status` has no stat bonuses (armor, attack damage, ...), so a pure `apply_status` rule could not express the headline use ("+damage below 50% health"). Both emit `ApplyStatus` with a blank duration, are reconciled by the same helper, and a passive-only stat is still rejected. Everything else about the rule (owner/caster target, blank duration, `has_status` self-reference) is as specified.
+2. **`source_triggers` returns a `Vec`, not a `SmallVec`, and takes no `rank`** (§2.2). `smallvec` is not a dependency and the helper never needed the rank; adding a dependency was not justified. A small `source_has_trigger` wrapper sits next to it.
+3. **`TriggerCounters` is a named struct** `{ counts, prd, sums }` instead of a tuple struct with two added lists (§2.3). The old tuple field is now `counts`; nothing outside `effects.rs` read it.
+4. **`CooldownReadyEvent` lives in `abilities/reactive_triggers.rs`**, not `actions/` (§2.3), because only the ability layer and `items::tick_item_cooldowns` use it and `actions` must not depend on `abilities`.
+5. **The `status_triggers` ordering is pinned from the abilities chain** (`status_triggers.after(tick_status_effects)`) instead of `tick_status_effects.before(status_triggers)` in `StatusPlugin` (§7), so `status.rs` does not depend on the abilities module. The constraint is the same and creates no cycle; the existing status tests are unchanged.
+6. **`StatusEffectEvent` literals were extended with `reactive: false` rather than rewritten to `::new`** (§2.3, "update the 19 literals"). `StatusEffectEvent::new(...)` exists and is used by the runner and the held-status helper; test literals keep the struct form to keep the diff small.
+7. **Gates and passive entries do not count as spell hits** (§2.4). `resolve_ability_triggers` skips `Proc` / `Counter` / `Accumulate` / `PassiveStat` entries when collecting hit enemies (`AbilityEffect::acts_on_targets`), so a bare proc aimed at an enemy does not register a hit.
+8. **`DamageAppliedEvent` is written for every event that reaches a living, vulnerable target**, including zero-damage ones (e.g. a full damage immunity); the dispatcher filters `amount <= 0`. Kill and health-crossing need the before / after values regardless.
+9. **Tooltip tags for parameterised triggers are generic** ("at low health", "periodically", ...) because `trigger_tag` returns `&'static str`; the parameters are not printed.
+10. **`on_status_applied:any` is accepted** as an explicit spelling of the blank filter.
+11. **`OnAttackHit` carries the landed damage as `amount`** (as §3 step 2 says), so an `accumulate` under `on_attack_hit` sums damage, not hits. The "accumulate equals counter" regression test therefore uses `OnAttack`, whose amount is the default 1.
+12. **The `on_cooldown_ready` item rule** counts `on_use`, `on_channel_end` and `on_channel_interrupted` rows as "has an active", matching how the generator already decides that an item is activatable.
+13. **Unrelated rustfmt drift** (import order in `abilities/custom.rs`, `ui.rs`, `units.rs`) was fixed in the step 1 commit so that `cargo fmt --check` passes on every commit.
+14. **Examples:** `thornskin` (a passive ability with `on_damage_taken` and a `while` row) was added next to the nine items listed in step 11, to show that reactive triggers are valid for learned passives. Its invalid counterpart is an `on_cooldown_ready` row on the existing invalid passive `aura`; the nine items share one invalid owner, `reactor`.

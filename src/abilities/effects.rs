@@ -326,6 +326,11 @@ pub trait AbilityEffectAppExt {
     /// Register the system behind `AbilityEffect::Custom { id, .. }`. It receives the
     /// resolved targets and should emit shared gameplay events rather than mutating
     /// `Health` / stats directly.
+    ///
+    /// The input's `ctx.reaction` is true when the effect runs under a damage- or
+    /// status-class trigger. A custom effect must pass it on (`DamageEvent::reactive`,
+    /// `StatusEffectEvent::reactive`, `ResourceDrainEvent::reactive`) and must not start
+    /// attacks under it, or it bypasses the recursion guard.
     fn register_custom_effect<M>(
         &mut self,
         id: &'static str,
