@@ -458,6 +458,9 @@ pub enum StatusSpec {
         /// is built (see [`StatusBuildContext::base_attack_damage`]) and added to the flat
         /// `attack_damage` bonus.
         attack_damage_pct: RankValue,
+        /// Cleave ratio (0..=1) added to `CombatStats::cleave_damage_ratio`; only melee
+        /// attackers cleave.
+        cleave: RankValue,
     },
 }
 
@@ -499,6 +502,7 @@ impl StatusSpec {
             attack_speed_mult: RankValue::ZERO,
             attack_range: RankValue::ZERO,
             attack_damage_pct: RankValue::ZERO,
+            cleave: RankValue::ZERO,
         }
     }
 
@@ -630,6 +634,7 @@ impl StatusSpec {
                 attack_speed_mult,
                 attack_range,
                 attack_damage_pct,
+                cleave,
             } => {
                 let base = match kind {
                     StatusKind::Buff => StatusEffect::buff(id, duration),
@@ -644,6 +649,7 @@ impl StatusSpec {
                     attack_speed_flat: attack_speed_flat.at(rank),
                     attack_speed_mult: attack_speed_mult.at(rank),
                     attack_range: attack_range.at(rank),
+                    cleave: cleave.at(rank),
                     ..base
                 }
             }

@@ -1305,6 +1305,41 @@ mod tests {
     }
 
     #[test]
+    fn timed_cleave_status_cleaves_melee_attackers_only() {
+        use crate::status::{StatusEffect, StatusEffects, apply_status};
+        let timed_cleave = || StatusEffect {
+            cleave: 0.5,
+            ..StatusEffect::buff("empower_cleave", 5.0)
+        };
+
+        // Melee: the status grants cleave while it lasts.
+        let (mut world, mut schedule) = world_with_pipeline();
+        let (attacker, target) = melee_duel(&mut world);
+        let mut statuses = StatusEffects::default();
+        let mut stats = world.get_mut::<CombatStats>(attacker).unwrap();
+        apply_status(&mut statuses, &mut stats, timed_cleave(), 0.0);
+        world.entity_mut(attacker).insert(statuses);
+        let beside = bystander(&mut world, Vec3::new(0.0, 0.0, 250.0));
+        run_frames(&mut world, &mut schedule, 12);
+        assert!(hp(&world, target) < 1000.0);
+        assert!((hp(&world, beside) - secondary_hit()).abs() < 1e-3);
+
+        // Ranged: the same status does nothing.
+        let (mut world, mut schedule) = world_with_pipeline();
+        let target_pos = Vec3::new(450.0, 0.0, 0.0);
+        let target = spawn_unit(&mut world, Team::Dire, target_pos, passive_stats());
+        let attacker = spawn_attacker(&mut world, 500.0, target, target_pos);
+        let mut statuses = StatusEffects::default();
+        let mut stats = world.get_mut::<CombatStats>(attacker).unwrap();
+        apply_status(&mut statuses, &mut stats, timed_cleave(), 0.0);
+        world.entity_mut(attacker).insert(statuses);
+        let beside = bystander(&mut world, Vec3::new(450.0, 0.0, 100.0));
+        run_frames(&mut world, &mut schedule, 40);
+        assert!(hp(&world, target) < 1000.0);
+        assert_eq!(hp(&world, beside), 1000.0);
+    }
+
+    #[test]
     fn cleave_radius_stat_overrides_the_default() {
         let (mut world, mut schedule) = world_with_pipeline();
         let (attacker, _) = melee_duel(&mut world);

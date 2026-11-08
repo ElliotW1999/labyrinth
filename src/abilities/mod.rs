@@ -2959,6 +2959,7 @@ mod tests {
             attack_speed_mult: RankValue::fixed(0.1),
             attack_range: RankValue::ZERO,
             attack_damage_pct: RankValue::ZERO,
+            cleave: RankValue::ZERO,
         };
         let mut app = test_app();
         let toggle = AbilityDefinition::new(AbilityId::Overcharge)
@@ -6325,6 +6326,7 @@ mod tests {
                     attack_speed_mult: RankValue::fixed(0.35),
                     attack_range: RankValue::fixed(100.0),
                     attack_damage_pct: RankValue::ZERO,
+                    cleave: RankValue::ZERO,
                 },
                 duration: RankValue::ZERO,
             },
@@ -7089,6 +7091,7 @@ mod tests {
             attack_speed_mult: RankValue::ZERO,
             attack_range: RankValue::ZERO,
             attack_damage_pct: RankValue::fixed(pct),
+            cleave: RankValue::ZERO,
         }
     }
 

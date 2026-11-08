@@ -282,6 +282,8 @@ TIMED_STATS = {
     "attack_range": "attack_range",
     # Percent (0..1000) of the target's base attack damage, snapshotted when applied.
     "attack_damage_pct": "attack_damage_pct",
+    # Cleave ratio (0..1) added to the target's cleave; only melee attackers cleave.
+    "cleave": "cleave",
 }
 
 # Timed resource modifiers map onto `StatusSpec::ResourceModifier` (summed when read).
@@ -1739,6 +1741,9 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
                     return None
                 duration = [0.0]
             elif not _require(e, "duration", report, "timed stat modifiers need a duration (only item passives are permanent)"):
+                return None
+            if effect_id == "cleave" and any(not 0 <= v <= 1 for v in value):
+                report.error(row.file, row.line, "value", row.get("value"), "a timed cleave is a fraction of the attack damage (0.25 = 25%) and must be within 0..1")
                 return None
             if effect_id == "attack_damage_pct" and any(not 0 <= v <= 1000 for v in value):
                 report.error(row.file, row.line, "value", row.get("value"), "attack_damage_pct is a percentage of the target's base attack damage and must be within 0..1000")

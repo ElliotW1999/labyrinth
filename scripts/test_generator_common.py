@@ -1561,6 +1561,18 @@ class TimedStatModifierTests(unittest.TestCase):
         self.assertEqual(report.errors, [])
 
 
+    def test_timed_cleave_is_a_fraction_within_zero_and_one(self) -> None:
+        abilities, report = self._stat("cleave", "0.16|0.24|0.32|0.4|0.48|0.56|0.64")
+        self.assertEqual(report.errors, [])
+        self.assertIn("cleave: RankValue::from_level_1(0.16, 0.08)", str(abilities[0].effects))
+        self.assertIn('id: "tester_cleave"', str(abilities[0].effects))
+        for bad in ("1.5", "-0.2"):
+            _, report = self._stat("cleave", bad)
+            self.assertTrue(
+                any("must be within 0..1" in e.message for e in report.errors), bad
+            )
+
+
 class HeroGeneratorTests(unittest.TestCase):
     HEADER = (
         "Hero_name,is_melee,Ability_Q_Name,Ability_W_Name,Ability_E_Name,Ability_R_Name,"
