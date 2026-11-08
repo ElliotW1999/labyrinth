@@ -9,7 +9,7 @@ Plan and decisions: `docs/plans/2026-11-08-mechanic-composition-layers.md`. Reac
 | Layer | Purpose | Owning code | May emit | May read |
 |---|---|---|---|---|
 | **Activation** | How an action starts: targeting, range, cost, cooldown, cast point, channel | `src/actions/` (`pipeline.rs`, `targeting.rs`, `resources.rs`); source-specific halves in `abilities/casting.rs` (`ability_action_spec`, `commit_ability`) and `items.rs` (`item_action_spec`, `commit_item`) | `ActionFiredEvent`, `ActionChannelEndEvent`; facts `AbilityCastEvent` (abilities only) and `CooldownReadyEvent` (carries an `EffectSource`, written when `ActionCooldown::tick` reports the cooldown became ready) | Loadout / inventory, mana, cooldowns, statuses (`DisableRule`) |
-| **Mechanics** | How an action plays out over time and **who** is involved: dash, projectile, attack-unit, and the four gates (`Proc` incl. pseudo-random, `Counter`, `Accumulate`, `Chain`; gate state in `TriggerCounters { counts, prd, sums }`) | `abilities/mechanics.rs` (`MechanicRunner`, `CastContext`, `chain_hops`, `execute_ability_casts`, `execute_item_mechanics`), `combat.rs` projectile systems, `displacement.rs` motion | `AbilityTriggerEvent`, `SpawnProjectileEvent`, `DisplacementEvent` (dash). Never Damage, Heal or Status events | Positions, teams, health (alive), untargetable |
+| **Mechanics** | How an action plays out over time and **who** is involved: dash, projectile (homing, skillshot, skillshot that widens with distance via `end_radius`), `ProjectileToEach` (one homing projectile per unit in an area), attack-unit, and the four gates (`Proc` incl. pseudo-random, `Counter`, `Accumulate`, `Chain`; gate state in `TriggerCounters { counts, prd, sums }`) | `abilities/mechanics.rs` (`MechanicRunner`, `CastContext`, `chain_hops`, `execute_ability_casts`, `execute_item_mechanics`), `combat.rs` projectile systems, `displacement.rs` motion | `AbilityTriggerEvent`, `SpawnProjectileEvent`, `DisplacementEvent` (dash). Never Damage, Heal or Status events | Positions, teams, health (alive), untargetable |
 | **Triggers** | **When** effects run: `AbilityTrigger` plus the systems that emit it | `definition.rs` (`AbilityTrigger`, `StatusFilter`, `Condition`), `mechanics.rs` (`OnCast`, `projectile_hit_triggers`), `items.rs` (`OnUse`), `casting.rs` (channel end), `attack_triggers.rs`, `displacement.rs` (contact, movement end), `passive.rs` (`WhileToggled`), `reactive_triggers.rs` (dispatchers `track_travel`, `proximity_triggers`, `interval_triggers`, `cooldown_triggers`, `cast_triggers`, `damage_triggers`, `status_triggers`; state `TriggerTracking`; shared fan-out `owner_sources` / `source_triggers` / `fan_out`) | `AbilityTriggerEvent(TriggerContext)`. The dispatchers read only fact messages (I11) | The fired action; fact messages from the Effects and Gameplay-rules layers |
 | **Effects** | **What** happens: `AbilityEffect` rows executed by the single executor. This is also the only place the reaction flag is stamped (I1, I10) | `abilities/effects.rs` (`EffectRunner::execute`, `resolve_ability_triggers`, `build_status_effect`) | `DamageEvent`, `HealEvent`, `ManaRestoreEvent`, `ResourceDrainEvent`, `StatusEffectEvent` (all stamped `.reactive(ctx.reaction)`), `DisplacementEvent`, `TeleportEvent`, `ExtraAttackEvent`, derived contexts from gates; the fact `SpellHitEvent` (ability source, depth 0, cast phase only) | Context, target stats and statuses (for scaling) |
 | **Modifiers** | Persistent numeric changes | `PassiveStat` / `ItemPassives` (`items.rs`, `abilities/passive.rs`), `StatusSpec` modifier variants and `StatusEffect` stat fields (`status.rs`), `vitals::resource_stat` | Stat changes through `CombatStats` | Owned items, ranks, active statuses |
@@ -143,7 +143,7 @@ Which events fire reactive triggers (`on_damage_dealt`, `on_damage_taken`, `on_s
 |---|---|
 | Damage from a non-reaction trigger | Yes: dealt for the source's owner, taken for the target |
 | Damage from a reaction (thorns, Storm Mail arcs), including `Chain` hops | No dealt, no taken. Kill, death and health-below still fire |
-| Burn / DoT ticks | Never dealt or taken (`DamageKind::Dot`). A burn started by a reaction is reactive and its ticks stay reactive. Kill, death and health-below still fire |
+| Burn / DoT ticks | Never dealt or taken (`DamageKind::Dot`). A burn started by a reaction is reactive and its ticks stay reactive. Kill, death and health-below still fire. Ticking burns (`tick_interval > 0`) follow the same rule: `tick_status_effects` writes one Dot event per interval, the first one interval after application, `floor(duration / interval)` in total; ticks still owed are flushed when the burn expires on its own, never on a dispel or a refresh. Generated burns carry the id `<owner>_burn`, so burns from different sources coexist (see 6.11) |
 | Reflected damage | Reactive; fires nothing but kill / death / health-below |
 | Resource drain | Never fires damage triggers (floors health at 1). Reactive when started by a reaction |
 | Status applied or removed by a non-reaction effect | Yes: `on_status_applied` / `on_status_removed` for the holder |
@@ -281,6 +281,8 @@ blink,0,on_cast,caster,movement,teleport,,,,,,,
 blink_dagger,0,on_use,owner,movement,teleport,,,,,,,
 ```
 
+Bounded teleport (Queen of Pain's blink, 6.11): the same effect with `min_distance` / `max_distance`. `EffectRunner` clamps the flat distance from the caster to the aim point into that range along the same line (an aim on the caster uses her facing) and sends the result as `TeleportEvent.destination`; `teleport.rs` is unchanged and still validates the map, terrain, occupancy, leash and immunity. Blank bounds keep the destination exactly at the aim point, so Blink and Blink Dagger are unchanged. Combined with `cast_range=global` (`scale::GLOBAL_CAST_RANGE`) the cast never walks the hero into range.
+
 ### 6.6 Stone Skin vs Iron Bracer
 
 ```text
@@ -411,6 +413,32 @@ bloodstone,0,on_kill,owner,heal,,150,,,,,,
 ```
 
 `thorn_mail` (item) and `thornskin` (learned passive) are the same row with a different owner column and fire the same `OnDamageTaken` through `owner_sources`; the reflected hit is reactive. `bloodstone` fires `on_kill` for the owner of the damage that crossed zero health; kill and death still fire for reactive causes.
+
+### 6.11 Queen of Pain
+
+All four abilities are data rows (`data/abilities.csv`, `data/ability_effects.csv`); the only hand-written pieces are the shared mechanics, effects and rules introduced for them.
+
+**Shadow Strike** (unit target, homing projectile): damage, a 16 s slow and a ticking burn, all on `on_projectile_hit,trigger_unit`.
+
+```text
+Mechanic: Projectile (homing) -> OnProjectileHit
+Effects:  magical damage 50..230 | slow 25..85% for 16 s | burn 20..140 per tick, tick_interval 3 s, 16 s
+Rules:    status id shadow_strike_burn; first tick 3 s after impact, 5 ticks (DamageKind::Dot)
+```
+
+```csv
+shadow_strike,2,on_projectile_hit,trigger_unit,apply_status,burn,20|40|60|80|100|120|140,magical,16,,3,,
+```
+
+**QoP Blink** (`queen_of_pain_blink`, display name "QoP Blink"): `cast_range=global` plus a bounded teleport, `value` = max distance (1075 to 1525) and `amount` = min distance (200).
+
+```csv
+queen_of_pain_blink,0,on_cast,caster,movement,teleport,1075|1150|1225|1300|1375|1450|1525,,,,200,,
+```
+
+**Scream of Pain** (no target, radius 600): `projectile_type=targeted_each` -> `AbilityMechanic::ProjectileToEach { center: Caster, team: Enemy, speed: 900 }` plus the shockwave ring. Each projectile fires its own `OnProjectileHit` with `trigger_unit` set to the struck enemy; the damage row is an ordinary `damage` effect.
+
+**Sonic Wave** (interval design): one expanding skillshot (`projectile_end_radius` 450 from `aoe_radius` 100, 900 units at 642.857 u/s = 1.4 s) that hits each enemy once. On hit it applies a pure ticking burn (23/34/45/56 per tick, `tick_interval` 0.1 s, 1.4 s = exactly 14 instances, id `sonic_wave_burn`) and one knockback of 350 over 1.4 s, away from the contact point. Because the burn ids are per owner it coexists with Shadow Strike's. Tests: `sonic_wave_deals_fourteen_instances_and_one_knockback`, `shadow_strike_and_sonic_wave_dots_coexist`.
 
 ## 7. Checklist: adding a mechanic, effect or trigger
 

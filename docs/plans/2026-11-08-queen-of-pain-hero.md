@@ -305,3 +305,23 @@ python3 scripts/HeroGenerator.py data/heroes.example.csv --dry-run
 3. Blink clicked on self: moves 200 in facing direction.
 4. Scream of Pain projectile speed: 900.
 5. Generated burns use per-owner status ids.
+
+## 13. Implementation notes (2026-11-08)
+
+Steps 1 to 9 landed as separate commits on the PR branch (Step 7 is an empty commit: the interval design needs no code beyond Steps 3 and 5). No mechanic, trigger, effect, status, CSV column or keyword beyond §2/§3 was added. Deviations and clarifications:
+
+1. **Skillshot range.** `Skillshot.start` and `range` are derived in `combat::spawn_spell_bolt` from the event's `origin` and `target_pos` (for a skillshot, `target_pos = origin + dir * cast_range`, set in `mechanics.rs`), so `SpawnProjectileEvent` only gains `skillshot_end_width`. This is the cast range in every case, without a second field that could disagree with it.
+2. **`unit_in_area` signature.** It takes `untargetable: bool` instead of a status query. `EffectTarget::UnitsInRadius` waives the check for the caster, and `ProjectileToEach` excludes the caster altogether, so each caller computes the flag. Both runners use the same predicate otherwise.
+3. **Items and `projectile_end_radius`.** The shared validator requires `aoe_radius` for it, and items have no `aoe_radius` column, so items reject the column with a clear message (the same position as `targeted_each`). The column is accepted in the optional item activation list so that the error, not an "unknown column" warning, is shown.
+4. **Validation beyond the listed rules** (none adds surface; each only rejects a combination that would otherwise do nothing or lie):
+   - `cast_range=global` mixed into a level list is an error.
+   - A teleport with bounds on a target other than `caster` / `owner` is an error (the bounds are measured from the caster).
+   - `targeted_each` with `target_team=self` is an error (the caster is never a target, so nothing would be sent).
+   - Burn `amount` must also be above 0 (the spec's "> 0 and <= duration" rule), checked per rank; the invalid example uses `amount=0`.
+5. **Tooltips.** Ticking burns show "Burn damage per Ns"; continuous ones show "Burn damage per second" (previously only "Burn" and the duration). Skillshots with an end radius add an "End radius" row. Bounded teleports add a "Max distance" row and a "at least N away" line. A global cast range still prints its numeric value (25000) in the "Cast range" row.
+6. **Generator output formatting.** `AbilityGenerator.py` and `HeroGenerator.py` rewrite the `ability_ultimates` region in `components.rs` unformatted; run `cargo fmt` after every generator run (as Step 8 already prescribed). The only hand-formatted diffs left in generated files are the ones named in Steps 4 to 6 and 8.
+7. **Ticking burn tolerance.** A tick is due when `dot_timer + 1e-4 >= dot_interval`, matching the `1e-4` slack used for `floor(duration / interval + 1e-4)`. With 0.05 s frames the 16 s / 3 s burn ticks exactly at 3, 6, 9, 12 and 15 s and the 1.4 s / 0.1 s burn deals 14 ticks at any frame rate (the test uses uneven frames and a single long frame).
+8. **Test harness.** The Sonic Wave and Shadow Strike integration tests use `qop_app()`: the ability `test_app()` plus `tick_status_effects` ordered before `status_triggers`. They land the projectile with an explicit `ProjectileHitEvent` (the harness has no projectile entities); the skillshot's width growth is covered separately in `combat.rs` (`expanding_skillshot_widens_with_distance_travelled`).
+9. **Heroes CSV.** `data/heroes.csv` also got the Queen of Pain row, next to the still-pending Magnus row. HeroGenerator ran only on a scratch CSV (header plus the Queen of Pain row, kept outside the repo), so Magnus was not generated.
+
+Remaining limitations: the hero-select UI may overflow with six heroes (cosmetic, §11); the global-range tooltip shows 25000.
