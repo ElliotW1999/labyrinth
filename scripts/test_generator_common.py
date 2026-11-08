@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -1237,6 +1238,36 @@ class ReactiveTriggerTests(unittest.TestCase):
         effect, ctx = _effect("stat_modifier", "strength", target="owner", trigger="while:moving", kind="item", value="5")
         report = Report()
         self.assertIsNone(effect_to_rust(effect, ctx, report))
+
+
+class ExampleCatalogTests(unittest.TestCase):
+    """The shipped example CSVs stay valid and the invalid ones stay rejected."""
+
+    ROOT = Path(__file__).resolve().parent.parent
+    CASES = (
+        ("AbilityGenerator.py", "abilities.csv", "ability_effects.csv"),
+        ("ItemGenerator.py", "items.csv", "item_effects.csv"),
+    )
+
+    def _check(self, script: str, directory: str, *files: str) -> "subprocess.CompletedProcess[str]":
+        base = self.ROOT / "data" / "examples" / directory
+        paths = [str(base / f) for f in files]
+        return subprocess.run(
+            [sys.executable, "-B", str(self.ROOT / "scripts" / script), "--check", *paths],
+            capture_output=True,
+            text=True,
+        )
+
+    def test_valid_examples_pass(self) -> None:
+        for script, *files in self.CASES:
+            result = self._check(script, "", *files)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_invalid_examples_are_rejected(self) -> None:
+        for script, *files in self.CASES:
+            result = self._check(script, "invalid", *files)
+            self.assertEqual(result.returncode, 1, script)
+            self.assertIn("validation error", result.stderr + result.stdout)
 
 
 if __name__ == "__main__":
