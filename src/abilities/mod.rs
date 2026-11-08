@@ -5373,4 +5373,93 @@ mod tests {
             "statuses started by a reaction must be reactive: {statuses:?}"
         );
     }
+
+    /// Fires `trigger` for a dash item whose contact row damages enemies, with the owner
+    /// aiming along +X, and returns the contact `DamageEvent`s seen over the dash.
+    fn dash_contact_damage(trigger: AbilityTrigger) -> Vec<DamageEvent> {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            entry(
+                trigger,
+                EffectTarget::Caster,
+                AbilityEffect::Displace {
+                    kind: DisplacementKind::Dash,
+                    distance: Some(RankValue::fixed(300.0)),
+                    duration: RankValue::fixed(0.25),
+                    speed: None,
+                },
+            ),
+            entry(
+                AbilityTrigger::OnUnitContact,
+                EffectTarget::TriggerUnit,
+                fixed_magical_damage(50.0),
+            ),
+        ])]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(150.0, 0.0, 0.0));
+        for unit in [caster, enemy] {
+            app.world_mut().entity_mut(unit).insert(BoundRadius(30.0));
+        }
+        let mut ctx = item_ctx(&app, caster, trigger, enemy);
+        ctx.aim = Vec3::new(1000.0, 0.0, 0.0);
+        fire(&mut app, ctx);
+        let mut seen = Vec::new();
+        for _ in 0..12 {
+            step(&mut app);
+            seen.extend(current_messages::<DamageEvent>(&app));
+        }
+        assert!(
+            app.world().get::<Transform>(caster).unwrap().translation.x > 100.0,
+            "the dash ran"
+        );
+        seen
+    }
+
+    #[test]
+    fn contact_damage_of_a_reaction_launched_dash_is_reactive() {
+        let damage = dash_contact_damage(AbilityTrigger::OnDamageTaken);
+        assert_eq!(damage.len(), 1, "one contact hit: {damage:?}");
+        assert!(damage[0].reactive, "{damage:?}");
+    }
+
+    #[test]
+    fn contact_damage_of_an_ordinary_dash_stays_non_reactive() {
+        let damage = dash_contact_damage(AbilityTrigger::OnAttackHit);
+        assert_eq!(damage.len(), 1, "one contact hit: {damage:?}");
+        assert!(!damage[0].reactive, "{damage:?}");
+    }
+
+    #[test]
+    fn ordinary_cyclone_status_stays_non_reactive() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![entry(
+            AbilityTrigger::OnAttackHit,
+            EffectTarget::TriggerUnit,
+            AbilityEffect::Displace {
+                kind: DisplacementKind::Cyclone,
+                distance: None,
+                duration: RankValue::fixed(1.0),
+                speed: None,
+            },
+        )])]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        let ctx = item_ctx(&app, caster, AbilityTrigger::OnAttackHit, enemy);
+        fire(&mut app, ctx);
+        let mut statuses: Vec<StatusEffectEvent> = Vec::new();
+        for _ in 0..3 {
+            step(&mut app);
+            statuses.extend(current_messages::<StatusEffectEvent>(&app));
+        }
+        let cyclone: Vec<_> = statuses
+            .iter()
+            .filter(
+                |e| matches!(&e.change, crate::status::StatusChange::Apply(s) if s.id == "cyclone"),
+            )
+            .collect();
+        assert_eq!(cyclone.len(), 1);
+        assert!(!cyclone[0].reactive);
+    }
 }
