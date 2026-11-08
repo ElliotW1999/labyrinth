@@ -56,7 +56,9 @@ use effects::{
     AbilityTriggerEvent, CustomAbilityEffects, HealEvent, ManaRestoreEvent, apply_heal_events,
     apply_mana_restore_events, resolve_ability_triggers, source_params,
 };
-use mechanics::{CustomAbilityBehaviors, execute_ability_casts, projectile_hit_triggers};
+use mechanics::{
+    CustomAbilityBehaviors, execute_ability_casts, execute_item_mechanics, projectile_hit_triggers,
+};
 use passive::{sync_ability_passives, tick_toggle_upkeep};
 
 pub struct AbilitiesPlugin;
@@ -97,7 +99,7 @@ impl Plugin for AbilitiesPlugin {
                     validate_activation_requests,
                     (refresh_activation_aims, tick_activations).chain(),
                     emit_ability_casts,
-                    crate::items::resolve_item_uses,
+                    (crate::items::resolve_item_uses, execute_item_mechanics).chain(),
                     execute_ability_casts,
                     action_channel_end_triggers,
                     projectile_hit_triggers,
@@ -665,7 +667,7 @@ mod tests {
                     refresh_activation_aims,
                     tick_activations,
                     emit_ability_casts,
-                    crate::items::resolve_item_uses,
+                    (crate::items::resolve_item_uses, execute_item_mechanics).chain(),
                     execute_ability_casts,
                     action_channel_end_triggers,
                     projectile_hit_triggers,
@@ -787,6 +789,7 @@ mod tests {
             color: [1.0, 1.0, 1.0],
             description: "test",
             effects,
+            mechanics: &[],
         }
     }
 
@@ -828,6 +831,7 @@ mod tests {
             color: [1.0, 1.0, 1.0],
             description: "test",
             effects,
+            mechanics: &[],
         }
     }
 
@@ -2776,6 +2780,96 @@ mod tests {
         }
     }
 
+    fn projectile_item(entries: Vec<AbilityEffectEntry>) -> ItemDefinition {
+        static MECHANICS: [AbilityMechanic; 1] = [AbilityMechanic::Projectile {
+            splash_radius: AreaRadius::Ability,
+            speed: None,
+            skillshot: false,
+            first_hit: false,
+        }];
+        let effects: &'static [AbilityEffectEntry] = Box::leak(entries.into_boxed_slice());
+        ItemDefinition {
+            mechanics: &MECHANICS,
+            ..item_with(
+                effects,
+                TargetType::Unit,
+                TargetTeam::Enemy,
+                scale::u(600.0),
+            )
+        }
+    }
+
+    fn use_projectile_item(
+        app: &mut App,
+        caster: Entity,
+        target: Entity,
+    ) -> Vec<SpawnProjectileEvent> {
+        give_item(app, caster, ItemId::HeartwoodBand);
+        request_item(app, caster, 0, CastTarget::Unit(target));
+        let mut spawned = Vec::new();
+        for _ in 0..6 {
+            step(app);
+            spawned.extend(
+                app.world()
+                    .resource::<Messages<SpawnProjectileEvent>>()
+                    .iter_current_update_messages()
+                    .copied(),
+            );
+        }
+        spawned
+    }
+
+    #[test]
+    fn item_projectile_fires_on_projectile_hit_for_the_item() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([projectile_item(vec![damage_entry(
+            AbilityTrigger::OnProjectileHit,
+            EffectTarget::TriggerUnit,
+            75.0,
+        )])]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        let target = enemy_at(&mut app, 300.0);
+        let spawned = use_projectile_item(&mut app, caster, target);
+
+        assert_eq!(spawned.len(), 1, "the item launched its projectile");
+        assert_eq!(
+            spawned[0].payload.source,
+            EffectSource::Item(ItemId::HeartwoodBand)
+        );
+        assert_eq!(spawned[0].target, Some(target));
+        assert_eq!(health(&app, target), 1000.0, "nothing lands before the hit");
+
+        app.world_mut().write_message(hit(
+            spawned[0].payload,
+            Vec3::X * 300.0,
+            Some(target),
+            Vec::new(),
+        ));
+        step(&mut app);
+        assert!((health(&app, target) - 925.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn item_projectile_splash_uses_the_item_radius() {
+        let mut app = test_app();
+        let entries = vec![AbilityEffectEntry {
+            trigger: AbilityTrigger::OnImpact,
+            target: EffectTarget::UnitsInRadius {
+                center: super::definition::AreaCenter::TriggerPoint,
+                radius: AreaRadius::Fixed(RankValue::fixed(143.0)),
+                team: TargetTeam::Enemy,
+            },
+            effect: fixed_magical_damage(10.0),
+        }];
+        let _defs = install_test_item_definitions([projectile_item(entries)]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        let target = enemy_at(&mut app, 300.0);
+        let spawned = use_projectile_item(&mut app, caster, target);
+
+        assert_eq!(spawned.len(), 1);
+        assert_eq!(spawned[0].splash_radius, 143.0);
+    }
+
     #[test]
     fn data_only_ability_resolves_on_hit_effects() {
         let mut app = test_app();
@@ -3237,6 +3331,7 @@ mod tests {
             color: [1.0, 1.0, 1.0],
             description: "test",
             effects: item_effects,
+            mechanics: &[],
         };
 
         let mut ability_app = test_app();
@@ -3872,6 +3967,7 @@ mod tests {
             color: [1.0, 1.0, 1.0],
             description: "test",
             effects,
+            mechanics: &[],
         }
     }
 

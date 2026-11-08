@@ -3,9 +3,9 @@
 
 #[allow(unused_imports)]
 use crate::abilities::definition::{
-    AbilityEffect, AbilityEffectEntry, AbilityTrigger, AreaCenter, AreaRadius, Attribute,
-    DisplacementKind, EffectScaling, EffectTarget, LeashAnchorKind, PassiveStat, RankValue,
-    StatusSpec, TargetTeam, TargetType,
+    AbilityEffect, AbilityEffectEntry, AbilityMechanic, AbilityTrigger, AreaCenter, AreaRadius,
+    Attribute, DisplacementKind, EffectScaling, EffectTarget, LeashAnchorKind, PassiveStat,
+    RankValue, StatusSpec, TargetTeam, TargetType,
 };
 #[allow(unused_imports)]
 use crate::components::DamageType;
@@ -117,6 +117,7 @@ static IRON_BRACER: ItemDefinition = ItemDefinition {
             },
         },
     ],
+    mechanics: &[],
 };
 // </item:iron_bracer>
 
@@ -146,6 +147,7 @@ static SWIFT_BOOTS: ItemDefinition = ItemDefinition {
             amount: RankValue::fixed(65.0),
         },
     }],
+    mechanics: &[],
 };
 // </item:swift_boots>
 
@@ -185,6 +187,7 @@ static MANA_CRYSTAL: ItemDefinition = ItemDefinition {
             },
         },
     ],
+    mechanics: &[],
 };
 // </item:mana_crystal>
 
@@ -224,6 +227,7 @@ static BLADE_OF_ASH: ItemDefinition = ItemDefinition {
             },
         },
     ],
+    mechanics: &[],
 };
 // </item:blade_of_ash>
 
@@ -263,6 +267,7 @@ static AEGIS_CHARM: ItemDefinition = ItemDefinition {
             },
         },
     ],
+    mechanics: &[],
 };
 // </item:aegis_charm>
 
@@ -299,6 +304,7 @@ static VIAL_OF_LIGHT: ItemDefinition = ItemDefinition {
             scaling: EffectScaling::None,
         },
     }],
+    mechanics: &[],
 };
 // </item:vial_of_light>
 
@@ -358,6 +364,7 @@ static STORM_ROD: ItemDefinition = ItemDefinition {
             },
         },
     ],
+    mechanics: &[],
 };
 // </item:storm_rod>
 
@@ -422,6 +429,7 @@ static WARDSTONE_CLOAK: ItemDefinition = ItemDefinition {
             },
         },
     ],
+    mechanics: &[],
 };
 // </item:wardstone_cloak>
 
@@ -469,6 +477,7 @@ static HEARTWOOD_BAND: ItemDefinition = ItemDefinition {
             },
         },
     ],
+    mechanics: &[],
 };
 // </item:heartwood_band>
 
@@ -539,6 +548,7 @@ static SPARK_PENDANT: ItemDefinition = ItemDefinition {
             },
         },
     ],
+    mechanics: &[],
 };
 // </item:spark_pendant>
 
@@ -561,6 +571,7 @@ static RECIPE_HEARTWOOD_BAND: ItemDefinition = ItemDefinition {
     color: [0.55, 0.5, 0.35],
     description: "Combines with components into Heartwood Band",
     effects: &[],
+    mechanics: &[],
 };
 // </item:recipe_heartwood_band>
 
@@ -583,6 +594,7 @@ static RECIPE_SPARK_PENDANT: ItemDefinition = ItemDefinition {
     color: [0.6, 0.45, 0.25],
     description: "Combines with components into Spark Pendant",
     effects: &[],
+    mechanics: &[],
 };
 // </item:recipe_spark_pendant>
 
@@ -612,6 +624,7 @@ static GAUNTLETS_OF_STRENGTH: ItemDefinition = ItemDefinition {
             amount: RankValue::fixed(3.0),
         },
     }],
+    mechanics: &[],
 };
 // </item:gauntlets_of_strength>
 
@@ -641,6 +654,7 @@ static SLIPPERS_OF_AGILITY: ItemDefinition = ItemDefinition {
             amount: RankValue::fixed(3.0),
         },
     }],
+    mechanics: &[],
 };
 // </item:slippers_of_agility>
 
@@ -670,6 +684,7 @@ static MANTLE_OF_INTELLIGENCE: ItemDefinition = ItemDefinition {
             amount: RankValue::fixed(3.0),
         },
     }],
+    mechanics: &[],
 };
 // </item:mantle_of_intelligence>
 
@@ -717,6 +732,7 @@ static CIRCLET: ItemDefinition = ItemDefinition {
             },
         },
     ],
+    mechanics: &[],
 };
 // </item:circlet>
 
@@ -746,6 +762,7 @@ static BELT_OF_STRENGTH: ItemDefinition = ItemDefinition {
             amount: RankValue::fixed(6.0),
         },
     }],
+    mechanics: &[],
 };
 // </item:belt_of_strength>
 
@@ -775,6 +792,7 @@ static BAND_OF_ELVENSKIN: ItemDefinition = ItemDefinition {
             amount: RankValue::fixed(6.0),
         },
     }],
+    mechanics: &[],
 };
 // </item:band_of_elvenskin>
 
@@ -804,6 +822,7 @@ static ROBE_OF_THE_MAGI: ItemDefinition = ItemDefinition {
             amount: RankValue::fixed(6.0),
         },
     }],
+    mechanics: &[],
 };
 // </item:robe_of_the_magi>
 
@@ -851,6 +870,7 @@ static CROWN: ItemDefinition = ItemDefinition {
             },
         },
     ],
+    mechanics: &[],
 };
 // </item:crown>
 
@@ -880,6 +900,7 @@ static OGRE_AXE: ItemDefinition = ItemDefinition {
             amount: RankValue::fixed(10.0),
         },
     }],
+    mechanics: &[],
 };
 // </item:ogre_axe>
 
@@ -909,6 +930,7 @@ static BLADE_OF_ALACRITY: ItemDefinition = ItemDefinition {
             amount: RankValue::fixed(10.0),
         },
     }],
+    mechanics: &[],
 };
 // </item:blade_of_alacrity>
 
@@ -938,6 +960,7 @@ static STAFF_OF_WIZARDRY: ItemDefinition = ItemDefinition {
             amount: RankValue::fixed(10.0),
         },
     }],
+    mechanics: &[],
 };
 // </item:staff_of_wizardry>
 
@@ -985,6 +1008,7 @@ static DIADEM: ItemDefinition = ItemDefinition {
             },
         },
     ],
+    mechanics: &[],
 };
 // </item:diadem>
 
@@ -1014,6 +1038,7 @@ static RING_OF_PROTECTION: ItemDefinition = ItemDefinition {
             amount: RankValue::fixed(1.0),
         },
     }],
+    mechanics: &[],
 };
 // </item:ring_of_protection>
 
@@ -1043,6 +1068,7 @@ static BLADES_OF_ATTACK: ItemDefinition = ItemDefinition {
             amount: RankValue::fixed(9.0),
         },
     }],
+    mechanics: &[],
 };
 // </item:blades_of_attack>
 
@@ -1072,6 +1098,7 @@ static GLOVES_OF_HASTE: ItemDefinition = ItemDefinition {
             amount: RankValue::fixed(20.0),
         },
     }],
+    mechanics: &[],
 };
 // </item:gloves_of_haste>
 
@@ -1101,6 +1128,7 @@ static CHAINMAIL: ItemDefinition = ItemDefinition {
             amount: RankValue::fixed(4.0),
         },
     }],
+    mechanics: &[],
 };
 // </item:chainmail>
 
@@ -1140,6 +1168,7 @@ static HELM_OF_IRON_WILL: ItemDefinition = ItemDefinition {
             },
         },
     ],
+    mechanics: &[],
 };
 // </item:helm_of_iron_will>
 
@@ -1169,6 +1198,7 @@ static BROADSWORD: ItemDefinition = ItemDefinition {
             amount: RankValue::fixed(15.0),
         },
     }],
+    mechanics: &[],
 };
 // </item:broadsword>
 
@@ -1198,6 +1228,7 @@ static BLITZ_KNUCKLES: ItemDefinition = ItemDefinition {
             amount: RankValue::fixed(35.0),
         },
     }],
+    mechanics: &[],
 };
 // </item:blitz_knuckles>
 
@@ -1227,6 +1258,7 @@ static CLAYMORE: ItemDefinition = ItemDefinition {
             amount: RankValue::fixed(20.0),
         },
     }],
+    mechanics: &[],
 };
 // </item:claymore>
 
@@ -1256,6 +1288,7 @@ static MITHRIL_HAMMER: ItemDefinition = ItemDefinition {
             amount: RankValue::fixed(24.0),
         },
     }],
+    mechanics: &[],
 };
 // </item:mithril_hammer>
 
@@ -1285,6 +1318,7 @@ static RING_OF_REGEN: ItemDefinition = ItemDefinition {
             amount: RankValue::fixed(1.25),
         },
     }],
+    mechanics: &[],
 };
 // </item:ring_of_regen>
 
@@ -1314,6 +1348,7 @@ static SAGES_MASK: ItemDefinition = ItemDefinition {
             amount: RankValue::fixed(0.7),
         },
     }],
+    mechanics: &[],
 };
 // </item:sages_mask>
 
@@ -1343,6 +1378,7 @@ static FLUFFY_HAT: ItemDefinition = ItemDefinition {
             amount: RankValue::fixed(125.0),
         },
     }],
+    mechanics: &[],
 };
 // </item:fluffy_hat>
 
@@ -1372,6 +1408,7 @@ static WIND_LACE: ItemDefinition = ItemDefinition {
             amount: RankValue::fixed(15.0),
         },
     }],
+    mechanics: &[],
 };
 // </item:wind_lace>
 
@@ -1401,6 +1438,7 @@ static CLOAK: ItemDefinition = ItemDefinition {
             amount: RankValue::fixed(18.0),
         },
     }],
+    mechanics: &[],
 };
 // </item:cloak>
 
@@ -1430,6 +1468,7 @@ static BOOTS_OF_SPEED: ItemDefinition = ItemDefinition {
             amount: RankValue::fixed(45.0),
         },
     }],
+    mechanics: &[],
 };
 // </item:boots_of_speed>
 
@@ -1459,6 +1498,7 @@ static RING_OF_HEALTH: ItemDefinition = ItemDefinition {
             amount: RankValue::fixed(4.5),
         },
     }],
+    mechanics: &[],
 };
 // </item:ring_of_health>
 
@@ -1488,6 +1528,7 @@ static VOID_STONE: ItemDefinition = ItemDefinition {
             amount: RankValue::fixed(1.75),
         },
     }],
+    mechanics: &[],
 };
 // </item:void_stone>
 
@@ -1517,6 +1558,7 @@ static VITALITY_BOOSTER: ItemDefinition = ItemDefinition {
             amount: RankValue::fixed(250.0),
         },
     }],
+    mechanics: &[],
 };
 // </item:vitality_booster>
 
@@ -1556,6 +1598,7 @@ static POINT_BOOSTER: ItemDefinition = ItemDefinition {
             },
         },
     ],
+    mechanics: &[],
 };
 // </item:point_booster>
 
@@ -1585,6 +1628,7 @@ static PLATEMAIL: ItemDefinition = ItemDefinition {
             amount: RankValue::fixed(10.0),
         },
     }],
+    mechanics: &[],
 };
 // </item:platemail>
 
@@ -1614,6 +1658,7 @@ static HYPERSTONE: ItemDefinition = ItemDefinition {
             amount: RankValue::fixed(60.0),
         },
     }],
+    mechanics: &[],
 };
 // </item:hyperstone>
 
@@ -1661,6 +1706,7 @@ static ULTIMATE_ORB: ItemDefinition = ItemDefinition {
             },
         },
     ],
+    mechanics: &[],
 };
 // </item:ultimate_orb>
 
@@ -1690,6 +1736,7 @@ static DEMON_EDGE: ItemDefinition = ItemDefinition {
             amount: RankValue::fixed(40.0),
         },
     }],
+    mechanics: &[],
 };
 // </item:demon_edge>
 
@@ -1719,6 +1766,7 @@ static MYSTIC_STAFF: ItemDefinition = ItemDefinition {
             amount: RankValue::fixed(25.0),
         },
     }],
+    mechanics: &[],
 };
 // </item:mystic_staff>
 
@@ -1748,6 +1796,7 @@ static REAVER: ItemDefinition = ItemDefinition {
             amount: RankValue::fixed(25.0),
         },
     }],
+    mechanics: &[],
 };
 // </item:reaver>
 
@@ -1777,6 +1826,7 @@ static EAGLESONG: ItemDefinition = ItemDefinition {
             amount: RankValue::fixed(25.0),
         },
     }],
+    mechanics: &[],
 };
 // </item:eaglesong>
 
@@ -1806,6 +1856,7 @@ static SACRED_RELIC: ItemDefinition = ItemDefinition {
             amount: RankValue::fixed(55.0),
         },
     }],
+    mechanics: &[],
 };
 // </item:sacred_relic>
 
@@ -1857,6 +1908,7 @@ static NULL_TALISMAN: ItemDefinition = ItemDefinition {
             },
         },
     ],
+    mechanics: &[],
 };
 // </item:null_talisman>
 
@@ -1879,6 +1931,7 @@ static RECIPE_NULL: ItemDefinition = ItemDefinition {
     color: [0.315147, 0.244832, 0.89219],
     description: "",
     effects: &[],
+    mechanics: &[],
 };
 // </item:recipe_null>
 
@@ -1930,6 +1983,7 @@ static WRAITH_BAND: ItemDefinition = ItemDefinition {
             },
         },
     ],
+    mechanics: &[],
 };
 // </item:wraith_band>
 
@@ -1952,6 +2006,7 @@ static RECIPE_WRAITH: ItemDefinition = ItemDefinition {
     color: [0.499596, 0.875601, 0.454348],
     description: "",
     effects: &[],
+    mechanics: &[],
 };
 // </item:recipe_wraith>
 
@@ -2003,6 +2058,7 @@ static BRACER: ItemDefinition = ItemDefinition {
             },
         },
     ],
+    mechanics: &[],
 };
 // </item:bracer>
 
@@ -2025,6 +2081,7 @@ static RECIPE_BRACER: ItemDefinition = ItemDefinition {
     color: [0.358461, 0.783632, 0.52908],
     description: "",
     effects: &[],
+    mechanics: &[],
 };
 // </item:recipe_bracer>
 
@@ -2077,6 +2134,7 @@ static FALCON_BLADE: ItemDefinition = ItemDefinition {
             },
         },
     ],
+    mechanics: &[],
 };
 // </item:falcon_blade>
 
@@ -2099,6 +2157,7 @@ static RECIPE_FALCON: ItemDefinition = ItemDefinition {
     color: [0.492675, 0.399693, 0.109166],
     description: "",
     effects: &[],
+    mechanics: &[],
 };
 // </item:recipe_falcon>
 
@@ -2132,5 +2191,6 @@ static BLINK_DAGGER: ItemDefinition = ItemDefinition {
         target: EffectTarget::Caster,
         effect: AbilityEffect::Teleport,
     }],
+    mechanics: &[],
 };
 // </item:blink_dagger>

@@ -75,6 +75,9 @@ ITEM_TRIGGERS = {
     "on_attack_hit": "OnAttackHit",
     "on_channel_end": "OnChannelEnd",
     "on_channel_interrupted": "OnChannelInterrupted",
+    # Only with a projectile_type: the item launches the same projectile mechanic abilities use.
+    "on_projectile_hit": "OnProjectileHit",
+    "on_impact": "OnImpact",
     "on_damage_taken": "OnDamageTaken",
     "on_kill": "OnKill",
     "on_death": "OnDeath",
@@ -566,14 +569,6 @@ def parse_activation_spec(
     if kind == "item" and target_type is None:
         return None
 
-    if kind == "item" and projectile != "none":
-        report.warn(
-            row.file,
-            row.line,
-            "projectile_type",
-            row.get("projectile_type"),
-            "item projectiles are not emitted by the runtime yet (ProjectilePayload is ability-scoped); reserved for a future pipeline",
-        )
     if kind == "item" and speed is not None and projectile == "none":
         report.error(row.file, row.line, "projectile_speed", row.get("projectile_speed"), "projectile_speed requires projectile_type targeted or skillshot")
 

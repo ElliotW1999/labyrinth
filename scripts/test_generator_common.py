@@ -834,5 +834,61 @@ class ChainEffectTests(unittest.TestCase):
         self.assertFalse(report.warnings)
 
 
+class ItemProjectileTests(unittest.TestCase):
+    ITEM_HEADER = "id,name,item_type,cost,sell_value,tier,rarity,stackable,max_stack,consumable,max_charges,description,cooldown,target_type,target_team,cast_range,projectile_type,projectile_speed\n"
+    EFFECT_HEADER = "item_id,effect_index,trigger,effect_target,effect_type,effect_id,value,damage_type,duration,radius,amount,scaling_type,scaling_value\n"
+
+    def load(self, item_row: str, effect_rows: str):
+        import tempfile
+
+        import ItemGenerator
+
+        with tempfile.TemporaryDirectory() as tmp:
+            items = Path(tmp) / "items.csv"
+            effects = Path(tmp) / "effects.csv"
+            items.write_text(self.ITEM_HEADER + item_row + "\n", encoding="utf-8")
+            effects.write_text(self.EFFECT_HEADER + effect_rows, encoding="utf-8")
+            loaded, report = ItemGenerator.load(items, effects, set())
+        return ItemGenerator, loaded, report
+
+    def test_projectile_type_emits_the_projectile_mechanic(self) -> None:
+        module, items, report = self.load(
+            "bolt_wand,Bolt Wand,weapon,100,50,1,common,false,,false,,wand,10,unit,enemy,800,targeted,1200",
+            "bolt_wand,0,on_projectile_hit,trigger_unit,damage,,50,magical,,,,,\n",
+        )
+        self.assertFalse(report.errors)
+        self.assertFalse([w for w in report.warnings if w.field == "projectile_type"])
+        rendered = module.item_static(items[0])
+        self.assertIn(
+            "mechanics: &[AbilityMechanic::Projectile { splash_radius: AreaRadius::Ability, speed: Some(1200.0), skillshot: false, first_hit: false }],",
+            rendered,
+        )
+        self.assertIn("AbilityTrigger::OnProjectileHit", rendered)
+
+    def test_items_without_a_projectile_emit_empty_mechanics(self) -> None:
+        module, items, report = self.load(
+            "plain_wand,Plain Wand,weapon,100,50,1,common,false,,false,,wand,10,unit,enemy,800,,",
+            "plain_wand,0,on_use,cast_target,damage,,50,magical,,,,,\n",
+        )
+        self.assertFalse(report.errors)
+        self.assertIn("mechanics: &[],", module.item_static(items[0]))
+
+    def test_projectile_triggers_need_a_projectile(self) -> None:
+        for trigger, target in (("on_projectile_hit", "trigger_unit"), ("on_impact", "affected_units")):
+            _, _, report = self.load(
+                "dull_wand,Dull Wand,weapon,100,50,1,common,false,,false,,wand,10,unit,enemy,800,,",
+                f"dull_wand,0,on_use,cast_target,damage,,50,magical,,,,,\ndull_wand,1,{trigger},{target},damage,,50,magical,,,,,\n",
+            )
+            self.assertTrue(any("no projectile" in e.message for e in report.errors), trigger)
+
+    def test_projectile_item_counts_as_active(self) -> None:
+        _, _, report = self.load(
+            "bolt_wand,Bolt Wand,weapon,100,50,1,common,false,,false,,wand,10,unit,enemy,800,targeted,",
+            "bolt_wand,0,on_projectile_hit,trigger_unit,damage,,50,magical,,,,,\n",
+        )
+        self.assertFalse(report.errors)
+        self.assertFalse([w for w in report.warnings if w.field == "cooldown"])
+
+
 if __name__ == "__main__":
     unittest.main()

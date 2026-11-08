@@ -20,6 +20,7 @@ use super::definition::{
     AbilityMechanic, AbilityTrigger, AreaCenter, AreaRadius, DisplacementKind, RingStyle,
 };
 use super::effects::{AbilityTriggerEvent, EffectSource, TriggerContext};
+use crate::actions::{ActionFiredEvent, ActionId};
 use crate::combat::{ProjectileHitEvent, ProjectilePayload, SpawnProjectileEvent, flat_distance};
 use crate::components::{AbilityId, AttackTarget, Health, Team};
 use crate::dimensions::area_contains;
@@ -90,6 +91,7 @@ pub struct CastContext {
 
 impl CastContext {
     /// The casting ability, or `None` when an item is the source.
+    #[allow(dead_code)]
     pub fn ability(&self) -> Option<AbilityId> {
         match self.source {
             EffectSource::Ability(id) => Some(id),
@@ -268,6 +270,42 @@ impl MechanicRunner<'_, '_> {
             max_distance / DASH_SPEED,
             None,
         ));
+    }
+}
+
+/// Items run the same mechanics as abilities: when an item activation fires, its
+/// `ItemDefinition::mechanics` start (a projectile, …) with the item as the effect source.
+/// The `OnUse` trigger itself comes from `items::resolve_item_uses`.
+pub fn execute_item_mechanics(
+    mut fired: MessageReader<ActionFiredEvent>,
+    casters: Query<(&Transform, &Team)>,
+    mut runner: MechanicRunner,
+) {
+    for event in fired.read() {
+        let ActionId::Item { item, .. } = event.action else {
+            continue;
+        };
+        let def = item.definition();
+        if def.mechanics.is_empty() {
+            continue;
+        }
+        let Ok((transform, team)) = casters.get(event.caster) else {
+            continue;
+        };
+        let ctx = CastContext {
+            caster: event.caster,
+            team: *team,
+            source: EffectSource::Item(item),
+            rank: 1,
+            origin: transform.translation,
+            aim: event.aim,
+            unit_target: event.target.unit().and_then(|e| runner.living_unit(e)),
+            aoe_radius: def.aoe_radius(),
+            cast_range: def.activation.cast_range,
+        };
+        for mechanic in def.mechanics {
+            runner.run(&ctx, mechanic);
+        }
     }
 }
 
