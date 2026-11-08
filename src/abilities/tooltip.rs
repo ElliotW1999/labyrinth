@@ -360,7 +360,8 @@ fn effect_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
         | AbilityEffect::RemoveStatus { .. }
         | AbilityEffect::Teleport
         | AbilityEffect::Proc { .. }
-        | AbilityEffect::Counter { .. } => Vec::new(),
+        | AbilityEffect::Counter { .. }
+        | AbilityEffect::PerformAttack { .. } => Vec::new(),
     }
 }
 
@@ -453,6 +454,21 @@ fn effect_text_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
             "{}% chance to proc",
             fmt_num(chance.at(1) * 100.0)
         ))],
+        AbilityEffect::PerformAttack {
+            damage_ratio,
+            max_targets,
+            ..
+        } => {
+            let hits = match max_targets {
+                0 => "Attacks every target".to_string(),
+                1 => "Attacks once".to_string(),
+                n => format!("Attacks up to {n} targets"),
+            };
+            vec![text_row(format!(
+                "{hits} for {}% damage",
+                fmt_num(damage_ratio.at(1) * 100.0)
+            ))]
+        }
         AbilityEffect::Counter { every, .. } => {
             vec![text_row(format!("Every {every} attacks"))]
         }

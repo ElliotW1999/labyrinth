@@ -651,6 +651,17 @@ pub enum AbilityEffect {
         every: u32,
         then: AbilityTrigger,
     },
+    /// Each resolved enemy gets an extra basic attack dealing `damage_ratio` (1.0 = 100%) of
+    /// the caster's attack damage, ignoring cooldown, swing and range (instant attack, double
+    /// attack, multi-target attack). The caster itself is never a target, nor the trigger unit
+    /// when `exclude_trigger_unit` is set; at most `max_targets` are attacked, nearest first
+    /// (0 = all). Does nothing under a trigger caused by an extra attack, so extra attacks
+    /// never chain.
+    PerformAttack {
+        damage_ratio: RankValue,
+        max_targets: u32,
+        exclude_trigger_unit: bool,
+    },
     /// Escape hatch: runs the system registered under `id` with
     /// `effects::AbilityEffectAppExt::register_custom_effect`. It still receives
     /// resolved targets and should emit the shared gameplay events.

@@ -5,9 +5,9 @@ use bevy::prelude::*;
 
 use crate::basic_attack::{
     BasicAttackEvent, BasicAttackImpactEvent, BasicAttackLandedEvent, BasicAttackReleaseEvent,
-    advance_attacks_in_flight, animate_melee_slashes, request_basic_attacks,
-    resolve_attack_releases, resolve_basic_attack_impacts, start_basic_attack_windups,
-    sync_attack_projectile_visuals, tick_attack_swings,
+    ExtraAttackEvent, advance_attacks_in_flight, animate_melee_slashes, release_extra_attacks,
+    request_basic_attacks, resolve_attack_releases, resolve_basic_attack_impacts,
+    start_basic_attack_windups, sync_attack_projectile_visuals, tick_attack_swings,
 };
 use crate::components::{
     AbilityId, AttackCooldown, BoundRadius, CombatStats, DamageType, GoldBounty, Health,
@@ -33,6 +33,7 @@ impl Plugin for CombatPlugin {
             .add_message::<BasicAttackReleaseEvent>()
             .add_message::<BasicAttackImpactEvent>()
             .add_message::<BasicAttackLandedEvent>()
+            .add_message::<ExtraAttackEvent>()
             .add_message::<DamageEvent>()
             .add_message::<SpawnProjectileEvent>()
             .add_message::<ProjectileHitEvent>()
@@ -47,6 +48,7 @@ impl Plugin for CombatPlugin {
                     request_basic_attacks,
                     start_basic_attack_windups,
                     tick_attack_swings,
+                    release_extra_attacks,
                     resolve_attack_releases,
                     advance_attacks_in_flight,
                     resolve_basic_attack_impacts,

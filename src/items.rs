@@ -2890,6 +2890,7 @@ mod tests {
             .init_resource::<AbilityDefinitions>()
             .init_resource::<crate::abilities::effects::CustomAbilityEffects>()
             .init_resource::<crate::combat::CombatRng>()
+            .add_message::<crate::basic_attack::ExtraAttackEvent>()
             .add_message::<ActivationRequest>()
             .add_message::<crate::actions::ActionFiredEvent>()
             .add_message::<crate::actions::ActionChannelEndEvent>()

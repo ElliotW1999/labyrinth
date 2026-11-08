@@ -19,6 +19,7 @@ use super::definition::{
     EffectScaling, EffectTarget, StatusBuildContext,
 };
 use crate::actions::{ActionId, team_allows};
+use crate::basic_attack::ExtraAttackEvent;
 use crate::combat::{CombatRng, DamageEvent};
 use crate::components::{AbilityId, BoundRadius, CombatStats, Health, HeroAttributes, Mana, Team};
 use crate::dimensions::{area_contains, bounds_of};
@@ -253,6 +254,7 @@ pub struct EffectRunner<'w, 's> {
     statuses: MessageWriter<'w, StatusEffectEvent>,
     displacements: MessageWriter<'w, DisplacementEvent>,
     teleports: MessageWriter<'w, TeleportEvent>,
+    extra_attacks: MessageWriter<'w, ExtraAttackEvent>,
     rng: ResMut<'w, CombatRng>,
     counters: Query<'w, 's, &'static mut TriggerCounters>,
     /// Contexts produced by gates since the last [`Self::take_derived`].
@@ -584,6 +586,38 @@ impl EffectRunner<'_, '_> {
             }
             // Applied when the item is acquired, not when a trigger fires.
             AbilityEffect::PassiveStat { .. } => {}
+            AbilityEffect::PerformAttack {
+                damage_ratio,
+                max_targets,
+                exclude_trigger_unit,
+            } => {
+                // The one recursion guard: an extra attack never causes another.
+                if ctx.attack.is_some_and(|attack| attack.extra) {
+                    return;
+                }
+                let mut chosen: Vec<(f32, Entity)> = targets
+                    .into_iter()
+                    .filter(|&e| {
+                        e != ctx.caster && !(exclude_trigger_unit && ctx.trigger_unit == Some(e))
+                    })
+                    .filter_map(|e| {
+                        let (_, tf, team, health, _) = self.units.get(e).ok()?;
+                        (*team == ctx.team.enemy() && health.is_alive())
+                            .then(|| (crate::combat::flat_distance(ctx.origin, tf.translation), e))
+                    })
+                    .collect();
+                chosen.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+                if max_targets > 0 {
+                    chosen.truncate(max_targets as usize);
+                }
+                for (_, target) in chosen {
+                    self.extra_attacks.write(ExtraAttackEvent {
+                        attacker: ctx.caster,
+                        target,
+                        damage_ratio: damage_ratio.at(rank),
+                    });
+                }
+            }
             AbilityEffect::Proc { chance, then } => {
                 if self.gate_open(ctx) && self.rng.roll(chance.at(rank)) {
                     self.derived.push(ctx.derived(then));

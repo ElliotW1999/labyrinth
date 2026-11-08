@@ -654,6 +654,7 @@ mod tests {
             .add_message::<crate::basic_attack::BasicAttackReleaseEvent>()
             .add_message::<crate::basic_attack::BasicAttackImpactEvent>()
             .add_message::<crate::basic_attack::BasicAttackLandedEvent>()
+            .add_message::<crate::basic_attack::ExtraAttackEvent>()
             .add_systems(
                 Update,
                 (
@@ -1495,6 +1496,125 @@ mod tests {
         land_hits(&mut app, caster, target, 1);
         // Depth 1 and depth 2 run their entries; the proc at depth 2 stops the chain.
         assert_eq!(health(&app, caster), 100.0 + 2.0 * 10.0);
+    }
+
+    fn extra_attack_events(app: &App) -> Vec<crate::basic_attack::ExtraAttackEvent> {
+        app.world()
+            .resource::<Messages<crate::basic_attack::ExtraAttackEvent>>()
+            .iter_current_update_messages()
+            .copied()
+            .collect()
+    }
+
+    fn perform_attack(max_targets: u32, exclude_trigger_unit: bool) -> AbilityEffect {
+        AbilityEffect::PerformAttack {
+            damage_ratio: RankValue::fixed(0.7),
+            max_targets,
+            exclude_trigger_unit,
+        }
+    }
+
+    #[test]
+    fn perform_attack_on_cast_is_an_instant_attack() {
+        let ability = AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::Unit, RankValue::fixed(500.0), RankValue::ZERO)
+            .costs(RankValue::ZERO, RankValue::ZERO)
+            .timing(0.0, 0.0)
+            .on(
+                AbilityTrigger::OnCast,
+                EffectTarget::CastTarget,
+                perform_attack(1, false),
+            );
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(ability);
+        let caster = spawn_caster(&mut app, KIT);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+
+        request(&mut app, caster, 3, CastTarget::Unit(enemy));
+        let mut seen = Vec::new();
+        for _ in 0..6 {
+            step(&mut app);
+            seen.extend(extra_attack_events(&app));
+        }
+        assert_eq!(
+            seen,
+            vec![crate::basic_attack::ExtraAttackEvent {
+                attacker: caster,
+                target: enemy,
+                damage_ratio: 0.7,
+            }]
+        );
+    }
+
+    #[test]
+    fn double_attack_does_not_chain() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            proc_entry(1.0, "on_double"),
+            AbilityEffectEntry {
+                trigger: AbilityTrigger::Custom("on_double"),
+                target: EffectTarget::TriggerUnit,
+                effect: perform_attack(0, false),
+            },
+        ])]);
+        let (caster, target) = attack_duel(&mut app);
+
+        // A normal landed attack procs one extra attack...
+        write_attack_hit(&mut app, caster, target);
+        step(&mut app);
+        assert_eq!(extra_attack_events(&app).len(), 1);
+
+        // ...but an extra attack that lands runs the proc and performs nothing.
+        app.world_mut()
+            .write_message(crate::basic_attack::BasicAttackLandedEvent {
+                attacker: caster,
+                attacker_team: Team::Radiant,
+                target,
+                damage: 10.0,
+                crit: false,
+                extra: true,
+            });
+        step(&mut app);
+        assert!(
+            extra_attack_events(&app).is_empty(),
+            "extra attacks never chain"
+        );
+    }
+
+    #[test]
+    fn multishot_excludes_primary_and_caps_targets() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![AbilityEffectEntry {
+            trigger: AbilityTrigger::OnAttack,
+            target: EffectTarget::UnitsInRadius {
+                center: definition::AreaCenter::Caster,
+                radius: AreaRadius::Fixed(RankValue::fixed(600.0)),
+                team: TargetTeam::Enemy,
+            },
+            effect: perform_attack(2, true),
+        }])]);
+        let (caster, primary) = attack_duel(&mut app);
+        let nearest = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        let middle = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, 200.0));
+        let _far = spawn_unit(&mut app, Team::Dire, Vec3::new(400.0, 0.0, 0.0));
+        let _out_of_radius = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, 900.0));
+        let _ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(10.0, 0.0, 0.0));
+
+        write_attack_release(&mut app, caster, primary);
+        step(&mut app);
+
+        let targets: Vec<Entity> = extra_attack_events(&app)
+            .iter()
+            .map(|event| event.target)
+            .collect();
+        assert_eq!(
+            targets,
+            vec![nearest, middle],
+            "nearest two, never the primary"
+        );
+        assert!(!targets.contains(&primary) && !targets.contains(&caster));
     }
 
     #[test]

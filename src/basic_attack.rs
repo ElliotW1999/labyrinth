@@ -40,6 +40,16 @@ pub struct BasicAttackEvent {
     pub target: Entity,
 }
 
+/// Request for an extra basic attack (instant / double / multi-target attack). It ignores
+/// cooldown, swing and range, and never changes them; see [`release_extra_attacks`].
+#[derive(Message, Debug, Clone, Copy, PartialEq)]
+pub struct ExtraAttackEvent {
+    pub attacker: Entity,
+    pub target: Entity,
+    /// Fraction of the attacker's attack damage the extra attack deals (1.0 = a full hit).
+    pub damage_ratio: f32,
+}
+
 /// The attacker reached its attack point; the attack leaves the attacker.
 #[derive(Message, Debug, Clone, Copy, PartialEq)]
 pub struct BasicAttackReleaseEvent {
@@ -304,6 +314,43 @@ pub fn tick_attack_swings(
     }
 }
 
+/// Turn each [`ExtraAttackEvent`] into a release flagged `extra`. The attacker must be alive
+/// and able to attack, the target a living, targetable enemy; anything else is dropped whole.
+/// Cooldown, swing, `AttackTarget` and movement are never touched.
+pub fn release_extra_attacks(
+    mut requests: MessageReader<ExtraAttackEvent>,
+    mut releases: MessageWriter<BasicAttackReleaseEvent>,
+    attackers: Query<(&CombatStats, &Health, &Team, Option<&StatusEffects>)>,
+    targets: Query<(&Team, &Health)>,
+    statuses_of: Query<&StatusEffects>,
+) {
+    for request in requests.read() {
+        let Ok((stats, health, team, statuses)) = attackers.get(request.attacker) else {
+            continue;
+        };
+        if !health.is_alive()
+            || stats.attack_damage <= 0.0
+            || statuses.is_some_and(|s| !s.can_attack())
+        {
+            continue;
+        }
+        let target_ok = targets.get(request.target).is_ok_and(|(target_team, hp)| {
+            *target_team == team.enemy()
+                && hp.is_alive()
+                && !is_untargetable(&statuses_of, request.target)
+        });
+        if !target_ok {
+            continue;
+        }
+        releases.write(BasicAttackReleaseEvent {
+            attacker: request.attacker,
+            target: request.target,
+            damage: stats.attack_damage * request.damage_ratio.max(0.0),
+            extra: true,
+        });
+    }
+}
+
 /// Melee attacks connect immediately if the target is still within lenient reach;
 /// ranged attacks start an authoritative [`BasicAttackInFlight`] plus a projectile visual.
 pub fn resolve_attack_releases(
@@ -334,13 +381,16 @@ pub fn resolve_attack_releases(
             let Some((target_tf, _, _, target_bound)) = target else {
                 continue;
             };
-            if within_range(
-                origin,
-                bounds_of(attacker_bound),
-                target_tf.translation(),
-                bounds_of(target_bound),
-                stats.attack_range * MELEE_HIT_RANGE_LENIENCY,
-            ) {
+            // Extra attacks reach their target wherever it stands.
+            if release.extra
+                || within_range(
+                    origin,
+                    bounds_of(attacker_bound),
+                    target_tf.translation(),
+                    bounds_of(target_bound),
+                    stats.attack_range * MELEE_HIT_RANGE_LENIENCY,
+                )
+            {
                 impacts.write(BasicAttackImpactEvent {
                     attacker: release.attacker,
                     attacker_team: *team,
@@ -750,6 +800,7 @@ mod tests {
         world.init_resource::<Time>();
         world.init_resource::<SharedAssets>();
         world.init_resource::<Messages<BasicAttackEvent>>();
+        world.init_resource::<Messages<ExtraAttackEvent>>();
         world.init_resource::<Messages<BasicAttackReleaseEvent>>();
         world.init_resource::<Messages<BasicAttackImpactEvent>>();
         world.init_resource::<Messages<BasicAttackLandedEvent>>();
@@ -762,6 +813,7 @@ mod tests {
                 request_basic_attacks,
                 start_basic_attack_windups,
                 tick_attack_swings,
+                release_extra_attacks,
                 resolve_attack_releases,
                 advance_attacks_in_flight,
                 resolve_basic_attack_impacts,
@@ -1277,5 +1329,120 @@ mod tests {
             panic!("never hit");
         }
         assert!(frames_to_hit(700.0) < frames_to_hit(0.0));
+    }
+
+    fn request_extra(world: &mut World, attacker: Entity, target: Entity, ratio: f32) {
+        world.write_message(ExtraAttackEvent {
+            attacker,
+            target,
+            damage_ratio: ratio,
+        });
+    }
+
+    #[test]
+    fn extra_attack_ignores_cooldown_and_swing() {
+        let (mut world, mut schedule) = world_with_pipeline();
+        let (attacker, target) = melee_duel(&mut world);
+        // Mid-backswing with a long cooldown: a normal attack could not start.
+        world.get_mut::<AttackCooldown>(attacker).unwrap().0 = 5.0;
+        world
+            .entity_mut(attacker)
+            .insert(AttackSwing::Backswing { remaining: 0.4 });
+        world.entity_mut(attacker).remove::<AttackTarget>();
+
+        request_extra(&mut world, attacker, target, 0.5);
+        step(&mut world, &mut schedule);
+
+        let expected = 1000.0 - apply_damage(25.0, DamageType::Physical, &passive_stats());
+        assert!((hp(&world, target) - expected).abs() < 1e-3);
+        assert_eq!(world.get::<AttackCooldown>(attacker).unwrap().0, 5.0);
+        assert!(matches!(
+            world.get::<AttackSwing>(attacker),
+            Some(AttackSwing::Backswing { remaining }) if *remaining > 0.3
+        ));
+        assert!(world.get::<AttackTarget>(attacker).is_none());
+        let landed = world
+            .resource::<Messages<BasicAttackLandedEvent>>()
+            .iter_current_update_messages()
+            .next()
+            .copied()
+            .expect("an extra attack lands like any other");
+        assert!(landed.extra);
+    }
+
+    #[test]
+    fn extra_melee_attack_skips_range_check() {
+        let (mut world, mut schedule) = world_with_pipeline();
+        let far = Vec3::new(2000.0, 0.0, 0.0);
+        let target = spawn_unit(&mut world, Team::Dire, far, passive_stats());
+        let attacker = spawn_unit(
+            &mut world,
+            Team::Radiant,
+            Vec3::ZERO,
+            CombatStats::simple(50.0, scale::MELEE_ATTACK_RANGE, 1.0, 0.0, 0.0, 300.0),
+        );
+        request_extra(&mut world, attacker, target, 1.0);
+        step(&mut world, &mut schedule);
+        assert!((hp(&world, target) - expected_hit()).abs() < 1e-3);
+    }
+
+    #[test]
+    fn extra_attack_needs_a_living_enabled_attacker_and_a_valid_target() {
+        let (mut world, mut schedule) = world_with_pipeline();
+        let (attacker, target) = melee_duel(&mut world);
+        let ally = spawn_unit(&mut world, Team::Radiant, Vec3::X * 50.0, passive_stats());
+        let mut statuses = StatusEffects::default();
+        statuses
+            .effects
+            .push(crate::status::StatusEffect::disarmed(10.0));
+        world.entity_mut(attacker).insert(statuses);
+
+        request_extra(&mut world, attacker, target, 1.0);
+        step(&mut world, &mut schedule);
+        assert_eq!(
+            hp(&world, target),
+            1000.0,
+            "disarmed attackers cannot attack"
+        );
+
+        world.entity_mut(attacker).remove::<StatusEffects>();
+        request_extra(&mut world, attacker, ally, 1.0);
+        request_extra(&mut world, attacker, Entity::PLACEHOLDER, 1.0);
+        step(&mut world, &mut schedule);
+        assert_eq!(hp(&world, ally), 1000.0, "never against allies");
+        assert_eq!(landed_count(&world), 0);
+    }
+
+    #[test]
+    fn ranged_extra_attack_flies_flagged_extra() {
+        let (mut world, mut schedule) = world_with_pipeline();
+        let target_pos = Vec3::new(450.0, 0.0, 0.0);
+        let target = spawn_unit(&mut world, Team::Dire, target_pos, passive_stats());
+        let attacker = spawn_unit(
+            &mut world,
+            Team::Radiant,
+            Vec3::ZERO,
+            CombatStats::simple(50.0, 500.0, 1.0, 0.0, 0.0, 300.0),
+        );
+        // Keep the AI attacker from also swinging normally.
+        world.get_mut::<AttackCooldown>(attacker).unwrap().0 = 100.0;
+        request_extra(&mut world, attacker, target, 1.0);
+        step(&mut world, &mut schedule);
+        let flights: Vec<bool> = world
+            .query::<&BasicAttackInFlight>()
+            .iter(&world)
+            .map(|flight| flight.extra)
+            .collect();
+        assert_eq!(flights, vec![true]);
+        assert_eq!(hp(&world, target), 1000.0, "it still has to travel");
+        run_frames(&mut world, &mut schedule, 40);
+        assert!((hp(&world, target) - expected_hit()).abs() < 1e-3);
+        let landed = world
+            .resource::<Messages<BasicAttackLandedEvent>>()
+            .iter_current_update_messages()
+            .next()
+            .copied()
+            .unwrap();
+        assert!(landed.extra);
     }
 }
