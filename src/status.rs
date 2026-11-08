@@ -12,12 +12,14 @@ pub struct StatusPlugin;
 
 impl Plugin for StatusPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<StatusEffectEvent>().add_systems(
-            Update,
-            tick_status_effects
-                .before(crate::combat::apply_damage_events)
-                .before(crate::vitals::sync_status_resource_caps),
-        );
+        app.add_message::<StatusEffectEvent>()
+            .add_message::<StatusLifecycleEvent>()
+            .add_systems(
+                Update,
+                tick_status_effects
+                    .before(crate::combat::apply_damage_events)
+                    .before(crate::vitals::sync_status_resource_caps),
+            );
     }
 }
 
@@ -633,9 +635,77 @@ impl StatusEffectEvent {
     }
 }
 
+/// What happened to a status, as reported to the reactive-trigger layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusLifecycle {
+    /// Applied, or refreshed by a same-id status.
+    Applied,
+    /// Ran out.
+    Expired,
+    /// Purged by a dispel or by gaining debuff immunity.
+    Dispelled,
+    /// Removed by id, or broken (sleep ends on damage).
+    Removed,
+}
+
+/// A status appeared on or left `target`. Written by [`apply_status_effect_events`],
+/// [`tick_status_effects`] and the sleep break in `combat::apply_damage_events` (the only
+/// places statuses change). Never written for reactive changes or reactive statuses, so a
+/// reaction cannot trigger another through the status layer.
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatusLifecycleEvent {
+    pub target: Entity,
+    pub source: Option<Entity>,
+    pub id: &'static str,
+    pub kind: StatusKind,
+    pub change: StatusLifecycle,
+}
+
+/// A status taken off a unit by [`remove_statuses`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RemovedStatus {
+    pub id: &'static str,
+    pub kind: StatusKind,
+    pub reactive: bool,
+}
+
+impl RemovedStatus {
+    pub(crate) fn of(effect: &StatusEffect) -> Self {
+        Self {
+            id: effect.id,
+            kind: effect.kind,
+            reactive: effect.reactive,
+        }
+    }
+}
+
+/// Report removed statuses (skipping reactive ones and everything under a reactive cause).
+pub(crate) fn report_removed(
+    lifecycle: &mut MessageWriter<StatusLifecycleEvent>,
+    target: Entity,
+    source: Option<Entity>,
+    cause_is_reactive: bool,
+    change: StatusLifecycle,
+    removed: impl IntoIterator<Item = RemovedStatus>,
+) {
+    if cause_is_reactive {
+        return;
+    }
+    for status in removed.into_iter().filter(|status| !status.reactive) {
+        lifecycle.write(StatusLifecycleEvent {
+            target,
+            source,
+            id: status.id,
+            kind: status.kind,
+            change,
+        });
+    }
+}
+
 pub fn tick_status_effects(
     time: Res<Time>,
     mut damage: MessageWriter<DamageEvent>,
+    mut lifecycle: MessageWriter<StatusLifecycleEvent>,
     mut units: Query<(
         Entity,
         &mut StatusEffects,
@@ -674,6 +744,14 @@ pub fn tick_status_effects(
                 let expired = statuses.effects.remove(i);
                 subtract_status_stat_delta(&expired, &mut stats, agi);
                 release_shield(&expired, shield.as_deref_mut());
+                report_removed(
+                    &mut lifecycle,
+                    entity,
+                    None,
+                    false,
+                    StatusLifecycle::Expired,
+                    [RemovedStatus::of(&expired)],
+                );
             } else {
                 i += 1;
             }
@@ -809,20 +887,24 @@ fn remove_statuses(
     agility: f32,
     mut pool: Option<&mut ShieldPool>,
     matches: impl Fn(&StatusEffect) -> bool,
-) {
+) -> Vec<RemovedStatus> {
+    let mut removed = Vec::new();
     statuses.effects.retain(|effect| {
         if !matches(effect) {
             return true;
         }
         subtract_status_stat_delta(effect, stats, agility);
         release_shield(effect, pool.as_deref_mut());
+        removed.push(RemovedStatus::of(effect));
         false
     });
+    removed
 }
 
 pub fn apply_status_effect_events(
     mut commands: Commands,
     mut events: MessageReader<StatusEffectEvent>,
+    mut lifecycle: MessageWriter<StatusLifecycleEvent>,
     mut units: Query<(
         Entity,
         &mut StatusEffects,
@@ -840,7 +922,7 @@ pub fn apply_status_effect_events(
         match &event.change {
             StatusChange::Apply(effect) => {
                 if effect.debuff_immune {
-                    remove_statuses(
+                    let purged = remove_statuses(
                         &mut statuses,
                         &mut stats,
                         agility,
@@ -853,6 +935,14 @@ pub fn apply_status_effect_events(
                                     DispelStrength::Strong,
                                 )
                         },
+                    );
+                    report_removed(
+                        &mut lifecycle,
+                        entity,
+                        event.source,
+                        event.reactive,
+                        StatusLifecycle::Dispelled,
+                        purged,
                     );
                 }
                 let refresh_shield = effect.shield_amount > 0.0;
@@ -867,6 +957,15 @@ pub fn apply_status_effect_events(
                     0.0
                 };
                 let applied = apply_status(&mut statuses, &mut stats, effect.clone(), agility);
+                if applied && !event.reactive && !effect.reactive {
+                    lifecycle.write(StatusLifecycleEvent {
+                        target: entity,
+                        source: event.source,
+                        id: effect.id,
+                        kind: effect.kind,
+                        change: StatusLifecycle::Applied,
+                    });
+                }
                 if applied && effect.flying {
                     // When the flight ends, check the ground it lands on.
                     commands
@@ -884,21 +983,37 @@ pub fn apply_status_effect_events(
                 }
             }
             StatusChange::Dispel { kind, strength } => {
-                remove_statuses(
+                let removed = remove_statuses(
                     &mut statuses,
                     &mut stats,
                     agility,
                     shield.as_deref_mut(),
                     |e| status_dispel_matches(e, *kind, *strength),
                 );
+                report_removed(
+                    &mut lifecycle,
+                    entity,
+                    event.source,
+                    event.reactive,
+                    StatusLifecycle::Dispelled,
+                    removed,
+                );
             }
             StatusChange::Remove(id) => {
-                remove_statuses(
+                let removed = remove_statuses(
                     &mut statuses,
                     &mut stats,
                     agility,
                     shield.as_deref_mut(),
                     |e| e.id == *id,
+                );
+                report_removed(
+                    &mut lifecycle,
+                    entity,
+                    event.source,
+                    event.reactive,
+                    StatusLifecycle::Removed,
+                    removed,
                 );
             }
         }
@@ -939,6 +1054,7 @@ mod tests {
         let mut world = World::new();
         world.init_resource::<Time>();
         world.init_resource::<Messages<DamageEvent>>();
+        world.init_resource::<Messages<StatusLifecycleEvent>>();
         let mut statuses = StatusEffects::default();
         let mut stats =
             CombatStats::simple(10.0, crate::scale::MELEE_ATTACK_RANGE, 1.0, 0.0, 0.0, 10.0);
@@ -1029,10 +1145,208 @@ mod tests {
         assert!(!statuses.is_stunned());
     }
 
+    // --- Lifecycle events ---
+
+    fn lifecycle_app() -> App {
+        let mut app = App::new();
+        app.init_resource::<Time>()
+            .add_message::<StatusEffectEvent>()
+            .add_message::<StatusLifecycleEvent>()
+            .add_message::<DamageEvent>()
+            .add_message::<crate::combat::DamageAppliedEvent>()
+            .add_systems(
+                Update,
+                (
+                    apply_status_effect_events,
+                    crate::combat::apply_damage_events,
+                    tick_status_effects,
+                )
+                    .chain(),
+            );
+        app
+    }
+
+    fn lifecycle_unit(app: &mut App) -> Entity {
+        app.world_mut()
+            .spawn((
+                StatusEffects::default(),
+                CombatStats::simple(10.0, 8.0, 1.0, 0.0, 0.0, 10.0),
+                HeroAttributes::starter(),
+                Health::new(1000.0),
+            ))
+            .id()
+    }
+
+    fn lifecycle_frame(app: &mut App, dt: f32) -> Vec<(&'static str, StatusLifecycle)> {
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(std::time::Duration::from_secs_f32(dt));
+        app.update();
+        app.world()
+            .resource::<Messages<StatusLifecycleEvent>>()
+            .iter_current_update_messages()
+            .map(|event| (event.id, event.change))
+            .collect()
+    }
+
+    fn change(app: &mut App, target: Entity, change: StatusChange, reactive: bool) {
+        app.world_mut()
+            .write_message(StatusEffectEvent::new(None, target, change).reactive(reactive));
+    }
+
+    #[test]
+    fn lifecycle_events_for_each_removal_cause() {
+        use StatusLifecycle::*;
+        let mut app = lifecycle_app();
+        let unit = lifecycle_unit(&mut app);
+
+        change(
+            &mut app,
+            unit,
+            StatusChange::Apply(StatusEffect::stunned(5.0)),
+            false,
+        );
+        assert_eq!(lifecycle_frame(&mut app, 0.01), [("stun", Applied)]);
+        change(
+            &mut app,
+            unit,
+            StatusChange::Apply(StatusEffect::stunned(5.0)),
+            false,
+        );
+        assert_eq!(
+            lifecycle_frame(&mut app, 0.01),
+            [("stun", Applied)],
+            "refresh"
+        );
+
+        change(
+            &mut app,
+            unit,
+            StatusChange::Dispel {
+                kind: StatusKind::Debuff,
+                strength: DispelStrength::Basic,
+            },
+            false,
+        );
+        assert_eq!(lifecycle_frame(&mut app, 0.01), [("stun", Dispelled)]);
+
+        change(
+            &mut app,
+            unit,
+            StatusChange::Apply(StatusEffect::stunned(5.0)),
+            false,
+        );
+        lifecycle_frame(&mut app, 0.01);
+        change(&mut app, unit, StatusChange::Remove("stun"), false);
+        assert_eq!(lifecycle_frame(&mut app, 0.01), [("stun", Removed)]);
+
+        change(
+            &mut app,
+            unit,
+            StatusChange::Apply(StatusEffect::buff("haste", 0.5)),
+            false,
+        );
+        lifecycle_frame(&mut app, 0.01);
+        assert_eq!(lifecycle_frame(&mut app, 1.0), [("haste", Expired)]);
+
+        // Gaining debuff immunity purges debuffs: they are reported as dispelled.
+        change(
+            &mut app,
+            unit,
+            StatusChange::Apply(StatusEffect::stunned(5.0)),
+            false,
+        );
+        lifecycle_frame(&mut app, 0.01);
+        change(
+            &mut app,
+            unit,
+            StatusChange::Apply(StatusEffect::debuff_immunity(5.0)),
+            false,
+        );
+        let events = lifecycle_frame(&mut app, 0.01);
+        assert_eq!(events, [("stun", Dispelled), ("spell_immunity", Applied)]);
+
+        // Sleep breaks on damage.
+        let sleeper = lifecycle_unit(&mut app);
+        change(
+            &mut app,
+            sleeper,
+            StatusChange::Apply(StatusEffect::sleep(10.0)),
+            false,
+        );
+        lifecycle_frame(&mut app, 0.01);
+        app.world_mut()
+            .write_message(DamageEvent::new(sleeper, 10.0, DamageType::Physical));
+        assert_eq!(lifecycle_frame(&mut app, 0.01), [("sleep", Removed)]);
+    }
+
+    #[test]
+    fn rejected_debuff_emits_nothing() {
+        let mut app = lifecycle_app();
+        let unit = lifecycle_unit(&mut app);
+        change(
+            &mut app,
+            unit,
+            StatusChange::Apply(StatusEffect::debuff_immunity(5.0)),
+            false,
+        );
+        lifecycle_frame(&mut app, 0.01);
+
+        change(
+            &mut app,
+            unit,
+            StatusChange::Apply(StatusEffect::stunned(5.0)),
+            false,
+        );
+        assert!(lifecycle_frame(&mut app, 0.01).is_empty());
+        assert!(!app.world().get::<StatusEffects>(unit).unwrap().is_stunned());
+    }
+
+    #[test]
+    fn reactive_status_expires_silently() {
+        let mut app = lifecycle_app();
+        let unit = lifecycle_unit(&mut app);
+
+        // A reactive event: applied, but unreported; the status itself is stamped reactive.
+        let reactive_stun = StatusEffect {
+            reactive: true,
+            ..StatusEffect::stunned(0.5)
+        };
+        change(&mut app, unit, StatusChange::Apply(reactive_stun), true);
+        assert!(lifecycle_frame(&mut app, 0.01).is_empty());
+        assert!(app.world().get::<StatusEffects>(unit).unwrap().is_stunned());
+        assert!(lifecycle_frame(&mut app, 1.0).is_empty(), "silent expiry");
+        assert!(!app.world().get::<StatusEffects>(unit).unwrap().is_stunned());
+
+        // A reactive status removed by an ordinary event is silent too.
+        let held = StatusEffect {
+            reactive: true,
+            ..StatusEffect::buff("held", 100.0)
+        };
+        change(&mut app, unit, StatusChange::Apply(held), true);
+        lifecycle_frame(&mut app, 0.01);
+        change(&mut app, unit, StatusChange::Remove("held"), false);
+        assert!(lifecycle_frame(&mut app, 0.01).is_empty());
+
+        // An ordinary status still reports once the reactive ones are gone.
+        change(
+            &mut app,
+            unit,
+            StatusChange::Apply(StatusEffect::buff("plain", 0.5)),
+            false,
+        );
+        lifecycle_frame(&mut app, 0.01);
+        assert_eq!(
+            lifecycle_frame(&mut app, 1.0),
+            [("plain", StatusLifecycle::Expired)]
+        );
+    }
+
     #[test]
     fn dispel_tiers_remove_basic_but_not_strong_debuffs() {
         let mut app = App::new();
         app.add_message::<StatusEffectEvent>()
+            .add_message::<StatusLifecycleEvent>()
             .add_systems(Update, apply_status_effect_events);
         let victim = app
             .world_mut()
@@ -1092,6 +1406,7 @@ mod tests {
         app.init_resource::<Time>()
             .add_message::<DamageEvent>()
             .add_message::<crate::combat::DamageAppliedEvent>()
+            .add_message::<crate::status::StatusLifecycleEvent>()
             .add_systems(Update, tick_status_effects);
         let mut statuses = StatusEffects::default();
         statuses.effects.push(StatusEffect {
@@ -1127,8 +1442,10 @@ mod tests {
             let mut app = App::new();
             app.init_resource::<Time>()
                 .add_message::<StatusEffectEvent>()
+                .add_message::<StatusLifecycleEvent>()
                 .add_message::<DamageEvent>()
                 .add_message::<crate::combat::DamageAppliedEvent>()
+                .add_message::<crate::status::StatusLifecycleEvent>()
                 .add_systems(
                     Update,
                     (
@@ -1309,8 +1626,10 @@ mod tests {
             let mut app = App::new();
             app.init_resource::<Time>()
                 .add_message::<StatusEffectEvent>()
+                .add_message::<StatusLifecycleEvent>()
                 .add_message::<DamageEvent>()
                 .add_message::<crate::combat::DamageAppliedEvent>()
+                .add_message::<crate::status::StatusLifecycleEvent>()
                 .add_systems(
                     Update,
                     (apply_status_effect_events, tick_status_effects).chain(),
@@ -1481,8 +1800,10 @@ mod tests {
             let mut app = App::new();
             app.init_resource::<Time>()
                 .add_message::<StatusEffectEvent>()
+                .add_message::<StatusLifecycleEvent>()
                 .add_message::<DamageEvent>()
                 .add_message::<crate::combat::DamageAppliedEvent>()
+                .add_message::<crate::status::StatusLifecycleEvent>()
                 .add_systems(
                     Update,
                     (apply_status_effect_events, tick_status_effects).chain(),
@@ -1651,8 +1972,10 @@ mod tests {
             let mut app = App::new();
             app.init_resource::<Time>()
                 .add_message::<StatusEffectEvent>()
+                .add_message::<StatusLifecycleEvent>()
                 .add_message::<DamageEvent>()
                 .add_message::<crate::combat::DamageAppliedEvent>()
+                .add_message::<crate::status::StatusLifecycleEvent>()
                 .add_systems(
                     Update,
                     (
@@ -1941,6 +2264,7 @@ mod tests {
             app.init_resource::<Time>()
                 .add_message::<DamageEvent>()
                 .add_message::<crate::combat::DamageAppliedEvent>()
+                .add_message::<crate::status::StatusLifecycleEvent>()
                 .add_plugins(StatusPlugin);
             let u = unit(&mut app);
             app.world_mut()

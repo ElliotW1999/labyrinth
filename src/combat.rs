@@ -376,6 +376,7 @@ pub fn absorb_with_mana_shield(damage: f32, mana: &mut Mana, shield: ManaShield)
 pub fn apply_damage_events(
     mut damage: ParamSet<(MessageReader<DamageEvent>, MessageWriter<DamageEvent>)>,
     mut applied: MessageWriter<DamageAppliedEvent>,
+    mut lifecycle: MessageWriter<crate::status::StatusLifecycleEvent>,
     positions: Query<&Transform>,
     mut unit_stats: ParamSet<(
         Query<(&CombatStats, Option<&StatusEffects>)>,
@@ -427,6 +428,14 @@ pub fn apply_damage_events(
                 {
                     let ef = st.effects.remove(i);
                     subtract_status_stat_delta(&ef, &mut target_stats, agi);
+                    crate::status::report_removed(
+                        &mut lifecycle,
+                        event.target,
+                        event.source,
+                        event.reactive,
+                        crate::status::StatusLifecycle::Removed,
+                        [crate::status::RemovedStatus::of(&ef)],
+                    );
                 }
             }
         }
@@ -1130,6 +1139,7 @@ mod tests {
         let mut world = World::new();
         world.init_resource::<Messages<DamageEvent>>();
         world.init_resource::<Messages<DamageAppliedEvent>>();
+        world.init_resource::<Messages<crate::status::StatusLifecycleEvent>>();
         let stats = CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 0.0);
         let pos = Vec3::new(3.0, 0.0, 4.0);
         let target = world
@@ -1168,6 +1178,7 @@ mod tests {
         let mut world = World::new();
         world.init_resource::<Messages<DamageEvent>>();
         world.init_resource::<Messages<crate::combat::DamageAppliedEvent>>();
+        world.init_resource::<Messages<crate::status::StatusLifecycleEvent>>();
         let stats = CombatStats::simple(0.0, 0.0, 1.0, 10.0, 0.0, 0.0);
         let alive = world.spawn((Health::new(500.0), stats)).id();
         let mut dead_hp = Health::new(500.0);
@@ -1187,6 +1198,7 @@ mod tests {
         let mut world = World::new();
         world.init_resource::<Messages<DamageEvent>>();
         world.init_resource::<Messages<crate::combat::DamageAppliedEvent>>();
+        world.init_resource::<Messages<crate::status::StatusLifecycleEvent>>();
         world.init_resource::<CombatRng>();
         let stats = CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 0.0);
         let target = world
@@ -1213,6 +1225,7 @@ mod tests {
         let mut world = World::new();
         world.init_resource::<Messages<DamageEvent>>();
         world.init_resource::<Messages<crate::combat::DamageAppliedEvent>>();
+        world.init_resource::<Messages<crate::status::StatusLifecycleEvent>>();
         let mut attacker_stats = CombatStats::simple(50.0, 0.0, 1.0, 0.0, 0.0, 0.0);
         attacker_stats.crit_chance = 1.0;
         attacker_stats.crit_multiplier = 3.0;
@@ -1230,6 +1243,7 @@ mod tests {
         let mut world = World::new();
         world.init_resource::<Messages<DamageEvent>>();
         world.init_resource::<Messages<crate::combat::DamageAppliedEvent>>();
+        world.init_resource::<Messages<crate::status::StatusLifecycleEvent>>();
         world.init_resource::<CombatRng>();
         let mut caster_stats = CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 0.0);
         caster_stats.outgoing_spell_amp = 0.25;
@@ -1397,6 +1411,7 @@ mod tests {
             let mut world = World::new();
             world.init_resource::<Messages<DamageEvent>>();
             world.init_resource::<Messages<crate::combat::DamageAppliedEvent>>();
+            world.init_resource::<Messages<crate::status::StatusLifecycleEvent>>();
             world.init_resource::<CombatRng>();
             world
         }
@@ -1586,6 +1601,7 @@ mod tests {
             let mut world = World::new();
             world.init_resource::<Messages<DamageEvent>>();
             world.init_resource::<Messages<crate::combat::DamageAppliedEvent>>();
+            world.init_resource::<Messages<crate::status::StatusLifecycleEvent>>();
             world.init_resource::<CombatRng>();
             let mut statuses = StatusEffects::default();
             statuses.effects.push(StatusEffect::mana_shield(
@@ -1635,6 +1651,7 @@ mod tests {
             let mut again = World::new();
             again.init_resource::<Messages<DamageEvent>>();
             again.init_resource::<Messages<crate::combat::DamageAppliedEvent>>();
+            again.init_resource::<Messages<crate::status::StatusLifecycleEvent>>();
             again.init_resource::<CombatRng>();
             let mut statuses = StatusEffects::default();
             statuses.effects.push(StatusEffect::mana_shield(

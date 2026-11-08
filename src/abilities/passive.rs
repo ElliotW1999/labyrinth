@@ -207,6 +207,7 @@ mod tests {
             app.init_resource::<Time>()
                 .init_resource::<AbilityDefinitions>()
                 .add_message::<StatusEffectEvent>()
+                .add_message::<crate::status::StatusLifecycleEvent>()
                 .add_systems(
                     Update,
                     (tick_toggle_upkeep, apply_status_effect_events).chain(),

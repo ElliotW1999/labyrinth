@@ -75,6 +75,7 @@ impl Plugin for AbilitiesPlugin {
             .add_message::<ManaRestoreEvent>()
             .add_message::<vitals::ResourceDrainEvent>()
             .add_message::<StatusEffectEvent>()
+            .add_message::<crate::status::StatusLifecycleEvent>()
             .add_message::<DisplacementEvent>()
             .add_message::<TeleportEvent>()
             .add_message::<TeleportCompletedEvent>()
@@ -110,6 +111,8 @@ impl Plugin for AbilitiesPlugin {
                         (tick_forced_movement, settle_grounded_units).chain(),
                         reactive_triggers::cast_triggers,
                         reactive_triggers::damage_triggers,
+                        reactive_triggers::status_triggers
+                            .after(crate::status::tick_status_effects),
                     )
                         .chain(),
                     resolve_ability_triggers,
@@ -652,6 +655,7 @@ mod tests {
             .add_message::<ManaRestoreEvent>()
             .add_message::<vitals::ResourceDrainEvent>()
             .add_message::<StatusEffectEvent>()
+            .add_message::<crate::status::StatusLifecycleEvent>()
             .add_message::<DisplacementEvent>()
             .add_message::<TeleportEvent>()
             .add_message::<TeleportCompletedEvent>()
@@ -659,6 +663,7 @@ mod tests {
             .init_resource::<NavGrid>()
             .add_message::<DamageEvent>()
             .add_message::<crate::combat::DamageAppliedEvent>()
+            .add_message::<crate::status::StatusLifecycleEvent>()
             .add_message::<SpawnProjectileEvent>()
             .add_message::<ProjectileHitEvent>()
             .add_message::<crate::basic_attack::BasicAttackReleaseEvent>()
@@ -684,6 +689,8 @@ mod tests {
                         (tick_forced_movement, settle_grounded_units).chain(),
                         reactive_triggers::cast_triggers,
                         reactive_triggers::damage_triggers,
+                        reactive_triggers::status_triggers
+                            .after(crate::status::tick_status_effects),
                     )
                         .chain(),
                     resolve_ability_triggers,
@@ -4353,5 +4360,139 @@ mod tests {
             "{:?}",
             of_trigger(&fired, AbilityTrigger::OnSpellHit)
         );
+    }
+
+    // --- Status triggers ---
+
+    fn status_filter_item(trigger: AbilityTrigger) -> Vec<AbilityEffectEntry> {
+        vec![marker_effect(trigger)]
+    }
+
+    fn send_status(
+        app: &mut App,
+        source: Option<Entity>,
+        target: Entity,
+        change: crate::status::StatusChange,
+    ) {
+        app.world_mut()
+            .write_message(StatusEffectEvent::new(source, target, change));
+    }
+
+    #[test]
+    fn status_applied_filter_debuff_ignores_buffs() {
+        use crate::status::{StatusChange, StatusEffect};
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(status_filter_item(
+            AbilityTrigger::OnStatusApplied(definition::StatusFilter::Debuff),
+        ))]);
+        let holder = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+        let foe = spawn_unit(&mut app, Team::Dire, Vec3::X);
+
+        send_status(
+            &mut app,
+            Some(holder),
+            holder,
+            StatusChange::Apply(StatusEffect::buff("haste", 5.0)),
+        );
+        assert!(
+            run_collecting(&mut app, 3).is_empty(),
+            "a buff is no debuff"
+        );
+
+        send_status(
+            &mut app,
+            Some(foe),
+            holder,
+            StatusChange::Apply(StatusEffect::stunned(5.0)),
+        );
+        let fired = run_collecting(&mut app, 3);
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0].caster, holder);
+        assert_eq!(fired[0].trigger_unit, Some(foe), "the applier");
+        let meta = fired[0].status.expect("status meta");
+        assert_eq!(meta.id, "stun");
+        assert_eq!(meta.kind, crate::status::StatusKind::Debuff);
+        assert!(fired[0].reaction);
+    }
+
+    #[test]
+    fn status_removed_on_expiry_and_dispel() {
+        use crate::status::{DispelStrength, StatusChange, StatusEffect, StatusKind};
+        let mut app = test_app();
+        app.add_systems(
+            Update,
+            crate::status::tick_status_effects.before(reactive_triggers::status_triggers),
+        );
+        let _defs = install_test_item_definitions([item_with_effects(status_filter_item(
+            AbilityTrigger::OnStatusRemoved(definition::StatusFilter::Id("stun")),
+        ))]);
+        let holder = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+
+        // Expiry: a 0.08 s stun is gone after two 0.05 s frames.
+        send_status(
+            &mut app,
+            None,
+            holder,
+            StatusChange::Apply(StatusEffect::stunned(0.08)),
+        );
+        let fired = run_collecting(&mut app, 4);
+        assert_eq!(fired.len(), 1, "{fired:?}");
+
+        // Dispel.
+        send_status(
+            &mut app,
+            None,
+            holder,
+            StatusChange::Apply(StatusEffect::stunned(10.0)),
+        );
+        step(&mut app);
+        send_status(
+            &mut app,
+            None,
+            holder,
+            StatusChange::Dispel {
+                kind: StatusKind::Debuff,
+                strength: DispelStrength::Basic,
+            },
+        );
+        let fired = run_collecting(&mut app, 3);
+        assert_eq!(fired.len(), 1, "{fired:?}");
+
+        // Other statuses do not match the id filter.
+        send_status(
+            &mut app,
+            None,
+            holder,
+            StatusChange::Apply(StatusEffect::debuff("weak", 0.08)),
+        );
+        assert!(run_collecting(&mut app, 4).is_empty());
+    }
+
+    #[test]
+    fn status_reaction_does_not_loop() {
+        use crate::status::{StatusChange, StatusEffect};
+        // Whenever afflicted, stun yourself (a reactive stun): afflicting would loop forever
+        // if the reaction's own status fired status triggers again.
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![entry(
+            AbilityTrigger::OnStatusApplied(definition::StatusFilter::Any),
+            EffectTarget::Caster,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Stun,
+                duration: RankValue::fixed(100.0),
+            },
+        )])]);
+        let holder = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+
+        send_status(
+            &mut app,
+            None,
+            holder,
+            StatusChange::Apply(StatusEffect::debuff("weak", 100.0)),
+        );
+        let fired = run_collecting(&mut app, 10);
+        assert_eq!(fired.len(), 1, "one reaction, no loop: {fired:?}");
+        let statuses = app.world().get::<StatusEffects>(holder).unwrap();
+        assert!(statuses.is_stunned(), "the reaction itself took effect");
     }
 }

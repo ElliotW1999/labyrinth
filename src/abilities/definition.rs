@@ -155,6 +155,11 @@ pub enum AbilityTrigger {
     OnHealthBelow {
         percent: u8,
     },
+    /// A status matching the filter was applied to (or refreshed on) the owner. Trigger unit
+    /// = the applier, if it is someone else. Reactive and held statuses never fire it.
+    OnStatusApplied(StatusFilter),
+    /// A status matching the filter left the owner (expired, dispelled, removed or broken).
+    OnStatusRemoved(StatusFilter),
     /// The owner finished casting an ability. Fans out to every other source the owner
     /// holds (never the cast ability itself); item uses are not spell casts.
     OnSpellCast,
@@ -163,6 +168,28 @@ pub enum AbilityTrigger {
     OnSpellHit,
     /// Emitted by a custom mechanic, e.g. `Custom("on_skewer_end")`.
     Custom(&'static str),
+}
+
+/// Which statuses an `OnStatusApplied` / `OnStatusRemoved` entry reacts to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StatusFilter {
+    Any,
+    Buff,
+    Debuff,
+    /// One status by its runtime id (e.g. `"stun"`).
+    Id(&'static str),
+}
+
+impl StatusFilter {
+    pub fn matches(self, id: &str, kind: crate::status::StatusKind) -> bool {
+        use crate::status::StatusKind;
+        match self {
+            Self::Any => true,
+            Self::Buff => kind == StatusKind::Buff,
+            Self::Debuff => kind == StatusKind::Debuff,
+            Self::Id(wanted) => wanted == id,
+        }
+    }
 }
 
 impl AbilityTrigger {
@@ -198,6 +225,8 @@ impl AbilityTrigger {
             Self::OnDamageDealt
                 | Self::OnDamageTaken
                 | Self::OnHealthBelow { .. }
+                | Self::OnStatusApplied(_)
+                | Self::OnStatusRemoved(_)
                 | Self::OnKill
                 | Self::OnDeath
         )

@@ -9,10 +9,13 @@ use bevy::prelude::*;
 use super::casting::AbilityCastEvent;
 use super::catalog::AbilityDefinitions;
 use super::definition::AbilityTrigger;
-use super::effects::{AbilityTriggerEvent, EffectSource, SpellHitEvent, TriggerContext};
+use super::effects::{
+    AbilityTriggerEvent, EffectSource, SpellHitEvent, StatusMeta, TriggerContext,
+};
 use crate::combat::{DamageAppliedEvent, DamageKind};
 use crate::components::{AbilityLoadout, Team};
 use crate::items::{Inventory, ItemId};
+use crate::status::{StatusLifecycle, StatusLifecycleEvent};
 
 /// Every effect source the owner holds: items in slot order (one per distinct [`ItemId`],
 /// however many copies are carried), then learned ability slots (rank > 0). Items use rank 1.
@@ -148,6 +151,52 @@ pub(crate) fn cast_triggers(
             &mut triggers,
             |ctx| ctx.trigger_unit(Some(hit.target)).at(hit.point),
         );
+    }
+}
+
+/// `OnStatusApplied` / `OnStatusRemoved` on the status holder, from [`StatusLifecycleEvent`].
+/// Each distinct filter a source holds that matches fires once. Pinned after
+/// `tick_status_effects`, so expiries are seen the frame they happen.
+pub(crate) fn status_triggers(
+    mut changes: MessageReader<StatusLifecycleEvent>,
+    defs: Res<AbilityDefinitions>,
+    owners: OwnerQuery,
+    mut triggers: MessageWriter<AbilityTriggerEvent>,
+) {
+    for change in changes.read() {
+        let Ok((owner_tf, team, inventory, loadout)) = owners.get(change.target) else {
+            continue;
+        };
+        let applied = change.change == StatusLifecycle::Applied;
+        for (source, rank) in owner_sources(inventory, loadout) {
+            let matching = source_triggers(source, &defs, |trigger| match trigger {
+                AbilityTrigger::OnStatusApplied(filter) => {
+                    applied && filter.matches(change.id, change.kind)
+                }
+                AbilityTrigger::OnStatusRemoved(filter) => {
+                    !applied && filter.matches(change.id, change.kind)
+                }
+                _ => false,
+            });
+            for trigger in matching {
+                triggers.write(AbilityTriggerEvent(
+                    TriggerContext::new(
+                        trigger,
+                        source,
+                        change.target,
+                        *team,
+                        rank,
+                        owner_tf.translation,
+                        owner_tf.translation,
+                    )
+                    .trigger_unit(change.source.filter(|&s| s != change.target))
+                    .status(StatusMeta {
+                        id: change.id,
+                        kind: change.kind,
+                    }),
+                ));
+            }
+        }
     }
 }
 
