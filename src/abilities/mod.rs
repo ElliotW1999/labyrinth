@@ -2140,7 +2140,7 @@ mod tests {
         let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(200.0, 0.0, 0.0));
         let payload = ProjectilePayload {
             caster,
-            ability: AbilityId::Bolt,
+            source: EffectSource::Ability(AbilityId::Bolt),
             rank: 1,
             cast_target: None,
             aim: Vec3::X * 200.0,
@@ -2155,7 +2155,7 @@ mod tests {
     fn land_bolt(app: &mut App, caster: Entity, primary: Entity) {
         let payload = ProjectilePayload {
             caster,
-            ability: AbilityId::Bolt,
+            source: EffectSource::Ability(AbilityId::Bolt),
             rank: 1,
             cast_target: Some(primary),
             aim: Vec3::X * 200.0,
@@ -2727,6 +2727,52 @@ mod tests {
             a.dot_source = a.dot_source.map(|_| Entity::PLACEHOLDER);
             b.dot_source = b.dot_source.map(|_| Entity::PLACEHOLDER);
             assert_eq!(format!("{a:?}"), format!("{b:?}"));
+        }
+    }
+
+    #[test]
+    fn projectile_hit_trigger_carries_the_payload_source() {
+        let mut app = test_app();
+        let caster = spawn_caster(&mut app, KIT);
+        let victim = enemy_at(&mut app, 300.0);
+        for (source, trigger) in [
+            (
+                EffectSource::Ability(AbilityId::Bolt),
+                AbilityTrigger::OnProjectileHit,
+            ),
+            (
+                EffectSource::Item(ItemId::StormRod),
+                AbilityTrigger::OnProjectileHit,
+            ),
+            (
+                EffectSource::Item(ItemId::StormRod),
+                AbilityTrigger::OnImpact,
+            ),
+        ] {
+            let payload = ProjectilePayload {
+                caster,
+                source,
+                rank: 1,
+                cast_target: None,
+                aim: Vec3::X,
+            };
+            let primary = (trigger == AbilityTrigger::OnProjectileHit).then_some(victim);
+            app.world_mut()
+                .write_message(hit(payload, Vec3::X, primary, Vec::new()));
+            // Run only the emitter, so no effect resolves.
+            bevy::ecs::system::RunSystemOnce::run_system_once(
+                app.world_mut(),
+                projectile_hit_triggers,
+            )
+            .unwrap();
+            let triggers: Vec<_> = app
+                .world()
+                .resource::<Messages<AbilityTriggerEvent>>()
+                .iter_current_update_messages()
+                .map(|e| (e.0.source, e.0.trigger))
+                .collect();
+            assert_eq!(triggers.last(), Some(&(source, trigger)));
+            step(&mut app);
         }
     }
 
@@ -3340,7 +3386,7 @@ mod tests {
         }
         let payload = ProjectilePayload {
             caster,
-            ability: AbilityId::Bulwark,
+            source: EffectSource::Ability(AbilityId::Bulwark),
             rank: 1,
             cast_target: None,
             aim: Vec3::new(900.0, 0.0, 0.0),

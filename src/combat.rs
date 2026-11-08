@@ -3,6 +3,7 @@
 
 use bevy::prelude::*;
 
+use crate::abilities::effects::EffectSource;
 use crate::basic_attack::{
     BasicAttackEvent, BasicAttackImpactEvent, BasicAttackLandedEvent, BasicAttackReleaseEvent,
     ExtraAttackEvent, advance_attacks_in_flight, animate_melee_slashes, release_extra_attacks,
@@ -10,9 +11,9 @@ use crate::basic_attack::{
     start_basic_attack_windups, sync_attack_projectile_visuals, tick_attack_swings,
 };
 use crate::components::{
-    AbilityId, AttackCooldown, BoundRadius, CombatStats, DamageType, GoldBounty, Health,
-    HeroAttributes, HeroProgress, Lifetime, Mana, PlayerHero, PlayerWallet, Projectile,
-    ProjectileHome, ProjectileStyle, ShieldPool, Team, XpBounty,
+    AttackCooldown, BoundRadius, CombatStats, DamageType, GoldBounty, Health, HeroAttributes,
+    HeroProgress, Lifetime, Mana, PlayerHero, PlayerWallet, Projectile, ProjectileHome,
+    ProjectileStyle, ShieldPool, Team, XpBounty,
 };
 use crate::dimensions::{area_contains, bounds_of};
 use crate::progression::add_xp;
@@ -562,7 +563,8 @@ pub struct ProjectileReachedTarget;
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub struct ProjectilePayload {
     pub caster: Entity,
-    pub ability: AbilityId,
+    /// The ability or item whose effect entries the impact resolves against.
+    pub source: EffectSource,
     pub rank: u32,
     pub cast_target: Option<Entity>,
     pub aim: Vec3,
@@ -956,6 +958,7 @@ pub struct GroundBoltAim {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::AbilityId;
     use bevy::ecs::system::RunSystemOnce;
 
     #[test]
@@ -1000,7 +1003,7 @@ mod tests {
         let caster = unit(&mut world, Team::Radiant, -500.0);
         let payload = ProjectilePayload {
             caster,
-            ability: AbilityId::Bolt,
+            source: EffectSource::Ability(AbilityId::Bolt),
             rank: 1,
             cast_target: Some(target),
             aim: Vec3::ZERO,
@@ -1161,7 +1164,7 @@ mod tests {
             .id();
         let payload = ProjectilePayload {
             caster,
-            ability: AbilityId::Bolt,
+            source: EffectSource::Ability(AbilityId::Bolt),
             rank: 1,
             cast_target: Some(target),
             aim: Vec3::ZERO,
@@ -1204,7 +1207,7 @@ mod tests {
     fn first_hit_skillshot_stops_on_first_enemy() {
         let payload = |caster| ProjectilePayload {
             caster,
-            ability: AbilityId::Bolt,
+            source: EffectSource::Ability(AbilityId::Bolt),
             rank: 1,
             cast_target: None,
             aim: Vec3::ZERO,

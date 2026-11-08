@@ -76,7 +76,9 @@ pub fn chain_hops(
 pub struct CastContext {
     pub caster: Entity,
     pub team: Team,
-    pub ability: AbilityId,
+    /// What owns the effect entries this cast resolves against: the casting ability today, an
+    /// item once items run mechanics (see [`Self::ability`]).
+    pub source: EffectSource,
     pub rank: u32,
     pub origin: Vec3,
     pub aim: Vec3,
@@ -87,11 +89,19 @@ pub struct CastContext {
 }
 
 impl CastContext {
+    /// The casting ability, or `None` when an item is the source.
+    pub fn ability(&self) -> Option<AbilityId> {
+        match self.source {
+            EffectSource::Ability(id) => Some(id),
+            EffectSource::Item(_) => None,
+        }
+    }
+
     /// A trigger fired by this cast; mechanics fill in who was involved.
     pub fn trigger(&self, trigger: AbilityTrigger, point: Vec3) -> TriggerContext {
         TriggerContext::new(
             trigger,
-            EffectSource::Ability(self.ability),
+            self.source,
             self.caster,
             self.team,
             self.rank,
@@ -206,7 +216,7 @@ impl MechanicRunner<'_, '_> {
                     },
                     payload: ProjectilePayload {
                         caster: ctx.caster,
-                        ability: ctx.ability,
+                        source: ctx.source,
                         rank: ctx.rank,
                         cast_target: ctx.unit_target,
                         aim: ctx.aim,
@@ -279,7 +289,7 @@ pub fn execute_ability_casts(
         let ctx = CastContext {
             caster: cast.caster,
             team: *team,
-            ability: cast.ability,
+            source: EffectSource::Ability(cast.ability),
             rank: cast.rank,
             origin: transform.translation,
             aim: cast.aim,
@@ -320,7 +330,7 @@ pub fn projectile_hit_triggers(
         triggers.write(AbilityTriggerEvent(
             TriggerContext::new(
                 trigger,
-                EffectSource::Ability(payload.ability),
+                payload.source,
                 payload.caster,
                 hit.team,
                 payload.rank,
