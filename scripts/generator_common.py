@@ -1051,11 +1051,13 @@ def _displacement_effect(
     value: list[float] | None,
     duration: list[float] | None,
     amount: list[float] | None,
+    radius: list[float] | None,
     report: Report,
 ) -> str | None:
     """`AbilityEffect::Displace` for the forced-movement kinds, validated per kind.
 
-    Columns: `value` = distance, `duration` = seconds, `amount` = speed (charge only).
+    Columns: `value` = distance, `duration` = seconds, `amount` = speed (charge only),
+    `radius` = contact radius (dash and charge only).
     """
     row = e.row
     kind = MOVEMENTS[effect_id]
@@ -1107,6 +1109,14 @@ def _displacement_effect(
         return None
     if effect_id == "drag":
         default_duration = 0.0  # blank: until the carrying movement ends
+    contact_radius = "None"
+    if radius and effect_id in ("dash", "charge"):
+        if any(r <= 0 for r in radius):
+            report.error(row.file, row.line, "radius", row.get("radius"), f"the {effect_id} contact radius must be above 0")
+            return None
+        contact_radius = f"Some({rank_value(radius)})"
+    elif radius and e.target != "units_in_radius":
+        _unused(e, report, "radius")
     unused = ["damage_type"]
     if effect_id != "charge":
         unused.append("amount")
@@ -1116,7 +1126,8 @@ def _displacement_effect(
     distance = f"Some({rank_value(value)})" if value and effect_id not in ("cyclone", "drag") else "None"
     return (
         f"AbilityEffect::Displace {{ kind: DisplacementKind::{kind}, "
-        f"distance: {distance}, duration: {rank_value(duration or [default_duration])}, speed: {speed} }}"
+        f"distance: {distance}, duration: {rank_value(duration or [default_duration])}, speed: {speed}, "
+        f"contact_radius: {contact_radius} }}"
     )
 
 
@@ -1720,7 +1731,7 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
                     max_distance = f"Some({rank_value(value)})"
             effect = f"AbilityEffect::Teleport {{ min_distance: {min_distance}, max_distance: {max_distance} }}"
         else:
-            effect = _displacement_effect(e, effect_id, ctx, value, duration, amount, report)
+            effect = _displacement_effect(e, effect_id, ctx, value, duration, amount, radius, report)
             if effect is None:
                 return None
     elif t == "stat_modifier":

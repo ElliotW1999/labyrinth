@@ -3765,6 +3765,7 @@ mod tests {
                     distance: None,
                     duration: RankValue::fixed(0.3),
                     speed: None,
+                    contact_radius: None,
                 },
             );
         app.world_mut()
@@ -3812,6 +3813,7 @@ mod tests {
                     distance: None,
                     duration: RankValue::fixed(0.3),
                     speed: None,
+                    contact_radius: None,
                 },
             );
         app.world_mut()
@@ -4010,6 +4012,7 @@ mod tests {
                 distance: None,
                 duration: RankValue::ZERO,
                 speed: None,
+                contact_radius: None,
             },
         );
         app.world_mut()
@@ -4085,6 +4088,7 @@ mod tests {
                         distance: Some(RankValue::fixed(300.0)),
                         duration: RankValue::fixed(0.25),
                         speed: None,
+                        contact_radius: None,
                     },
                 },
                 AbilityEffectEntry {
@@ -4142,6 +4146,7 @@ mod tests {
                     distance: None,
                     duration: RankValue::fixed(3.0),
                     speed: Some(RankValue::fixed(900.0)),
+                    contact_radius: None,
                 },
             )
             .on(
@@ -5850,6 +5855,7 @@ mod tests {
                         distance: None,
                         duration: RankValue::fixed(0.3),
                         speed: None,
+                        contact_radius: None,
                     },
                 )],
         );
@@ -6479,6 +6485,7 @@ mod tests {
                 distance: None,
                 duration: RankValue::fixed(1.0),
                 speed: None,
+                contact_radius: None,
             },
         )])]);
         let victim = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
@@ -6514,6 +6521,7 @@ mod tests {
                     distance: Some(RankValue::fixed(300.0)),
                     duration: RankValue::fixed(0.25),
                     speed: None,
+                    contact_radius: None,
                 },
             ),
             entry(
@@ -6568,6 +6576,7 @@ mod tests {
                 distance: None,
                 duration: RankValue::fixed(1.0),
                 speed: None,
+                contact_radius: None,
             },
         )])]);
         let caster = spawn_caster_with_inventory(&mut app, KIT);

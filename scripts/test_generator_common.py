@@ -1583,6 +1583,32 @@ class TimedStatModifierTests(unittest.TestCase):
                 self.assertTrue(any("must be above 0" in e.message for e in report.errors), (stat, bad))
 
 
+class DashContactRadiusTests(unittest.TestCase):
+    @staticmethod
+    def _dash(effect_id: str = "dash", **cells: str):
+        effect = {"effect_type": "movement", "effect_id": effect_id, "value": "800", "duration": "1"}
+        effect.update(cells)
+        return load_test_ability({"target_type": "point", "cast_range": "800"}, [effect])
+
+    def test_dash_radius_is_the_contact_radius(self) -> None:
+        abilities, report = self._dash(radius="145")
+        self.assertEqual(report.errors, [])
+        self.assertIn("contact_radius: Some(RankValue::fixed(145.0))", str(abilities[0].effects))
+        abilities, report = self._dash()
+        self.assertIn("contact_radius: None", str(abilities[0].effects))
+
+    def test_dash_radius_must_be_above_zero(self) -> None:
+        _, report = self._dash(radius="0")
+        self.assertTrue(any("contact radius must be above 0" in e.message for e in report.errors))
+
+    def test_radius_on_other_movements_is_ignored_with_a_warning(self) -> None:
+        effect = {"effect_type": "movement", "effect_id": "knockback", "value": "300", "effect_target": "cast_target", "radius": "145"}
+        abilities, report = load_test_ability({"target_type": "unit", "cast_range": "800"}, [effect])
+        self.assertEqual(report.errors, [])
+        self.assertTrue(any(w.field == "radius" for w in report.warnings), report.warnings)
+        self.assertIn("contact_radius: None", str(abilities[0].effects))
+
+
 class HeroGeneratorTests(unittest.TestCase):
     HEADER = (
         "Hero_name,is_melee,Ability_Q_Name,Ability_W_Name,Ability_E_Name,Ability_R_Name,"

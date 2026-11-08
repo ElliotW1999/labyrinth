@@ -767,16 +767,20 @@ impl EffectRunner<'_, '_> {
                 distance,
                 duration,
                 speed,
+                contact_radius,
             } => {
                 for target in targets {
-                    self.displacements.write(DisplacementEvent::from_ctx(
-                        ctx,
-                        target,
-                        kind,
-                        distance.map(|d| d.at(rank)),
-                        duration.at(rank),
-                        speed.map(|s| s.at(rank)),
-                    ));
+                    self.displacements.write(
+                        DisplacementEvent::from_ctx(
+                            ctx,
+                            target,
+                            kind,
+                            distance.map(|d| d.at(rank)),
+                            duration.at(rank),
+                            speed.map(|s| s.at(rank)),
+                        )
+                        .with_contact_radius(contact_radius.map(|r| r.at(rank))),
+                    );
                 }
             }
             AbilityEffect::Teleport {

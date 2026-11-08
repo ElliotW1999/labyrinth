@@ -809,6 +809,9 @@ pub enum AbilityEffect {
         duration: RankValue,
         /// Travel speed; only kinds that chase a unit read it.
         speed: Option<RankValue>,
+        /// Dash and charge only: the reach from the mover's centre (plus the other unit's
+        /// bound) within which it contacts enemies. `None` is body contact.
+        contact_radius: Option<RankValue>,
     },
     /// Instantly relocates each target to the trigger's aim point, validated against the
     /// map, static obstacles, and unit overlap (see `crate::teleport`). Rejected

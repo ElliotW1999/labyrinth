@@ -45,6 +45,9 @@ pub struct DisplacementEvent {
     pub speed: Option<f32>,
     /// Trigger identity; self-propelled motion reports contacts and its end with it.
     pub source: Option<MotionSource>,
+    /// Self-propelled motion only: the reach (from the mover's centre, plus the other unit's
+    /// bound) within which it contacts enemies. `None` is body contact (the mover's bound).
+    pub contact_radius: Option<f32>,
 }
 
 impl DisplacementEvent {
@@ -78,7 +81,14 @@ impl DisplacementEvent {
                 cast_target: ctx.cast_target,
                 reaction: ctx.reaction,
             }),
+            contact_radius: None,
         }
+    }
+
+    /// Sets the contact reach of a self-propelled motion (see [`Self::contact_radius`]).
+    pub fn with_contact_radius(mut self, contact_radius: Option<f32>) -> Self {
+        self.contact_radius = contact_radius;
+        self
     }
 }
 
@@ -164,6 +174,9 @@ pub struct ForcedMovement {
     pub hit: Vec<Entity>,
     /// End early once this status id is gone from the unit (`"cyclone"`).
     pub bound_status: Option<&'static str>,
+    /// Reach (from the mover's centre, plus the other unit's bound) for contacting enemies;
+    /// `None` uses the mover's own bound.
+    pub contact_radius: Option<f32>,
 }
 
 /// Id of the status that mirrors a cyclone motion.
@@ -180,6 +193,7 @@ impl ForcedMovement {
             source: None,
             hit: Vec::new(),
             bound_status: None,
+            contact_radius: None,
         }
     }
 
@@ -279,6 +293,7 @@ pub fn apply_displacement_events(
         motion.priority = priority;
         if priority == MotionPriority::Own {
             motion.source = event.source;
+            motion.contact_radius = event.contact_radius;
         }
         motion.ignore_terrain = flying || cyclone;
         if cyclone {
@@ -546,6 +561,7 @@ pub fn tick_forced_movement(
             forced.elapsed += dt;
             let (elapsed, duration, bound_status) =
                 (forced.elapsed, forced.duration, forced.bound_status);
+            let contact_reach = forced.contact_radius.unwrap_or(own_bound);
             let mut finished = dead || interrupted || forced.elapsed >= forced.duration;
             let mut reached: Option<Entity> = None;
             let here3 = transform.translation;
@@ -655,7 +671,7 @@ pub fn tick_forced_movement(
                         || other.untargetable
                         || other.team.is_none_or(|t| t == src.team)
                         || forced.hit.contains(&other.entity)
-                        || center_distance(pos, other.pos) > own_bound + other.bound
+                        || center_distance(pos, other.pos) > contact_reach + other.bound
                     {
                         continue;
                     }
@@ -796,6 +812,7 @@ mod tests {
             duration,
             speed: None,
             source: None,
+            contact_radius: None,
         });
     }
 
@@ -1369,6 +1386,7 @@ mod tests {
             duration: 2.0,
             speed,
             source: Some(own_source(charger)),
+            contact_radius: None,
         };
         for event in [
             charge(None, Some(900.0)),
@@ -1457,6 +1475,7 @@ mod tests {
             duration,
             speed: None,
             source: None,
+            contact_radius: None,
         });
     }
 
@@ -1883,6 +1902,7 @@ mod tests {
             duration: 0.4,
             speed: None,
             source: Some(own_source(dasher)),
+            contact_radius: None,
         });
         run(&mut app, 3);
         assert_eq!(
@@ -1915,6 +1935,86 @@ mod tests {
         assert!(
             x >= 60.0 - 1.0 && x < 900.0,
             "pulled toward the last known spot, then released: {x}"
+        );
+    }
+
+    fn contacted(seen: &[TriggerContext]) -> Vec<Entity> {
+        seen.iter()
+            .filter(|c| c.trigger == AbilityTrigger::OnUnitContact)
+            .filter_map(|c| c.trigger_unit)
+            .collect()
+    }
+
+    /// Dashes a 36-radius unit from the origin to x = 600 and returns who it contacted.
+    fn dash_contacts(contact_radius: Option<f32>) -> (Vec<Entity>, [Entity; 3]) {
+        let mut app = sim_app();
+        let dasher = spawn_unit(&mut app, Team::Radiant, Vec3::ZERO, 36.0);
+        let near = spawn_unit(&mut app, Team::Dire, Vec3::new(300.0, 0.0, 120.0), 36.0);
+        let far = spawn_unit(&mut app, Team::Dire, Vec3::new(400.0, 0.0, 200.0), 36.0);
+        let ahead = spawn_unit(&mut app, Team::Dire, Vec3::new(500.0, 0.0, 40.0), 36.0);
+        step(&mut app);
+        let before = pos(&app, dasher);
+        app.world_mut().write_message(DisplacementEvent {
+            target: dasher,
+            kind: DisplacementKind::Dash,
+            caster: dasher,
+            origin: before,
+            point: before,
+            aim: Vec3::new(600.0, 0.0, 0.0),
+            cast_target: None,
+            distance: Some(600.0),
+            duration: 0.6,
+            speed: None,
+            source: Some(own_source(dasher)),
+            contact_radius,
+        });
+        let mut seen = Vec::new();
+        for _ in 0..30 {
+            step(&mut app);
+            collect(&app, &mut seen);
+        }
+        (contacted(&seen), [near, far, ahead])
+    }
+
+    #[test]
+    fn dash_contact_radius_widens_the_reach_of_a_dash() {
+        // Body contact (36 + 36 = 72): only the unit nearly on the path is touched.
+        let (hit, [near, far, ahead]) = dash_contacts(None);
+        assert_eq!(hit, vec![ahead]);
+        assert!(!hit.contains(&near) && !hit.contains(&far));
+
+        // Contact radius 145 (+ the other unit's 36 = 181): 120 off the path is touched,
+        // 200 off is not.
+        let (hit, [near, far, ahead]) = dash_contacts(Some(145.0));
+        assert!(hit.contains(&near) && hit.contains(&ahead), "{hit:?}");
+        assert!(!hit.contains(&far), "200 off the path is out of reach");
+    }
+
+    #[test]
+    fn contact_radius_is_copied_onto_the_own_motion_only() {
+        let mut app = sim_app();
+        let dasher = spawn_unit(&mut app, Team::Radiant, Vec3::ZERO, 36.0);
+        step(&mut app);
+        app.world_mut().write_message(DisplacementEvent {
+            target: dasher,
+            kind: DisplacementKind::Dash,
+            caster: dasher,
+            origin: Vec3::ZERO,
+            point: Vec3::ZERO,
+            aim: Vec3::new(600.0, 0.0, 0.0),
+            cast_target: None,
+            distance: Some(600.0),
+            duration: 1.0,
+            speed: None,
+            source: Some(own_source(dasher)),
+            contact_radius: Some(145.0),
+        });
+        step(&mut app);
+        let motion = app.world().get::<ForcedMovement>(dasher).unwrap();
+        assert_eq!(motion.contact_radius, Some(145.0));
+        assert_eq!(
+            ForcedMovement::new(motion.path.clone(), 1.0).contact_radius,
+            None
         );
     }
 }
