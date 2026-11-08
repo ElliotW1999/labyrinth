@@ -236,7 +236,7 @@ impl TriggerContext {
     }
 
     /// The same context re-fired under `trigger` one hop deeper (by `Proc` / `Counter` / `Chain`).
-    fn derived(&self, trigger: AbilityTrigger) -> Self {
+    pub(super) fn derived(&self, trigger: AbilityTrigger) -> Self {
         Self {
             trigger,
             depth: self.depth + 1,

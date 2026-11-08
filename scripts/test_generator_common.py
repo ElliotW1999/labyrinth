@@ -19,6 +19,7 @@ from generator_common import (  # noqa: E402
     NOT_EMITTED_TRIGGERS,
     effect_to_rust,
     held_status_id,
+    chain_fed_triggers,
     reaction_triggers,
     warn_duplicate_held_statuses,
     warn_unemitted_triggers,
@@ -1104,6 +1105,61 @@ class ReactiveTriggerTests(unittest.TestCase):
         effect, ctx = _effect("perform_attack", "", target="owner", trigger="on_echo", kind="item")
         ctx.reaction = reaction_triggers(rows)
         self.assertIsNone(effect_to_rust(effect, ctx, Report()))
+
+    def test_not_emitted_triggers_are_channel_tick_and_expire(self) -> None:
+        self.assertEqual(set(NOT_EMITTED_TRIGGERS), {"on_channel_tick", "on_expire"})
+
+    @staticmethod
+    def _item_row(trigger: str, effect_type: str, effect_id: str) -> EffectRow:
+        cells = {"item_id": "t", "effect_index": "0", "trigger": trigger, "effect_target": "owner", "effect_type": effect_type, "effect_id": effect_id}
+        return EffectRow(row(cells), "t", 0, trigger, "owner", effect_type)
+
+    def test_chain_fed_by_reaction_is_a_reaction(self) -> None:
+        rows = [self._item_row("on_damage_taken", "chain", "on_arc"), self._item_row("on_arc", "damage", "")]
+        self.assertIn("on_arc", reaction_triggers(rows))
+        self.assertIn("on_arc", chain_fed_triggers(rows))
+        # A chain fed by a non-reaction trigger is chain-fed but not a reaction.
+        rows = [self._item_row("on_attack_hit", "chain", "on_bounce")]
+        self.assertNotIn("on_bounce", reaction_triggers(rows))
+        self.assertIn("on_bounce", chain_fed_triggers(rows))
+
+    def test_perform_attack_rejected_under_chain_fed_trigger(self) -> None:
+        rows = [
+            self._item_row("on_attack_hit", "chain", "on_bounce"),
+            self._item_row("on_bounce", "proc", "on_lucky"),
+            self._item_row("on_lucky", "perform_attack", ""),
+        ]
+        fed = chain_fed_triggers(rows)
+        self.assertEqual(fed, {"on_bounce", "on_lucky"})
+        for trigger in ("on_bounce", "on_lucky"):
+            effect, ctx = _effect("perform_attack", "", target="owner", trigger=trigger, kind="item")
+            ctx.reaction = reaction_triggers(rows)
+            ctx.chain_fed = fed
+            report = Report()
+            self.assertIsNone(effect_to_rust(effect, ctx, report), trigger)
+            self.assertIn("fed by a chain", report.errors[0].message)
+        # Not fed by the chain: still fine.
+        effect, ctx = _effect("perform_attack", "", target="owner", trigger="on_attack_hit", kind="item")
+        ctx.chain_fed = fed
+        self.assertIsNotNone(effect_to_rust(effect, ctx, Report()))
+
+    def test_cooldown_ready_valid_for_projectile_items(self) -> None:
+        import tempfile
+
+        import ItemGenerator
+
+        item_header = "id,name,item_type,cost,sell_value,tier,rarity,stackable,max_stack,consumable,max_charges,description,cooldown,target_type,target_team,cast_range,projectile_type,projectile_speed\n"
+        effect_header = "item_id,effect_index,trigger,effect_target,effect_type,effect_id,value,damage_type,duration,radius,amount,scaling_type,scaling_value\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            (tmp / "i.csv").write_text(item_header + "tester,Tester,weapon,100,50,1,common,false,,false,,x,5,unit,enemy,600,targeted,900\n")
+            (tmp / "ie.csv").write_text(
+                effect_header
+                + "tester,0,on_cooldown_ready,owner,heal,,10,,,,,,\n"
+                + "tester,1,on_projectile_hit,trigger_unit,damage,,10,magical,,,,,\n"
+            )
+            _, report = ItemGenerator.load(tmp / "i.csv", tmp / "ie.csv", set())
+            self.assertEqual([e.message for e in report.errors], [])
 
     def test_pseudo_proc_and_accumulate_columns(self) -> None:
         effect, ctx = _gate_row("pseudo_proc", "on_bash", "on_attack_hit", "25", {"on_bash"})

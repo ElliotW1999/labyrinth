@@ -832,6 +832,8 @@ class EffectContext:
     owner_triggers: set[str] | None = None
     #: Triggers whose effects run as reactions (see `reaction_triggers`); None = just the built-ins.
     reaction: set[str] | None = None
+    #: Custom triggers fed (directly or through gates) by a `chain` row (see `chain_fed_triggers`).
+    chain_fed: set[str] | None = None
 
 
 def _levels(e: EffectRow, name: str, ctx: EffectContext, report: Report, **kwargs) -> list[float] | None:
@@ -1185,6 +1187,26 @@ def reaction_triggers(effects: list[EffectRow]) -> set[str]:
     return reaction
 
 
+def chain_fed_triggers(effects: list[EffectRow]) -> set[str]:
+    """Custom triggers fed by a `chain` row, directly or through further gates.
+
+    Chain hops carry no `AttackMeta`, so a `perform_attack` under such a trigger would start an
+    attack whose hit re-fires the trigger that fed the chain: an unbounded loop (F7).
+    """
+    fed_triggers: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for e in effects:
+            fed = e.row.get("effect_id").lower()
+            if e.effect_type not in CUSTOM_TRIGGER_FEEDERS or fed in fed_triggers:
+                continue
+            if e.effect_type == "chain" or e.trigger in fed_triggers:
+                fed_triggers.add(fed)
+                changed = True
+    return fed_triggers
+
+
 def warn_duplicate_held_statuses(effects: list[EffectRow], report: Report) -> None:
     """Two `while` rows of one owner holding the same status id would fight over it."""
     seen: dict[str, int] = {}
@@ -1312,6 +1334,16 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             "effect_type",
             e.effect_type,
             f"{e.trigger} reacts to damage or statuses, and reactions never start attacks",
+        )
+        return None
+    if e.effect_type == "perform_attack" and e.trigger in (ctx.chain_fed or ()):
+        report.error(
+            row.file,
+            row.line,
+            "effect_type",
+            e.effect_type,
+            f"{e.trigger} is fed by a chain row; a chain hop carries no attack, so perform_attack here "
+            "could re-fire the trigger that fed the chain without end",
         )
         return None
 

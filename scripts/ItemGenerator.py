@@ -61,6 +61,7 @@ from generator_common import (  # noqa: E402
     f32,
     find_emitted_custom_triggers,
     find_registered_custom_effects,
+    chain_fed_triggers,
     reaction_triggers,
     warn_duplicate_held_statuses,
     warn_unemitted_triggers,
@@ -491,6 +492,7 @@ def load(items_csv: Path, effects_csv: Path, existing_ids: set[str], *, repo_roo
         ctx.registered_custom = registered_custom
         ctx.owner_triggers = {e.trigger for e in effects}
         ctx.reaction = reaction_triggers(effects)
+        ctx.chain_fed = chain_fed_triggers(effects)
         if item.projectile == "none" and not any(e.trigger in ("on_use", "on_channel_end", "on_channel_interrupted") for e in effects):
             ctx.invalid_trigger["on_cooldown_ready"] = "the item has no active (no on_use effect), so it has no cooldown to finish"
         warn_unreachable_custom_triggers(effects, emitted_triggers, report)

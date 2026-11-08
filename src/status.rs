@@ -1104,14 +1104,20 @@ mod tests {
         assert_eq!(stats.move_speed, 60.0);
         assert!(statuses.is_asleep());
 
-        wake_from_sleep(&mut statuses, &mut stats, 0.0, None);
+        let woken = wake_from_sleep(&mut statuses, &mut stats, 0.0, None);
+        assert_eq!(
+            woken.iter().map(|r| r.id).collect::<Vec<_>>(),
+            ["sleep"],
+            "the removed ids are returned for reporting"
+        );
+        assert!(!woken[0].reactive);
 
         assert!(!statuses.is_asleep());
         assert_eq!(stats.move_speed, baseline.move_speed);
         assert_eq!(stats.armor, baseline.armor + 4.0, "only sleep is released");
         assert_eq!(statuses.effects.len(), 1);
-        // Waking a unit that is not asleep changes nothing.
-        wake_from_sleep(&mut statuses, &mut stats, 0.0, None);
+        // Waking a unit that is not asleep changes nothing and reports nothing.
+        assert!(wake_from_sleep(&mut statuses, &mut stats, 0.0, None).is_empty());
         assert_eq!(statuses.effects.len(), 1);
     }
 
@@ -1356,6 +1362,36 @@ mod tests {
         app.world_mut()
             .write_message(DamageEvent::new(sleeper, 10.0, DamageType::Physical));
         assert_eq!(lifecycle_frame(&mut app, 0.01), [("sleep", Removed)]);
+    }
+
+    /// Damage always breaks sleep, but a reactive hit wakes the unit silently.
+    #[test]
+    fn sleep_break_reports_removed_unless_reactive() {
+        for (reactive, expected) in [
+            (false, vec![("sleep", StatusLifecycle::Removed)]),
+            (true, vec![]),
+        ] {
+            let mut app = lifecycle_app();
+            let sleeper = lifecycle_unit(&mut app);
+            change(
+                &mut app,
+                sleeper,
+                StatusChange::Apply(StatusEffect::sleep(10.0)),
+                false,
+            );
+            lifecycle_frame(&mut app, 0.01);
+            app.world_mut().write_message(
+                DamageEvent::new(sleeper, 10.0, DamageType::Physical).reactive(reactive),
+            );
+            assert_eq!(lifecycle_frame(&mut app, 0.01), expected, "{reactive}");
+            assert!(
+                !app.world()
+                    .get::<StatusEffects>(sleeper)
+                    .unwrap()
+                    .is_asleep(),
+                "woken either way (reactive: {reactive})"
+            );
+        }
     }
 
     #[test]
