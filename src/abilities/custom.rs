@@ -1,8 +1,8 @@
 //! Abilities whose *mechanics* don't fit [`super::definition::AbilityMechanic`]
-//! (e.g. a Skewer-style drag) register a one-shot system here with
+//! (anything the shared dash / charge / drag / projectile mechanics cannot express) register a one-shot system here with
 //! `app.register_ability_behavior(id, system)`. They still go through the shared
 //! cast pipeline and report what happened as `AbilityTriggerEvent`s, such as
-//! `AbilityTrigger::Custom("on_skewer_end")` with the dragged units as affected units.
+//! `AbilityTrigger::Custom("on_my_event")` with the units involved as affected units.
 //! Consequences stay in the ability's effect entries.
 //!
 //! Every built-in ability is currently expressed with the generic mechanics.

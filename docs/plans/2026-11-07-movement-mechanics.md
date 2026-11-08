@@ -1,7 +1,7 @@
 # Movement and repositioning mechanics: audit and implementation plan
 
 **Date:** 2026-11-07
-**Status:** Approved 2026-11-07 with the decisions recorded under "Approved decisions" (end of file). The architect did not run `cargo test`, so Step 0 records the baseline.
+**Status:** Implemented 2026-11-07 (see "Implementation notes / deviations" at the end). Approved 2026-11-07 with the decisions recorded under "Approved decisions" (end of file). The architect did not run `cargo test`, so Step 0 records the baseline.
 **Based on:** `2026-11-06-shared-effects-pipeline.md`, `2026-11-06-status-effects-catalog.md` (rows Leash, Cyclone, Turn rate slow, Phased; Phase E), `2026-11-07-item-ability-architecture-cleanup.md` (invariants, the V commands, test-app rules).
 **Scope:** one PR with one commit per step. Every step compiles and passes **V** (the shared verification commands in the cleanup plan) on its own.
 
@@ -419,3 +419,25 @@ These override the recommendations above where they differ.
   Leave immunity to new debuffs out of scope, except where skipping effects on untargetable units already covers it.
 - **D7: no.** Tethers clamp and never break.
 - **D8:** use the proposed `DASH_SPEED = 1200`; choose a sensible `CYCLONE_HEIGHT` constant in `scale.rs`.
+
+## Implementation notes / deviations
+
+Implemented in eleven commits (Step 0 has no commit; Steps 1 to 11 one each). Baseline `cargo test`: 222 passed. Final: 267 passed. Generator unit tests: 13 before, 21 after.
+
+Environment: the build needs the Bevy Linux packages from Phase 0 of the cleanup plan (`pkg-config libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev`), installed with apt. `cargo fmt --check` already failed on 13 files at the baseline, so `cargo fmt` was not run on untouched files; new code is rustfmt-formatted and files that carry generated regions (`components.rs`) were not re-formatted by hand.
+
+Deviations and clarifications, by step:
+
+- **Step 1.** `MotionPath`, `MotionPriority` and `ForcedMovement` start with only the fields Step 1 needs (`Line`, `Own`/`External`); `Toward`, `Attached`, `Hold`, `Suspend`, `source`, `hit` and `bound_status` arrive with the step that uses them. `ForcedMovement::line` is only used by tests, so it is `cfg_attr(not(test), allow(dead_code))`. The terrain stop sweeps the segment with `segment_clear` and bisects to the last clear point, so a fast step cannot tunnel through a thin tree. The `AbilitiesPlugin` chain reached Bevy's 20-element tuple limit, so `tick_forced_movement` and later `settle_grounded_units` sit in a nested `.chain()` group, and `despawn_indicators` / `animate_spell_fx` are grouped the same way.
+- **Step 2.** `MotionSource` is attached only to Own motion (the plan's doc comment says "self-motion"; the contact rule in the body said "motions with a source"). Knockbacks and pulls therefore never raise `OnUnitContact` / `OnMovementEnd`. A tracking pull's nominal duration is the time to close the starting gap, and it gives up after 3x that (`PULL_TIMEOUT_FACTOR`) when a fleeing caster outruns it.
+- **Step 3.** Dash duration is `duration x actual / max distance`; the `Dash` mechanic passes `max_distance / DASH_SPEED`. Charge uses `duration` as its hard cap. Dash and charge no longer clear `AttackTarget` / `AttackMoveOrder` (orders survive, as for knockback). Self-propelled movers face their travel direction every frame, not only at the start.
+- **Step 4.** A drag request is ignored unless the caster is already in (or about to get, in the same frame) a forced motion. The offset is the actual offset at contact, clamped to the bounds sum, so a deep overlap stays deep.
+- **Step 5.** `CYCLONE_HEIGHT = 140` and `CYCLONE_RISE_TIME = 0.25` (lift and set-down ramps). A refresh keeps the original ground height. Untargetable (D6) is implemented once as `status::is_untargetable` plus `UnitInfo.untargetable` and applied in: activation validation, unit-command target checks, basic-attack and AI acquisition snapshots, basic-attack release / flight / impact / cleave, homing projectiles (they miss), skillshots and projectile splash, `EffectRunner::targets` (all selectors except the caster itself), and the forced-movement contact and chase snapshots. `emit_chain_damage` (chain jumps) was left alone: nothing calls it yet. The extra tests are `unit_cast_on_a_cycloned_target_is_rejected_and_area_effects_skip_it` (abilities), `untargetable_units_cannot_be_picked_except_by_themselves` (targeting) and `suspended_units_cannot_be_teleported` (teleport); the `cyclone_blocks_damage_displacement_and_teleport` test in `displacement.rs` also covers the teleport rejection through the real teleport system.
+- **Step 6.** Flying paths are replaced (not kept) when the request moves more than 0.5 units; the stuck counter is carried over so a flyer pushed against a tower still gives up near its goal.
+- **Step 7.** `enforce_leashes` is a `ParamSet` of a read-only query and a mutable query; the anchor position is read before any correction in the same frame.
+- **Step 8.** Move-speed tests are in `components.rs` (`movement_stat_tests`). No `MAX_MOVE_SPEED` (D4), so `haste_is_not_capped` replaces the cap test. `effective_move_speed` sums every effect in the list (expired effects are removed by the tick), mirroring how the deltas were added to the stat.
+- **Step 9.** Production CSVs are untouched; the regenerated Rust only gains the `LeashAnchorKind` import (and `first_hit` from Step 10). In `data/examples/` the skewer's old `on_skewer_end` rows became `on_movement_end` rows, since the custom trigger had no emitter any more. New valid examples: `lunge`, `bull_rush`, `meat_hook`, `twister`, `snare_field`, `chain_link`, `wings`, and the item `lunge_blade`. New invalid examples cover each new error (plus a passive `aura` ability for `on_movement_end`). EffectContext gained a `target_type` field so charge can be rejected on non-unit abilities and items.
+- **Step 10.** A first-hit skillshot strikes the nearest enemy among those touched in the same frame and ends without an `OnImpact`. Wired through `SpawnProjectileEvent.skillshot_max_hits` and `Skillshot.max_hits`.
+- **Step 11.** README: status table, trigger / effect lists, a "Forced movement" section, the layout line, and the Limitations sentence "Displacement ignores obstacles" removed. Dated notes added to the Leash, Cyclone and Turn rate rows of `2026-11-06-status-effects-catalog.md`.
+
+Not done / known limits: flyers rely on building collision (D5), a unit hit by a hostile leash outside its radius is snapped to the edge at once, and `emit_chain_damage` does not skip untargetable units.

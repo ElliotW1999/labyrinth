@@ -186,6 +186,12 @@ IssueCommand (input / minimap / network host)
 | Shield | Absorbs damage before HP (`ShieldPool`; Barrier also grants bonus armor) |
 | Burn | DoT via `damage_per_sec` → `DamageEvent` each frame |
 | Phased / Forceful | Collision ignore / stronger soft-separation |
+| Flying | Walks over trees and other props (towers and ancients still block); forced movement ignores terrain; sets the unit down on walkable ground when it ends |
+| Leash / Tether | Clamps the unit inside a circle around a fixed point (Leash) or around the caster (Tether); basic-dispellable debuffs that never break; a teleport outside the circle is rejected |
+| Cyclone | Lifts and holds the unit: stun + invulnerable + **untargetable**, undispellable, immune to other displacement and teleports |
+| Turn rate bonus / slow | `base × (1 + Σ bonus %) × (1 − strongest slow %)` |
+
+Walking speed never drops below `scale::MIN_MOVE_SPEED` (100) however many slows stack; there is no upper cap, and units with a base speed of zero stay stationary.
 
 ### Damage mechanics (player terms → code)
 
@@ -279,7 +285,7 @@ Shared pipeline: `ActivationRequest` → `ActionSpec` (`src/actions/`) → cast 
 | Backswing | Does not remove backswing by itself | Removes `Activation` | — | Cancel |
 
 A `CastTarget::Unit` that turns invisible or untargetable during the cast point is still tracked by `refresh_activation_aims`; only death or despawn stops the tracking. That is acceptable today and would need revisiting if fog-based targeting is added.
-- **Custom mechanics** (`abilities/custom.rs`): `app.register_ability_behavior(id, system)` runs a one-shot system with the `CastContext`. It reports what happened with a trigger such as `AbilityTrigger::Custom("on_skewer_end")`, and the ability's effect entries apply the consequences
+- **Custom mechanics** (`abilities/custom.rs`): `app.register_ability_behavior(id, system)` runs a one-shot system with the `CastContext`. It reports what happened with a trigger such as `AbilityTrigger::Custom("on_my_event")`, and the ability's effect entries apply the consequences
 
 Adding a simple ability: add an `AbilityId` variant (or use the generators), then add an arm to `catalog::builtin`:
 
@@ -308,7 +314,7 @@ id,name,slot,ability_type,target_type,target_team,cast_range,aoe_radius,cast_tim
 shockwave,Shockwave,Q,active,point,enemy,1200,,0.3,,13|12|11|10,85|90|95|100,,,skillshot,900,Launches a wave that damages pulls and slows enemies
 ```
 
-- Enums: `slot` Q/W/E/R/innate (R ⇒ ultimate), `ability_type` active/passive/toggle, `target_type` unit/point/direction/no_target/self, `target_team` enemy/ally/both/self, `projectile_type` none/targeted/skillshot
+- Enums: `slot` Q/W/E/R/innate (R ⇒ ultimate), `ability_type` active/passive/toggle, `target_type` unit/point/direction/no_target/self, `target_team` enemy/ally/both/self, `projectile_type` none/targeted/skillshot/skillshot_single (`skillshot_single` stops at the first enemy it strikes, for hooks)
 - **Area targeting in CSV:** there is no separate `area` value. Author `target_type=point` with non-zero `aoe_radius` and `projectile_type none`; the generator emits Rust `TargetType::Area` (see `scripts/AbilityGenerator.py`). Ground-placed AoE uses the same cast / range rules as point spells.
 - Level values: a single number or `a|b|c|d` (one per rank; arithmetic lists become `RankValue::from_level_1`, others a level table). Blank = not applicable
 - Optional extra columns: `cast_backswing` (default 0.25), `max_rank` (else the level-list length, else 4 for R / 7 otherwise), `toggle_mana_per_sec` (toggle abilities only; level list allowed)
@@ -318,12 +324,13 @@ shockwave,Shockwave,Q,active,point,enemy,1200,,0.3,,13|12|11|10,85|90|95|100,,,s
 ability_id,effect_index,trigger,effect_target,effect_type,effect_id,value,damage_type,duration,radius,amount,scaling_type,scaling_value
 shockwave,0,on_projectile_hit,trigger_unit,damage,,75|150|225|300,magical,,,,,
 shockwave,1,on_projectile_hit,trigger_unit,movement,pull,,,,,,,
-skewer,1,on_unit_contact,trigger_unit,custom,skewer_drag,,,,,,,
+skewer,0,on_cast,caster,movement,dash,900,,0.6,,,,
+skewer,1,on_unit_contact,trigger_unit,movement,drag,,,,,,,
 ```
 
-- `trigger`: `on_cast`, `on_projectile_hit`, `on_unit_contact`, `on_impact`, `on_channel_tick`, `on_channel_end` (channel completed), `on_channel_interrupted` (channel cut short by silence/stun/mute; a new order fires neither), `on_expire`, `while_toggled` (toggle abilities only: `stat_modifier` on `caster`, no duration; applied while the toggle is on; the upkeep is the ability row's `toggle_mana_per_sec`), or any other `on_…` name raised by a custom mechanic
+- `trigger`: `on_cast`, `on_projectile_hit`, `on_unit_contact` (a dash or charge touched an enemy; trigger unit = that enemy), `on_movement_end` (a dash or charge ended; trigger unit = the chased unit if reached, affected units = everyone touched), `on_impact`, `on_channel_tick`, `on_channel_end` (channel completed), `on_channel_interrupted` (channel cut short by silence/stun/mute; a new order fires neither), `on_expire`, `while_toggled` (toggle abilities only: `stat_modifier` on `caster`, no duration; applied while the toggle is on; the upkeep is the ability row's `toggle_mana_per_sec`), or any other `on_…` name raised by a custom mechanic
 - `effect_target`: `caster`, `cast_target`, `trigger_unit`, `affected_units`, `units_in_radius` (around the trigger point; `radius` or the ability AoE; team from the ability / effect polarity)
-- `effect_type` (+ `effect_id`): `damage` (`value` or `amount`, `damage_type` physical/magical/pure), `heal` (`effect_id=mana` restores mana), `apply_status` (`stun`, `root`, `silence`, `disarm`, `slow` (% from `amount`/`value`), `phased`, `forceful`, `debuff_immunity`, or any id as a timed `stat_modifier`), `remove_status` (`buff`/`debuff` dispel, otherwise a status id), `movement` (`knockback` / `pull`; `value` = distance, `duration`; `teleport` sends `caster` / `owner` / `cast_target` / `trigger_unit` to the cast's aim point — see Teleport below), `stat_modifier` (`effect_id` = stat, `amount`, `duration`), `custom` (registered id; receives `value`, `amount`, `duration`)
+- `effect_type` (+ `effect_id`): `damage` (`value` or `amount`, `damage_type` physical/magical/pure), `heal` (`effect_id=mana` restores mana), `apply_status` (`stun`, `root`, `silence`, `disarm`, `slow` (% from `amount`/`value`), `turn_rate_slow`, `turn_rate_bonus` (% from `amount`, 0..400), `phased`, `forceful`, `flying`, `leash` / `tether` (`value` = radius), `debuff_immunity`, or any id as a timed `stat_modifier`), `remove_status` (`buff`/`debuff` dispel, otherwise a status id), `movement` (`knockback`, `pull`, `pull_point`, `dash`, `charge`, `drag`, `cyclone`; `value` = distance, `duration`, `amount` = charge speed — see Forced movement below; `teleport` sends `caster` / `owner` / `cast_target` / `trigger_unit` to the cast's aim point — see Teleport below), `stat_modifier` (`effect_id` = stat, `amount`, `duration`), `custom` (registered id; receives `value`, `amount`, `duration`)
 - `scaling_type`: `strength` / `agility` / `intelligence` / `attack_damage` × `scaling_value` (damage and heal)
 
 ### Generator validation
@@ -363,7 +370,7 @@ frost_hammer,Frost Hammer,weapon,2800,1400,3,rare,false,,false,,A heavy weapon i
 
 - `item_type` component/weapon/armor/accessory/consumable/utility/recipe, `rarity` common/uncommon/rare/epic/legendary; optional extras `short_label`, `cooldown`, `components` (`;`-separated ids), `color_r/g/b`
 - Optional activation columns on items with `on_use` or a channel trigger (blank = instant no-target use): `target_type` (`unit`, `point`, `direction`, `no_target`, `self`), `target_team` (`enemy`, `ally`, `both`, `self`), `cast_range`, `cast_time`, `channel_time`, `mana_cost`, `projectile_type`, `projectile_speed` (`cooldown` remains on the item row). Unit targets require `target_team`. Point, unit, and direction targets require `cast_range`. Teleport items must be `point` or `direction` so the destination is the cast aim. Item `projectile_*` fields are reserved — the runtime only emits ability projectiles today
-- Effects use the ability effect schema with item triggers `passive` (must be `stat_modifier`: `max_health`, `health_regen`, `max_mana`, `mana_regen`, `attack_damage`, `attack_speed`, `armor`, `magic_resist`, `move_speed`, `strength`, `agility`, `intelligence`, `spell_amp`, `outgoing_physical_amp`, `incoming_damage_amp`, `damage_block`, `damage_reflect`; `health` and `mana` are aliases of `max_health` and `max_mana`), `on_use`, `on_attack`, `on_attack_hit`, `on_channel_end` / `on_channel_interrupted` (channelled actives only), `on_damage_taken`, `on_kill`, `on_death` and targets `owner`, `cast_target` (unit and self actives), `trigger_unit`, `attacker`, `affected_units`, `units_in_radius`
+- Effects use the ability effect schema with item triggers `passive` (must be `stat_modifier`: `max_health`, `health_regen`, `max_mana`, `mana_regen`, `attack_damage`, `attack_speed`, `armor`, `magic_resist`, `move_speed`, `strength`, `agility`, `intelligence`, `spell_amp`, `outgoing_physical_amp`, `incoming_damage_amp`, `damage_block`, `damage_reflect`; `health` and `mana` are aliases of `max_health` and `max_mana`), `on_use`, `on_unit_contact` / `on_movement_end` (after a dash or charge from `on_use`), `on_attack`, `on_attack_hit`, `on_channel_end` / `on_channel_interrupted` (channelled actives only), `on_damage_taken`, `on_kill`, `on_death` and targets `owner`, `cast_target` (unit and self actives), `trigger_unit`, `attacker`, `affected_units`, `units_in_radius`
 - Consumables spend a charge (or one of the stack) when the use fires, and disappear when empty. A rejected activation spends nothing. Item charges never regenerate, so a `charge_restore_time` on an item is an error. `scaling_type=distance` is also rejected on items (they have no rank-scaled cast range); every other scaling works
 
 ### Teleport
@@ -374,9 +381,35 @@ frost_hammer,Frost Hammer,weapon,2800,1400,3,rare,false,,false,,A heavy weapon i
 - On success the unit moves instantly, keeps its Y, health, mana, statuses, and cooldowns, and loses its `MoveTarget`, `NavPath`, attack-move, attack-position goal, and in-flight forced movement. A `TeleportCompletedEvent` is emitted. Attack and queued-cast orders are kept (units re-path from the new spot).
 - Costs are paid at cast / use time, so a rejected teleport still spends mana and starts the cooldown.
 
+### Forced movement
+
+Knockback, pull, dash, charge, drag and cyclone are one shared primitive: `AbilityEffect::Displace { kind, distance, duration, speed }` → `DisplacementEvent` → `ForcedMovement` on the moved unit, ticked by `displacement.rs`, which is the only writer of a moving unit's `Transform`. Abilities and items use the same effect (`movement,<kind>` rows); `AbilityMechanic::Dash` writes the same event and only adds the ghost trail.
+
+| Kind | CSV | Moves | Notes |
+| --- | --- | --- | --- |
+| `knockback` | `value` = distance, `duration` | target, away from the trigger point | |
+| `pull` | `duration` (and optional `value` = max distance) | target, toward the caster | Tracks the caster until contact; the pull time is the time to close the starting gap |
+| `pull_point` | `duration`, optional `value` | target, toward the trigger point | |
+| `dash` | `value` = max distance (required), `duration` = time at max distance (default 0.3) | caster / owner only | Straight line at constant speed; shorter dashes take proportionally less time |
+| `charge` | `amount` = speed, `duration` = max time (both required), optional `value` | caster / owner only | Chases the cast target (needs `target_type unit`) until contact |
+| `drag` | optional `duration` | target (not the caster) | Rides along at a fixed offset with the caster's own dash or charge; blank duration = until that movement ends. Typically `on_unit_contact,trigger_unit` |
+| `cyclone` | `duration` (required) | target, held in place | Also applies the `cyclone` status |
+
+- **Priority.** A unit has at most one motion. A new request replaces the current one only if its priority is at least as high: own movement (dash, charge) < external (knockback, pull, drag) < suspend (cyclone). The newest wins at equal priority. A cycloned unit rejects every other displacement and teleport; another cyclone refreshes it.
+- **Own movement needs a unit that can move.** A rooted, stunned or sleeping caster pays for the cast but does not dash. A stun or root during a dash ends it at the current spot. External motion continues through stuns and roots.
+- **Hostile only.** Debuff immunity blocks hostile displacement; a unit's own and its allies' motion are allowed.
+- **Terrain.** Motion stops at trees, towers, ancients and the map edge (unless the unit is flying or cycloned). A unit that starts inside geometry may move so it can get out.
+- **Landing.** Every motion that ends normally sets the unit on valid ground (the nearest walkable spot if it ended inside geometry) and drops its stale `NavPath`, so its `MoveTarget` is replanned from the new position. Motion no longer roots the victim: move orders survive and resume afterwards. Units in forced motion ignore unit collision while they travel.
+- **Triggers.** Own movement carrying a cast reports `OnUnitContact` for each enemy it newly touches and one `OnMovementEnd` when it ends by arrival, block, timeout, or the mover being disabled. Replacement, teleport, and death end it silently. Both resolve in the frame they happen.
+- **Untargetable.** A cycloned unit cannot be picked as a unit target (casts, attack commands, basic attacks, AI acquisition), homing projectiles miss it, and skillshots, splash, cleave, and ability area effects skip it. Its own targeting is unaffected.
+- **Flying.** Flying units path in a straight line and walk over trees; towers and ancients still block. When the status ends over geometry the unit is moved to the nearest walkable spot.
+- **Leash / tether.** `enforce_leashes` clamps a leashed unit to its circle after walking and after forced motion every frame, so a knockback stops at the edge. A tether whose anchor is gone does nothing. Teleporting outside a circle is rejected (`TeleportError::Leashed`).
+
+A hook is a composition: an ability with `projectile_type skillshot_single` and `on_projectile_hit,trigger_unit,movement,pull`. A skewer is `movement,dash` on cast plus `on_unit_contact,trigger_unit,movement,drag`, with consequences on `on_movement_end`.
+
 ### Limitations
 
-Not yet expressible without engine changes: **autocast**; **cooldown reduction / reset**; **hero / creep / building** target masks; **channel ticks** (`on_channel_tick` is defined but the shared pipeline does not emit it — custom mechanics only); delayed effects; cooldown floors other than explicit level lists; item `projectile_type` / `projectile_speed` (CSV validated, not emitted — `ProjectilePayload` is ability-scoped); and the `on_damage_taken` / `on_kill` / `on_death` item triggers (validated, not emitted yet). Item charges are spent when the item fires and refill with the next unit of the stack; they never regenerate over time the way ability charges do, and `ItemGenerator` rejects a `charge_restore_time` on items. An instant item (no cast point and no channel) fires without joining the command queue, so Shift does not queue it. Displacement ignores obstacles.
+Not yet expressible without engine changes: **autocast**; **cooldown reduction / reset**; **hero / creep / building** target masks; **channel ticks** (`on_channel_tick` is defined but the shared pipeline does not emit it — custom mechanics only); delayed effects; cooldown floors other than explicit level lists; item `projectile_type` / `projectile_speed` (CSV validated, not emitted — `ProjectilePayload` is ability-scoped); and the `on_damage_taken` / `on_kill` / `on_death` item triggers (validated, not emitted yet). Item charges are spent when the item fires and refill with the next unit of the stack; they never regenerate over time the way ability charges do, and `ItemGenerator` rejects a `charge_restore_time` on items. An instant item (no cast point and no channel) fires without joining the command queue, so Shift does not queue it.
 
 ## What's included
 
@@ -424,7 +457,7 @@ src/
   items.rs            Shop, inventory, sell, actives
   status.rs           Buffs and debuffs, dispel, shields, DoT ticking (`StatusPlugin`)
   item_catalog.rs     Generated ItemDefinitions (ItemGenerator)
-  displacement.rs     Knockback / pull forced movement
+  displacement.rs     Forced movement: knockback / pull / dash / charge / drag / cyclone, priority, terrain stop, landing, contact / end triggers
   teleport.rs         Teleport effect: destination validation, instant relocation, completion / rejection events
   net/                Offline / host / client UDP session + hero snapshots
   ai.rs               Lane following + aggro
