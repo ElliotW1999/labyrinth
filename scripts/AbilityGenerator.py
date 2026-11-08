@@ -105,7 +105,7 @@ ABILITY_TYPES = {"active": "Active", "passive": "Passive", "toggle": "Toggle"}
 LEVEL_FIELDS = ("cast_range", "aoe_radius", "cooldown", "mana_cost", "toggle_mana_per_sec", "projectile_end_radius")
 EFFECT_LEVEL_FIELDS = ("value", "duration", "amount", "radius")
 # Mirrors abilities::definition::MAX_CAST_BACKSWING.
-MAX_CAST_BACKSWING = 1.0
+MAX_CAST_BACKSWING = 1.5
 DEFAULT_BACKSWING = 0.25
 
 GENERATED_HEADER = """\

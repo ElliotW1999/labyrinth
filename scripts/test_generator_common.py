@@ -1478,6 +1478,64 @@ class ExampleCatalogTests(unittest.TestCase):
             self.assertIn("validation error", result.stderr + result.stdout)
 
 
+ABILITY_COLUMNS_FOR_TESTS = (
+    "id,name,slot,ability_type,target_type,target_team,cast_range,aoe_radius,cast_time,"
+    "channel_time,cooldown,mana_cost,max_charges,charge_restore_time,projectile_type,"
+    "projectile_speed,description,cast_backswing,max_rank,toggle_mana_per_sec,"
+    "projectile_end_radius"
+).split(",")
+EFFECT_COLUMNS_FOR_TESTS = (
+    "ability_id,effect_index,trigger,effect_target,effect_type,effect_id,value,damage_type,"
+    "duration,radius,amount,scaling_type,scaling_value"
+).split(",")
+
+
+def load_test_ability(ability: dict[str, str] | None = None, effects: list[dict[str, str]] | None = None):
+    """Run `AbilityGenerator.load` on one temporary ability (default: a no_target Q) plus effect rows.
+
+    Returns `(abilities, report)`. `ability` overrides the default cells; each effect dict
+    overrides `{ability_id: tester, effect_index: <n>, trigger: on_cast, effect_target: caster}`.
+    """
+    import csv
+    import tempfile
+
+    import AbilityGenerator
+
+    cells = {
+        "id": "tester", "name": "Tester", "slot": "Q", "ability_type": "active",
+        "target_type": "no_target", "target_team": "enemy", "cast_time": "0.1",
+        "cooldown": "10", "mana_cost": "50", "projectile_type": "none", "description": "x",
+    }
+    cells.update(ability or {})
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        with (tmp / "a.csv").open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(ABILITY_COLUMNS_FOR_TESTS)
+            writer.writerow([cells.get(c, "") for c in ABILITY_COLUMNS_FOR_TESTS])
+        with (tmp / "ae.csv").open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(EFFECT_COLUMNS_FOR_TESTS)
+            for index, effect in enumerate(effects or []):
+                base = {"ability_id": "tester", "effect_index": str(index), "trigger": "on_cast", "effect_target": "caster"}
+                base.update(effect)
+                writer.writerow([base.get(c, "") for c in EFFECT_COLUMNS_FOR_TESTS])
+        return AbilityGenerator.load(tmp / "a.csv", tmp / "ae.csv")
+
+
+class CastBackswingTests(unittest.TestCase):
+    def test_backswing_up_to_one_and_a_half_is_accepted_silently(self) -> None:
+        for value in ("0.3", "1.2", "1.3", "1.5"):
+            _, report = load_test_ability({"cast_backswing": value})
+            self.assertEqual(report.errors, [])
+            self.assertEqual([w for w in report.warnings if w.field == "cast_backswing"], [], value)
+
+    def test_backswing_above_the_cap_warns(self) -> None:
+        _, report = load_test_ability({"cast_backswing": "1.6"})
+        self.assertEqual(report.errors, [])
+        self.assertTrue(any(w.field == "cast_backswing" and "1.5" in w.message for w in report.warnings))
+
+
 class HeroGeneratorTests(unittest.TestCase):
     HEADER = (
         "Hero_name,is_melee,Ability_Q_Name,Ability_W_Name,Ability_E_Name,Ability_R_Name,"

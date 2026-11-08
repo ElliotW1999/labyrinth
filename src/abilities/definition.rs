@@ -10,7 +10,7 @@ use crate::status::{DispelType, Leash, LeashAnchor, StatusEffect, StatusKind};
 use crate::vitals::{ManaShield, ResourceKind, ResourceStat};
 
 /// Upper bound (seconds) for an ability's cancellable backswing. The cast point stays capped at 0.5.
-pub const MAX_CAST_BACKSWING: f32 = 1.0;
+pub const MAX_CAST_BACKSWING: f32 = 1.5;
 
 /// A value that scales with ability level: `clamp(base + per_rank × rank, min, max)`,
 /// or an explicit per-level table (`75|150|225|300` in the generator CSVs).

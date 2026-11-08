@@ -431,6 +431,14 @@ mod tests {
         assert_eq!(d.backswing, 0.9);
         let d = builtin(AbilityId::Dash).timing(0.1, 7.0);
         assert_eq!(d.backswing, MAX_CAST_BACKSWING);
+        assert_eq!(MAX_CAST_BACKSWING, 1.5);
+        for backswing in [1.07, 1.2, 1.3] {
+            let d = builtin(AbilityId::Dash).timing(0.3, backswing);
+            assert_eq!(
+                d.backswing, backswing,
+                "backswings up to 1.5 apply unclamped"
+            );
+        }
     }
 
     #[test]
