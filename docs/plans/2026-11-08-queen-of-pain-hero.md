@@ -1,6 +1,6 @@
 # Queen of Pain hero — implementation spec
 
-Status: **approved by user 2026-11-08, pending confirmation of §12**. Replaces the draft of the same name.
+Status: **approved by user 2026-11-08** (§12 confirmed). Replaces the draft of the same name.
 
 Related plans: `docs/architecture/composition.md`, `2026-11-08-mechanic-composition-layers.md`, `2026-11-07-movement-mechanics.md`, `2026-11-06-status-effects-catalog.md`, `2026-11-06-activation-targeting-mechanics.md`, `2026-11-06-damage-mechanics.md`, `2026-11-06-generator-shared-architecture.md`.
 
@@ -216,11 +216,11 @@ Append `,projectile_end_radius` to the header.
 ```csv
 shadow_strike,Shadow Strike,Q,active,unit,enemy,450|500|550|600|650|700|750,,0.3,,11|9|7|5|3|3|3,100|105|110|115|120|125|130,,,targeted,,"Hurls a dagger that deals magical damage, then slows the target and deals magical damage every 3s for 16s",0.77,,,
 queen_of_pain_blink,QoP Blink,W,active,point,enemy,global,,0.33,,12|10|8|6|4|2|1,65,,,none,,"Teleports toward the target point, at least 200 and at most the maximum blink distance away",0.07,,,
-scream_of_pain,Scream of Pain,E,active,no_target,enemy,,600,0,,7.5|7|6.5|6|5.5|5|4.5,120,,,targeted_each,,"Sends a projectile at every nearby enemy, each dealing magical damage",0.63,,,
+scream_of_pain,Scream of Pain,E,active,no_target,enemy,,600,0,,7.5|7|6.5|6|5.5|5|4.5,120,,,targeted_each,900,"Sends a projectile at every nearby enemy, each dealing magical damage",0.63,,,
 sonic_wave,Sonic Wave,R,active,point,enemy,900,100,0.452,,110|95|80|65,250|400|550|700,,,skillshot,642.857143,"Sends out a widening wave; each enemy struck takes pure damage 14 times over 1.4s and is knocked back",0.9,,,450
 ```
 - W uses `target_team enemy`, the same as the existing `blink` row; point targeting with team `self` is rejected.
-- Scream of Pain's projectile speed is left at the default.
+- Scream of Pain's projectile speed is 900 (user decision).
 
 ## 6. `data/ability_effects.csv` and `data/examples/ability_effects.csv`
 ```csv
@@ -299,9 +299,9 @@ python3 scripts/HeroGenerator.py data/heroes.example.csv --dry-run
 - Generated burns now use per-owner ids, so `remove_status,burn` no longer matches them. No current data is affected.
 - The hero-select UI may overflow with 6 heroes (cosmetic).
 
-## 12. Points to confirm with the user
-1. Sonic Wave: the interval design (recommended) or the pulse model (needs more new machinery).
-2. Shadow Strike's first tick lands 3 s after impact, giving 5 ticks. Ticking on impact would give 6.
-3. A Blink click on herself moves 200 in her facing direction.
-4. Scream of Pain's projectile speed defaults to ~884.
-5. Generated burns switch to per-owner status ids, so different sources' DoTs stack instead of replacing each other.
+## 12. User confirmations (2026-11-08)
+1. Sonic Wave: interval design (Step 7).
+2. Shadow Strike: first tick 3 s after impact, 5 ticks.
+3. Blink clicked on self: moves 200 in facing direction.
+4. Scream of Pain projectile speed: 900.
+5. Generated burns use per-owner status ids.
