@@ -12,7 +12,7 @@ use crate::actions::{
     ActionCooldown, ActionCost, ActionFiredEvent, ActionId, ActionSpec, DisableRule, TargetTeam,
     TargetType,
 };
-use crate::basic_attack::{BasicAttackImpactEvent, BasicAttackReleaseEvent};
+use crate::basic_attack::{BasicAttackLandedEvent, BasicAttackReleaseEvent};
 use crate::combat::flat_distance;
 use crate::components::{
     CastTarget, CombatStats, Health, HeroAttributes, Lifetime, Mana, PlayerHero, PlayerWallet,
@@ -1142,7 +1142,7 @@ fn item_use_trigger(
 /// attacker owns that has entries for the trigger.
 pub(crate) fn item_attack_triggers(
     mut releases: MessageReader<BasicAttackReleaseEvent>,
-    mut impacts: MessageReader<BasicAttackImpactEvent>,
+    mut landed: MessageReader<BasicAttackLandedEvent>,
     owners: Query<(&Transform, &Team, &Inventory)>,
     targets: Query<&Transform>,
     mut triggers: MessageWriter<AbilityTriggerEvent>,
@@ -1151,7 +1151,7 @@ pub(crate) fn item_attack_triggers(
         .read()
         .map(|e| (AbilityTrigger::OnAttack, e.attacker, e.target))
         .chain(
-            impacts
+            landed
                 .read()
                 .map(|e| (AbilityTrigger::OnAttackHit, e.attacker, e.target)),
         );

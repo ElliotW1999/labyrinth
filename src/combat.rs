@@ -4,24 +4,24 @@
 use bevy::prelude::*;
 
 use crate::basic_attack::{
-    BasicAttackEvent, BasicAttackImpactEvent, BasicAttackReleaseEvent, advance_attacks_in_flight,
-    animate_melee_slashes, request_basic_attacks, resolve_attack_releases,
-    resolve_basic_attack_impacts, start_basic_attack_windups, sync_attack_projectile_visuals,
-    tick_attack_swings,
+    BasicAttackEvent, BasicAttackImpactEvent, BasicAttackLandedEvent, BasicAttackReleaseEvent,
+    advance_attacks_in_flight, animate_melee_slashes, request_basic_attacks,
+    resolve_attack_releases, resolve_basic_attack_impacts, start_basic_attack_windups,
+    sync_attack_projectile_visuals, tick_attack_swings,
 };
 use crate::components::{
     AbilityId, AttackCooldown, BoundRadius, CombatStats, DamageType, GoldBounty, Health,
     HeroAttributes, HeroProgress, Lifetime, Mana, PlayerHero, PlayerWallet, Projectile,
     ProjectileHome, ProjectileStyle, ShieldPool, Team, XpBounty,
 };
-use crate::status::{StatusEffects, is_untargetable, subtract_status_stat_delta};
-use crate::vitals::{
-    HealKind, ManaShield, ResourceStat, apply_heal, heal_factor, outgoing_heal_amp, resource_stat,
-};
 use crate::dimensions::{area_contains, bounds_of};
 use crate::progression::add_xp;
 use crate::resources::SharedAssets;
 use crate::scale;
+use crate::status::{StatusEffects, is_untargetable, subtract_status_stat_delta};
+use crate::vitals::{
+    HealKind, ManaShield, ResourceStat, apply_heal, heal_factor, outgoing_heal_amp, resource_stat,
+};
 
 pub struct CombatPlugin;
 
@@ -32,6 +32,7 @@ impl Plugin for CombatPlugin {
             .add_message::<BasicAttackEvent>()
             .add_message::<BasicAttackReleaseEvent>()
             .add_message::<BasicAttackImpactEvent>()
+            .add_message::<BasicAttackLandedEvent>()
             .add_message::<DamageEvent>()
             .add_message::<SpawnProjectileEvent>()
             .add_message::<ProjectileHitEvent>()
@@ -83,7 +84,8 @@ pub struct DamageEvent {
     pub amount: f32,
     pub damage_type: DamageType,
     pub kind: DamageKind,
-    pub can_crit: bool,
+    /// Informational: the main hit rolled a critical strike (decided in the attack-hit stage).
+    pub crit: bool,
     pub is_spell: bool,
     pub applies_block: bool,
     pub pierces_shields: bool,
@@ -101,7 +103,7 @@ impl DamageEvent {
             amount,
             damage_type,
             kind: DamageKind::Generic,
-            can_crit: false,
+            crit: false,
             is_spell: false,
             applies_block: true,
             pierces_shields: false,
@@ -117,7 +119,7 @@ impl DamageEvent {
             amount,
             damage_type: DamageType::Physical,
             kind: DamageKind::BasicAttack,
-            can_crit: true,
+            crit: false,
             is_spell: false,
             applies_block: true,
             pierces_shields: false,
@@ -133,7 +135,7 @@ impl DamageEvent {
             amount,
             damage_type,
             kind: DamageKind::Ability,
-            can_crit: false,
+            crit: false,
             is_spell: true,
             applies_block: true,
             pierces_shields: false,
@@ -142,14 +144,19 @@ impl DamageEvent {
         }
     }
 
-    pub fn dot(source: Option<Entity>, target: Entity, amount: f32, damage_type: DamageType) -> Self {
+    pub fn dot(
+        source: Option<Entity>,
+        target: Entity,
+        amount: f32,
+        damage_type: DamageType,
+    ) -> Self {
         Self {
             source,
             target,
             amount,
             damage_type,
             kind: DamageKind::Dot,
-            can_crit: false,
+            crit: false,
             is_spell: false,
             applies_block: true,
             pierces_shields: false,
@@ -167,6 +174,12 @@ impl DamageEvent {
         }
     }
 
+    /// Marks the main hit as critical (informational; the amount is already multiplied).
+    pub fn with_crit(mut self, crit: bool) -> Self {
+        self.crit = crit;
+        self
+    }
+
     /// Marks the damage as a health transfer: the source heals `ratio` of the health removed.
     pub fn drained(mut self, ratio: f32) -> Self {
         self.drain_ratio = ratio;
@@ -182,7 +195,9 @@ pub struct CombatRng {
 
 impl Default for CombatRng {
     fn default() -> Self {
-        Self { state: 0xDEAD_BEEF_CAFE_1234 }
+        Self {
+            state: 0xDEAD_BEEF_CAFE_1234,
+        }
     }
 }
 
@@ -198,8 +213,15 @@ impl CombatRng {
         (self.state as f32) / u64::MAX as f32
     }
 
-    pub fn roll_crit(&mut self, chance: f32) -> bool {
-        chance > 0.0 && self.next_f32() < chance.clamp(0.0, 1.0)
+    /// Bernoulli roll. Draws nothing when the outcome is certain (`chance <= 0` or `>= 1`).
+    pub fn roll(&mut self, chance: f32) -> bool {
+        if chance <= 0.0 {
+            return false;
+        }
+        if chance >= 1.0 {
+            return true;
+        }
+        self.next_f32() < chance
     }
 }
 
@@ -217,8 +239,6 @@ pub fn resolve_outgoing_amount(
     raw: f32,
     event: &DamageEvent,
     source_stats: Option<&CombatStats>,
-    rng: &mut CombatRng,
-    hooks: &DamageTestHooks,
 ) -> f32 {
     let mut amount = raw.max(0.0);
     if let Some(stats) = source_stats {
@@ -227,9 +247,6 @@ pub fn resolve_outgoing_amount(
         }
         if event.is_spell && event.damage_type == DamageType::Magical {
             amount *= 1.0 + stats.outgoing_spell_amp;
-        }
-        if event.can_crit && (hooks.force_crit || rng.roll_crit(stats.crit_chance)) {
-            amount *= stats.crit_multiplier.max(1.0);
         }
     }
     amount
@@ -286,12 +303,7 @@ pub fn absorb_with_mana_shield(damage: f32, mana: &mut Mana, shield: ManaShield)
 }
 
 pub fn apply_damage_events(
-    mut damage: ParamSet<(
-        MessageReader<DamageEvent>,
-        MessageWriter<DamageEvent>,
-    )>,
-    mut rng: Option<ResMut<CombatRng>>,
-    hooks: Option<Res<DamageTestHooks>>,
+    mut damage: ParamSet<(MessageReader<DamageEvent>, MessageWriter<DamageEvent>)>,
     mut unit_stats: ParamSet<(
         Query<(&CombatStats, Option<&StatusEffects>)>,
         Query<(
@@ -304,9 +316,6 @@ pub fn apply_damage_events(
         )>,
     )>,
 ) {
-    let hooks = hooks.as_deref().copied().unwrap_or_default();
-    let mut fallback_rng = CombatRng::default();
-    let rng = rng.as_deref_mut().unwrap_or(&mut fallback_rng);
     let mut reflected = Vec::new();
     // (source, health to give back); applied after the whole batch, same frame.
     let mut leeches: Vec<(Entity, f32)> = Vec::new();
@@ -330,10 +339,7 @@ pub fn apply_damage_events(
         if !health.is_alive() {
             continue;
         }
-        if statuses
-            .as_ref()
-            .is_some_and(|s| s.is_invulnerable())
-        {
+        if statuses.as_ref().is_some_and(|s| s.is_invulnerable()) {
             continue;
         }
 
@@ -352,17 +358,9 @@ pub fn apply_damage_events(
             }
         }
 
-        let damage_immune = statuses
-            .as_ref()
-            .is_some_and(|s| s.has_damage_immunity());
+        let damage_immune = statuses.as_ref().is_some_and(|s| s.has_damage_immunity());
         let damage_reflect = target_stats.damage_reflect;
-        let outgoing = resolve_outgoing_amount(
-            event.amount,
-            event,
-            source_stats_snapshot.as_ref(),
-            rng,
-            &hooks,
-        );
+        let outgoing = resolve_outgoing_amount(event.amount, event, source_stats_snapshot.as_ref());
         let mut resolved = resolve_incoming_damage(
             outgoing,
             event.damage_type,
@@ -414,7 +412,7 @@ pub fn apply_damage_events(
                     amount,
                     damage_type: event.damage_type,
                     kind: DamageKind::Generic,
-                    can_crit: false,
+                    crit: false,
                     is_spell: false,
                     applies_block: true,
                     pierces_shields: false,
@@ -474,7 +472,12 @@ pub fn emit_chain_damage(
             break;
         };
         current_amount *= falloff;
-        damage.write(DamageEvent::spell(source, next, current_amount, damage_type));
+        damage.write(DamageEvent::spell(
+            source,
+            next,
+            current_amount,
+            damage_type,
+        ));
         hit.push(next);
         current = next;
     }
@@ -698,7 +701,8 @@ pub fn apply_projectile_hits(
             // A target that is lifted out of play makes the projectile miss where it is.
             if is_untargetable(&statuses_of, home.target) {
                 despawn = true;
-            } else if let Ok((unit_entity, unit_tf, team, health, radius)) = units.get(home.target) {
+            } else if let Ok((unit_entity, unit_tf, team, health, radius)) = units.get(home.target)
+            {
                 // Aim point is unit.y + body(1); keep the vertical pad in world units.
                 let vertical = (impact.y - (unit_tf.translation.y + scale::body(1.0))).abs();
                 if *team != projectile.team
@@ -1040,11 +1044,7 @@ mod tests {
         dead_hp.current = 0.0;
         let dead = world.spawn((dead_hp, stats)).id();
         for target in [alive, dead] {
-            world.write_message(DamageEvent::new(
-                target,
-                100.0,
-                DamageType::Physical,
-            ));
+            world.write_message(DamageEvent::new(target, 100.0, DamageType::Physical));
         }
         world.run_system_once(apply_damage_events).unwrap();
         let expected = 500.0 - apply_damage(100.0, DamageType::Physical, &stats);
@@ -1061,11 +1061,7 @@ mod tests {
         let target = world
             .spawn((Health::new(500.0), stats, ShieldPool { amount: 120.0 }))
             .id();
-        world.write_message(DamageEvent::new(
-            target,
-            100.0,
-            DamageType::Physical,
-        ));
+        world.write_message(DamageEvent::new(target, 100.0, DamageType::Physical));
         world.run_system_once(apply_damage_events).unwrap();
         assert_eq!(world.get::<ShieldPool>(target).unwrap().amount, 20.0);
         assert_eq!(world.get::<Health>(target).unwrap().current, 500.0);
@@ -1081,33 +1077,19 @@ mod tests {
     }
 
     #[test]
-    fn crit_doubles_with_test_hook() {
+    fn crit_is_not_rolled_at_damage_application() {
+        // Crit is decided in the attack-hit stage; the damage step only applies amplifiers.
         let mut world = World::new();
         world.init_resource::<Messages<DamageEvent>>();
-        world.init_resource::<CombatRng>();
-        world.insert_resource(DamageTestHooks {
-            force_crit: true,
-        });
         let mut attacker_stats = CombatStats::simple(50.0, 0.0, 1.0, 0.0, 0.0, 0.0);
-        attacker_stats.crit_chance = 0.0;
+        attacker_stats.crit_chance = 1.0;
+        attacker_stats.crit_multiplier = 3.0;
         let defender = CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 0.0);
         let attacker = world.spawn(attacker_stats).id();
         let target = world.spawn((Health::new(500.0), defender)).id();
-        world.write_message(DamageEvent {
-            source: Some(attacker),
-            target,
-            amount: 50.0,
-            damage_type: DamageType::Physical,
-            kind: DamageKind::BasicAttack,
-            can_crit: true,
-            is_spell: false,
-            applies_block: true,
-            pierces_shields: false,
-            reflects: false,
-            drain_ratio: 0.0,
-        });
+        world.write_message(DamageEvent::basic_attack(attacker, target, 50.0));
         world.run_system_once(apply_damage_events).unwrap();
-        let expected = 500.0 - apply_damage(100.0, DamageType::Physical, &defender);
+        let expected = 500.0 - apply_damage(50.0, DamageType::Physical, &defender);
         assert!((world.get::<Health>(target).unwrap().current - expected).abs() < 1e-3);
     }
 
@@ -1121,7 +1103,12 @@ mod tests {
         let defender = CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 0.0);
         let caster = world.spawn(caster_stats).id();
         let target = world.spawn((Health::new(500.0), defender)).id();
-        world.write_message(DamageEvent::spell(caster, target, 100.0, DamageType::Magical));
+        world.write_message(DamageEvent::spell(
+            caster,
+            target,
+            100.0,
+            DamageType::Magical,
+        ));
         world.run_system_once(apply_damage_events).unwrap();
         let expected = 500.0 - apply_damage(125.0, DamageType::Magical, &defender);
         assert!((world.get::<Health>(target).unwrap().current - expected).abs() < 1e-3);
@@ -1164,7 +1151,11 @@ mod tests {
             ))
             .id();
         let caster = world
-            .spawn((Transform::from_xyz(-500.0, 0.0, 0.0), Team::Radiant, Health::new(500.0)))
+            .spawn((
+                Transform::from_xyz(-500.0, 0.0, 0.0),
+                Team::Radiant,
+                Health::new(500.0),
+            ))
             .id();
         let payload = ProjectilePayload {
             caster,
@@ -1196,7 +1187,10 @@ mod tests {
             .cloned()
             .collect();
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].primary, None, "the projectile misses the cycloned unit");
+        assert_eq!(
+            hits[0].primary, None,
+            "the projectile misses the cycloned unit"
+        );
         assert_eq!(
             hits[0].splashed,
             vec![bystander],

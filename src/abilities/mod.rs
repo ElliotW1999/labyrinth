@@ -651,6 +651,7 @@ mod tests {
             .add_message::<ProjectileHitEvent>()
             .add_message::<crate::basic_attack::BasicAttackReleaseEvent>()
             .add_message::<crate::basic_attack::BasicAttackImpactEvent>()
+            .add_message::<crate::basic_attack::BasicAttackLandedEvent>()
             .add_systems(
                 Update,
                 (
@@ -909,11 +910,13 @@ mod tests {
 
     fn write_attack_hit(app: &mut App, attacker: Entity, target: Entity) {
         app.world_mut()
-            .write_message(crate::basic_attack::BasicAttackImpactEvent {
+            .write_message(crate::basic_attack::BasicAttackLandedEvent {
                 attacker,
                 attacker_team: Team::Radiant,
                 target,
                 damage: 10.0,
+                crit: false,
+                extra: false,
             });
     }
 

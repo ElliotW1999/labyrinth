@@ -18,7 +18,7 @@
 
 use bevy::prelude::*;
 
-use crate::combat::{DamageEvent, flat_distance};
+use crate::combat::{CombatRng, DamageEvent, DamageTestHooks, flat_distance};
 use crate::components::{
     AttackCooldown, AttackSwing, AttackTarget, BoundRadius, CombatStats, Health, Lifetime,
     PlayerHero, ProjectileStyle, Team,
@@ -28,17 +28,6 @@ use crate::facing::turn_toward;
 use crate::resources::SharedAssets;
 use crate::scale;
 use crate::status::{StatusEffects, is_untargetable};
-
-/// Deterministic "roll" for blind miss (same attacker/target pair is stable within a session).
-fn basic_attack_misses_blind(attacker: Entity, target: Entity, miss_chance: f32) -> bool {
-    if miss_chance <= 0.0 {
-        return false;
-    }
-    let mut h = attacker.to_bits().wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    h ^= target.to_bits().wrapping_mul(0x85EB_CA6B);
-    let roll = (h % 10000) as f32 / 10000.0;
-    roll < miss_chance.clamp(0.0, 1.0)
-}
 
 /// Melee hits forgive a target stepping slightly away during the windup.
 const MELEE_HIT_RANGE_LENIENCY: f32 = 1.15;
@@ -57,6 +46,8 @@ pub struct BasicAttackReleaseEvent {
     pub attacker: Entity,
     pub target: Entity,
     pub damage: f32,
+    /// An extra attack (instant / double / multi-target); never touches cooldown or swing.
+    pub extra: bool,
 }
 
 /// The attack connects with its target (at release for melee, on arrival for ranged).
@@ -67,6 +58,20 @@ pub struct BasicAttackImpactEvent {
     pub attacker_team: Team,
     pub target: Entity,
     pub damage: f32,
+    pub extra: bool,
+}
+
+/// A basic or extra attack passed its hit roll and dealt its main hit. Item and ability
+/// `OnAttackHit` triggers read this, so missed attacks never fire on-hit effects.
+#[derive(Message, Debug, Clone, Copy, PartialEq)]
+pub struct BasicAttackLandedEvent {
+    pub attacker: Entity,
+    pub attacker_team: Team,
+    pub target: Entity,
+    /// Post-crit, pre-mitigation main-hit damage.
+    pub damage: f32,
+    pub crit: bool,
+    pub extra: bool,
 }
 
 /// Authoritative state of a ranged basic attack travelling to its target.
@@ -76,6 +81,7 @@ pub struct BasicAttackInFlight {
     pub attacker_team: Team,
     pub target: Entity,
     pub damage: f32,
+    pub extra: bool,
     pub speed: f32,
     /// Contact radius added to the target's bounds radius.
     pub radius: f32,
@@ -271,6 +277,7 @@ pub fn tick_attack_swings(
                     attacker: entity,
                     target,
                     damage,
+                    extra: false,
                 });
                 cooldown.0 = 1.0 / stats.attack_speed.max(0.05);
                 let back = stats.attack_backswing.clamp(0.0, 0.5);
@@ -334,6 +341,7 @@ pub fn resolve_attack_releases(
                     attacker_team: *team,
                     target: release.target,
                     damage: release.damage,
+                    extra: release.extra,
                 });
             }
         } else if let Some((target_tf, _, _, _)) = target {
@@ -347,6 +355,7 @@ pub fn resolve_attack_releases(
                         attacker_team: *team,
                         target: release.target,
                         damage: release.damage,
+                        extra: release.extra,
                         speed: projectile_speed_for(stats.attack_range),
                         radius: scale::body(0.7),
                         position: start,
@@ -435,6 +444,7 @@ pub fn advance_attacks_in_flight(
                 attacker_team: attack.attacker_team,
                 target: attack.target,
                 damage: attack.damage,
+                extra: attack.extra,
             });
         }
         if contact || arrived {
@@ -443,15 +453,28 @@ pub fn advance_attacks_in_flight(
     }
 }
 
-/// Final validation at impact time: the target must still exist, be alive, and be an enemy.
+/// Chance that an attack misses: the attacker's blind and the target's evasion combine as
+/// independent dodges, then the attacker's accuracy rerolls the miss (true strike = 1.0).
+pub fn attack_miss_chance(blind: f32, evasion: f32, accuracy: f32) -> f32 {
+    let dodge = 1.0 - (1.0 - blind.clamp(0.0, 1.0)) * (1.0 - evasion.clamp(0.0, 1.0));
+    dodge * (1.0 - accuracy.clamp(0.0, 1.0))
+}
+
+/// The attack-hit stage. Re-validates the target, rolls to hit (one [`CombatRng`] draw), rolls
+/// the crit (one more draw, only on a hit), emits the main [`DamageEvent`] and a
+/// [`BasicAttackLandedEvent`], then cleaves. Misses stop here: no damage, no landed event.
 pub fn resolve_basic_attack_impacts(
     mut impacts: MessageReader<BasicAttackImpactEvent>,
     mut damage: MessageWriter<DamageEvent>,
+    mut landed: MessageWriter<BasicAttackLandedEvent>,
+    mut rng: ResMut<CombatRng>,
+    hooks: Option<Res<DamageTestHooks>>,
     targets: Query<(&Team, &Health, Option<&StatusEffects>)>,
-    attackers: Query<(&CombatStats, &Transform)>,
+    attackers: Query<(&CombatStats, &Transform, Option<&StatusEffects>)>,
     cleave_candidates: Query<(Entity, &Transform, &Team, &Health, Option<&BoundRadius>)>,
     statuses_of: Query<&StatusEffects>,
 ) {
+    let force_crit = hooks.is_some_and(|h| h.force_crit);
     for impact in impacts.read() {
         let Ok((team, health, defender_status)) = targets.get(impact.target) else {
             continue;
@@ -462,48 +485,77 @@ pub fn resolve_basic_attack_impacts(
         {
             continue;
         }
-        let blind = defender_status
-            .map(|s| s.blind_miss_chance())
-            .unwrap_or(0.0);
-        if basic_attack_misses_blind(impact.attacker, impact.target, blind) {
+        // The attacker may have despawned mid-flight: no blind, no crit, no cleave.
+        let attacker = attackers.get(impact.attacker).ok();
+        let blind = attacker
+            .and_then(|(_, _, statuses)| statuses)
+            .map_or(0.0, |s| s.blind_miss_chance());
+        if rng.roll(attack_miss_chance(blind, 0.0, 0.0)) {
             continue;
         }
-        damage.write(DamageEvent::basic_attack(
-            impact.attacker,
-            impact.target,
-            impact.damage,
-        ));
+        let crit_chance = attacker.map_or(0.0, |(stats, _, _)| stats.crit_chance);
+        let crit = force_crit || rng.roll(crit_chance);
+        let multiplier = match attacker {
+            Some((stats, _, _)) if crit => stats.crit_multiplier.max(1.0),
+            _ => 1.0,
+        };
+        let amount = impact.damage * multiplier;
+        damage.write(
+            DamageEvent::basic_attack(impact.attacker, impact.target, amount).with_crit(crit),
+        );
+        landed.write(BasicAttackLandedEvent {
+            attacker: impact.attacker,
+            attacker_team: impact.attacker_team,
+            target: impact.target,
+            damage: amount,
+            crit,
+            extra: impact.extra,
+        });
 
-        let Ok((stats, attacker_tf)) = attackers.get(impact.attacker) else {
+        let Some((stats, attacker_tf, _)) = attacker else {
             continue;
         };
         if stats.cleave_radius <= 0.0 || stats.cleave_damage_ratio <= 0.0 {
             continue;
         }
-        let origin = attacker_tf.translation;
-        let cleave_amount = impact.damage * stats.cleave_damage_ratio;
-        for (entity, tf, unit_team, hp, bound) in &cleave_candidates {
-            if entity == impact.target
-                || *unit_team != impact.attacker_team.enemy()
-                || !hp.is_alive()
-                || is_untargetable(&statuses_of, entity)
-            {
-                continue;
-            }
-            if flat_distance(origin, tf.translation) > stats.cleave_radius {
-                continue;
-            }
-            if !area_contains(
-                origin,
-                stats.cleave_radius,
-                tf.translation,
-                bounds_of(bound),
-            ) {
-                continue;
-            }
+        let cleave_amount = amount * stats.cleave_damage_ratio;
+        for entity in secondary_attack_targets(
+            attacker_tf.translation,
+            stats.cleave_radius,
+            impact.target,
+            impact.attacker_team,
+            &cleave_candidates,
+            &statuses_of,
+        ) {
             damage.write(DamageEvent::cleave(impact.attacker, entity, cleave_amount));
         }
     }
+}
+
+/// Living, targetable enemies of `team` whose bounds overlap the circle (`center`, `radius`),
+/// excluding `primary`, sorted by [`Entity`] so message order is deterministic.
+fn secondary_attack_targets(
+    center: Vec3,
+    radius: f32,
+    primary: Entity,
+    team: Team,
+    candidates: &Query<(Entity, &Transform, &Team, &Health, Option<&BoundRadius>)>,
+    statuses_of: &Query<&StatusEffects>,
+) -> Vec<Entity> {
+    let mut found: Vec<Entity> = candidates
+        .iter()
+        .filter(|(entity, tf, unit_team, hp, bound)| {
+            *entity != primary
+                && **unit_team == team.enemy()
+                && hp.is_alive()
+                && !is_untargetable(statuses_of, *entity)
+                && flat_distance(center, tf.translation) <= radius
+                && area_contains(center, radius, tf.translation, bounds_of(*bound))
+        })
+        .map(|(entity, ..)| entity)
+        .collect();
+    found.sort();
+    found
 }
 
 fn spawn_projectile_visual(
@@ -642,7 +694,10 @@ mod tests {
         world.init_resource::<Messages<BasicAttackEvent>>();
         world.init_resource::<Messages<BasicAttackReleaseEvent>>();
         world.init_resource::<Messages<BasicAttackImpactEvent>>();
+        world.init_resource::<Messages<BasicAttackLandedEvent>>();
         world.init_resource::<Messages<DamageEvent>>();
+        world.init_resource::<CombatRng>();
+        world.init_resource::<DamageTestHooks>();
         let mut schedule = Schedule::default();
         schedule.add_systems(
             (
@@ -810,15 +865,164 @@ mod tests {
         for _ in 0..20 {
             step(&mut world, &mut schedule);
         }
-        assert_eq!(hp(&world, target), 1000.0, "nothing can hit a cycloned unit");
+        assert_eq!(
+            hp(&world, target),
+            1000.0,
+            "nothing can hit a cycloned unit"
+        );
         assert!(world.get::<AttackSwing>(ordered).is_none());
         assert!(world.get::<AttackSwing>(seeker).is_none());
 
         // Once the cyclone ends the same attackers connect again.
-        world.get_mut::<StatusEffects>(target).unwrap().effects.clear();
+        world
+            .get_mut::<StatusEffects>(target)
+            .unwrap()
+            .effects
+            .clear();
         for _ in 0..20 {
             step(&mut world, &mut schedule);
         }
         assert!(hp(&world, target) < 1000.0);
+    }
+
+    fn run_frames(world: &mut World, schedule: &mut Schedule, frames: usize) {
+        for _ in 0..frames {
+            step(world, schedule);
+        }
+    }
+
+    fn blind_status(chance: f32) -> StatusEffects {
+        let mut statuses = StatusEffects::default();
+        statuses
+            .effects
+            .push(crate::status::StatusEffect::blind(chance, 30.0));
+        statuses
+    }
+
+    /// Melee attacker at the origin ordered onto a Dire target 100 units away.
+    fn melee_duel(world: &mut World) -> (Entity, Entity) {
+        let target_pos = Vec3::new(100.0, 0.0, 0.0);
+        let target = spawn_unit(world, Team::Dire, target_pos, passive_stats());
+        let attacker = spawn_attacker(world, scale::MELEE_ATTACK_RANGE, target, target_pos);
+        (attacker, target)
+    }
+
+    fn landed_count(world: &World) -> usize {
+        world.resource::<Messages<BasicAttackLandedEvent>>().len()
+    }
+
+    #[test]
+    fn attack_miss_chance_formula() {
+        assert!((attack_miss_chance(0.5, 0.5, 0.5) - 0.375).abs() < 1e-6);
+        assert!((attack_miss_chance(0.25, 0.5, 0.0) - 0.625).abs() < 1e-6);
+        assert_eq!(attack_miss_chance(0.0, 0.0, 0.0), 0.0);
+        assert_eq!(
+            attack_miss_chance(1.0, 1.0, 1.0),
+            0.0,
+            "accuracy 1 never misses"
+        );
+    }
+
+    #[test]
+    fn blinded_attacker_misses() {
+        let (mut world, mut schedule) = world_with_pipeline();
+        let (attacker, target) = melee_duel(&mut world);
+        world.entity_mut(attacker).insert(blind_status(1.0));
+        run_frames(&mut world, &mut schedule, 12);
+        assert_eq!(hp(&world, target), 1000.0);
+        assert_eq!(landed_count(&world), 0, "a miss is not a landed attack");
+    }
+
+    #[test]
+    fn blind_on_target_does_not_protect_it() {
+        let (mut world, mut schedule) = world_with_pipeline();
+        let (_, target) = melee_duel(&mut world);
+        world.entity_mut(target).insert(blind_status(1.0));
+        run_frames(&mut world, &mut schedule, 12);
+        assert!((hp(&world, target) - expected_hit()).abs() < 1e-3);
+    }
+
+    #[test]
+    fn seeded_hit_rolls_are_reproducible() {
+        // Messages are never swapped in these worlds, so the counters are cumulative.
+        fn outcome(seed: u64) -> (usize, usize) {
+            let (mut world, mut schedule) = world_with_pipeline();
+            world.resource_mut::<CombatRng>().seed(seed);
+            let (attacker, _) = melee_duel(&mut world);
+            world.entity_mut(attacker).insert(blind_status(0.5));
+            for _ in 0..200 {
+                // The cooldown tick is not part of this schedule: re-arm every frame.
+                world.get_mut::<AttackCooldown>(attacker).unwrap().0 = 0.0;
+                step(&mut world, &mut schedule);
+            }
+            (
+                world.resource::<Messages<BasicAttackImpactEvent>>().len(),
+                landed_count(&world),
+            )
+        }
+        let (impacts, landed) = outcome(7);
+        assert_eq!((impacts, landed), outcome(7));
+        assert!(
+            landed > 0 && landed < impacts,
+            "half blind: {landed}/{impacts}"
+        );
+    }
+
+    #[test]
+    fn forced_crit_multiplies_main_hit_once() {
+        let (mut world, mut schedule) = world_with_pipeline();
+        world.insert_resource(DamageTestHooks { force_crit: true });
+        let (_, target) = melee_duel(&mut world);
+        run_frames(&mut world, &mut schedule, 9);
+        let defender = passive_stats();
+        let expected = 1000.0 - apply_damage(100.0, DamageType::Physical, &defender);
+        assert!((hp(&world, target) - expected).abs() < 1e-3);
+    }
+
+    #[test]
+    fn crit_chance_one_crits_and_reports_it() {
+        let (mut world, mut schedule) = world_with_pipeline();
+        let (attacker, target) = melee_duel(&mut world);
+        {
+            let mut stats = world.get_mut::<CombatStats>(attacker).unwrap();
+            stats.crit_chance = 1.0;
+            stats.crit_multiplier = 3.0;
+        }
+        run_frames(&mut world, &mut schedule, 12);
+        let seen = world
+            .resource::<Messages<BasicAttackLandedEvent>>()
+            .iter_current_update_messages()
+            .next()
+            .copied();
+        let event = seen.expect("attack landed");
+        assert!(event.crit);
+        assert_eq!(event.damage, 150.0);
+        assert!(hp(&world, target) < 1000.0);
+    }
+
+    #[test]
+    fn cleave_uses_crit_damage_without_rolling() {
+        let (mut world, mut schedule) = world_with_pipeline();
+        world.insert_resource(DamageTestHooks { force_crit: true });
+        let (attacker, _target) = melee_duel(&mut world);
+        world
+            .get_mut::<CombatStats>(attacker)
+            .unwrap()
+            .cleave_radius = 400.0;
+        world
+            .get_mut::<CombatStats>(attacker)
+            .unwrap()
+            .cleave_damage_ratio = 0.5;
+        let bystander = spawn_unit(
+            &mut world,
+            Team::Dire,
+            Vec3::new(0.0, 0.0, 150.0),
+            passive_stats(),
+        );
+        // Crit chance is zero: only the forced crit can inflate the main hit, and cleave
+        // must reuse that result (50 x 2 x 0.5) instead of rolling for itself.
+        run_frames(&mut world, &mut schedule, 9);
+        let expected = 1000.0 - apply_damage(50.0, DamageType::Physical, &passive_stats());
+        assert!((hp(&world, bystander) - expected).abs() < 1e-3);
     }
 }
