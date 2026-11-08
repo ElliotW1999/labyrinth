@@ -1,7 +1,14 @@
 id,name,slot,ability_type,target_type,target_team,cast_range,aoe_radius,cast_time,channel_time,cooldown,mana_cost,max_charges,charge_restore_time,projectile_type,projectile_speed,description
 shockwave,Shockwave,Q,active,point,enemy,1200,,0.3,,13|12|11|10,85|90|95|100,,,skillshot,900,Launches a wave that damages pulls and slows enemies
-skewer,Skewer,E,active,point,enemy,900,,0.25,,20|18|16|14,80,,,none,,Charges forward dragging enemies and slowing them at the end
+skewer,Skewer,E,active,point,enemy,900,,0.25,,20|18|16|14,80,,,none,,Dashes forward dragging enemies along and slowing them at the end
 frost_lance,Frost Lance,W,active,unit,enemy,600,150,0.2,,6,70|80|90|100,2,12,targeted,1100,Homing lance; splashes and chills enemies near the target
 war_cry,War Cry,R,active,self,self,,400,0.1,,60|50|40,100|150|200,,,none,,Empowers the caster and nearby allies and knocks enemies back
 blink,Blink,Q,active,point,enemy,800,,0,,15,75,,,none,,Teleport to the target point
 mending_beam,Mending Beam,E,active,self,self,,,0.1,2,25,60,,,none,,Channel to heal; an interrupted channel heals less
+lunge,Lunge,W,active,point,enemy,600,,0.1,,10,50,,,none,,A quick dash toward the target point
+bull_rush,Bull Rush,R,active,unit,enemy,1200,,0.2,,50|45|40,100,,,none,,Charges the target and stuns it on arrival
+meat_hook,Meat Hook,Q,active,point,enemy,1100,,0.3,,14|13|12|11,100,,,skillshot,1200,Throws a hook that pulls the first enemy it hits to the caster
+twister,Twister,E,active,unit,enemy,700,,0.2,,18,90,,,none,,Lifts an enemy unit into the air where nothing can touch it
+snare_field,Snare Field,W,active,point,enemy,800,300,0.3,,16,110,,,none,,Confines enemies in the area to a circle around the target point
+chain_link,Chain Link,E,active,unit,enemy,600,,0.2,,14,80,,,none,,Tethers an enemy to the caster
+wings,Wings,R,active,self,self,,,0.1,,40,100,,,none,,Grants flight and quicker turning

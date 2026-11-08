@@ -1029,7 +1029,7 @@ mod tests {
                 cycloned,
             ))
             .id();
-        let splashed = world
+        let _cycloned_neighbour = world
             .spawn((
                 Transform::from_xyz(30.0, 0.0, 0.0),
                 Team::Dire,

@@ -143,8 +143,8 @@ GENERATED_HEADER = """\
 #[allow(unused_imports)]
 use crate::abilities::definition::{
     AbilityEffect, AbilityEffectEntry, AbilityTrigger, AreaCenter, AreaRadius, Attribute,
-    DisplacementKind, EffectScaling, EffectTarget, PassiveStat, RankValue, StatusSpec, TargetTeam,
-    TargetType,
+    DisplacementKind, EffectScaling, EffectTarget, LeashAnchorKind, PassiveStat, RankValue,
+    StatusSpec, TargetTeam, TargetType,
 };
 #[allow(unused_imports)]
 use crate::components::DamageType;
@@ -318,12 +318,13 @@ def effect_context(item: Item) -> EffectContext:
         owner_id=item.id,
         levels=None,
         center_for={"on_use": "Caster" if target_type in ("no_target", "self") else "Aim", "passive": "Caster"},
+        target_type=target_type,
     )
     if not item.activation.channel_time:
         for trigger in ("on_channel_end", "on_channel_interrupted"):
             ctx.invalid_trigger[trigger] = "the item is not channelled (channel_time blank)"
-    for trigger in ("passive", "on_use", "on_attack", "on_attack_hit", "on_channel_end", "on_channel_interrupted", "on_damage_taken", "on_kill", "on_death"):
-        if trigger == "on_use" and target_type in ("unit", "self"):
+    for trigger in ("passive", "on_use", "on_unit_contact", "on_movement_end", "on_attack", "on_attack_hit", "on_channel_end", "on_channel_interrupted", "on_damage_taken", "on_kill", "on_death"):
+        if trigger in ("on_use", "on_unit_contact", "on_movement_end") and target_type in ("unit", "self"):
             continue
         reason = (
             f"{target_type} items have no cast target; use target_type unit or self"
@@ -335,6 +336,7 @@ def effect_context(item: Item) -> EffectContext:
         ctx.invalid_combo[("passive", target)] = "passive bonuses apply to the owner"
     for target in ("trigger_unit", "affected_units", "attacker"):
         ctx.invalid_combo[("on_use", target)] = f"on_use has no {target.replace('_', ' ')}; use owner or units_in_radius"
+    ctx.invalid_combo[("on_unit_contact", "affected_units")] = "on_unit_contact reports one unit at a time; use trigger_unit"
     for trigger in ("on_attack", "on_attack_hit", "on_damage_taken", "on_kill", "on_death"):
         ctx.invalid_combo[(trigger, "affected_units")] = f"{trigger} has no affected units; use units_in_radius"
     return ctx

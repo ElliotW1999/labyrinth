@@ -191,5 +191,164 @@ class ParseActivationSpecTests(unittest.TestCase):
         self.assertTrue(report.warnings)
 
 
+class MovementEffectTests(unittest.TestCase):
+    @staticmethod
+    def _movement(
+        effect_id: str,
+        target: str = "caster",
+        trigger: str = "on_cast",
+        target_type: str | None = "point",
+        kind: str = "ability",
+        **cells: str,
+    ) -> tuple[EffectRow, EffectContext]:
+        base = {
+            "ability_id": "mover",
+            "effect_index": "0",
+            "trigger": trigger,
+            "effect_target": target,
+            "effect_type": "movement",
+            "effect_id": effect_id,
+        }
+        base.update(cells)
+        effect = EffectRow(row(base), "mover", 0, trigger, target, "movement")
+        ctx = EffectContext(
+            kind=kind,
+            owner_id="mover",
+            levels=None if kind == "item" else 1,
+            center_for={},
+            target_type=target_type,
+        )
+        return effect, ctx
+
+    def test_movement_dash_requires_caster_target(self) -> None:
+        report = Report()
+        effect, ctx = self._movement("dash", target="cast_target", value="400")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertEqual(report.errors[0].field, "effect_target")
+
+        report = Report()
+        effect, ctx = self._movement("dash", value="")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertEqual(report.errors[0].field, "value")
+
+        report = Report()
+        effect, ctx = self._movement("dash", target="owner", value="400")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors)
+        self.assertIn("DisplacementKind::Dash", result[2])
+        self.assertIn("distance: Some(RankValue::fixed(400.0))", result[2])
+        self.assertIn("duration: RankValue::fixed(0.3)", result[2])
+        self.assertIn("speed: None", result[2])
+
+    def test_charge_requires_unit_target_and_speed(self) -> None:
+        report = Report()
+        effect, ctx = self._movement("charge", target_type="point", amount="900", duration="2")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertIn("target_type unit", report.errors[0].message)
+
+        report = Report()
+        effect, ctx = self._movement("charge", target_type="unit", duration="2")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertEqual(report.errors[0].field, "amount")
+
+        report = Report()
+        effect, ctx = self._movement("charge", target_type="unit", amount="900")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertEqual(report.errors[0].field, "duration")
+
+        report = Report()
+        effect, ctx = self._movement("charge", target_type="unit", amount="900", duration="2")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors)
+        self.assertIn("DisplacementKind::Charge", result[2])
+        self.assertIn("speed: Some(RankValue::fixed(900.0))", result[2])
+        self.assertIn("distance: None", result[2])
+
+    def test_drag_rejects_caster(self) -> None:
+        report = Report()
+        effect, ctx = self._movement("drag", target="caster", trigger="on_unit_contact")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertEqual(report.errors[0].field, "effect_target")
+
+        report = Report()
+        effect, ctx = self._movement("drag", target="trigger_unit", trigger="on_unit_contact")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors)
+        self.assertIn("DisplacementKind::Drag", result[2])
+        self.assertIn("duration: RankValue::fixed(0.0)", result[2])
+
+    def test_leash_requires_radius(self) -> None:
+        cells = {
+            "ability_id": "mover",
+            "effect_index": "0",
+            "trigger": "on_cast",
+            "effect_target": "units_in_radius",
+            "effect_type": "apply_status",
+            "effect_id": "leash",
+            "duration": "4",
+            "radius": "300",
+        }
+        ctx = EffectContext(kind="ability", owner_id="mover", levels=1, center_for={}, has_aoe=True)
+
+        report = Report()
+        effect = EffectRow(row(cells), "mover", 0, "on_cast", "units_in_radius", "apply_status")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertEqual(report.errors[0].field, "value")
+
+        report = Report()
+        effect = EffectRow(row({**cells, "value": "500"}), "mover", 0, "on_cast", "units_in_radius", "apply_status")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors)
+        self.assertIn("LeashAnchorKind::TriggerPoint", result[2])
+
+        report = Report()
+        tether = {**cells, "effect_id": "tether", "value": "500"}
+        effect = EffectRow(row(tether), "mover", 0, "on_cast", "units_in_radius", "apply_status")
+        self.assertIn("LeashAnchorKind::Caster", effect_to_rust(effect, ctx, report)[2])
+
+    def test_on_movement_end_in_trigger_tables(self) -> None:
+        self.assertEqual(ABILITY_TRIGGERS["on_movement_end"], "OnMovementEnd")
+        self.assertEqual(ITEM_TRIGGERS["on_movement_end"], "OnMovementEnd")
+        self.assertEqual(ITEM_TRIGGERS["on_unit_contact"], "OnUnitContact")
+
+    def test_cyclone_requires_duration(self) -> None:
+        report = Report()
+        effect, ctx = self._movement("cyclone", target="cast_target", target_type="unit")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertEqual(report.errors[0].field, "duration")
+
+        report = Report()
+        effect, ctx = self._movement("cyclone", target="cast_target", target_type="unit", duration="2.5")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors)
+        self.assertIn("DisplacementKind::Cyclone", result[2])
+        self.assertIn("duration: RankValue::fixed(2.5)", result[2])
+
+    def test_flying_and_turn_rate_bonus_statuses(self) -> None:
+        cells = {
+            "ability_id": "mover",
+            "effect_index": "0",
+            "trigger": "on_cast",
+            "effect_target": "caster",
+            "effect_type": "apply_status",
+            "duration": "4",
+        }
+        ctx = EffectContext(kind="ability", owner_id="mover", levels=1, center_for={})
+        report = Report()
+        effect = EffectRow(row({**cells, "effect_id": "flying"}), "mover", 0, "on_cast", "caster", "apply_status")
+        self.assertIn("StatusSpec::Flying", effect_to_rust(effect, ctx, report)[2])
+        self.assertFalse(report.errors)
+
+        report = Report()
+        bonus = {**cells, "effect_id": "turn_rate_bonus", "amount": "500"}
+        effect = EffectRow(row(bonus), "mover", 0, "on_cast", "caster", "apply_status")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertIn("0..400", report.errors[0].message)
+
+        report = Report()
+        effect = EffectRow(row({**bonus, "amount": "100"}), "mover", 0, "on_cast", "caster", "apply_status")
+        self.assertIn("StatusSpec::TurnRateBonus", effect_to_rust(effect, ctx, report)[2])
+
+
 if __name__ == "__main__":
     unittest.main()
