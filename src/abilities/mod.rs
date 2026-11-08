@@ -5050,4 +5050,334 @@ mod tests {
             "applying and removing a held status is silent: {fired:?}"
         );
     }
+
+    // --- Verification additions: guards, attribution, exactness ---
+
+    /// Every context an event batch produced, as `(trigger, caster)` pairs for brevity.
+    fn damage_taken_sources(contexts: &[TriggerContext]) -> Vec<EffectSource> {
+        of_trigger(contexts, AbilityTrigger::OnDamageTaken)
+            .iter()
+            .map(|c| c.source)
+            .collect()
+    }
+
+    #[test]
+    fn item_copies_fire_once_and_items_precede_abilities() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![marker_effect(
+            AbilityTrigger::OnDamageTaken,
+        )])]);
+        with_definitions(
+            &mut app,
+            [AbilityDefinition::new(AbilityId::Shockwave).on(
+                AbilityTrigger::OnDamageTaken,
+                EffectTarget::Caster,
+                fixed_magical_damage(1.0),
+            )],
+        );
+        let victim = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, victim, ItemId::HeartwoodBand);
+        give_item(&mut app, victim, ItemId::HeartwoodBand);
+        let foe = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+
+        strike(&mut app, Some(foe), victim, 100.0);
+        step(&mut app);
+        let fired = run_collecting(&mut app, 1);
+        assert_eq!(
+            damage_taken_sources(&fired),
+            vec![
+                EffectSource::Item(ItemId::HeartwoodBand),
+                EffectSource::Ability(AbilityId::Shockwave)
+            ],
+            "one trigger per distinct item, items first, then learned abilities"
+        );
+    }
+
+    #[test]
+    fn reflected_damage_is_reactive_and_credits_the_reflector() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            marker_effect(AbilityTrigger::OnDamageTaken),
+            marker_effect(AbilityTrigger::OnDamageDealt),
+            marker_effect(AbilityTrigger::OnKill),
+            marker_effect(AbilityTrigger::OnDeath),
+        ])]);
+        let attacker = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+        let reflector = spawn_item_holder(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        app.world_mut()
+            .get_mut::<CombatStats>(reflector)
+            .unwrap()
+            .damage_reflect = 1.0;
+        app.world_mut().get_mut::<Health>(attacker).unwrap().current = 50.0;
+
+        strike(&mut app, Some(attacker), reflector, 100.0);
+        let fired = run_collecting(&mut app, 6);
+
+        assert!(health(&app, attacker) <= 0.0, "the reflection was lethal");
+        let taken = of_trigger(&fired, AbilityTrigger::OnDamageTaken);
+        assert_eq!(taken.len(), 1, "only the opening hit counts as taken");
+        assert_eq!(taken[0].caster, reflector);
+        let dealt = of_trigger(&fired, AbilityTrigger::OnDamageDealt);
+        assert_eq!(dealt.len(), 1, "reflected damage is never 'dealt'");
+        assert_eq!(dealt[0].caster, attacker);
+        let kills = of_trigger(&fired, AbilityTrigger::OnKill);
+        assert_eq!(kills.len(), 1);
+        assert_eq!(kills[0].caster, reflector, "the reflector gets the kill");
+        assert_eq!(kills[0].trigger_unit, Some(attacker));
+        let deaths = of_trigger(&fired, AbilityTrigger::OnDeath);
+        assert_eq!(deaths.len(), 1);
+        assert_eq!(deaths[0].caster, attacker);
+        assert_eq!(deaths[0].trigger_unit, Some(reflector));
+    }
+
+    #[test]
+    fn health_below_thresholds_fire_independently_once_per_crossing() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            marker_effect(below(75)),
+            marker_effect(below(50)),
+            marker_effect(below(25)),
+        ])]);
+        let unit = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+        let foe = spawn_unit(&mut app, Team::Dire, Vec3::X);
+        let count = |fired: &[TriggerContext], percent: u8| of_trigger(fired, below(percent)).len();
+
+        // 100% -> 40% in one hit crosses both 75 and 50, each once.
+        strike(&mut app, Some(foe), unit, 600.0);
+        step(&mut app);
+        let fired = run_collecting(&mut app, 1);
+        assert_eq!(
+            (count(&fired, 75), count(&fired, 50), count(&fired, 25)),
+            (1, 1, 0)
+        );
+
+        // Two hits in one frame over the 25% line: one crossing, not two. The second is
+        // reactive DoT-kind damage, which health-below still sees but cannot repeat.
+        strike(&mut app, Some(foe), unit, 200.0);
+        app.world_mut().write_message(
+            DamageEvent::dot(Some(foe), unit, 50.0, DamageType::Pure).reactive(true),
+        );
+        step(&mut app);
+        let fired = run_collecting(&mut app, 1);
+        assert_eq!(
+            (count(&fired, 75), count(&fired, 50), count(&fired, 25)),
+            (0, 0, 1)
+        );
+
+        // A reactive DoT tick alone is enough to cross: heal, then tick across 75.
+        app.world_mut().get_mut::<Health>(unit).unwrap().current = 1000.0;
+        app.world_mut().write_message(
+            DamageEvent::dot(Some(foe), unit, 300.0, DamageType::Pure).reactive(true),
+        );
+        step(&mut app);
+        let fired = run_collecting(&mut app, 1);
+        assert_eq!(count(&fired, 75), 1, "kind and reactive flag are ignored");
+    }
+
+    #[test]
+    fn interval_never_fires_twice_in_a_frame_after_a_long_hitch() {
+        let mut app = test_app();
+        let _defs =
+            install_test_item_definitions([item_with_effects(vec![marker_effect(interval(100))])]);
+        spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+        run_collecting(&mut app, 1);
+
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_secs_f32(1.0));
+        app.update();
+        let first = current_messages::<AbilityTriggerEvent>(&app)
+            .into_iter()
+            .filter(|e| e.0.trigger == interval(100))
+            .count();
+        assert_eq!(first, 1, "a one second hitch is still one firing");
+        for _ in 0..30 {
+            step(&mut app);
+            let n = current_messages::<AbilityTriggerEvent>(&app)
+                .into_iter()
+                .filter(|e| e.0.trigger == interval(100))
+                .count();
+            assert!(n <= 1, "at most once per frame");
+        }
+    }
+
+    #[test]
+    fn held_modifier_reverts_every_stat_exactly_across_cycles_and_sale() {
+        use definition::Condition;
+        let all_stats = AbilityEffectEntry {
+            trigger: AbilityTrigger::While(Condition::HealthBelow { percent: 50 }),
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::ApplyStatus {
+                status: StatusSpec::Modifier {
+                    id: "berserk_all",
+                    kind: crate::status::StatusKind::Buff,
+                    armor: RankValue::fixed(7.0),
+                    magic_resist: RankValue::fixed(5.0),
+                    move_speed: RankValue::fixed(40.0),
+                    attack_damage: RankValue::fixed(33.0),
+                    attack_speed_flat: RankValue::fixed(20.0),
+                    attack_speed_mult: RankValue::fixed(0.35),
+                    attack_range: RankValue::fixed(100.0),
+                },
+                duration: RankValue::ZERO,
+            },
+        };
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![all_stats])]);
+        let unit = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+        app.world_mut()
+            .entity_mut(unit)
+            .insert(crate::components::HeroAttributes::starter());
+        step(&mut app);
+        let snapshot = |app: &App| format!("{:?}", app.world().get::<CombatStats>(unit).unwrap());
+        // One throwaway cycle first: the first status change re-derives `attack_speed` from
+        // the hero's agility, which is not part of what is being checked here.
+        set_health(&mut app, unit, 100.0);
+        step(&mut app);
+        set_health(&mut app, unit, 900.0);
+        step(&mut app);
+        let base = snapshot(&app);
+
+        for cycle in 0..5 {
+            set_health(&mut app, unit, 100.0);
+            step(&mut app);
+            assert!(has_status(&app, unit, "berserk_all"), "cycle {cycle}");
+            assert_ne!(snapshot(&app), base);
+            step(&mut app);
+            set_health(&mut app, unit, 900.0);
+            step(&mut app);
+            assert!(!has_status(&app, unit, "berserk_all"));
+            assert_eq!(snapshot(&app), base, "cycle {cycle} left residue");
+        }
+
+        // Sold while active.
+        set_health(&mut app, unit, 100.0);
+        step(&mut app);
+        assert!(has_status(&app, unit, "berserk_all"));
+        app.world_mut().get_mut::<Inventory>(unit).unwrap().slots = Default::default();
+        step(&mut app);
+        assert!(!has_status(&app, unit, "berserk_all"));
+        assert_eq!(snapshot(&app), base, "selling reverts exactly");
+    }
+
+    #[test]
+    fn held_status_is_removed_when_its_owner_dies() {
+        use definition::Condition;
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![while_entry(
+            Condition::Stationary,
+            "fortify",
+        )])]);
+        let unit = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+        step(&mut app);
+        step(&mut app);
+        assert!(has_status(&app, unit, "fortify"));
+        set_health(&mut app, unit, 0.0);
+        step(&mut app);
+        step(&mut app);
+        assert!(!has_status(&app, unit, "fortify"), "a corpse holds nothing");
+    }
+
+    /// DEFECT (guard bypass): a built-in custom effect that deals damage ignores
+    /// `ctx.reaction`, so `bolt_chain` under a damage-class trigger emits non-reactive
+    /// damage that can start damage triggers again. Remove the `ignore` once
+    /// `bolt_chain` / `emit_chain_damage` pass the reaction flag on.
+    #[test]
+    #[ignore = "known defect: custom::bolt_chain drops ctx.reaction"]
+    fn custom_chain_damage_under_a_reaction_is_reactive() {
+        let mut app = test_app();
+        custom::register(&mut app);
+        with_definitions(
+            &mut app,
+            [AbilityDefinition::new(AbilityId::Bolt).on(
+                AbilityTrigger::OnDamageTaken,
+                EffectTarget::TriggerUnit,
+                AbilityEffect::Custom {
+                    id: "bolt_chain",
+                    value: RankValue::fixed(2.0),
+                    amount: RankValue::fixed(50.0),
+                    duration: RankValue::ZERO,
+                },
+            )],
+        );
+        let caster = spawn_caster(&mut app, KIT);
+        let primary = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        let _second = spawn_unit(&mut app, Team::Dire, Vec3::new(120.0, 0.0, 0.0));
+        let ctx = TriggerContext::new(
+            AbilityTrigger::OnDamageTaken,
+            EffectSource::Ability(AbilityId::Bolt),
+            caster,
+            Team::Radiant,
+            1,
+            Vec3::ZERO,
+            Vec3::ZERO,
+        )
+        .trigger_unit(Some(primary));
+        assert!(ctx.reaction);
+        fire(&mut app, ctx);
+        step(&mut app);
+        let damage = current_messages::<DamageEvent>(&app);
+        assert!(!damage.is_empty(), "the chain jumped");
+        assert!(
+            damage.iter().all(|e| e.reactive),
+            "chain damage under a reaction must be reactive: {damage:?}"
+        );
+    }
+
+    #[test]
+    fn production_plugins_build_an_acyclic_update_schedule() {
+        // The test app re-declares the chain by hand; this builds the real plugins so a
+        // cycle between `status_triggers` / `tick_status_effects` / the combat chain is
+        // caught at graph-build time.
+        let mut app = App::new();
+        app.init_resource::<Time>().add_plugins((
+            crate::combat::CombatPlugin,
+            crate::status::StatusPlugin,
+            AbilitiesPlugin,
+        ));
+        app.finish();
+        app.world_mut().schedule_scope(Update, |world, schedule| {
+            schedule
+                .initialize(world)
+                .expect("the Update schedule must have no ordering cycle");
+        });
+    }
+
+    /// DEFECT (guard gap): a cyclone launched by a reaction applies its `cyclone` status with
+    /// `reactive: false` (`displacement.rs`, `apply_displacement_events`), because
+    /// `DisplacementEvent` carries no reaction flag. The status therefore fires
+    /// `OnStatusApplied` / `OnStatusRemoved` on the victim, which can start another reaction.
+    #[test]
+    #[ignore = "known defect: cyclone status from a reactive Displace is not reactive"]
+    fn cyclone_launched_by_a_reaction_applies_a_reactive_status() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![entry(
+            AbilityTrigger::OnDamageTaken,
+            EffectTarget::TriggerUnit,
+            AbilityEffect::Displace {
+                kind: DisplacementKind::Cyclone,
+                distance: None,
+                duration: RankValue::fixed(1.0),
+                speed: None,
+            },
+        )])]);
+        let victim = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+        let attacker = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        strike(&mut app, Some(attacker), victim, 100.0);
+        let mut statuses: Vec<StatusEffectEvent> = Vec::new();
+        for _ in 0..4 {
+            step(&mut app);
+            statuses.extend(current_messages::<StatusEffectEvent>(&app));
+        }
+        assert!(
+            statuses
+                .iter()
+                .any(|e| matches!(&e.change, crate::status::StatusChange::Apply(_))),
+            "the cyclone status was applied"
+        );
+        assert!(
+            statuses.iter().all(|e| e.reactive),
+            "statuses started by a reaction must be reactive: {statuses:?}"
+        );
+    }
 }

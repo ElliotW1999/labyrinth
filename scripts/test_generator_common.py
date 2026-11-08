@@ -17,6 +17,7 @@ from generator_common import (  # noqa: E402
     ABILITY_TRIGGERS,
     ITEM_TRIGGERS,
     effect_to_rust,
+    held_status_id,
     reaction_triggers,
     warn_duplicate_held_statuses,
     warn_unreachable_custom_triggers,
@@ -1020,6 +1021,33 @@ class ReactiveTriggerTests(unittest.TestCase):
         report = Report()
         warn_duplicate_held_statuses([make(0, "while:moving", "evasion"), make(1, "while:stationary", "accuracy")], report)
         self.assertFalse(report.warnings)
+
+    @unittest.expectedFailure
+    def test_custom_trigger_with_arguments_is_rejected(self) -> None:
+        # KNOWN DEFECT: `parse_effect_rows` splits the trigger cell on ":" for every trigger,
+        # but only built-in triggers validate the arguments. A custom trigger such as
+        # `on_bash:5` is silently accepted and emitted as plain `on_bash`, dropping the
+        # argument. Remove `expectedFailure` once custom triggers reject arguments.
+        result, report = self._render("on_bash:5")
+        self.assertIsNone(result)
+        self.assertEqual(report.errors[0].field, "trigger")
+
+    def test_while_stat_modifier_holds_a_permanent_status_with_the_owner_scoped_id(self) -> None:
+        # The deviation: `while` accepts timed stat_modifier rows. They must emit a blank
+        # (zero) duration, and the status id the duplicate-id warning and the `has_status`
+        # self-reference rule reason about must be the id the emitted status really has.
+        effect, ctx = _effect("stat_modifier", "armor", target="owner", trigger="while:moving", kind="item", value="5")
+        report = Report()
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors, [e.message for e in report.errors])
+        self.assertIn("duration: RankValue::fixed(0.0)", result[2])
+        self.assertIn(f'id: "{ctx.owner_id}_armor"', result[2])
+        self.assertEqual(held_status_id(effect), f"{effect.owner}_armor")
+
+        # A passive-only stat still cannot be held.
+        effect, ctx = _effect("stat_modifier", "strength", target="owner", trigger="while:moving", kind="item", value="5")
+        report = Report()
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
 
 
 if __name__ == "__main__":
