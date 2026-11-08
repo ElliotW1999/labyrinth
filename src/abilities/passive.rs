@@ -277,6 +277,40 @@ mod tests {
         }
 
         #[test]
+        fn while_toggled_status_has_expected_fields() {
+            let mut app = app();
+            let hero = hero(&mut app, 100.0);
+            set_toggled(&mut app, hero, true);
+            step(&mut app, 0.1);
+            let statuses = app.world().get::<StatusEffects>(hero).unwrap();
+            let speed = statuses
+                .effects
+                .iter()
+                .find(|e| e.id == "overcharge_attack_speed_mult")
+                .expect("attack speed status");
+            assert_eq!(speed.kind, StatusKind::Buff);
+            assert!(speed.remaining.is_infinite());
+            assert!(speed.undispellable);
+            assert_eq!(speed.dispel_type, DispelType::None);
+            assert!((speed.attack_speed_mult - 0.2).abs() < 1e-6);
+            assert_eq!(speed.dot_source, None);
+            assert_eq!(speed.heal_per_sec, 0.0);
+            assert_eq!(statuses.effects.len(), 2);
+            let ids: Vec<_> = statuses.effects.iter().map(|e| e.id).collect();
+            assert!(
+                ids.iter().all(|id| id.starts_with("overcharge_")),
+                "{ids:?}"
+            );
+            let movement = statuses
+                .effects
+                .iter()
+                .find(|e| e.id != "overcharge_attack_speed_mult")
+                .unwrap();
+            assert!((movement.move_speed - 10.0).abs() < 1e-6);
+            assert!(movement.remaining.is_infinite() && movement.undispellable);
+        }
+
+        #[test]
         fn overcharge_turns_off_at_zero_mana_and_reverts_stats() {
             let mut app = app();
             let hero = hero(&mut app, 1.0);

@@ -2151,6 +2151,74 @@ mod tests {
         assert!((health(&app, enemy) - (1000.0 - 120.0)).abs() < 1e-3);
     }
 
+    /// Land a rank-1 Bolt on `primary` (no splash) and run one frame.
+    fn land_bolt(app: &mut App, caster: Entity, primary: Entity) {
+        let payload = ProjectilePayload {
+            caster,
+            ability: AbilityId::Bolt,
+            rank: 1,
+            cast_target: Some(primary),
+            aim: Vec3::X * 200.0,
+        };
+        app.world_mut()
+            .write_message(hit(payload, Vec3::X * 200.0, Some(primary), Vec::new()));
+        step(app);
+    }
+
+    fn enemy_at(app: &mut App, x: f32) -> Entity {
+        spawn_unit(app, Team::Dire, Vec3::new(scale::u(x), 0.0, 0.0))
+    }
+
+    #[test]
+    fn bolt_chain_hits_the_two_nearest_enemies_with_compounding_falloff() {
+        let mut app = test_app();
+        let caster = spawn_caster(&mut app, KIT);
+        let primary = enemy_at(&mut app, 300.0);
+        let near = enemy_at(&mut app, 500.0);
+        let next = enemy_at(&mut app, 800.0);
+        let spare = enemy_at(&mut app, 1100.0);
+
+        land_bolt(&mut app, caster, primary);
+
+        // Rank 1: projectile 120; chain base 45 + 12 = 57, x0.75 per hop.
+        assert!((health(&app, primary) - (1000.0 - 120.0)).abs() < 1e-3);
+        assert!((health(&app, near) - (1000.0 - 57.0 * 0.75)).abs() < 1e-3);
+        assert!((health(&app, next) - (1000.0 - 57.0 * 0.75 * 0.75)).abs() < 1e-3);
+        assert_eq!(health(&app, spare), 1000.0, "only two jumps");
+    }
+
+    #[test]
+    fn bolt_chain_stops_when_no_enemy_is_within_the_jump_radius() {
+        let mut app = test_app();
+        let caster = spawn_caster(&mut app, KIT);
+        let primary = enemy_at(&mut app, 300.0);
+        let far = enemy_at(&mut app, 300.0 + 460.0);
+
+        land_bolt(&mut app, caster, primary);
+
+        assert_eq!(health(&app, far), 1000.0, "beyond the 450 jump radius");
+        assert!((health(&app, primary) - (1000.0 - 120.0)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn bolt_chain_never_revisits_a_unit() {
+        let mut app = test_app();
+        let caster = spawn_caster(&mut app, KIT);
+        let primary = enemy_at(&mut app, 300.0);
+        let only = enemy_at(&mut app, 500.0);
+
+        land_bolt(&mut app, caster, primary);
+
+        assert!(
+            (health(&app, only) - (1000.0 - 57.0 * 0.75)).abs() < 1e-3,
+            "hit once, not again on the second jump"
+        );
+        assert!(
+            (health(&app, primary) - (1000.0 - 120.0)).abs() < 1e-3,
+            "the primary target is not chained back to"
+        );
+    }
+
     #[test]
     fn data_only_ability_resolves_on_hit_effects() {
         let mut app = test_app();
