@@ -2256,6 +2256,118 @@ mod tests {
         }
     }
 
+    const QOP: [AbilityId; 4] = [
+        AbilityId::ShadowStrike,
+        AbilityId::QueenOfPainBlink,
+        AbilityId::ScreamOfPain,
+        AbilityId::SonicWave,
+    ];
+
+    /// The ability test app plus the status ticker (ticking burns are written there).
+    fn qop_app() -> App {
+        let mut app = test_app();
+        app.add_systems(
+            Update,
+            crate::status::tick_status_effects.before(reactive_triggers::status_triggers),
+        );
+        app
+    }
+
+    /// Casts `slot` and returns the projectiles it spawned plus every damage event it
+    /// produced while the cast played out.
+    fn cast_for_projectiles(
+        app: &mut App,
+        caster: Entity,
+        slot: usize,
+        target: CastTarget,
+    ) -> Vec<SpawnProjectileEvent> {
+        request(app, caster, slot, target);
+        let mut spawned = Vec::new();
+        for _ in 0..16 {
+            step(app);
+            let messages = app.world().resource::<Messages<SpawnProjectileEvent>>();
+            spawned.extend(messages.iter_current_update_messages().copied());
+        }
+        spawned
+    }
+
+    #[test]
+    fn sonic_wave_deals_fourteen_instances_and_one_knockback() {
+        use crate::combat::DamageKind;
+        let mut app = qop_app();
+        let caster = spawn_caster(&mut app, QOP);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(400.0, 0.0, 0.0));
+        let spawned = cast_for_projectiles(&mut app, caster, 3, CastTarget::Point(Vec3::X * 800.0));
+        assert_eq!(spawned.len(), 1);
+        let wave = spawned[0];
+        assert_eq!(wave.skillshot_width, Some(100.0));
+        assert_eq!(wave.skillshot_end_width, Some(450.0));
+        assert!(
+            (wave.speed.unwrap() - 900.0 / 1.4).abs() < 0.01,
+            "900 units in 1.4s"
+        );
+
+        app.world_mut()
+            .write_message(hit(wave.payload, Vec3::X * 400.0, Some(enemy), Vec::new()));
+        let mut dots = Vec::new();
+        let mut knockbacks = 0;
+        for _ in 0..40 {
+            step(&mut app);
+            dots.extend(
+                current_messages::<DamageEvent>(&app)
+                    .into_iter()
+                    .filter(|d| d.kind == DamageKind::Dot),
+            );
+            knockbacks += current_messages::<DisplacementEvent>(&app)
+                .iter()
+                .filter(|d| d.kind == DisplacementKind::Knockback)
+                .count();
+        }
+        assert_eq!(dots.len(), 14, "14 instances over 1.4s");
+        assert!(
+            dots.iter()
+                .all(|d| d.amount == 23.0 && d.damage_type == DamageType::Pure)
+        );
+        assert_eq!(knockbacks, 1, "one knockback");
+        assert!((health(&app, enemy) - (1000.0 - 14.0 * 23.0)).abs() < 1e-2);
+    }
+
+    #[test]
+    fn shadow_strike_and_sonic_wave_dots_coexist() {
+        let mut app = qop_app();
+        let caster = spawn_caster(&mut app, QOP);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(300.0, 0.0, 0.0));
+        let dagger = cast_for_projectiles(&mut app, caster, 0, CastTarget::Unit(enemy));
+        let wave = cast_for_projectiles(&mut app, caster, 3, CastTarget::Point(Vec3::X * 800.0));
+        assert_eq!((dagger.len(), wave.len()), (1, 1));
+        let landed_at = Vec3::X * 300.0;
+        app.world_mut()
+            .write_message(hit(dagger[0].payload, landed_at, Some(enemy), Vec::new()));
+        app.world_mut()
+            .write_message(hit(wave[0].payload, landed_at, Some(enemy), Vec::new()));
+        step(&mut app);
+        let ids: Vec<_> = app
+            .world()
+            .get::<StatusEffects>(enemy)
+            .unwrap()
+            .effects
+            .iter()
+            .map(|e| e.id)
+            .collect();
+        assert!(ids.contains(&"shadow_strike_burn"), "{ids:?}");
+        assert!(ids.contains(&"sonic_wave_burn"), "{ids:?}");
+        assert!(ids.contains(&"slow"), "{ids:?}");
+        // Run past both durations (16s): 50 hit + 5 x 20 + 14 x 23.
+        for _ in 0..340 {
+            step(&mut app);
+        }
+        assert!(
+            (health(&app, enemy) - (1000.0 - 50.0 - 100.0 - 322.0)).abs() < 1e-2,
+            "{}",
+            health(&app, enemy)
+        );
+    }
+
     #[test]
     fn execute_bonus_comes_from_effect_data() {
         let mut app = test_app();

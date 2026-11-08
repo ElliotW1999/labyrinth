@@ -30,6 +30,10 @@ pub fn definition(id: AbilityId) -> Option<AbilityDefinition> {
         AbilityId::StoneSkin => Some(stone_skin()),
         AbilityId::Overcharge => Some(overcharge()),
         AbilityId::Blink => Some(blink()),
+        AbilityId::ShadowStrike => Some(shadow_strike()),
+        AbilityId::QueenOfPainBlink => Some(queen_of_pain_blink()),
+        AbilityId::ScreamOfPain => Some(scream_of_pain()),
+        AbilityId::SonicWave => Some(sonic_wave()),
         _ => None,
     }
 }
@@ -265,3 +269,169 @@ fn blink() -> AbilityDefinition {
         )
 }
 // </ability:blink>
+
+// <ability:shadow_strike>
+fn shadow_strike() -> AbilityDefinition {
+    const DESCRIPTION: &str = "Hurls a dagger that deals magical damage, then slows the target and deals magical damage every 3s for 16s";
+    AbilityDefinition::new(AbilityId::ShadowStrike)
+        .description(DESCRIPTION)
+        .targeting(
+            TargetType::Unit,
+            RankValue::from_level_1(450.0, 50.0),
+            RankValue::ZERO,
+        )
+        .team(TargetTeam::Enemy)
+        .costs(
+            RankValue::levels(&[11.0, 9.0, 7.0, 5.0, 3.0, 3.0, 3.0]),
+            RankValue::from_level_1(100.0, 5.0),
+        )
+        .timing(0.3, 0.77)
+        .mechanic(AbilityMechanic::Projectile {
+            splash_radius: AreaRadius::Ability,
+            speed: None,
+            skillshot: false,
+            first_hit: false,
+            end_radius: None,
+        })
+        .on(
+            AbilityTrigger::OnProjectileHit,
+            EffectTarget::TriggerUnit,
+            AbilityEffect::Damage {
+                amount: RankValue::from_level_1(50.0, 30.0),
+                damage_type: DamageType::Magical,
+                scaling: EffectScaling::None,
+            },
+        )
+        .on(
+            AbilityTrigger::OnProjectileHit,
+            EffectTarget::TriggerUnit,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Slow {
+                    percent: RankValue::from_level_1(25.0, 10.0),
+                },
+                duration: RankValue::fixed(16.0),
+            },
+        )
+        .on(
+            AbilityTrigger::OnProjectileHit,
+            EffectTarget::TriggerUnit,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Burn {
+                    id: "shadow_strike_burn",
+                    amount: RankValue::from_level_1(20.0, 20.0),
+                    damage_type: DamageType::Magical,
+                    tick_interval: RankValue::fixed(3.0),
+                },
+                duration: RankValue::fixed(16.0),
+            },
+        )
+}
+// </ability:shadow_strike>
+
+// <ability:queen_of_pain_blink>
+fn queen_of_pain_blink() -> AbilityDefinition {
+    const DESCRIPTION: &str = "Teleports toward the target point, at least 200 and at most the maximum blink distance away";
+    AbilityDefinition::new(AbilityId::QueenOfPainBlink)
+        .description(DESCRIPTION)
+        .targeting(
+            TargetType::Point,
+            RankValue::fixed(25000.0),
+            RankValue::ZERO,
+        )
+        .team(TargetTeam::Enemy)
+        .costs(
+            RankValue::levels(&[12.0, 10.0, 8.0, 6.0, 4.0, 2.0, 1.0]),
+            RankValue::fixed(65.0),
+        )
+        .timing(0.33, 0.07)
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::Caster,
+            AbilityEffect::Teleport {
+                min_distance: RankValue::fixed(200.0),
+                max_distance: Some(RankValue::from_level_1(1075.0, 75.0)),
+            },
+        )
+}
+// </ability:queen_of_pain_blink>
+
+// <ability:scream_of_pain>
+fn scream_of_pain() -> AbilityDefinition {
+    const DESCRIPTION: &str =
+        "Sends a projectile at every nearby enemy, each dealing magical damage";
+    AbilityDefinition::new(AbilityId::ScreamOfPain)
+        .description(DESCRIPTION)
+        .targeting(
+            TargetType::NoTarget,
+            RankValue::ZERO,
+            RankValue::fixed(600.0),
+        )
+        .team(TargetTeam::Enemy)
+        .costs(RankValue::from_level_1(7.5, -0.5), RankValue::fixed(120.0))
+        .timing(0.0, 0.63)
+        .mechanic(shockwave_ring())
+        .mechanic(AbilityMechanic::ProjectileToEach {
+            center: AreaCenter::Caster,
+            team: TargetTeam::Enemy,
+            speed: Some(900.0),
+        })
+        .on(
+            AbilityTrigger::OnProjectileHit,
+            EffectTarget::TriggerUnit,
+            AbilityEffect::Damage {
+                amount: RankValue::from_level_1(90.0, 85.0),
+                damage_type: DamageType::Magical,
+                scaling: EffectScaling::None,
+            },
+        )
+}
+// </ability:scream_of_pain>
+
+// <ability:sonic_wave>
+fn sonic_wave() -> AbilityDefinition {
+    const DESCRIPTION: &str = "Sends out a widening wave; each enemy struck takes pure damage 14 times over 1.4s and is knocked back";
+    AbilityDefinition::new(AbilityId::SonicWave)
+        .description(DESCRIPTION)
+        .targeting(
+            TargetType::Point,
+            RankValue::fixed(900.0),
+            RankValue::fixed(100.0),
+        )
+        .team(TargetTeam::Enemy)
+        .costs(
+            RankValue::from_level_1(110.0, -15.0),
+            RankValue::from_level_1(250.0, 150.0),
+        )
+        .timing(0.452, 0.9)
+        .mechanic(AbilityMechanic::Projectile {
+            splash_radius: AreaRadius::Ability,
+            speed: Some(642.857143),
+            skillshot: true,
+            first_hit: false,
+            end_radius: Some(RankValue::fixed(450.0)),
+        })
+        .on(
+            AbilityTrigger::OnProjectileHit,
+            EffectTarget::TriggerUnit,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Burn {
+                    id: "sonic_wave_burn",
+                    amount: RankValue::from_level_1(23.0, 11.0),
+                    damage_type: DamageType::Pure,
+                    tick_interval: RankValue::fixed(0.1),
+                },
+                duration: RankValue::fixed(1.4),
+            },
+        )
+        .on(
+            AbilityTrigger::OnProjectileHit,
+            EffectTarget::TriggerUnit,
+            AbilityEffect::Displace {
+                kind: DisplacementKind::Knockback,
+                distance: Some(RankValue::fixed(350.0)),
+                duration: RankValue::fixed(1.4),
+                speed: None,
+            },
+        )
+}
+// </ability:sonic_wave>

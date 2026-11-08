@@ -79,6 +79,7 @@ The HUD shows connection status. Host sim runs combat / creeps / AI; clients app
 | Arcanist | Intelligence | Missile, Frost (root), Barrier (debuff immunity), Meteor (stun) |
 | Warden | Strength | Bulwark, ShieldBash, Taunt, Aegis (stubs — implement later) |
 | Hexer | Intelligence | HexBolt, Curse, Ward, Ritual (stubs — implement later) |
+| Queen of Pain | Intelligence | Shadow Strike, QoP Blink, Scream of Pain, Sonic Wave |
 
 Each hero has its own base Str/Agi/Int and per-level growth.
 

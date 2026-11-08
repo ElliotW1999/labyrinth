@@ -464,6 +464,117 @@ mod tests {
     }
 
     #[test]
+    fn queen_of_pain_abilities_generate_expected_definitions() {
+        use crate::abilities::definition::{AreaCenter, StatusSpec};
+        use crate::actions::TargetType;
+
+        let strike = builtin(AbilityId::ShadowStrike);
+        assert_eq!(strike.max_rank, 7);
+        assert_eq!(strike.target_type, TargetType::Unit);
+        let strike_cooldowns: Vec<f32> = (1..=7).map(|r| strike.cooldown.at(r)).collect();
+        assert_eq!(strike_cooldowns, [11.0, 9.0, 7.0, 5.0, 3.0, 3.0, 3.0]);
+        assert_eq!(strike.cast_range.at(1), 450.0);
+        assert_eq!(strike.cast_range.at(7), 750.0);
+        let (burn_damage, burn_interval, burn_duration) = strike
+            .effects_for(AbilityTrigger::OnProjectileHit)
+            .find_map(|e| match e.effect {
+                AbilityEffect::ApplyStatus {
+                    status:
+                        StatusSpec::Burn {
+                            id,
+                            amount,
+                            tick_interval,
+                            ..
+                        },
+                    duration,
+                } => {
+                    assert_eq!(id, "shadow_strike_burn");
+                    Some((amount, tick_interval, duration))
+                }
+                _ => None,
+            })
+            .expect("Shadow Strike burns");
+        assert_eq!(burn_damage.at(1), 20.0);
+        assert_eq!(burn_damage.at(7), 140.0);
+        assert_eq!(burn_interval.at(1), 3.0);
+        assert_eq!(burn_duration.at(1), 16.0);
+
+        let blink = builtin(AbilityId::QueenOfPainBlink);
+        assert_eq!(blink.name, "QoP Blink");
+        assert_eq!(blink.max_rank, 7);
+        assert!(blink.cast_range.at(1) >= crate::scale::GLOBAL_CAST_RANGE);
+        let blink_cooldowns: Vec<f32> = (1..=7).map(|r| blink.cooldown.at(r)).collect();
+        assert_eq!(blink_cooldowns, [12.0, 10.0, 8.0, 6.0, 4.0, 2.0, 1.0]);
+        let (min, max) = blink
+            .effects_for(AbilityTrigger::OnCast)
+            .find_map(|e| match e.effect {
+                AbilityEffect::Teleport {
+                    min_distance,
+                    max_distance,
+                } => Some((min_distance, max_distance.expect("bounded"))),
+                _ => None,
+            })
+            .expect("a bounded teleport");
+        assert_eq!(min.at(1), 200.0);
+        assert_eq!(max.at(1), 1075.0);
+        assert_eq!(max.at(7), 1525.0);
+
+        let scream = builtin(AbilityId::ScreamOfPain);
+        assert_eq!(scream.max_rank, 7);
+        assert!(scream.mechanics.iter().any(|m| matches!(
+            m,
+            AbilityMechanic::ProjectileToEach {
+                center: AreaCenter::Caster,
+                team: TargetTeam::Enemy,
+                speed: Some(speed),
+            } if *speed == 900.0
+        )));
+        assert_eq!(scream.aoe_radius.at(1), 600.0);
+
+        let wave = builtin(AbilityId::SonicWave);
+        assert_eq!(wave.max_rank, 4, "ultimates have four ranks");
+        assert!(wave.is_ultimate);
+        let wave_cooldowns: Vec<f32> = (1..=4).map(|r| wave.cooldown.at(r)).collect();
+        assert_eq!(wave_cooldowns, [110.0, 95.0, 80.0, 65.0]);
+        let end_radius = wave
+            .mechanics
+            .iter()
+            .find_map(|m| match m {
+                AbilityMechanic::Projectile {
+                    skillshot: true,
+                    end_radius,
+                    ..
+                } => *end_radius,
+                _ => None,
+            })
+            .expect("an expanding skillshot");
+        assert_eq!(wave.aoe_radius.at(1), 100.0);
+        assert_eq!(end_radius.at(1), 450.0);
+        let wave_burn = wave
+            .effects_for(AbilityTrigger::OnProjectileHit)
+            .find_map(|e| match e.effect {
+                AbilityEffect::ApplyStatus {
+                    status:
+                        StatusSpec::Burn {
+                            id,
+                            amount,
+                            tick_interval,
+                            damage_type,
+                        },
+                    duration,
+                } => Some((id, amount, tick_interval, damage_type, duration)),
+                _ => None,
+            })
+            .expect("Sonic Wave burns");
+        assert_eq!(wave_burn.0, "sonic_wave_burn");
+        let totals: Vec<f32> = (1..=4).map(|r| wave_burn.1.at(r) * 14.0).collect();
+        assert_eq!(totals, [322.0, 476.0, 630.0, 784.0]);
+        assert_eq!(wave_burn.2.at(1), 0.1);
+        assert_eq!(wave_burn.3, DamageType::Pure);
+        assert_eq!(wave_burn.4.at(1), 1.4);
+    }
+
+    #[test]
     fn generated_abilities_build_normal_definitions() {
         let slam = builtin(AbilityId::SeismicSlam);
         assert_eq!(slam.target_type, TargetType::NoTarget);
