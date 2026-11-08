@@ -25,7 +25,7 @@ use crate::components::{AbilityId, BoundRadius, CombatStats, Health, HeroAttribu
 use crate::dimensions::{area_contains, bounds_of};
 use crate::displacement::DisplacementEvent;
 use crate::items::ItemId;
-use crate::status::{StatusChange, StatusEffectEvent, StatusEffects, is_untargetable};
+use crate::status::{StatusChange, StatusEffectEvent, StatusEffects, StatusKind, is_untargetable};
 use crate::teleport::TeleportEvent;
 use crate::vitals::{self, HealKind, ResourceDrainEvent, ResourceKind};
 
@@ -74,6 +74,13 @@ pub struct AttackMeta {
     pub crit: bool,
 }
 
+/// Which status a status trigger (`OnStatusApplied` / `OnStatusRemoved`) is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatusMeta {
+    pub id: &'static str,
+    pub kind: StatusKind,
+}
+
 /// Who and where a trigger involved. Mechanics fill this in once so effects never
 /// have to rediscover the entities.
 #[derive(Debug, Clone, PartialEq)]
@@ -102,6 +109,15 @@ pub struct TriggerContext {
     pub attack: Option<AttackMeta>,
     /// How many `Proc` / `Counter` hops produced this context (0 = straight from a mechanic).
     pub depth: u8,
+    /// The size of the occurrence: post-mitigation damage for damage triggers, landed damage
+    /// for `OnAttackHit`, distance for `OnMove`, otherwise 1. Read by the `Accumulate` gate.
+    pub amount: f32,
+    /// Caused by damage or a status change. Effects resolved under a reaction emit
+    /// `reactive` damage, drains and statuses, which never fire damage or status triggers
+    /// again, and `PerformAttack` does nothing. Inherited by derived contexts.
+    pub reaction: bool,
+    /// The status a status trigger is about.
+    pub status: Option<StatusMeta>,
 }
 
 impl TriggerContext {
@@ -130,6 +146,9 @@ impl TriggerContext {
             affected_units: Vec::new(),
             attack: None,
             depth: 0,
+            amount: 1.0,
+            reaction: trigger.is_reaction(),
+            status: None,
         }
     }
 
@@ -160,6 +179,21 @@ impl TriggerContext {
 
     pub fn attack(mut self, attack: AttackMeta) -> Self {
         self.attack = Some(attack);
+        self
+    }
+
+    pub fn amount(mut self, amount: f32) -> Self {
+        self.amount = amount;
+        self
+    }
+
+    pub fn reaction(mut self, reaction: bool) -> Self {
+        self.reaction = reaction;
+        self
+    }
+
+    pub fn status(mut self, status: StatusMeta) -> Self {
+        self.status = Some(status);
         self
     }
 
@@ -419,11 +453,14 @@ impl EffectRunner<'_, '_> {
                     if let Some(amount) =
                         self.scaled_amount(ctx, amount.at(rank), scaling, target, cast_range)
                     {
-                        self.damage.write(if ctx.attack.is_some() {
-                            DamageEvent::attack_bonus(ctx.caster, target, amount, damage_type)
-                        } else {
-                            DamageEvent::spell(ctx.caster, target, amount, damage_type)
-                        });
+                        self.damage.write(
+                            if ctx.attack.is_some() {
+                                DamageEvent::attack_bonus(ctx.caster, target, amount, damage_type)
+                            } else {
+                                DamageEvent::spell(ctx.caster, target, amount, damage_type)
+                            }
+                            .reactive(ctx.reaction),
+                        );
                     }
                 }
             }
@@ -439,7 +476,8 @@ impl EffectRunner<'_, '_> {
                     {
                         self.damage.write(
                             DamageEvent::spell(ctx.caster, target, amount, damage_type)
-                                .drained(transfer_ratio),
+                                .drained(transfer_ratio)
+                                .reactive(ctx.reaction),
                         );
                     }
                 }
@@ -473,6 +511,7 @@ impl EffectRunner<'_, '_> {
                         to_source: (transfer_ratio > 0.0).then_some(transfer_ratio),
                         convert_to: None,
                         from_attack: ctx.attack.is_some(),
+                        reactive: ctx.reaction,
                     });
                 }
             }
@@ -491,6 +530,7 @@ impl EffectRunner<'_, '_> {
                         to_source: None,
                         convert_to,
                         from_attack: ctx.attack.is_some(),
+                        reactive: ctx.reaction,
                     });
                 }
             }
@@ -533,29 +573,31 @@ impl EffectRunner<'_, '_> {
                         let amp = vitals::outgoing_heal_amp(healer_stats, healer_statuses);
                         built.heal_per_sec *= (1.0 + amp).max(0.0);
                     }
-                    self.statuses.write(StatusEffectEvent {
-                        source,
-                        target,
-                        change: StatusChange::Apply(built),
-                    });
+                    built.reactive = ctx.reaction;
+                    self.statuses.write(
+                        StatusEffectEvent::new(source, target, StatusChange::Apply(built))
+                            .reactive(ctx.reaction),
+                    );
                 }
             }
             AbilityEffect::Dispel { kind, strength } => {
                 for target in targets {
-                    self.statuses.write(StatusEffectEvent {
-                        source,
-                        target,
-                        change: StatusChange::Dispel { kind, strength },
-                    });
+                    self.statuses.write(
+                        StatusEffectEvent::new(
+                            source,
+                            target,
+                            StatusChange::Dispel { kind, strength },
+                        )
+                        .reactive(ctx.reaction),
+                    );
                 }
             }
             AbilityEffect::RemoveStatus { id } => {
                 for target in targets {
-                    self.statuses.write(StatusEffectEvent {
-                        source,
-                        target,
-                        change: StatusChange::Remove(id),
-                    });
+                    self.statuses.write(
+                        StatusEffectEvent::new(source, target, StatusChange::Remove(id))
+                            .reactive(ctx.reaction),
+                    );
                 }
             }
             AbilityEffect::Displace {
@@ -591,8 +633,9 @@ impl EffectRunner<'_, '_> {
                 max_targets,
                 exclude_trigger_unit,
             } => {
-                // The one recursion guard: an extra attack never causes another.
-                if ctx.attack.is_some_and(|attack| attack.extra) {
+                // Recursion guards: an extra attack never causes another, and a reaction
+                // (damage- or status-class trigger) never starts attacks.
+                if ctx.reaction || ctx.attack.is_some_and(|attack| attack.extra) {
                     return;
                 }
                 let mut chosen: Vec<(f32, Entity)> = targets
@@ -757,5 +800,41 @@ pub fn apply_mana_restore_events(
         if let Ok(mut mana) = targets.get_mut(event.target) {
             mana.current = (mana.current + event.amount).min(mana.max);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn derived_context_inherits_reaction() {
+        let caster = Entity::from_raw_u32(1).unwrap();
+        let root = TriggerContext::new(
+            AbilityTrigger::OnDamageTaken,
+            EffectSource::Item(ItemId::HeartwoodBand),
+            caster,
+            Team::Radiant,
+            1,
+            Vec3::ZERO,
+            Vec3::ZERO,
+        )
+        .amount(42.0);
+        assert!(root.reaction, "damage taken is a reaction trigger");
+        let derived = root.derived(AbilityTrigger::Custom("on_thorns"));
+        assert!(derived.reaction);
+        assert_eq!(derived.depth, 1);
+        assert_eq!(derived.amount, 42.0, "the occurrence size carries over");
+
+        let attack = TriggerContext::new(
+            AbilityTrigger::OnAttackHit,
+            EffectSource::Item(ItemId::HeartwoodBand),
+            caster,
+            Team::Radiant,
+            1,
+            Vec3::ZERO,
+            Vec3::ZERO,
+        );
+        assert!(!attack.derived(AbilityTrigger::Custom("on_x")).reaction);
     }
 }

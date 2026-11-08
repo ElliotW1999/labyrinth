@@ -150,12 +150,14 @@ pub fn tick_toggle_upkeep(
                     built.undispellable = true;
                     built.dispel_type = DispelType::None;
                     status_events.write(StatusEffectEvent {
+                        reactive: false,
                         source: Some(entity),
                         target: entity,
                         change: StatusChange::Apply(built),
                     });
                 } else if !slot.toggled && present {
                     status_events.write(StatusEffectEvent {
+                        reactive: false,
                         source: Some(entity),
                         target: entity,
                         change: StatusChange::Remove(built.id),
@@ -308,6 +310,7 @@ mod tests {
             step(&mut app, 0.1);
             let on = stats(&app, hero);
             app.world_mut().write_message(StatusEffectEvent {
+                reactive: false,
                 source: None,
                 target: hero,
                 change: StatusChange::Dispel {

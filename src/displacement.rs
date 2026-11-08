@@ -275,6 +275,7 @@ pub fn apply_displacement_events(
         if cyclone {
             motion.bound_status = Some(CYCLONE_STATUS);
             statuses.write(StatusEffectEvent {
+                reactive: false,
                 source: Some(event.caster),
                 target: event.target,
                 change: StatusChange::Apply(StatusEffect::cyclone(duration, hostile)),
@@ -1487,6 +1488,7 @@ mod tests {
         assert!(pos(&app, enemy).y > 0.0);
 
         app.world_mut().write_message(StatusEffectEvent {
+            reactive: false,
             source: Some(caster),
             target: enemy,
             change: StatusChange::Dispel {
@@ -1502,6 +1504,7 @@ mod tests {
         assert!(app.world().get::<ForcedMovement>(enemy).is_some());
 
         app.world_mut().write_message(StatusEffectEvent {
+            reactive: false,
             source: Some(caster),
             target: enemy,
             change: StatusChange::Remove("cyclone"),
@@ -1520,6 +1523,7 @@ mod tests {
         let flyer = spawn_unit(&mut app, Team::Radiant, Vec3::new(500.0, 0.0, 0.0), 30.0);
         step(&mut app);
         app.world_mut().write_message(StatusEffectEvent {
+            reactive: false,
             source: None,
             target: flyer,
             change: crate::status::StatusChange::Apply(crate::status::StatusEffect::flying(1.0)),

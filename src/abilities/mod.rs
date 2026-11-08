@@ -2680,6 +2680,9 @@ mod tests {
                 affected_units: Vec::new(),
                 attack: None,
                 depth: 0,
+                amount: 1.0,
+                reaction: false,
+                status: None,
             }));
         step(&mut app);
         assert!((health(&app, near) - 910.0).abs() < 1e-3);
@@ -2913,6 +2916,7 @@ mod tests {
         step(&mut app);
         step(&mut app);
         app.world_mut().write_message(StatusEffectEvent {
+            reactive: false,
             source: None,
             target: caster,
             change: crate::status::StatusChange::Apply(crate::status::StatusEffect::stunned(2.0)),
@@ -3616,5 +3620,152 @@ mod tests {
             1000.0,
             "nothing was paid"
         );
+    }
+
+    // --- Reactive triggers ---
+
+    fn current_messages<M: Message + Clone>(app: &App) -> Vec<M> {
+        app.world()
+            .resource::<Messages<M>>()
+            .iter_current_update_messages()
+            .cloned()
+            .collect()
+    }
+
+    fn entry(
+        trigger: AbilityTrigger,
+        target: EffectTarget,
+        effect: AbilityEffect,
+    ) -> AbilityEffectEntry {
+        AbilityEffectEntry {
+            trigger,
+            target,
+            effect,
+        }
+    }
+
+    /// A trigger context for the test item, rooted at the caster, aimed at `target`.
+    fn item_ctx(
+        app: &App,
+        caster: Entity,
+        trigger: AbilityTrigger,
+        target: Entity,
+    ) -> TriggerContext {
+        let origin = app.world().get::<Transform>(caster).unwrap().translation;
+        TriggerContext::new(
+            trigger,
+            EffectSource::Item(ItemId::HeartwoodBand),
+            caster,
+            Team::Radiant,
+            1,
+            origin,
+            origin,
+        )
+        .trigger_unit(Some(target))
+    }
+
+    fn fire(app: &mut App, ctx: TriggerContext) {
+        app.world_mut().write_message(AbilityTriggerEvent(ctx));
+    }
+
+    #[test]
+    fn reaction_context_stamps_damage_status_and_drain_events() {
+        let stun = AbilityEffect::ApplyStatus {
+            status: StatusSpec::Stun,
+            duration: RankValue::fixed(1.0),
+        };
+        let burn = AbilityEffect::DrainMana {
+            amount: RankValue::fixed(10.0),
+            burn_ratio: 1.0,
+            damage_type: DamageType::Magical,
+            transfer_ratio: 0.0,
+        };
+        let mut entries = Vec::new();
+        for trigger in [AbilityTrigger::OnDamageTaken, AbilityTrigger::OnAttackHit] {
+            for effect in [fixed_magical_damage(10.0), stun, burn] {
+                entries.push(entry(trigger, EffectTarget::TriggerUnit, effect));
+            }
+        }
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(entries)]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+
+        for (trigger, reactive) in [
+            (AbilityTrigger::OnDamageTaken, true),
+            (AbilityTrigger::OnAttackHit, false),
+        ] {
+            let ctx = item_ctx(&app, caster, trigger, target);
+            assert_eq!(ctx.reaction, reactive);
+            fire(&mut app, ctx);
+            step(&mut app);
+
+            let damage = current_messages::<DamageEvent>(&app);
+            let drains = current_messages::<vitals::ResourceDrainEvent>(&app);
+            let statuses = current_messages::<StatusEffectEvent>(&app);
+            assert!(!damage.is_empty() && !drains.is_empty() && !statuses.is_empty());
+            assert!(damage.iter().all(|e| e.reactive == reactive), "{trigger:?}");
+            assert!(drains.iter().all(|e| e.reactive == reactive), "{trigger:?}");
+            for event in &statuses {
+                assert_eq!(event.reactive, reactive, "{trigger:?}");
+                let crate::status::StatusChange::Apply(built) = &event.change else {
+                    panic!("expected an apply");
+                };
+                assert_eq!(built.reactive, reactive, "the status itself is stamped");
+            }
+        }
+    }
+
+    #[test]
+    fn perform_attack_is_inert_under_reaction() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            entry(
+                AbilityTrigger::OnDamageTaken,
+                EffectTarget::TriggerUnit,
+                perform_attack(0, false),
+            ),
+            entry(
+                AbilityTrigger::OnAttackHit,
+                EffectTarget::TriggerUnit,
+                perform_attack(0, false),
+            ),
+        ])]);
+        let (caster, target) = attack_duel(&mut app);
+
+        let ctx = item_ctx(&app, caster, AbilityTrigger::OnDamageTaken, target);
+        fire(&mut app, ctx);
+        step(&mut app);
+        assert!(
+            extra_attack_events(&app).is_empty(),
+            "a reaction never attacks"
+        );
+
+        let ctx = item_ctx(&app, caster, AbilityTrigger::OnAttackHit, target);
+        fire(&mut app, ctx);
+        step(&mut app);
+        assert_eq!(
+            extra_attack_events(&app).len(),
+            1,
+            "the same effect works outside"
+        );
+    }
+
+    #[test]
+    fn attack_hit_amount_is_the_landed_damage() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([attack_hit_heal_item()]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+
+        write_attack_hit(&mut app, caster, target);
+        step(&mut app);
+
+        let contexts = current_messages::<AbilityTriggerEvent>(&app);
+        assert_eq!(contexts.len(), 1);
+        assert_eq!(contexts[0].0.amount, 10.0);
+        assert!(!contexts[0].0.reaction);
     }
 }

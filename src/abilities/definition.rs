@@ -153,6 +153,13 @@ impl AbilityTrigger {
     pub fn is_attack(self) -> bool {
         matches!(self, Self::OnAttack | Self::OnAttackHit)
     }
+
+    /// Caused by damage or a status change. Contexts rooted in such a trigger are
+    /// reactions: the damage and statuses they produce are `reactive` and never fire
+    /// damage or status triggers again.
+    pub fn is_reaction(self) -> bool {
+        matches!(self, Self::OnDamageTaken | Self::OnKill | Self::OnDeath)
+    }
 }
 
 /// Hero attribute used by [`EffectScaling::CasterAttribute`] and item stat bonuses.

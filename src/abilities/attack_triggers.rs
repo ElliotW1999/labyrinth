@@ -36,16 +36,22 @@ pub(crate) fn attack_triggers(
                 extra: e.extra,
                 crit: false,
             };
-            (AbilityTrigger::OnAttack, e.attacker, e.target, meta)
+            (AbilityTrigger::OnAttack, e.attacker, e.target, meta, 1.0)
         })
         .chain(landed.read().map(|e| {
             let meta = AttackMeta {
                 extra: e.extra,
                 crit: e.crit,
             };
-            (AbilityTrigger::OnAttackHit, e.attacker, e.target, meta)
+            (
+                AbilityTrigger::OnAttackHit,
+                e.attacker,
+                e.target,
+                meta,
+                e.damage,
+            )
         }));
-    for (trigger, attacker, target, meta) in fired {
+    for (trigger, attacker, target, meta, amount) in fired {
         debug_assert!(trigger.is_attack());
         let Ok((owner_tf, team, inventory, loadout)) = owners.get(attacker) else {
             continue;
@@ -65,7 +71,8 @@ pub(crate) fn attack_triggers(
                     point,
                 )
                 .trigger_unit(Some(target))
-                .attack(meta),
+                .attack(meta)
+                .amount(amount),
             ));
         };
 

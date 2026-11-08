@@ -135,6 +135,9 @@ pub struct StatusEffect {
     pub leash: Option<Leash>,
     /// Forced retreat from this entity while feared (`None` if source despawned).
     pub fear_source: Option<Entity>,
+    /// Applied by a reaction or held by a condition: expires and is removed silently (it
+    /// never fires status triggers).
+    pub reactive: bool,
 }
 
 impl StatusEffect {
@@ -180,6 +183,7 @@ impl StatusEffect {
             flying: false,
             leash: None,
             fear_source: None,
+            reactive: false,
         }
     }
 
@@ -609,6 +613,24 @@ pub struct StatusEffectEvent {
     pub source: Option<Entity>,
     pub target: Entity,
     pub change: StatusChange,
+    /// Caused by a reaction or a held condition: the change fires no status triggers.
+    pub reactive: bool,
+}
+
+impl StatusEffectEvent {
+    pub fn new(source: Option<Entity>, target: Entity, change: StatusChange) -> Self {
+        Self {
+            source,
+            target,
+            change,
+            reactive: false,
+        }
+    }
+
+    pub fn reactive(mut self, reactive: bool) -> Self {
+        self.reactive = reactive;
+        self
+    }
 }
 
 pub fn tick_status_effects(
@@ -1021,11 +1043,13 @@ mod tests {
             ))
             .id();
         app.world_mut().write_message(StatusEffectEvent {
+            reactive: false,
             source: None,
             target: victim,
             change: StatusChange::Apply(StatusEffect::stunned(2.0)),
         });
         app.world_mut().write_message(StatusEffectEvent {
+            reactive: false,
             source: None,
             target: victim,
             change: StatusChange::Apply(StatusEffect::hexed(2.0)),
@@ -1035,6 +1059,7 @@ mod tests {
         assert!(st.is_stunned());
         assert!(st.effects.iter().any(|e| e.id == "hex"));
         app.world_mut().write_message(StatusEffectEvent {
+            reactive: false,
             source: None,
             target: victim,
             change: StatusChange::Dispel {
@@ -1047,6 +1072,7 @@ mod tests {
         assert!(!st.is_stunned());
         assert!(st.effects.iter().any(|e| e.id == "hex"));
         app.world_mut().write_message(StatusEffectEvent {
+            reactive: false,
             source: None,
             target: victim,
             change: StatusChange::Dispel {
@@ -1138,6 +1164,7 @@ mod tests {
 
         fn send(app: &mut App, target: Entity, change: StatusChange) {
             app.world_mut().write_message(StatusEffectEvent {
+                reactive: false,
                 source: None,
                 target,
                 change,
@@ -1304,6 +1331,7 @@ mod tests {
 
         fn send(app: &mut App, target: Entity, change: StatusChange) {
             app.world_mut().write_message(StatusEffectEvent {
+                reactive: false,
                 source: None,
                 target,
                 change,
@@ -1471,6 +1499,7 @@ mod tests {
 
         fn send(app: &mut App, target: Entity, change: StatusChange) {
             app.world_mut().write_message(StatusEffectEvent {
+                reactive: false,
                 source: None,
                 target,
                 change,

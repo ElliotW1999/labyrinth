@@ -99,6 +99,9 @@ pub struct DamageEvent {
     pub reflects: bool,
     /// Fraction of health actually removed that heals the source (health transfer).
     pub drain_ratio: f32,
+    /// Caused by a reaction (a damage- or status-class trigger): never fires damage or
+    /// status triggers itself, so reactions cannot ping-pong.
+    pub reactive: bool,
 }
 
 impl DamageEvent {
@@ -116,6 +119,7 @@ impl DamageEvent {
             pierces_shields: false,
             reflects: true,
             drain_ratio: 0.0,
+            reactive: false,
         }
     }
 
@@ -132,6 +136,7 @@ impl DamageEvent {
             pierces_shields: false,
             reflects: true,
             drain_ratio: 0.0,
+            reactive: false,
         }
     }
 
@@ -148,6 +153,7 @@ impl DamageEvent {
             pierces_shields: false,
             reflects: true,
             drain_ratio: 0.0,
+            reactive: false,
         }
     }
 
@@ -169,6 +175,7 @@ impl DamageEvent {
             pierces_shields: false,
             reflects: false,
             drain_ratio: 0.0,
+            reactive: false,
         }
     }
 
@@ -200,6 +207,7 @@ impl DamageEvent {
             pierces_shields: false,
             reflects: true,
             drain_ratio: 0.0,
+            reactive: false,
         }
     }
 
@@ -214,6 +222,12 @@ impl DamageEvent {
     /// Marks the main hit as critical (informational; the amount is already multiplied).
     pub fn with_crit(mut self, crit: bool) -> Self {
         self.crit = crit;
+        self
+    }
+
+    /// Marks the damage as caused by a reaction (see [`DamageEvent::reactive`]).
+    pub fn reactive(mut self, reactive: bool) -> Self {
+        self.reactive = reactive;
         self
     }
 
@@ -458,6 +472,7 @@ pub fn apply_damage_events(
                     pierces_shields: false,
                     reflects: false,
                     drain_ratio: 0.0,
+                    reactive: true,
                 });
             }
         }
