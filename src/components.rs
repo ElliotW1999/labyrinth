@@ -108,6 +108,7 @@ impl Mana {
 }
 
 #[derive(Component, Debug, Clone, Copy)]
+#[require(crate::abilities::effects::TriggerCounters)]
 pub struct CombatStats {
     /// Auto-attack damage (physical).
     pub attack_damage: f32,
@@ -148,6 +149,19 @@ pub struct CombatStats {
     /// Enemies within this radius take cleave_damage_ratio × attack damage.
     pub cleave_radius: f32,
     pub cleave_damage_ratio: f32,
+    /// Chance (0..=1) that a basic attack against this unit misses. Stacks with statuses.
+    pub evasion: f32,
+    /// Chance (0..=1) that an attack which would miss lands anyway. 1.0 is true strike.
+    pub accuracy: f32,
+    /// Enemies within this radius of the struck unit take `splash_damage_ratio` of the
+    /// attack's damage. Zero uses [`crate::scale::ATTACK_SPLASH_RADIUS`].
+    pub splash_radius: f32,
+    pub splash_damage_ratio: f32,
+    /// Part of `attack_range` that came from modifiers; `attack_range - bonus` is the base
+    /// range, which decides melee versus ranged.
+    pub attack_range_bonus: f32,
+    /// Added to the attack projectile speed (units / second).
+    pub attack_projectile_speed_bonus: f32,
     /// Fraction of basic-attack damage dealt that heals the attacker.
     pub lifesteal: f32,
     /// Fraction of spell damage dealt that heals the caster.
@@ -201,6 +215,12 @@ impl CombatStats {
             damage_reflect: 0.0,
             cleave_radius: 0.0,
             cleave_damage_ratio: 0.0,
+            evasion: 0.0,
+            accuracy: 0.0,
+            splash_radius: 0.0,
+            splash_damage_ratio: 0.0,
+            attack_range_bonus: 0.0,
+            attack_projectile_speed_bonus: 0.0,
             lifesteal: 0.0,
             spell_lifesteal: 0.0,
             heal_amp: 0.0,
@@ -209,6 +229,17 @@ impl CombatStats {
         };
         stats.recompute_attack_speed(0.0);
         stats
+    }
+
+    /// Attack range before range modifiers (items, statuses).
+    pub fn base_attack_range(&self) -> f32 {
+        self.attack_range - self.attack_range_bonus
+    }
+
+    /// Melee units cleave and swing a slash; ranged ones fire a projectile. Decided from the
+    /// base range so a range bonus never turns a melee unit into a ranged one.
+    pub fn is_melee(&self) -> bool {
+        crate::scale::is_melee_attack_range(self.base_attack_range())
     }
 
     /// `(base + agi + flat) × (1 + mult)`, clamped to 20..=700.
@@ -609,8 +640,12 @@ impl AbilityId {
         matches!(
             self,
             // <hero_generator:ability_ultimates>
-            AbilityId::Nova | AbilityId::Execute | AbilityId::Meteor | AbilityId::Aegis | AbilityId::Ritual | AbilityId::Cataclysm
- // </hero_generator:ability_ultimates>
+            AbilityId::Nova
+                | AbilityId::Execute
+                | AbilityId::Meteor
+                | AbilityId::Aegis
+                | AbilityId::Ritual
+                | AbilityId::Cataclysm // </hero_generator:ability_ultimates>
         )
     }
 

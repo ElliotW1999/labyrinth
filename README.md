@@ -194,6 +194,10 @@ IssueCommand (input / minimap / network host)
 | Heal reduction | Debuff: `heal_reduction` fraction of healing received is negated; the strongest one applies, they do not stack |
 | Heal block | Debuff: prevents all healing (direct, over time, leech, regen, conversion) |
 | Mana shield | Buff: diverts `absorb` of post-mitigation damage to mana at `damage_per_mana`; the `ShieldPool` absorbs first; works with `while_toggled`; absorbs nothing at 0 mana |
+| Blind | Debuff on the **attacker**: `blind_miss_chance` is rolled on the shared `CombatRng` in the attack-hit stage (blinding a unit makes *its* attacks miss; it does not protect it) |
+| Evasion | Buff: `StatusSpec::Evasion` / `CombatStats::evasion`; chance that attacks against the holder miss. Sources stack as `1 - prod(1 - e)`; basic-dispellable |
+| Accuracy / True strike | Buff: `StatusSpec::Accuracy` / `TrueStrike` / `CombatStats::accuracy`; chance that the holder's attacks land despite blind or evasion. True strike is accuracy 1.0 and ignores both |
+| Attack range | `Modifier.attack_range` / `PassiveStat::AttackRange`: flat bonus to `attack_range`, also tracked in `attack_range_bonus`, so melee units stay melee (`CombatStats::is_melee`) |
 | Resource modifier | Timed regen / max / lifesteal / heal amp / cost modifier (`StatusSpec::ResourceModifier`); summed when read, never stored into stats (timed max health / mana is reconciled by `vitals::sync_status_resource_caps`) |
 
 Walking speed never drops below `scale::MIN_MOVE_SPEED` (100) however many slows stack; there is no upper cap, and units with a base speed of zero stay stationary.
@@ -207,10 +211,12 @@ Walking speed never drops below `scale::MIN_MOVE_SPEED` (100) however many slows
 | Outgoing amp | `CombatStats::outgoing_physical_amp` / `outgoing_spell_amp` on `DamageEvent` resolution |
 | Incoming amp | `CombatStats::incoming_damage_amp` after mitigation |
 | Spell amp | Item passive `PassiveStat::SpellAmp` → `outgoing_spell_amp` |
-| Crit | `crit_chance` / `crit_multiplier`; basic attacks set `DamageEvent::can_crit` |
+| Crit | `crit_chance` / `crit_multiplier`, rolled **once per landed attack** in `basic_attack::resolve_basic_attack_impacts` (one `CombatRng` draw, after the hit roll); the main hit is multiplied there and `DamageEvent::crit` is informational. Crit never applies to bonus damage, DoTs, cleave or splash |
 | Block | Flat `CombatStats::damage_block` per hit |
 | Shield / barrier | `ShieldPool` consumed in `resolve_incoming_damage` (Barrier ability: debuff immunity + armor + shield) |
-| Cleave | `cleave_radius` / `cleave_damage_ratio` on basic attack impact |
+| Cleave | Melee only: `cleave_damage_ratio` x the post-crit main hit to enemies around the attacker (`cleave_radius`, default `scale::ATTACK_CLEAVE_RADIUS` = 300); `DamageKind::Cleave` |
+| Splash (attack) | `splash_damage_ratio` x the post-crit main hit to enemies around the struck unit (`splash_radius`, default `scale::ATTACK_SPLASH_RADIUS` = 250); any attack; `DamageKind::Splash`. Secondary hits never crit, roll to hit, leech or fire triggers |
+| Attack bonus damage | `Damage` / mana-burn effects under `on_attack` / `on_attack_hit` become `DamageKind::AttackBonus`: no spell amp, no block, leeched like a basic attack, reflectable |
 | Chain | Bolt `bolt_chain` custom effect → `emit_chain_damage` |
 | DoT | Status `damage_per_sec` ticks in `tick_status_effects` |
 | Reflection | `damage_reflect` fraction of dealt damage returned to attacker |
@@ -228,13 +234,13 @@ Every health increase goes through `vitals::apply_heal`; `combat::apply_damage_e
 | Health regeneration | `Health::regen_per_sec` + timed `ResourceStat::HealthRegen`; `regen_health` uses `HealKind::Regen` (ignores amps, respects reduction and block) |
 | Healing amplification | `CombatStats::heal_amp` (provided) / `heal_received_amp` (received) plus timed modifiers; one additive bucket `1 + healer + target` |
 | Healing reduction / prevention | Heal reduction (strongest, multiplicative after amp) and heal block (factor 0, wins over amp) statuses |
-| Lifesteal | `CombatStats::lifesteal` on `DamageKind::BasicAttack` hits: fraction of health actually removed (no overkill, nothing a shield or mana shield absorbed) |
+| Lifesteal | `CombatStats::lifesteal` on `DamageKind::BasicAttack` and `DamageKind::AttackBonus` hits: fraction of health actually removed (no overkill, nothing a shield or mana shield absorbed) |
 | Spell lifesteal | `CombatStats::spell_lifesteal` on `DamageEvent::is_spell` hits |
 | Health transfer | `AbilityEffect::DrainHealth` → `DamageEvent::spell(..).drained(ratio)`: damage that heals the caster for `ratio ×` health removed |
-| Leech rules | Applied after the damage batch in the same frame via `HealKind::Leech`; DoT, reflected damage and `DamageKind::Cleave` never leech; a source killed in the same batch gets nothing |
+| Leech rules | Applied after the damage batch in the same frame via `HealKind::Leech`; DoT, reflected damage, `DamageKind::Cleave` and `DamageKind::Splash` never leech; a source killed in the same batch gets nothing |
 | Mana restoration | `AbilityEffect::RestoreMana` (generator `heal,mana`) |
 | Mana regeneration | `Mana::regen_per_sec` + timed `ResourceStat::ManaRegen`; skips dead units |
-| Mana burn / drain | `AbilityEffect::DrainMana` → `ResourceDrainEvent` → `vitals::apply_resource_drain_events` (burn deals spell damage; drain gives mana to the caster, clamped to max). Blocked only by invulnerability, not debuff immunity |
+| Mana burn / drain | `AbilityEffect::DrainMana` → `ResourceDrainEvent` → `vitals::apply_resource_drain_events` (burn deals spell damage, or attack bonus damage when `ResourceDrainEvent::from_attack` is set by an attack trigger; drain gives mana to the caster, clamped to max). Blocked only by invulnerability, not debuff immunity |
 | Health sacrifice | `AbilityEffect::SpendResource { Health }`: non-lethal (floor 1 HP), bypasses shields, reflection and leech |
 | Resource conversion | `SpendResource { convert_to }`: health → mana, or mana → health (through the central heal path) |
 | Mana shield | `StatusSpec::ManaShield` → `combat::absorb_with_mana_shield` |
@@ -276,7 +282,46 @@ spell projectile → ProjectileHitEvent { primary, splashed } → OnProjectileHi
 - **Activation** (`actions/`) is shared by abilities and active items: target types (no target, self, unit, point, area, direction), team rules (enemy / ally / both / self), range, cast point, channel, mana cost, cooldown, and charges. Out-of-range activations walk into range and re-request. Mana and cooldown are paid when the action fires. `ActionSources` asks the ability layer (learned / castable, rank) or the item layer (the inventory slot holds that active, per-copy cooldown and charges). Items carry an instance id, so two copies keep separate state and an in-flight use follows its copy if it changes slots
 - **Casting** (`abilities/casting.rs`) is the ability layer on top: learned / passive gating, the `ActionSpec` at the slot's rank, toggle state, and turning fired actions into `AbilityCastEvent`s and channel ends into `OnChannelEnd` triggers (`action_channel_end_triggers`, for both abilities and items). Abilities (`DisableRule::SilenceOrStun`, via `can_cast()`) are blocked and interrupted by silence, stun or sleep (hex counts as silence); mute alone does not stop them. Items (`DisableRule::MuteOrStun`) are blocked and interrupted by mute or stun; silence and sleep do not stop them
 - **Passive abilities** (`abilities/passive.rs`): `ability_type=passive` with `passive` effect rows (`stat_modifier` → `AbilityEffect::PassiveStat`) apply on loadout init and rank-up, mirroring item passives. **Toggle upkeep:** `ability_type=toggle` flips `AbilityState.toggled` on each cast (cooldown starts each flip); a toggle drains `toggle_mana_per_sec` while on and turns off at 0 mana (no cooldown). Its `while_toggled` `stat_modifier` rows are ordinary permanent, undispellable statuses applied and removed through `StatusEffectEvent` by `tick_toggle_upkeep`; ranking up while on keeps the old values until the toggle is cycled
+- **Derived triggers:** `AbilityEffect::Proc { chance, then }` and `Counter { every, then }` re-fire the same context under the custom trigger `then`. `resolve_ability_triggers` drains a FIFO queue, so derived contexts resolve in the same call; each carries `depth` and gates stop at `MAX_TRIGGER_DEPTH` (2). `Proc` makes one `CombatRng` draw per execution (one roll covers every entry under `then`); `Counter` state lives in `TriggerCounters`, per source and `then`
+- **Attack triggers:** `abilities/attack_triggers.rs` fires `OnAttack` (every release) and `OnAttackHit` (landed attacks only) for every distinct item and every learned ability (rank above 0), with `TriggerContext::attack = Some(AttackMeta { extra, crit })`
 - **Autocast:** not implemented (no CSV column or AI heuristic yet)
+
+### Attack modifiers
+
+```text
+request_basic_attacks -> windup -> tick_attack_swings -> BasicAttackReleaseEvent { extra: false } (sets cooldown)
+release_extra_attacks (ExtraAttackEvent)  -> BasicAttackReleaseEvent { extra: true }  (no cooldown / swing / AttackTarget change)
+resolve_attack_releases (melee: impact now, extra skips the range check | ranged: BasicAttackInFlight)
+resolve_basic_attack_impacts = the attack-hit stage:
+  validate -> hit roll -> crit roll -> main DamageEvent -> BasicAttackLandedEvent -> cleave / splash
+attack_triggers (OnAttack / OnAttackHit) -> resolve_ability_triggers (Proc / Counter / PerformAttack)
+```
+
+Rules (binding):
+
+- **Order:** base damage (snapshotted at windup; extra attacks use `attack_damage x ratio`), crit on the main hit only, cleave / splash = ratio x post-crit main hit, then `apply_damage_events` (amp, shield, block (main hit only), armor, incoming amp, mana shield, HP), then leech from health actually removed
+- **Hit roll:** `miss = (1 - (1 - blind)(1 - evasion)) x (1 - accuracy)`; blind from the attacker, evasion from the target, accuracy from the attacker. One `CombatRng` draw; a miss stops everything (no damage, no landed event, no secondary hits, no `OnAttackHit`). An attacker that despawned mid-flight has no blind, accuracy or crit and does not cleave
+- **Stacking:** item / passive stats are additive and undo exactly; chances combine as `1 - prod(1 - c)`; `crit_multiplier` passive is a bonus on top of 2.0
+- **RNG:** only `CombatRng`, in fixed order (hit, crit per impact in message order; one draw per `Proc` in queue order); `CombatRng::roll` draws nothing at chance <= 0 or >= 1
+- **Recursion guards:** `PerformAttack` does nothing under a trigger caused by an extra attack (extra attacks still fire `OnAttack`, `OnAttackHit`, procs and counters); derived triggers stop at depth 2; cleave, splash, DoT, reflection and burn never send attack events; one trigger per distinct item and per learned ability per attack. Extra attacks start the frame after the effect that requested them
+
+Recipes (CSV rows, `trigger,target,effect_type,effect_id,value,...`):
+
+| Mechanic | Rows |
+| --- | --- |
+| Crit | passive `crit_chance` (fraction) and `crit_multiplier` (bonus on 2.0) |
+| Bash | `on_attack_hit,attacker,proc,on_bash,25` + `on_bash,trigger_unit,apply_status,stun,,,1.2` + `on_bash,trigger_unit,damage,,40,physical` |
+| Orb / bonus damage | `on_attack_hit,trigger_unit,damage,,40,magical` (attack bonus damage) plus any status (poison = `burn`, slow, `armor` timed modifier) |
+| Mana break | `on_attack_hit,trigger_unit,resource,mana_burn,40,physical,,,,0.8` |
+| Cleave / splash | passive `cleave` / `splash` ratios |
+| Evasion / accuracy / true strike | passive `evasion` / `accuracy`, or timed statuses `evasion`, `accuracy`, `true_strike` |
+| Instant attack | `on_cast,cast_target,perform_attack,,100` |
+| Double attack | `on_attack_hit,attacker,proc,on_double,25` + `on_double,trigger_unit,perform_attack,,100` |
+| Multi-target attack | `on_attack,units_in_radius,perform_attack,exclude_trigger_unit,70,,,600,2` (value = damage %, radius, amount = max targets) |
+| Attack counter | `on_attack_hit,attacker,counter,on_fourth,4` + `on_fourth,...` rows |
+| Range / projectile speed | passive or timed `attack_range`; passive `attack_projectile_speed` |
+
+Samples: `basher`, `desolator`, `crit_blade`, `split_bow`, `mana_breaker`, `thunder_axe` in `data/examples/`. Out of scope: orb uniqueness, autocast orbs, bounce / pierce attack projectiles.
 
 ### Activation & targeting mechanics (reference)
 
@@ -416,7 +461,7 @@ frost_hammer,Frost Hammer,weapon,2800,1400,3,rare,false,,false,,A heavy weapon i
 
 - `item_type` component/weapon/armor/accessory/consumable/utility/recipe, `rarity` common/uncommon/rare/epic/legendary; optional extras `short_label`, `cooldown`, `components` (`;`-separated ids), `color_r/g/b`
 - Optional activation columns on items with `on_use` or a channel trigger (blank = instant no-target use): `target_type` (`unit`, `point`, `direction`, `no_target`, `self`), `target_team` (`enemy`, `ally`, `both`, `self`), `cast_range`, `cast_time`, `channel_time`, `mana_cost`, `projectile_type`, `projectile_speed` (`cooldown` remains on the item row). Unit targets require `target_team`. Point, unit, and direction targets require `cast_range`. Teleport items must be `point` or `direction` so the destination is the cast aim. Item `projectile_*` fields are reserved — the runtime only emits ability projectiles today
-- Effects use the ability effect schema with item triggers `passive` (must be `stat_modifier`: `max_health`, `health_regen`, `max_mana`, `mana_regen`, `attack_damage`, `attack_speed`, `armor`, `magic_resist`, `move_speed`, `strength`, `agility`, `intelligence`, `spell_amp`, `outgoing_physical_amp`, `incoming_damage_amp`, `damage_block`, `damage_reflect`, `lifesteal`, `spell_lifesteal`, `heal_amp`, `heal_received_amp`, `mana_cost_amp`; `health` and `mana` are aliases of `max_health` and `max_mana`), `on_use`, `on_unit_contact` / `on_movement_end` (after a dash or charge from `on_use`), `on_attack`, `on_attack_hit`, `on_channel_end` / `on_channel_interrupted` (channelled actives only), `on_damage_taken`, `on_kill`, `on_death` and targets `owner`, `cast_target` (unit and self actives), `trigger_unit`, `attacker`, `affected_units`, `units_in_radius`
+- Effects use the ability effect schema with item triggers `passive` (must be `stat_modifier`: `max_health`, `health_regen`, `max_mana`, `mana_regen`, `attack_damage`, `attack_speed`, `armor`, `magic_resist`, `move_speed`, `strength`, `agility`, `intelligence`, `spell_amp`, `outgoing_physical_amp`, `incoming_damage_amp`, `damage_block`, `damage_reflect`, `lifesteal`, `spell_lifesteal`, `heal_amp`, `heal_received_amp`, `mana_cost_amp`, `crit_chance`, `crit_multiplier`, `evasion`, `accuracy`, `cleave`, `splash`, `attack_range`, `attack_projectile_speed`; `health` and `mana` are aliases of `max_health` and `max_mana`), `on_use`, `on_unit_contact` / `on_movement_end` (after a dash or charge from `on_use`), `on_attack`, `on_attack_hit` (abilities accept these too), `on_channel_end` / `on_channel_interrupted` (channelled actives only), custom `on_<name>` triggers fed by `proc` / `counter` rows (a custom trigger nothing fires warns). New effect types: `proc` (`effect_id` = custom trigger, `value` = chance % in (0,100], owner targets), `counter` (`value` = integer >= 2), `perform_attack` (`value` = damage % default 100, `amount` = max targets, `effect_id` blank or `exclude_trigger_unit`); new statuses `evasion`, `accuracy`, `true_strike`; timed stat `attack_range`, `on_damage_taken`, `on_kill`, `on_death` and targets `owner`, `cast_target` (unit and self actives), `trigger_unit`, `attacker`, `affected_units`, `units_in_radius`
 - Consumables spend a charge (or one of the stack) when the use fires, and disappear when empty. A rejected activation spends nothing. Item charges never regenerate, so a `charge_restore_time` on an item is an error. `scaling_type=distance` is also rejected on items (they have no rank-scaled cast range); every other scaling works
 
 ### Teleport

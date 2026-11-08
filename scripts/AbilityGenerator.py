@@ -47,7 +47,9 @@ from generator_common import (  # noqa: E402
     check_id,
     effect_to_rust,
     f32,
+    find_emitted_custom_triggers,
     find_registered_custom_effects,
+    warn_unreachable_custom_triggers,
     parse_activation_spec,
     parse_effect_rows,
     parse_enum,
@@ -258,6 +260,9 @@ def effect_context(a: Ability) -> EffectContext:
     ctx.invalid_combo[("on_cast", "affected_units")] = "on_cast has no affected units; use units_in_radius"
     ctx.invalid_combo[("on_unit_contact", "affected_units")] = "on_unit_contact reports one unit at a time; use trigger_unit"
     ctx.invalid_combo[("on_impact", "trigger_unit")] = "on_impact fires when the projectile hit no unit; use affected_units or units_in_radius"
+    for trigger in ("on_attack", "on_attack_hit"):
+        ctx.invalid_combo[(trigger, "cast_target")] = f"{trigger} has no cast target; use trigger_unit"
+        ctx.invalid_combo[(trigger, "affected_units")] = f"{trigger} has no affected units; use units_in_radius"
     for trigger in ("on_channel_tick", "on_channel_end", "on_channel_interrupted"):
         ctx.invalid_combo[(trigger, "trigger_unit")] = f"{trigger} has no trigger unit"
         ctx.invalid_combo[(trigger, "affected_units")] = f"{trigger} has no affected units"
@@ -413,6 +418,7 @@ def main() -> int:
 def load(abilities_csv: Path, effects_csv: Path, *, repo_root: Path | None = None) -> tuple[list[Ability], Report]:
     report = Report()
     registered_custom = find_registered_custom_effects(repo_root) if repo_root else None
+    emitted_triggers = find_emitted_custom_triggers(repo_root) if repo_root else None
     ability_rows = read_csv(abilities_csv, ABILITY_COLUMNS, report, legacy_hint="Ability_name")
     effect_rows = read_csv(effects_csv, ("ability_id", *EFFECT_COLUMNS), report)
 
@@ -446,6 +452,8 @@ def load(abilities_csv: Path, effects_csv: Path, *, repo_root: Path | None = Non
             continue
         ctx = effect_context(ability)
         ctx.registered_custom = registered_custom
+        ctx.owner_triggers = {e.trigger for e in by_owner.get(ability.id, [])}
+        warn_unreachable_custom_triggers(by_owner.get(ability.id, []), emitted_triggers, report)
         for effect in by_owner.get(ability.id, []):
             rendered = effect_to_rust(effect, ctx, report)
             if rendered:

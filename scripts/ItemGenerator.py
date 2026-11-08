@@ -54,7 +54,9 @@ from generator_common import (  # noqa: E402
     check_id,
     effect_to_rust,
     f32,
+    find_emitted_custom_triggers,
     find_registered_custom_effects,
+    warn_unreachable_custom_triggers,
     parse_bool,
     parse_activation_spec,
     parse_effect_rows,
@@ -416,6 +418,7 @@ def patch_items_rs(items_rs: str, items: list[Item]) -> str:
 def load(items_csv: Path, effects_csv: Path, existing_ids: set[str], *, repo_root: Path | None = None) -> tuple[list[Item], Report]:
     report = Report()
     registered_custom = find_registered_custom_effects(repo_root) if repo_root else None
+    emitted_triggers = find_emitted_custom_triggers(repo_root) if repo_root else None
     item_rows = read_csv(items_csv, ITEM_COLUMNS, report, legacy_hint="Item_name")
     effect_rows = read_csv(effects_csv, ("item_id", *EFFECT_COLUMNS), report)
 
@@ -456,6 +459,8 @@ def load(items_csv: Path, effects_csv: Path, existing_ids: set[str], *, repo_roo
                 report.error(row.file, row.line, "components", comp, "no item with this id (in the CSV or already generated)")
         ctx = effect_context(item)
         ctx.registered_custom = registered_custom
+        ctx.owner_triggers = {e.trigger for e in effects}
+        warn_unreachable_custom_triggers(effects, emitted_triggers, report)
         for effect in effects:
             if effect.trigger == "passive" and effect.effect_type != "stat_modifier":
                 report.error(effect.row.file, effect.row.line, "effect_type", effect.effect_type, "passive item effects must be stat_modifier (use on_use / on_attack_hit for the rest)")

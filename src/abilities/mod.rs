@@ -15,6 +15,7 @@
 //! Items resolve their effect entries through the same trigger pipeline
 //! (`EffectSource::Item`).
 
+pub mod attack_triggers;
 pub mod casting;
 pub mod catalog;
 pub mod custom;
@@ -100,7 +101,7 @@ impl Plugin for AbilitiesPlugin {
                     execute_ability_casts,
                     action_channel_end_triggers,
                     projectile_hit_triggers,
-                    crate::items::item_attack_triggers,
+                    attack_triggers::attack_triggers,
                     // Before trigger resolution, so contact / end triggers fire this frame.
                     (tick_forced_movement, settle_grounded_units).chain(),
                     resolve_ability_triggers,
@@ -630,6 +631,7 @@ mod tests {
         app.init_resource::<Time>()
             .init_resource::<SharedAssets>()
             .init_resource::<AbilityDefinitions>()
+            .init_resource::<crate::combat::CombatRng>()
             .init_resource::<CustomAbilityBehaviors>()
             .init_resource::<CustomAbilityEffects>()
             .add_message::<ActivationRequest>()
@@ -651,6 +653,8 @@ mod tests {
             .add_message::<ProjectileHitEvent>()
             .add_message::<crate::basic_attack::BasicAttackReleaseEvent>()
             .add_message::<crate::basic_attack::BasicAttackImpactEvent>()
+            .add_message::<crate::basic_attack::BasicAttackLandedEvent>()
+            .add_message::<crate::basic_attack::ExtraAttackEvent>()
             .add_systems(
                 Update,
                 (
@@ -665,7 +669,7 @@ mod tests {
                     execute_ability_casts,
                     action_channel_end_triggers,
                     projectile_hit_triggers,
-                    crate::items::item_attack_triggers,
+                    attack_triggers::attack_triggers,
                     (tick_forced_movement, settle_grounded_units).chain(),
                     resolve_ability_triggers,
                     apply_heal_events,
@@ -909,11 +913,31 @@ mod tests {
 
     fn write_attack_hit(app: &mut App, attacker: Entity, target: Entity) {
         app.world_mut()
-            .write_message(crate::basic_attack::BasicAttackImpactEvent {
+            .write_message(crate::basic_attack::BasicAttackLandedEvent {
                 attacker,
                 attacker_team: Team::Radiant,
                 target,
                 damage: 10.0,
+                crit: false,
+                extra: false,
+            });
+    }
+
+    /// An item whose only content is the given effect entries (see [`attack_hit_heal_item`]).
+    fn item_with_effects(entries: Vec<AbilityEffectEntry>) -> ItemDefinition {
+        ItemDefinition {
+            effects: Box::leak(entries.into_boxed_slice()),
+            ..attack_hit_heal_item()
+        }
+    }
+
+    fn write_attack_release(app: &mut App, attacker: Entity, target: Entity) {
+        app.world_mut()
+            .write_message(crate::basic_attack::BasicAttackReleaseEvent {
+                attacker,
+                target,
+                damage: 10.0,
+                extra: false,
             });
     }
 
@@ -1161,6 +1185,626 @@ mod tests {
         step(&mut app);
 
         assert_eq!(health(&app, caster), 550.0);
+    }
+
+    #[test]
+    fn missed_attack_fires_on_attack_but_not_on_attack_hit() {
+        let mut app = test_app();
+        let heal = |trigger, amount| AbilityEffectEntry {
+            trigger,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::Heal {
+                amount: RankValue::fixed(amount),
+                scaling: EffectScaling::None,
+            },
+        };
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            heal(AbilityTrigger::OnAttack, 10.0),
+            heal(AbilityTrigger::OnAttackHit, 50.0),
+        ])]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 500.0;
+
+        // A missed attack releases but never lands.
+        write_attack_release(&mut app, caster, target);
+        step(&mut app);
+        assert_eq!(health(&app, caster), 510.0);
+
+        write_attack_release(&mut app, caster, target);
+        write_attack_hit(&mut app, caster, target);
+        step(&mut app);
+        assert_eq!(health(&app, caster), 570.0, "release 10 + landed 50");
+    }
+
+    #[test]
+    fn on_attack_hit_damage_is_attack_bonus() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![AbilityEffectEntry {
+            trigger: AbilityTrigger::OnAttackHit,
+            target: EffectTarget::TriggerUnit,
+            effect: fixed_magical_damage(100.0),
+        }])]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        {
+            let mut stats = app.world_mut().get_mut::<CombatStats>(caster).unwrap();
+            stats.outgoing_spell_amp = 1.0;
+            stats.spell_lifesteal = 1.0;
+            stats.lifesteal = 0.5;
+        }
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 500.0;
+
+        write_attack_hit(&mut app, caster, target);
+        step(&mut app);
+
+        assert_eq!(health(&app, target), 900.0, "no spell amp");
+        assert_eq!(
+            health(&app, caster),
+            550.0,
+            "lifesteal, not spell lifesteal"
+        );
+    }
+
+    #[test]
+    fn mana_break_burns_as_attack_bonus() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![AbilityEffectEntry {
+            trigger: AbilityTrigger::OnAttackHit,
+            target: EffectTarget::TriggerUnit,
+            effect: AbilityEffect::DrainMana {
+                amount: RankValue::fixed(50.0),
+                burn_ratio: 1.0,
+                damage_type: DamageType::Magical,
+                transfer_ratio: 0.0,
+            },
+        }])]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        app.world_mut()
+            .get_mut::<CombatStats>(caster)
+            .unwrap()
+            .outgoing_spell_amp = 1.0;
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        app.world_mut()
+            .entity_mut(target)
+            .insert(Mana::new(200.0, 0.0));
+
+        write_attack_hit(&mut app, caster, target);
+        step(&mut app);
+
+        assert_eq!(app.world().get::<Mana>(target).unwrap().current, 150.0);
+        assert_eq!(
+            health(&app, target),
+            950.0,
+            "burn is attack damage: no spell amp"
+        );
+    }
+
+    #[test]
+    fn ability_on_attack_hit_needs_a_learned_rank() {
+        let mut app = test_app();
+        app.world_mut().resource_mut::<AbilityDefinitions>().insert(
+            AbilityDefinition::new(KIT[0]).on(
+                AbilityTrigger::OnAttackHit,
+                EffectTarget::Caster,
+                AbilityEffect::Heal {
+                    amount: RankValue::fixed(50.0),
+                    scaling: EffectScaling::None,
+                },
+            ),
+        );
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 500.0;
+
+        app.world_mut()
+            .get_mut::<AbilityLoadout>(caster)
+            .unwrap()
+            .slots[0]
+            .rank = 0;
+        write_attack_hit(&mut app, caster, target);
+        step(&mut app);
+        assert_eq!(
+            health(&app, caster),
+            500.0,
+            "unlearned abilities never trigger"
+        );
+
+        app.world_mut()
+            .get_mut::<AbilityLoadout>(caster)
+            .unwrap()
+            .slots[0]
+            .rank = 1;
+        write_attack_hit(&mut app, caster, target);
+        step(&mut app);
+        assert_eq!(health(&app, caster), 550.0);
+
+        let ctx = app
+            .world()
+            .resource::<Messages<AbilityTriggerEvent>>()
+            .iter_current_update_messages()
+            .next()
+            .unwrap()
+            .0
+            .clone();
+        assert_eq!(ctx.source, EffectSource::Ability(KIT[0]));
+        assert_eq!(ctx.rank, 1);
+        assert_eq!(
+            ctx.attack,
+            Some(effects::AttackMeta {
+                extra: false,
+                crit: false
+            })
+        );
+    }
+
+    fn heal_entry(trigger: AbilityTrigger, amount: f32) -> AbilityEffectEntry {
+        AbilityEffectEntry {
+            trigger,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::Heal {
+                amount: RankValue::fixed(amount),
+                scaling: EffectScaling::None,
+            },
+        }
+    }
+
+    fn proc_entry(chance: f32, then: &'static str) -> AbilityEffectEntry {
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::OnAttackHit,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::Proc {
+                chance: RankValue::fixed(chance),
+                then: AbilityTrigger::Custom(then),
+            },
+        }
+    }
+
+    fn counter_entry(every: u32, then: &'static str) -> AbilityEffectEntry {
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::OnAttackHit,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::Counter {
+                every,
+                then: AbilityTrigger::Custom(then),
+            },
+        }
+    }
+
+    /// Land `hits` attacks, one per frame.
+    fn land_hits(app: &mut App, attacker: Entity, target: Entity, hits: usize) {
+        for _ in 0..hits {
+            write_attack_hit(app, attacker, target);
+            step(app);
+        }
+    }
+
+    fn attack_duel(app: &mut App) -> (Entity, Entity) {
+        let caster = spawn_caster_with_inventory(app, KIT);
+        give_item(app, caster, ItemId::HeartwoodBand);
+        let target = spawn_unit(app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 100.0;
+        (caster, target)
+    }
+
+    #[test]
+    fn proc_chance_one_always_and_zero_never() {
+        for (chance, healed) in [(1.0_f32, 50.0_f32), (0.0, 0.0)] {
+            let mut app = test_app();
+            let _defs = install_test_item_definitions([item_with_effects(vec![
+                proc_entry(chance, "on_bash"),
+                heal_entry(AbilityTrigger::Custom("on_bash"), 1.0),
+            ])]);
+            let (caster, target) = attack_duel(&mut app);
+            app.world_mut().get_mut::<Health>(caster).unwrap().current = 1.0;
+            land_hits(&mut app, caster, target, 50);
+            assert_eq!(health(&app, caster), 1.0 + healed, "chance {chance}");
+        }
+    }
+
+    #[test]
+    fn proc_rolls_once_for_all_derived_entries() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<crate::combat::CombatRng>()
+            .seed(99);
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            proc_entry(0.5, "on_bash"),
+            AbilityEffectEntry {
+                trigger: AbilityTrigger::Custom("on_bash"),
+                target: EffectTarget::TriggerUnit,
+                effect: fixed_magical_damage(10.0),
+            },
+            heal_entry(AbilityTrigger::Custom("on_bash"), 10.0),
+        ])]);
+        let (caster, target) = attack_duel(&mut app);
+        let (mut procs, mut dry) = (0, 0);
+        for _ in 0..40 {
+            app.world_mut().get_mut::<Health>(caster).unwrap().current = 100.0;
+            app.world_mut().get_mut::<Health>(target).unwrap().current = 1000.0;
+            land_hits(&mut app, caster, target, 1);
+            let damaged = health(&app, target) < 1000.0;
+            let healed = health(&app, caster) > 100.0;
+            assert_eq!(damaged, healed, "one roll decides every derived entry");
+            if damaged {
+                procs += 1;
+            } else {
+                dry += 1;
+            }
+        }
+        assert!(procs > 0 && dry > 0, "a 50% proc both fires and misses");
+    }
+
+    #[test]
+    fn counter_fires_every_nth_landed_attack() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            counter_entry(3, "on_third"),
+            heal_entry(AbilityTrigger::Custom("on_third"), 50.0),
+        ])]);
+        let (caster, target) = attack_duel(&mut app);
+        land_hits(&mut app, caster, target, 2);
+        assert_eq!(health(&app, caster), 100.0);
+        land_hits(&mut app, caster, target, 1);
+        assert_eq!(health(&app, caster), 150.0, "the third landed attack");
+        land_hits(&mut app, caster, target, 3);
+        assert_eq!(health(&app, caster), 200.0, "and the sixth");
+    }
+
+    #[test]
+    fn counters_are_per_source() {
+        let mut app = test_app();
+        let every_two = item_with_effects(vec![
+            counter_entry(2, "on_second"),
+            heal_entry(AbilityTrigger::Custom("on_second"), 10.0),
+        ]);
+        let every_three = ItemDefinition {
+            id: ItemId::SparkPendant,
+            ..item_with_effects(vec![
+                counter_entry(3, "on_third"),
+                heal_entry(AbilityTrigger::Custom("on_third"), 100.0),
+            ])
+        };
+        let _defs = install_test_item_definitions([every_two, every_three]);
+        let (caster, target) = attack_duel(&mut app);
+        give_item(&mut app, caster, ItemId::SparkPendant);
+        land_hits(&mut app, caster, target, 6);
+        // 3 x 10 from the first item, 2 x 100 from the second.
+        assert_eq!(health(&app, caster), 100.0 + 30.0 + 200.0);
+    }
+
+    #[test]
+    fn derived_trigger_depth_is_capped() {
+        let mut app = test_app();
+        let looping = |name: &'static str| AbilityEffectEntry {
+            trigger: AbilityTrigger::Custom(name),
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::Proc {
+                chance: RankValue::fixed(1.0),
+                then: AbilityTrigger::Custom(name),
+            },
+        };
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            proc_entry(1.0, "on_loop"),
+            looping("on_loop"),
+            heal_entry(AbilityTrigger::Custom("on_loop"), 10.0),
+        ])]);
+        let (caster, target) = attack_duel(&mut app);
+        land_hits(&mut app, caster, target, 1);
+        // Depth 1 and depth 2 run their entries; the proc at depth 2 stops the chain.
+        assert_eq!(health(&app, caster), 100.0 + 2.0 * 10.0);
+    }
+
+    fn extra_attack_events(app: &App) -> Vec<crate::basic_attack::ExtraAttackEvent> {
+        app.world()
+            .resource::<Messages<crate::basic_attack::ExtraAttackEvent>>()
+            .iter_current_update_messages()
+            .copied()
+            .collect()
+    }
+
+    fn perform_attack(max_targets: u32, exclude_trigger_unit: bool) -> AbilityEffect {
+        AbilityEffect::PerformAttack {
+            damage_ratio: RankValue::fixed(0.7),
+            max_targets,
+            exclude_trigger_unit,
+        }
+    }
+
+    #[test]
+    fn perform_attack_on_cast_is_an_instant_attack() {
+        let ability = AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::Unit, RankValue::fixed(500.0), RankValue::ZERO)
+            .costs(RankValue::ZERO, RankValue::ZERO)
+            .timing(0.0, 0.0)
+            .on(
+                AbilityTrigger::OnCast,
+                EffectTarget::CastTarget,
+                perform_attack(1, false),
+            );
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(ability);
+        let caster = spawn_caster(&mut app, KIT);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+
+        request(&mut app, caster, 3, CastTarget::Unit(enemy));
+        let mut seen = Vec::new();
+        for _ in 0..6 {
+            step(&mut app);
+            seen.extend(extra_attack_events(&app));
+        }
+        assert_eq!(
+            seen,
+            vec![crate::basic_attack::ExtraAttackEvent {
+                attacker: caster,
+                target: enemy,
+                damage_ratio: 0.7,
+            }]
+        );
+    }
+
+    #[test]
+    fn double_attack_does_not_chain() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            proc_entry(1.0, "on_double"),
+            AbilityEffectEntry {
+                trigger: AbilityTrigger::Custom("on_double"),
+                target: EffectTarget::TriggerUnit,
+                effect: perform_attack(0, false),
+            },
+        ])]);
+        let (caster, target) = attack_duel(&mut app);
+
+        // A normal landed attack procs one extra attack...
+        write_attack_hit(&mut app, caster, target);
+        step(&mut app);
+        assert_eq!(extra_attack_events(&app).len(), 1);
+
+        // ...but an extra attack that lands runs the proc and performs nothing.
+        app.world_mut()
+            .write_message(crate::basic_attack::BasicAttackLandedEvent {
+                attacker: caster,
+                attacker_team: Team::Radiant,
+                target,
+                damage: 10.0,
+                crit: false,
+                extra: true,
+            });
+        step(&mut app);
+        assert!(
+            extra_attack_events(&app).is_empty(),
+            "extra attacks never chain"
+        );
+    }
+
+    #[test]
+    fn multishot_excludes_primary_and_caps_targets() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![AbilityEffectEntry {
+            trigger: AbilityTrigger::OnAttack,
+            target: EffectTarget::UnitsInRadius {
+                center: definition::AreaCenter::Caster,
+                radius: AreaRadius::Fixed(RankValue::fixed(600.0)),
+                team: TargetTeam::Enemy,
+            },
+            effect: perform_attack(2, true),
+        }])]);
+        let (caster, primary) = attack_duel(&mut app);
+        let nearest = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        let middle = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, 200.0));
+        let _far = spawn_unit(&mut app, Team::Dire, Vec3::new(400.0, 0.0, 0.0));
+        let _out_of_radius = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, 900.0));
+        let _ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(10.0, 0.0, 0.0));
+
+        write_attack_release(&mut app, caster, primary);
+        step(&mut app);
+
+        let targets: Vec<Entity> = extra_attack_events(&app)
+            .iter()
+            .map(|event| event.target)
+            .collect();
+        assert_eq!(
+            targets,
+            vec![nearest, middle],
+            "nearest two, never the primary"
+        );
+        assert!(!targets.contains(&primary) && !targets.contains(&caster));
+    }
+
+    // --- End to end: the real attack pipeline feeding the ability layer ---
+
+    /// `test_app` plus the real basic-attack systems, running before the attack triggers.
+    fn attack_pipeline_app() -> App {
+        use crate::basic_attack::*;
+        let mut app = test_app();
+        app.add_message::<BasicAttackEvent>().add_systems(
+            Update,
+            (
+                request_basic_attacks,
+                start_basic_attack_windups,
+                tick_attack_swings,
+                release_extra_attacks,
+                resolve_attack_releases,
+                advance_attacks_in_flight,
+                resolve_basic_attack_impacts,
+            )
+                .chain()
+                .before(attack_triggers::attack_triggers),
+        );
+        app
+    }
+
+    fn with_world_transform(app: &mut App, entity: Entity) {
+        let tf = *app.world().get::<Transform>(entity).unwrap();
+        app.world_mut()
+            .entity_mut(entity)
+            .insert(GlobalTransform::from(tf));
+    }
+
+    /// A melee attacker (50 damage) ordered onto a Dire target 80 units away.
+    fn melee_attacker_and_target(app: &mut App, caster: Entity) -> Entity {
+        let target = spawn_unit(app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        with_world_transform(app, target);
+        app.world_mut().entity_mut(caster).insert((
+            CombatStats::simple(50.0, crate::scale::MELEE_ATTACK_RANGE, 1.0, 0.0, 0.0, 300.0),
+            Transform::default().looking_at(Vec3::new(80.0, 0.0, 0.0), Vec3::Y),
+            crate::components::AttackCooldown(0.0),
+            AttackTarget(target),
+        ));
+        with_world_transform(app, caster);
+        target
+    }
+
+    #[derive(Default)]
+    struct AttackLog {
+        releases: Vec<crate::basic_attack::BasicAttackReleaseEvent>,
+        landed: Vec<crate::basic_attack::BasicAttackLandedEvent>,
+    }
+
+    /// Let the first normal attack happen (then drop the order so no second one starts), and
+    /// keep running long enough for every consequence to play out.
+    fn run_one_normal_attack(app: &mut App, caster: Entity) -> AttackLog {
+        use crate::basic_attack::{BasicAttackLandedEvent, BasicAttackReleaseEvent};
+        let mut log = AttackLog::default();
+        let mut ordered = true;
+        for _ in 0..40 {
+            step(app);
+            let releases: Vec<_> = app
+                .world()
+                .resource::<Messages<BasicAttackReleaseEvent>>()
+                .iter_current_update_messages()
+                .copied()
+                .collect();
+            if ordered && releases.iter().any(|r| !r.extra) {
+                app.world_mut().entity_mut(caster).remove::<AttackTarget>();
+                ordered = false;
+            }
+            log.releases.extend(releases);
+            log.landed.extend(
+                app.world()
+                    .resource::<Messages<BasicAttackLandedEvent>>()
+                    .iter_current_update_messages()
+                    .copied(),
+            );
+        }
+        assert!(!ordered, "the normal attack was released");
+        log
+    }
+
+    fn proc_then_perform_attack(ratio: f32) -> Vec<AbilityEffectEntry> {
+        vec![
+            proc_entry(1.0, "on_double"),
+            AbilityEffectEntry {
+                trigger: AbilityTrigger::Custom("on_double"),
+                target: EffectTarget::TriggerUnit,
+                effect: AbilityEffect::PerformAttack {
+                    damage_ratio: RankValue::fixed(ratio),
+                    max_targets: 0,
+                    exclude_trigger_unit: false,
+                },
+            },
+        ]
+    }
+
+    fn assert_one_normal_and_one_extra(app: &App, log: &AttackLog, target: Entity, ratio: f32) {
+        let normal: Vec<_> = log.landed.iter().filter(|l| !l.extra).collect();
+        let extra: Vec<_> = log.landed.iter().filter(|l| l.extra).collect();
+        assert_eq!(
+            normal.len(),
+            1,
+            "one normal attack landed: {:?}",
+            log.landed
+        );
+        assert_eq!(
+            extra.len(),
+            1,
+            "exactly one extra attack, and it did not chain: {:?}",
+            log.landed
+        );
+        assert_eq!(log.releases.iter().filter(|r| r.extra).count(), 1);
+        assert_eq!(log.releases.iter().filter(|r| !r.extra).count(), 1);
+        assert_eq!(extra[0].target, target);
+        assert!((extra[0].damage - 50.0 * ratio).abs() < 1e-3);
+        let expected = 1000.0 - 50.0 - 50.0 * ratio;
+        assert!(
+            (health(app, target) - expected).abs() < 1e-3,
+            "two hits and no more, got {}",
+            health(app, target)
+        );
+    }
+
+    #[test]
+    fn item_proc_perform_attack_lands_one_extra_attack_through_the_real_pipeline() {
+        let mut app = attack_pipeline_app();
+        let _defs =
+            install_test_item_definitions([item_with_effects(proc_then_perform_attack(0.5))]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let target = melee_attacker_and_target(&mut app, caster);
+
+        let log = run_one_normal_attack(&mut app, caster);
+
+        assert_one_normal_and_one_extra(&app, &log, target, 0.5);
+    }
+
+    #[test]
+    fn ability_proc_perform_attack_lands_one_extra_attack_through_the_real_pipeline() {
+        let mut app = attack_pipeline_app();
+        let mut ability = AbilityDefinition::new(KIT[0]);
+        for entry in proc_then_perform_attack(1.0) {
+            ability = ability.on(entry.trigger, entry.target, entry.effect);
+        }
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(ability);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        let target = melee_attacker_and_target(&mut app, caster);
+
+        let log = run_one_normal_attack(&mut app, caster);
+
+        assert_one_normal_and_one_extra(&app, &log, target, 1.0);
+    }
+
+    #[test]
+    fn extra_attack_leaves_cooldown_swing_and_order_alone_and_does_not_chain_with_cleave() {
+        let mut app = attack_pipeline_app();
+        let _defs =
+            install_test_item_definitions([item_with_effects(proc_then_perform_attack(1.0))]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let target = melee_attacker_and_target(&mut app, caster);
+        // A bystander beside the target gets cleave damage, which must fire nothing.
+        let bystander = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 100.0));
+        with_world_transform(&mut app, bystander);
+        app.world_mut()
+            .get_mut::<CombatStats>(caster)
+            .unwrap()
+            .cleave_damage_ratio = 0.5;
+
+        let log = run_one_normal_attack(&mut app, caster);
+
+        assert_eq!(
+            log.landed.len(),
+            2,
+            "cleave is not an attack: only the normal and the extra attack land"
+        );
+        // Each of the two main hits cleaves 50% of 50.
+        assert!(
+            (health(&app, bystander) - (1000.0 - 2.0 * 25.0)).abs() < 1e-3,
+            "cleave from both hits, no other damage, got {}",
+            health(&app, bystander)
+        );
+        assert!((health(&app, target) - 900.0).abs() < 1e-3);
+        assert!(
+            app.world().get::<AttackTarget>(caster).is_none(),
+            "an extra attack never re-issues the attack order"
+        );
     }
 
     #[test]
@@ -2033,6 +2677,8 @@ mod tests {
                 cast_target: None,
                 trigger_unit: None,
                 affected_units: Vec::new(),
+                attack: None,
+                depth: 0,
             }));
         step(&mut app);
         assert!((health(&app, near) - 910.0).abs() < 1e-3);

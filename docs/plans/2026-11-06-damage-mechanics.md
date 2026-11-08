@@ -1,3 +1,5 @@
+> **Superseded in part (2026-11-08):** crit is no longer rolled at damage application. It is rolled once per landed attack in `basic_attack::resolve_basic_attack_impacts`, and `DamageEvent::can_crit` was replaced by the informational `crit`. See `2026-11-08-attack-modifiers.md`.
+
 # Damage mechanics — architecture audit & implementation plan
 
 **Date:** 2026-11-06  

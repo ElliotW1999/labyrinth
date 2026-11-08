@@ -12,7 +12,6 @@ use crate::actions::{
     ActionCooldown, ActionCost, ActionFiredEvent, ActionId, ActionSpec, DisableRule, TargetTeam,
     TargetType,
 };
-use crate::basic_attack::{BasicAttackImpactEvent, BasicAttackReleaseEvent};
 use crate::combat::flat_distance;
 use crate::components::{
     CastTarget, CombatStats, Health, HeroAttributes, Lifetime, Mana, PlayerHero, PlayerWallet,
@@ -756,6 +755,14 @@ pub struct ItemPassives {
     pub lifesteal: f32,
     pub spell_lifesteal: f32,
     pub mana_cost_amp: f32,
+    pub crit_chance: f32,
+    pub crit_multiplier: f32,
+    pub evasion: f32,
+    pub accuracy: f32,
+    pub cleave_ratio: f32,
+    pub splash_ratio: f32,
+    pub attack_range: f32,
+    pub attack_projectile_speed: f32,
 }
 
 impl ItemPassives {
@@ -785,6 +792,14 @@ impl ItemPassives {
             PassiveStat::Lifesteal => &mut self.lifesteal,
             PassiveStat::SpellLifesteal => &mut self.spell_lifesteal,
             PassiveStat::ManaCostAmp => &mut self.mana_cost_amp,
+            PassiveStat::CritChance => &mut self.crit_chance,
+            PassiveStat::CritMultiplier => &mut self.crit_multiplier,
+            PassiveStat::Evasion => &mut self.evasion,
+            PassiveStat::Accuracy => &mut self.accuracy,
+            PassiveStat::CleaveRatio => &mut self.cleave_ratio,
+            PassiveStat::SplashRatio => &mut self.splash_ratio,
+            PassiveStat::AttackRange => &mut self.attack_range,
+            PassiveStat::AttackProjectileSpeed => &mut self.attack_projectile_speed,
         };
         *field += amount;
     }
@@ -816,6 +831,14 @@ impl std::ops::AddAssign for ItemPassives {
             lifesteal,
             spell_lifesteal,
             mana_cost_amp,
+            crit_chance,
+            crit_multiplier,
+            evasion,
+            accuracy,
+            cleave_ratio,
+            splash_ratio,
+            attack_range,
+            attack_projectile_speed,
         } = rhs;
         self.max_health += max_health;
         self.health_regen += health_regen;
@@ -839,6 +862,14 @@ impl std::ops::AddAssign for ItemPassives {
         self.lifesteal += lifesteal;
         self.spell_lifesteal += spell_lifesteal;
         self.mana_cost_amp += mana_cost_amp;
+        self.crit_chance += crit_chance;
+        self.crit_multiplier += crit_multiplier;
+        self.evasion += evasion;
+        self.accuracy += accuracy;
+        self.cleave_ratio += cleave_ratio;
+        self.splash_ratio += splash_ratio;
+        self.attack_range += attack_range;
+        self.attack_projectile_speed += attack_projectile_speed;
     }
 }
 
@@ -959,6 +990,15 @@ fn adjust_passives(
     stats.lifesteal += passives.lifesteal * count;
     stats.spell_lifesteal += passives.spell_lifesteal * count;
     stats.mana_cost_amp += passives.mana_cost_amp * count;
+    stats.crit_chance += passives.crit_chance * count;
+    stats.crit_multiplier += passives.crit_multiplier * count;
+    stats.evasion += passives.evasion * count;
+    stats.accuracy += passives.accuracy * count;
+    stats.cleave_damage_ratio += passives.cleave_ratio * count;
+    stats.splash_damage_ratio += passives.splash_ratio * count;
+    stats.attack_range += passives.attack_range * count;
+    stats.attack_range_bonus += passives.attack_range * count;
+    stats.attack_projectile_speed_bonus += passives.attack_projectile_speed * count;
     stats.recompute_attack_speed(attrs.agility);
 }
 
@@ -1136,53 +1176,6 @@ fn item_use_trigger(
     )
     .at(position)
     .cast_target(target.unit())
-}
-
-/// `OnAttack` (release) and `OnAttackHit` (impact) for every distinct item the
-/// attacker owns that has entries for the trigger.
-pub(crate) fn item_attack_triggers(
-    mut releases: MessageReader<BasicAttackReleaseEvent>,
-    mut impacts: MessageReader<BasicAttackImpactEvent>,
-    owners: Query<(&Transform, &Team, &Inventory)>,
-    targets: Query<&Transform>,
-    mut triggers: MessageWriter<AbilityTriggerEvent>,
-) {
-    let fired = releases
-        .read()
-        .map(|e| (AbilityTrigger::OnAttack, e.attacker, e.target))
-        .chain(
-            impacts
-                .read()
-                .map(|e| (AbilityTrigger::OnAttackHit, e.attacker, e.target)),
-        );
-    for (trigger, attacker, target) in fired {
-        let Ok((owner_tf, team, inventory)) = owners.get(attacker) else {
-            continue;
-        };
-        let point = targets
-            .get(target)
-            .map_or(owner_tf.translation, |tf| tf.translation);
-        let mut seen: Vec<ItemId> = Vec::new();
-        for item in inventory.slots.iter().flatten() {
-            if seen.contains(&item.id) || item.id.definition().effects_for(trigger).next().is_none()
-            {
-                continue;
-            }
-            seen.push(item.id);
-            triggers.write(AbilityTriggerEvent(
-                TriggerContext::new(
-                    trigger,
-                    EffectSource::Item(item.id),
-                    attacker,
-                    *team,
-                    1,
-                    owner_tf.translation,
-                    point,
-                )
-                .trigger_unit(Some(target)),
-            ));
-        }
-    }
 }
 
 /// Presentation only: a heal flash when the active affects its owner and a pulse ring
@@ -1978,6 +1971,54 @@ mod tests {
         assert_eq!(stats.attack_speed_flat, 0.0);
     }
 
+    #[test]
+    fn attack_modifier_passives_apply_and_remove_symmetrically() {
+        let mut health = Health::new(720.0);
+        let mut mana = Mana::new(320.0, 12.0);
+        let mut stats = CombatStats::simple(55.0, scale::MELEE_ATTACK_RANGE, 1.1, 4.0, 3.0, 12.0);
+        let mut attrs = HeroAttributes::starter();
+        let before = stats;
+        let mut passives = ItemPassives::default();
+        for (stat, amount) in [
+            (PassiveStat::CritChance, 0.25),
+            (PassiveStat::CritMultiplier, 0.5),
+            (PassiveStat::Evasion, 0.2),
+            (PassiveStat::Accuracy, 0.3),
+            (PassiveStat::CleaveRatio, 0.4),
+            (PassiveStat::SplashRatio, 0.35),
+            (PassiveStat::AttackRange, 100.0),
+            (PassiveStat::AttackProjectileSpeed, 150.0),
+        ] {
+            passives.add_stat(stat, amount);
+        }
+        // Two copies: bonuses are additive.
+        apply_passives(passives, &mut health, &mut mana, &mut stats, &mut attrs);
+        apply_passives(passives, &mut health, &mut mana, &mut stats, &mut attrs);
+        assert!((stats.crit_chance - 0.5).abs() < 1e-6);
+        assert!(
+            (stats.crit_multiplier - 3.0).abs() < 1e-6,
+            "2.0 base + 2 x 0.5"
+        );
+        assert!((stats.evasion - 0.4).abs() < 1e-6);
+        assert!((stats.accuracy - 0.6).abs() < 1e-6);
+        assert!((stats.cleave_damage_ratio - 0.8).abs() < 1e-6);
+        assert!((stats.splash_damage_ratio - 0.7).abs() < 1e-6);
+        assert_eq!(stats.attack_range, scale::MELEE_ATTACK_RANGE + 200.0);
+        assert_eq!(stats.base_attack_range(), scale::MELEE_ATTACK_RANGE);
+        assert!(stats.is_melee(), "a range bonus keeps a melee unit melee");
+        assert_eq!(stats.attack_projectile_speed_bonus, 300.0);
+
+        remove_passives(passives, 2, &mut health, &mut mana, &mut stats, &mut attrs);
+        assert!((stats.crit_chance - before.crit_chance).abs() < 1e-6);
+        assert!((stats.crit_multiplier - before.crit_multiplier).abs() < 1e-6);
+        assert!(stats.evasion.abs() < 1e-6 && stats.accuracy.abs() < 1e-6);
+        assert!(stats.cleave_damage_ratio.abs() < 1e-6);
+        assert!(stats.splash_damage_ratio.abs() < 1e-6);
+        assert_eq!(stats.attack_range, before.attack_range);
+        assert_eq!(stats.attack_range_bonus, 0.0);
+        assert_eq!(stats.attack_projectile_speed_bonus, 0.0);
+    }
+
     fn commit(inv: &mut Inventory, slot: usize) {
         let spec = item_action_spec(inv, slot).expect("usable");
         commit_item(inv, slot, &spec);
@@ -2276,7 +2317,7 @@ mod tests {
         assert_eq!(health.max, 720.0);
     }
 
-    fn passive_fields(p: &ItemPassives) -> [f32; 22] {
+    fn passive_fields(p: &ItemPassives) -> [f32; 30] {
         let ItemPassives {
             max_health,
             health_regen,
@@ -2300,6 +2341,14 @@ mod tests {
             lifesteal,
             spell_lifesteal,
             mana_cost_amp,
+            crit_chance,
+            crit_multiplier,
+            evasion,
+            accuracy,
+            cleave_ratio,
+            splash_ratio,
+            attack_range,
+            attack_projectile_speed,
         } = *p;
         [
             max_health,
@@ -2324,6 +2373,14 @@ mod tests {
             lifesteal,
             spell_lifesteal,
             mana_cost_amp,
+            crit_chance,
+            crit_multiplier,
+            evasion,
+            accuracy,
+            cleave_ratio,
+            splash_ratio,
+            attack_range,
+            attack_projectile_speed,
         ]
     }
 
@@ -2392,6 +2449,14 @@ mod tests {
             PassiveStat::Lifesteal,
             PassiveStat::SpellLifesteal,
             PassiveStat::ManaCostAmp,
+            PassiveStat::CritChance,
+            PassiveStat::CritMultiplier,
+            PassiveStat::Evasion,
+            PassiveStat::Accuracy,
+            PassiveStat::CleaveRatio,
+            PassiveStat::SplashRatio,
+            PassiveStat::AttackRange,
+            PassiveStat::AttackProjectileSpeed,
         ];
         let mut seen = Vec::new();
         for stat in stats {
@@ -2407,7 +2472,7 @@ mod tests {
             assert!(!seen.contains(&changed[0]), "{stat:?} shares a field");
             seen.push(changed[0]);
         }
-        assert_eq!(seen.len(), 22, "every field is reachable");
+        assert_eq!(seen.len(), 30, "every field is reachable");
     }
 
     #[test]
@@ -2824,6 +2889,8 @@ mod tests {
             .init_resource::<SharedAssets>()
             .init_resource::<AbilityDefinitions>()
             .init_resource::<crate::abilities::effects::CustomAbilityEffects>()
+            .init_resource::<crate::combat::CombatRng>()
+            .add_message::<crate::basic_attack::ExtraAttackEvent>()
             .add_message::<ActivationRequest>()
             .add_message::<crate::actions::ActionFiredEvent>()
             .add_message::<crate::actions::ActionChannelEndEvent>()

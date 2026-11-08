@@ -24,6 +24,12 @@ pub const SHORT_ATTACK_RANGE: f32 = 150.0;
 pub const RANGED_ATTACK_RANGE: f32 = 500.0;
 /// Tower auto-attack range.
 pub const TOWER_ATTACK_RANGE: f32 = 700.0;
+/// Cleave reach around a melee attacker when its `cleave_radius` stat is unset. Twice the
+/// melee hero range: wide enough to catch the units standing beside the target.
+pub const ATTACK_CLEAVE_RADIUS: f32 = 300.0;
+/// Splash reach around the struck unit when its attacker's `splash_radius` stat is unset;
+/// matches the ground-targeted ability AoE ([`ABILITY_GROUND_AOE`]).
+pub const ATTACK_SPLASH_RADIUS: f32 = 250.0;
 /// Melee creep auto-attack range.
 pub const CREEP_MELEE_ATTACK_RANGE: f32 = 100.0;
 /// Ranged creep auto-attack range.

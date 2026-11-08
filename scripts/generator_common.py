@@ -62,6 +62,8 @@ ABILITY_TRIGGERS = {
     "on_expire": "OnExpire",
     "while_toggled": "WhileToggled",
     "passive": "Passive",
+    "on_attack": "OnAttack",
+    "on_attack_hit": "OnAttackHit",
 }
 
 ITEM_TRIGGERS = {
@@ -98,6 +100,11 @@ EFFECT_TYPES = {
     "stat_modifier",
     "resource",
     "custom",
+    # Gates: re-fire the row's context under a custom trigger (see AbilityEffect::Proc/Counter).
+    "proc",
+    "counter",
+    # Extra basic attacks (instant / double / multi-target attack).
+    "perform_attack",
 }
 
 DAMAGE_TYPES = {"physical": "Physical", "magical": "Magical", "pure": "Pure"}
@@ -121,6 +128,9 @@ STATUSES = {
     "leash": (None, "leash", False),
     "tether": (None, "tether", False),
     "blind": (None, "blind", False),
+    "evasion": (None, "evasion", True),
+    "accuracy": (None, "accuracy", True),
+    "true_strike": ("StatusSpec::TrueStrike", "true_strike", True),
     "phased": ("StatusSpec::Phased", "phased", True),
     "forceful": ("StatusSpec::Forceful", "forceful", True),
     "debuff_immunity": ("StatusSpec::DebuffImmunity", "spell_immunity", True),
@@ -203,6 +213,7 @@ TIMED_STATS = {
     "attack_damage": "attack_damage",
     "attack_speed_flat": "attack_speed_flat",
     "attack_speed_mult": "attack_speed_mult",
+    "attack_range": "attack_range",
 }
 
 # Timed resource modifiers map onto `StatusSpec::ResourceModifier` (summed when read).
@@ -218,7 +229,17 @@ RESOURCE_STATS = {
     "max_mana": "ResourceStat::MaxMana",
 }
 # Fractions (0.25 = 25%) share one range check; mana_cost_amp only has a floor (-1 = free).
-FRACTION_STATS = ("lifesteal", "spell_lifesteal", "heal_amp", "heal_received_amp")
+FRACTION_STATS = (
+    "lifesteal",
+    "spell_lifesteal",
+    "heal_amp",
+    "heal_received_amp",
+    "crit_chance",
+    "evasion",
+    "accuracy",
+    "cleave",
+    "splash",
+)
 # A negative cost amp is the beneficial direction.
 NEGATIVE_IS_BENEFICIAL = ("mana_cost_amp",)
 
@@ -248,6 +269,16 @@ PASSIVE_STATS = {
     "heal_amp": "PassiveStat::HealAmp",
     "heal_received_amp": "PassiveStat::HealReceivedAmp",
     "mana_cost_amp": "PassiveStat::ManaCostAmp",
+    # Attack modifiers. Chances and ratios are fractions (0.25 = 25%); crit_multiplier is a
+    # bonus on top of the 2.0 base; attack_projectile_speed is in units per second.
+    "crit_chance": "PassiveStat::CritChance",
+    "crit_multiplier": "PassiveStat::CritMultiplier",
+    "evasion": "PassiveStat::Evasion",
+    "accuracy": "PassiveStat::Accuracy",
+    "cleave": "PassiveStat::CleaveRatio",
+    "splash": "PassiveStat::SplashRatio",
+    "attack_range": "PassiveStat::AttackRange",
+    "attack_projectile_speed": "PassiveStat::AttackProjectileSpeed",
 }
 
 SCALING_TYPES = {
@@ -616,6 +647,33 @@ def ability_rust_target_type(target_type: str, projectile: str, aoe_radius: list
     return "NoTarget"
 
 
+def find_emitted_custom_triggers(repo_root: Path) -> set[str]:
+    """Custom `on_*` trigger names that hand-written Rust (mechanics) may emit."""
+    names: set[str] = set()
+    for path in (repo_root / "src").rglob("*.rs"):
+        if path.name in ("generated.rs", "item_catalog.rs"):
+            continue
+        names.update(re.findall(r'Custom\("(on_[a-z0-9_]+)"\)', path.read_text(encoding="utf-8")))
+    return names
+
+
+def warn_unreachable_custom_triggers(effects: list["EffectRow"], emitted: set[str] | None, report: Report) -> None:
+    """A custom trigger only fires when a proc / counter row names it or Rust emits it."""
+    fed = {e.row.get("effect_id").lower() for e in effects if e.effect_type in ("proc", "counter")}
+    for e in effects:
+        if e.trigger in ABILITY_TRIGGERS or e.trigger in ITEM_TRIGGERS:
+            continue
+        if e.trigger in fed or (emitted is not None and e.trigger in emitted):
+            continue
+        report.warn(
+            e.row.file,
+            e.row.line,
+            "trigger",
+            e.trigger,
+            "custom trigger is never fired: no proc / counter row names it and no Rust code emits it",
+        )
+
+
 def find_registered_custom_effects(repo_root: Path) -> set[str]:
     registered: set[str] = set()
     src = repo_root / "src"
@@ -707,6 +765,8 @@ class EffectContext:
     registered_custom: set[str] | None = None
     #: Activation `target_type` of the owner (None = unknown), for effects that need a cast target.
     target_type: str | None = None
+    #: Every trigger used by the owner's rows (lets `proc` / `counter` check their target).
+    owner_triggers: set[str] | None = None
 
 
 def _levels(e: EffectRow, name: str, ctx: EffectContext, report: Report, **kwargs) -> list[float] | None:
@@ -1157,6 +1217,18 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
                 f"StatusSpec::ManaShield {{ absorb_percent: {rank_value(value)}, "
                 f"damage_per_mana: {rank_value(amount)} }}"
             )
+        elif effect_id in ("evasion", "accuracy"):
+            percent = amount or value
+            if not percent:
+                report.error(row.file, row.line, "amount", "", f"required: {effect_id} percentage (e.g. 30)")
+                return None
+            if any(not 0 < p <= 100 for p in percent):
+                report.error(row.file, row.line, "amount" if amount else "value", row.get("amount") or row.get("value"), f"{effect_id} percentage must be above 0 and at most 100")
+                return None
+            variant = effect_id.capitalize()
+            spec = f"StatusSpec::{variant} {{ percent: {rank_value(percent)} }}"
+            if amount:
+                _unused(e, report, "value")
         elif effect_id == "blind":
             miss = amount or value
             if not miss:
@@ -1262,6 +1334,60 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
         effect = _resource_effect(e, effect_id, scaling, scaling_type, value, amount, report)
         if effect is None:
             return None
+    elif t in ("proc", "counter"):
+        if not _require(e, "effect_id", report, "the custom trigger to fire (on_<name>)"):
+            return None
+        if not CUSTOM_TRIGGER_PATTERN.match(effect_id) or effect_id in ABILITY_TRIGGERS or effect_id in ITEM_TRIGGERS:
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), "must be a custom on_<name> trigger, not a built-in trigger")
+            return None
+        if effect_id == e.trigger:
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), f"a {t} cannot fire its own trigger")
+            return None
+        if e.target not in ("caster", "owner", "attacker"):
+            report.error(row.file, row.line, "effect_target", e.target, f"{t} acts on the unit using it; use owner, caster, or attacker")
+            return None
+        if ctx.owner_triggers is not None and effect_id not in ctx.owner_triggers:
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), f"no row of {e.owner!r} uses trigger {effect_id}, so this {t} would do nothing")
+            return None
+        if not no_scaling():
+            return None
+        _unused(e, report, "damage_type", "duration", "amount", "radius")
+        if t == "proc":
+            if not _require(e, "value", report, "proc chance percent (above 0, at most 100)"):
+                return None
+            if any(not 0 < p <= 100 for p in value):
+                report.error(row.file, row.line, "value", row.get("value"), "proc chance percent must be above 0 and at most 100")
+                return None
+            chance = rank_value([p / 100 for p in value])
+            effect = f"AbilityEffect::Proc {{ chance: {chance}, then: AbilityTrigger::Custom(\"{effect_id}\") }}"
+        else:
+            if not _require(e, "value", report, "attacks between firings (integer, at least 2)"):
+                return None
+            if len(value) != 1 or not float(value[0]).is_integer() or value[0] < 2:
+                report.error(row.file, row.line, "value", row.get("value"), "counter needs a single integer of at least 2")
+                return None
+            effect = f"AbilityEffect::Counter {{ every: {int(value[0])}, then: AbilityTrigger::Custom(\"{effect_id}\") }}"
+    elif t == "perform_attack":
+        if effect_id not in ("", "exclude_trigger_unit"):
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), "perform_attack effect_id must be blank or exclude_trigger_unit")
+            return None
+        if not no_scaling():
+            return None
+        percent = value or [100.0]
+        if any(p <= 0 for p in percent):
+            report.error(row.file, row.line, "value", row.get("value"), "perform_attack damage percent must be above 0")
+            return None
+        max_targets = 0
+        if amount:
+            if len(amount) != 1 or not float(amount[0]).is_integer() or amount[0] < 0:
+                report.error(row.file, row.line, "amount", row.get("amount"), "max targets must be a single integer of at least 0 (0 = all)")
+                return None
+            max_targets = int(amount[0])
+        _unused(e, report, "damage_type", "duration")
+        effect = (
+            f"AbilityEffect::PerformAttack {{ damage_ratio: {rank_value([p / 100 for p in percent])}, "
+            f"max_targets: {max_targets}, exclude_trigger_unit: {'true' if effect_id else 'false'} }}"
+        )
     elif t == "custom":
         if not _require(e, "effect_id", report, "registered custom effect id"):
             return None

@@ -17,6 +17,7 @@ from generator_common import (  # noqa: E402
     ABILITY_TRIGGERS,
     ITEM_TRIGGERS,
     effect_to_rust,
+    warn_unreachable_custom_triggers,
     parse_activation_spec,
     validate_activation,
 )
@@ -632,6 +633,125 @@ class ResourceStatModifierTests(unittest.TestCase):
         effect, ctx = _effect("stat_modifier", "armor", target="caster", value="5", duration="4")
         result = effect_to_rust(effect, ctx, report)
         self.assertIn("StatusSpec::Modifier", result[2])
+
+
+class AttackModifierTests(unittest.TestCase):
+    def test_ability_attack_triggers_accepted(self) -> None:
+        self.assertEqual(ABILITY_TRIGGERS["on_attack"], "OnAttack")
+        self.assertEqual(ABILITY_TRIGGERS["on_attack_hit"], "OnAttackHit")
+        report = Report()
+        effect, ctx = _effect("damage", "", target="trigger_unit", trigger="on_attack_hit", value="20", damage_type="physical")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors)
+        self.assertIn("AbilityTrigger::OnAttackHit", result[0])
+
+    def test_proc_requires_custom_trigger_with_rows(self) -> None:
+        report = Report()
+        effect, ctx = _effect("proc", "on_bash", target="owner", trigger="on_attack_hit", kind="item", value="25")
+        ctx.owner_triggers = {"on_attack_hit", "on_bash"}
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors)
+        self.assertIn("AbilityEffect::Proc { chance: RankValue::fixed(0.25)", result[2])
+        self.assertIn('AbilityTrigger::Custom("on_bash")', result[2])
+
+        for bad_id, triggers in (("on_bash", {"on_attack_hit"}), ("on_cast", {"on_cast"}), ("bash", {"bash"}), ("on_attack_hit", {"on_attack_hit"})):
+            report = Report()
+            effect, ctx = _effect("proc", bad_id, target="owner", trigger="on_attack_hit", kind="item", value="25")
+            ctx.owner_triggers = triggers
+            self.assertIsNone(effect_to_rust(effect, ctx, report), bad_id)
+            self.assertEqual(report.errors[0].field, "effect_id")
+
+        report = Report()
+        effect, ctx = _effect("proc", "on_bash", target="trigger_unit", trigger="on_attack_hit", kind="item", value="25")
+        ctx.owner_triggers = {"on_bash"}
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertEqual(report.errors[0].field, "effect_target")
+
+    def test_proc_chance_range(self) -> None:
+        for value, ok in (("100", True), ("0.5", True), ("0", False), ("101", False), ("", False)):
+            report = Report()
+            effect, ctx = _effect("proc", "on_bash", target="owner", trigger="on_attack_hit", kind="item", value=value)
+            ctx.owner_triggers = {"on_bash"}
+            result = effect_to_rust(effect, ctx, report)
+            self.assertEqual(result is not None, ok, value)
+
+    def test_counter_requires_integer_at_least_two(self) -> None:
+        for value, ok in (("4", True), ("2", True), ("1", False), ("2.5", False), ("", False)):
+            report = Report()
+            effect, ctx = _effect("counter", "on_fourth", target="owner", trigger="on_attack_hit", kind="item", value=value)
+            ctx.owner_triggers = {"on_fourth"}
+            result = effect_to_rust(effect, ctx, report)
+            self.assertEqual(result is not None, ok, value)
+            if ok:
+                self.assertIn(f"every: {int(float(value))}", result[2])
+
+    def test_perform_attack_columns(self) -> None:
+        report = Report()
+        effect, ctx = _effect("perform_attack", "", target="cast_target")
+        self.assertIn("damage_ratio: RankValue::fixed(1.0), max_targets: 0, exclude_trigger_unit: false", effect_to_rust(effect, ctx, report)[2])
+
+        report = Report()
+        effect, ctx = _effect("perform_attack", "exclude_trigger_unit", target="trigger_unit", trigger="on_attack", kind="item", value="70", amount="2")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors)
+        self.assertIn("damage_ratio: RankValue::fixed(0.7), max_targets: 2, exclude_trigger_unit: true", result[2])
+
+        for cells in ({"effect_id": "bogus"}, {"value": "0"}, {"amount": "1.5"}, {"amount": "-1"}):
+            report = Report()
+            args = {"effect_id": "", **cells}
+            effect, ctx = _effect("perform_attack", args.pop("effect_id"), target="cast_target", **args)
+            self.assertIsNone(effect_to_rust(effect, ctx, report), cells)
+
+    def test_evasion_accuracy_true_strike_statuses(self) -> None:
+        for status, expected in (("evasion", "StatusSpec::Evasion { percent: RankValue::fixed(30.0) }"), ("accuracy", "StatusSpec::Accuracy { percent: RankValue::fixed(30.0) }")):
+            report = Report()
+            effect, ctx = _effect("apply_status", status, target="caster", amount="30", duration="5")
+            result = effect_to_rust(effect, ctx, report)
+            self.assertFalse(report.errors, status)
+            self.assertIn(expected, result[2])
+            report = Report()
+            effect, ctx = _effect("apply_status", status, target="caster", amount="0", duration="5")
+            self.assertIsNone(effect_to_rust(effect, ctx, report))
+        report = Report()
+        effect, ctx = _effect("apply_status", "true_strike", target="caster", duration="5")
+        self.assertIn("StatusSpec::TrueStrike", effect_to_rust(effect, ctx, report)[2])
+        self.assertFalse(report.errors)
+
+    def test_attack_passive_stat_ranges(self) -> None:
+        for stat, variant in (
+            ("crit_chance", "CritChance"), ("crit_multiplier", "CritMultiplier"), ("evasion", "Evasion"),
+            ("accuracy", "Accuracy"), ("cleave", "CleaveRatio"), ("splash", "SplashRatio"),
+            ("attack_range", "AttackRange"), ("attack_projectile_speed", "AttackProjectileSpeed"),
+        ):
+            report = Report()
+            effect, ctx = _effect("stat_modifier", stat, target="owner", trigger="passive", kind="item", value="0.5")
+            self.assertIn(f"PassiveStat::{variant}", effect_to_rust(effect, ctx, report)[2], stat)
+        for stat in ("crit_chance", "evasion", "accuracy", "cleave", "splash"):
+            report = Report()
+            effect, ctx = _effect("stat_modifier", stat, target="owner", trigger="passive", kind="item", value="1.5")
+            self.assertIsNone(effect_to_rust(effect, ctx, report), stat)
+            self.assertIn("-1..1", report.errors[0].message)
+
+    def test_timed_attack_range_modifier(self) -> None:
+        report = Report()
+        effect, ctx = _effect("stat_modifier", "attack_range", target="caster", value="100", duration="8")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors)
+        self.assertIn("StatusSpec::Modifier", result[2])
+        self.assertIn("attack_range: RankValue::fixed(100.0)", result[2])
+        self.assertIn("StatusKind::Buff", result[2])
+
+    def test_unreachable_custom_trigger_warns(self) -> None:
+        def make(trigger: str, effect_type: str, effect_id: str) -> EffectRow:
+            cells = {"item_id": "t", "effect_index": "0", "trigger": trigger, "effect_target": "owner", "effect_type": effect_type, "effect_id": effect_id}
+            return EffectRow(row(cells), "t", 0, trigger, "owner", effect_type)
+
+        report = Report()
+        warn_unreachable_custom_triggers([make("on_bash", "heal", "")], set(), report)
+        self.assertEqual(len(report.warnings), 1)
+        report = Report()
+        warn_unreachable_custom_triggers([make("on_attack_hit", "proc", "on_bash"), make("on_bash", "heal", "")], set(), report)
+        self.assertFalse(report.warnings)
 
 
 if __name__ == "__main__":

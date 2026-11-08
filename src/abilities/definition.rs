@@ -147,6 +147,14 @@ pub enum AbilityTrigger {
     Custom(&'static str),
 }
 
+impl AbilityTrigger {
+    /// Fired by a basic attack (release or landed hit); effects under it run with an
+    /// [`super::effects::AttackMeta`] on the context.
+    pub fn is_attack(self) -> bool {
+        matches!(self, Self::OnAttack | Self::OnAttackHit)
+    }
+}
+
 /// Hero attribute used by [`EffectScaling::CasterAttribute`] and item stat bonuses.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -248,6 +256,16 @@ pub enum StatusSpec {
     Blind {
         miss_chance_percent: RankValue,
     },
+    /// `percent` (0-100) chance that attacks against the target miss (a buff).
+    Evasion {
+        percent: RankValue,
+    },
+    /// `percent` (0-100) chance that the target's attacks land despite blind or evasion.
+    Accuracy {
+        percent: RankValue,
+    },
+    /// The target's attacks never miss: ignores evasion and blind.
+    TrueStrike,
     /// Run away from `source` (typically the caster).
     Fear,
     /// Reduces the target's current move speed by `percent`.
@@ -298,6 +316,8 @@ pub enum StatusSpec {
         attack_damage: RankValue,
         attack_speed_flat: RankValue,
         attack_speed_mult: RankValue,
+        /// Flat attack range change (does not change melee / ranged classification).
+        attack_range: RankValue,
     },
 }
 
@@ -333,6 +353,7 @@ impl StatusSpec {
             attack_damage: RankValue::ZERO,
             attack_speed_flat: RankValue::ZERO,
             attack_speed_mult: RankValue::ZERO,
+            attack_range: RankValue::ZERO,
         }
     }
 
@@ -378,6 +399,18 @@ impl StatusSpec {
                 (miss_chance_percent.at(rank) / 100.0).clamp(0.0, 1.0),
                 duration,
             ),
+            StatusSpec::Evasion { percent } => StatusEffect {
+                evasion: (percent.at(rank) / 100.0).clamp(0.0, 1.0),
+                ..StatusEffect::buff("evasion", duration)
+            },
+            StatusSpec::Accuracy { percent } => StatusEffect {
+                accuracy: (percent.at(rank) / 100.0).clamp(0.0, 1.0),
+                ..StatusEffect::buff("accuracy", duration)
+            },
+            StatusSpec::TrueStrike => StatusEffect {
+                accuracy: 1.0,
+                ..StatusEffect::buff("true_strike", duration)
+            },
             StatusSpec::Fear => StatusEffect::fear(duration, ctx.fear_source),
             StatusSpec::Slow { percent } => {
                 let p = (percent.at(rank) / 100.0).clamp(0.0, 1.0);
@@ -437,6 +470,7 @@ impl StatusSpec {
                 attack_damage,
                 attack_speed_flat,
                 attack_speed_mult,
+                attack_range,
             } => {
                 let base = match kind {
                     StatusKind::Buff => StatusEffect::buff(id, duration),
@@ -449,6 +483,7 @@ impl StatusSpec {
                     attack_damage: attack_damage.at(rank),
                     attack_speed_flat: attack_speed_flat.at(rank),
                     attack_speed_mult: attack_speed_mult.at(rank),
+                    attack_range: attack_range.at(rank),
                     ..base
                 }
             }
@@ -509,6 +544,22 @@ pub enum PassiveStat {
     SpellLifesteal,
     /// Additive change to mana costs (-0.25 = 25% cheaper).
     ManaCostAmp,
+    /// Chance (fraction) that basic attacks crit.
+    CritChance,
+    /// Bonus on top of the 2.0 base crit multiplier (0.5 = 2.5x).
+    CritMultiplier,
+    /// Chance (fraction) that attacks against the holder miss.
+    Evasion,
+    /// Chance (fraction) that the holder's attacks land despite blind or evasion.
+    Accuracy,
+    /// Fraction of attack damage dealt to enemies around a melee attacker.
+    CleaveRatio,
+    /// Fraction of attack damage dealt to enemies around the struck unit.
+    SplashRatio,
+    /// Flat attack range (does not change melee / ranged classification).
+    AttackRange,
+    /// Flat attack projectile speed (units / second).
+    AttackProjectileSpeed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -586,6 +637,30 @@ pub enum AbilityEffect {
     PassiveStat {
         stat: PassiveStat,
         amount: RankValue,
+    },
+    /// Gate: with probability `chance` (0..=1, one [`CombatRng`](crate::combat::CombatRng)
+    /// draw per execution) re-fires this trigger's context under the custom trigger `then`.
+    /// Entries tagged `then` hold the consequences, so one roll covers all of them.
+    Proc {
+        chance: RankValue,
+        then: AbilityTrigger,
+    },
+    /// Gate: every `every`th execution (counted per source and `then`) re-fires this
+    /// trigger's context under the trigger `then`.
+    Counter {
+        every: u32,
+        then: AbilityTrigger,
+    },
+    /// Each resolved enemy gets an extra basic attack dealing `damage_ratio` (1.0 = 100%) of
+    /// the caster's attack damage, ignoring cooldown, swing and range (instant attack, double
+    /// attack, multi-target attack). The caster itself is never a target, nor the trigger unit
+    /// when `exclude_trigger_unit` is set; at most `max_targets` are attacked, nearest first
+    /// (0 = all). Does nothing under a trigger caused by an extra attack, so extra attacks
+    /// never chain.
+    PerformAttack {
+        damage_ratio: RankValue,
+        max_targets: u32,
+        exclude_trigger_unit: bool,
     },
     /// Escape hatch: runs the system registered under `id` with
     /// `effects::AbilityEffectAppExt::register_custom_effect`. It still receives

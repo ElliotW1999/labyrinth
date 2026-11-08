@@ -358,7 +358,10 @@ fn effect_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
         }
         AbilityEffect::Dispel { .. }
         | AbilityEffect::RemoveStatus { .. }
-        | AbilityEffect::Teleport => Vec::new(),
+        | AbilityEffect::Teleport
+        | AbilityEffect::Proc { .. }
+        | AbilityEffect::Counter { .. }
+        | AbilityEffect::PerformAttack { .. } => Vec::new(),
     }
 }
 
@@ -373,6 +376,14 @@ fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
         StatusSpec::HealOverTime { hps } => vec![
             row("Heal per second", hps),
             seconds_row("Heal duration", duration),
+        ],
+        StatusSpec::Evasion { percent } => vec![
+            row("Evasion %", percent),
+            seconds_row("Evasion duration", duration),
+        ],
+        StatusSpec::Accuracy { percent } => vec![
+            row("Accuracy %", percent),
+            seconds_row("Accuracy duration", duration),
         ],
         StatusSpec::HealReduction { percent } => vec![
             row("Heal reduction %", percent),
@@ -399,6 +410,7 @@ fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
             magic_resist,
             move_speed,
             attack_damage,
+            attack_range,
             ..
         } => {
             let mut rows = Vec::new();
@@ -413,6 +425,9 @@ fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
             }
             if attack_damage != RankValue::ZERO {
                 rows.push(row("Attack damage", attack_damage));
+            }
+            if attack_range != RankValue::ZERO {
+                rows.push(row("Attack range", attack_range));
             }
             rows.push(seconds_row("Duration", duration));
             rows
@@ -435,6 +450,28 @@ fn effect_text_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
             }
         }
         AbilityEffect::RemoveStatus { id } => vec![text_row(format!("Remove {id}"))],
+        AbilityEffect::Proc { chance, .. } => vec![text_row(format!(
+            "{}% chance to proc",
+            fmt_num(chance.at(1) * 100.0)
+        ))],
+        AbilityEffect::PerformAttack {
+            damage_ratio,
+            max_targets,
+            ..
+        } => {
+            let hits = match max_targets {
+                0 => "Attacks every target".to_string(),
+                1 => "Attacks once".to_string(),
+                n => format!("Attacks up to {n} targets"),
+            };
+            vec![text_row(format!(
+                "{hits} for {}% damage",
+                fmt_num(damage_ratio.at(1) * 100.0)
+            ))]
+        }
+        AbilityEffect::Counter { every, .. } => {
+            vec![text_row(format!("Every {every} attacks"))]
+        }
         AbilityEffect::Teleport => vec![text_row("Teleports to the target point")],
         AbilityEffect::Displace {
             distance: None,
@@ -505,6 +542,9 @@ fn status_name(status: StatusSpec) -> &'static str {
         StatusSpec::Invulnerable => "Invulnerable",
         StatusSpec::Hex => "Hex",
         StatusSpec::Blind { .. } => "Blind",
+        StatusSpec::Evasion { .. } => "Evasion",
+        StatusSpec::Accuracy { .. } => "Accuracy",
+        StatusSpec::TrueStrike => "True strike",
         StatusSpec::Fear => "Fear",
         StatusSpec::Slow { .. } => "Slow",
         StatusSpec::AttackSpeedSlow { .. } => "Attack speed slow",
@@ -542,6 +582,14 @@ pub(crate) fn passive_name(stat: super::definition::PassiveStat) -> &'static str
         PassiveStat::Lifesteal => "Lifesteal",
         PassiveStat::SpellLifesteal => "Spell lifesteal",
         PassiveStat::ManaCostAmp => "Mana cost",
+        PassiveStat::CritChance => "Crit chance",
+        PassiveStat::CritMultiplier => "Crit multiplier",
+        PassiveStat::Evasion => "Evasion",
+        PassiveStat::Accuracy => "Accuracy",
+        PassiveStat::CleaveRatio => "Cleave",
+        PassiveStat::SplashRatio => "Splash",
+        PassiveStat::AttackRange => "Attack range",
+        PassiveStat::AttackProjectileSpeed => "Projectile speed",
     }
 }
 
