@@ -920,6 +920,24 @@ mod tests {
             });
     }
 
+    /// An item whose only content is the given effect entries (see [`attack_hit_heal_item`]).
+    fn item_with_effects(entries: Vec<AbilityEffectEntry>) -> ItemDefinition {
+        ItemDefinition {
+            effects: Box::leak(entries.into_boxed_slice()),
+            ..attack_hit_heal_item()
+        }
+    }
+
+    fn write_attack_release(app: &mut App, attacker: Entity, target: Entity) {
+        app.world_mut()
+            .write_message(crate::basic_attack::BasicAttackReleaseEvent {
+                attacker,
+                target,
+                damage: 10.0,
+                extra: false,
+            });
+    }
+
     fn cast_point_projectile() -> AbilityDefinition {
         AbilityDefinition::new(AbilityId::Bulwark)
             .targeting(TargetType::Unit, RankValue::fixed(600.0), RankValue::ZERO)
@@ -1164,6 +1182,102 @@ mod tests {
         step(&mut app);
 
         assert_eq!(health(&app, caster), 550.0);
+    }
+
+    #[test]
+    fn missed_attack_fires_on_attack_but_not_on_attack_hit() {
+        let mut app = test_app();
+        let heal = |trigger, amount| AbilityEffectEntry {
+            trigger,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::Heal {
+                amount: RankValue::fixed(amount),
+                scaling: EffectScaling::None,
+            },
+        };
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            heal(AbilityTrigger::OnAttack, 10.0),
+            heal(AbilityTrigger::OnAttackHit, 50.0),
+        ])]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 500.0;
+
+        // A missed attack releases but never lands.
+        write_attack_release(&mut app, caster, target);
+        step(&mut app);
+        assert_eq!(health(&app, caster), 510.0);
+
+        write_attack_release(&mut app, caster, target);
+        write_attack_hit(&mut app, caster, target);
+        step(&mut app);
+        assert_eq!(health(&app, caster), 570.0, "release 10 + landed 50");
+    }
+
+    #[test]
+    fn on_attack_hit_damage_is_attack_bonus() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![AbilityEffectEntry {
+            trigger: AbilityTrigger::OnAttackHit,
+            target: EffectTarget::TriggerUnit,
+            effect: fixed_magical_damage(100.0),
+        }])]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        {
+            let mut stats = app.world_mut().get_mut::<CombatStats>(caster).unwrap();
+            stats.outgoing_spell_amp = 1.0;
+            stats.spell_lifesteal = 1.0;
+            stats.lifesteal = 0.5;
+        }
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 500.0;
+
+        write_attack_hit(&mut app, caster, target);
+        step(&mut app);
+
+        assert_eq!(health(&app, target), 900.0, "no spell amp");
+        assert_eq!(
+            health(&app, caster),
+            550.0,
+            "lifesteal, not spell lifesteal"
+        );
+    }
+
+    #[test]
+    fn mana_break_burns_as_attack_bonus() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![AbilityEffectEntry {
+            trigger: AbilityTrigger::OnAttackHit,
+            target: EffectTarget::TriggerUnit,
+            effect: AbilityEffect::DrainMana {
+                amount: RankValue::fixed(50.0),
+                burn_ratio: 1.0,
+                damage_type: DamageType::Magical,
+                transfer_ratio: 0.0,
+            },
+        }])]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        app.world_mut()
+            .get_mut::<CombatStats>(caster)
+            .unwrap()
+            .outgoing_spell_amp = 1.0;
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        app.world_mut()
+            .entity_mut(target)
+            .insert(Mana::new(200.0, 0.0));
+
+        write_attack_hit(&mut app, caster, target);
+        step(&mut app);
+
+        assert_eq!(app.world().get::<Mana>(target).unwrap().current, 150.0);
+        assert_eq!(
+            health(&app, target),
+            950.0,
+            "burn is attack damage: no spell amp"
+        );
     }
 
     #[test]
@@ -2036,6 +2150,7 @@ mod tests {
                 cast_target: None,
                 trigger_unit: None,
                 affected_units: Vec::new(),
+                attack: None,
             }));
         step(&mut app);
         assert!((health(&app, near) - 910.0).abs() < 1e-3);

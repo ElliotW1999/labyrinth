@@ -6,7 +6,7 @@ use crate::abilities::definition::{
     AbilityEffect, AbilityEffectEntry, AbilityTrigger, AreaRadius, Attribute, EffectTarget,
     PassiveStat,
 };
-use crate::abilities::effects::{AbilityTriggerEvent, EffectSource, TriggerContext};
+use crate::abilities::effects::{AbilityTriggerEvent, AttackMeta, EffectSource, TriggerContext};
 use crate::abilities::tooltip;
 use crate::actions::{
     ActionCooldown, ActionCost, ActionFiredEvent, ActionId, ActionSpec, DisableRule, TargetTeam,
@@ -1149,13 +1149,21 @@ pub(crate) fn item_attack_triggers(
 ) {
     let fired = releases
         .read()
-        .map(|e| (AbilityTrigger::OnAttack, e.attacker, e.target))
-        .chain(
-            landed
-                .read()
-                .map(|e| (AbilityTrigger::OnAttackHit, e.attacker, e.target)),
-        );
-    for (trigger, attacker, target) in fired {
+        .map(|e| {
+            let meta = AttackMeta {
+                extra: e.extra,
+                crit: false,
+            };
+            (AbilityTrigger::OnAttack, e.attacker, e.target, meta)
+        })
+        .chain(landed.read().map(|e| {
+            let meta = AttackMeta {
+                extra: e.extra,
+                crit: e.crit,
+            };
+            (AbilityTrigger::OnAttackHit, e.attacker, e.target, meta)
+        }));
+    for (trigger, attacker, target, meta) in fired {
         let Ok((owner_tf, team, inventory)) = owners.get(attacker) else {
             continue;
         };
@@ -1179,7 +1187,8 @@ pub(crate) fn item_attack_triggers(
                     owner_tf.translation,
                     point,
                 )
-                .trigger_unit(Some(target)),
+                .trigger_unit(Some(target))
+                .attack(meta),
             ));
         }
     }

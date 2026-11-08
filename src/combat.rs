@@ -72,8 +72,13 @@ pub enum DamageKind {
     BasicAttack,
     Ability,
     Dot,
-    /// Splash from a basic attack; never leeched from.
+    /// Cleave from a basic attack (around the attacker); never leeched from.
     Cleave,
+    /// Splash from a basic attack (around the struck unit); never leeched from.
+    Splash,
+    /// Bonus damage dealt by an on-hit effect of a landed attack. Counts as attack damage:
+    /// no spell amp, no block, leeched like a basic attack.
+    AttackBonus,
 }
 
 /// Raw (pre-mitigation) damage dealt to `target`; resolved in [`apply_damage_events`].
@@ -170,6 +175,36 @@ impl DamageEvent {
     pub fn cleave(source: Entity, target: Entity, amount: f32) -> Self {
         Self {
             kind: DamageKind::Cleave,
+            ..Self::basic_attack(source, target, amount)
+        }
+    }
+
+    /// Bonus damage from an on-hit effect of a landed attack (items, abilities, mana burn).
+    pub fn attack_bonus(
+        source: Entity,
+        target: Entity,
+        amount: f32,
+        damage_type: DamageType,
+    ) -> Self {
+        Self {
+            source: Some(source),
+            target,
+            amount,
+            damage_type,
+            kind: DamageKind::AttackBonus,
+            crit: false,
+            is_spell: false,
+            applies_block: false,
+            pierces_shields: false,
+            reflects: true,
+            drain_ratio: 0.0,
+        }
+    }
+
+    /// Splash from a basic attack around the struck unit. Like cleave, it never leeches.
+    pub fn splash(source: Entity, target: Entity, amount: f32) -> Self {
+        Self {
+            kind: DamageKind::Splash,
             ..Self::basic_attack(source, target, amount)
         }
     }
@@ -391,7 +426,10 @@ pub fn apply_damage_events(
             (event.source, source_snapshot)
         {
             let mut ratio = event.drain_ratio;
-            if event.kind == DamageKind::BasicAttack {
+            if matches!(
+                event.kind,
+                DamageKind::BasicAttack | DamageKind::AttackBonus
+            ) {
                 ratio += lifesteal;
             }
             if event.is_spell {
@@ -1335,6 +1373,7 @@ mod tests {
             let a = attacker(&mut world, 1.0, 1.0);
             let t = victim(&mut world, 1000.0);
             world.write_message(DamageEvent::cleave(a, t, 100.0));
+            world.write_message(DamageEvent::splash(a, t, 100.0));
             world.write_message(DamageEvent::dot(Some(a), t, 100.0, DamageType::Physical));
             world.write_message(DamageEvent {
                 kind: DamageKind::Generic,
@@ -1349,6 +1388,27 @@ mod tests {
             run(&mut world);
             assert!(hp(&world, t) < 1000.0, "all of it landed");
             assert_eq!(hp(&world, a), 500.0, "none of it leeched");
+        }
+
+        #[test]
+        fn attack_bonus_leeches_without_spell_amp_or_block() {
+            let mut world = world();
+            let a = attacker(&mut world, 0.5, 0.2);
+            world.get_mut::<CombatStats>(a).unwrap().outgoing_spell_amp = 1.0;
+            let t = world
+                .spawn((Health::new(1000.0), {
+                    let mut stats = plain();
+                    stats.damage_block = 30.0;
+                    stats
+                }))
+                .id();
+            world.write_message(DamageEvent::attack_bonus(a, t, 100.0, DamageType::Magical));
+            run(&mut world);
+            assert_eq!(hp(&world, t), 900.0, "no spell amp (x2) and no block (-30)");
+            assert!(
+                (hp(&world, a) - 550.0).abs() < 1e-3,
+                "lifesteal 0.5 of 100, not the spell lifesteal"
+            );
         }
 
         #[test]

@@ -35,6 +35,15 @@ pub enum EffectSource {
     Item(ItemId),
 }
 
+/// What an attack-derived trigger knows about the attack that caused it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AttackMeta {
+    /// The attack was an extra attack (instant / double / multi-target).
+    pub extra: bool,
+    /// The main hit was a critical strike (`OnAttackHit` only).
+    pub crit: bool,
+}
+
 /// Who and where a trigger involved. Mechanics fill this in once so effects never
 /// have to rediscover the entities.
 #[derive(Debug, Clone, PartialEq)]
@@ -58,6 +67,9 @@ pub struct TriggerContext {
     /// target for `OnAttack` / `OnAttackHit`).
     pub trigger_unit: Option<Entity>,
     pub affected_units: Vec<Entity>,
+    /// Set for triggers caused by a basic attack. Damage dealt under such a context is
+    /// attack bonus damage rather than spell damage.
+    pub attack: Option<AttackMeta>,
 }
 
 impl TriggerContext {
@@ -84,6 +96,7 @@ impl TriggerContext {
             cast_target: None,
             trigger_unit: None,
             affected_units: Vec::new(),
+            attack: None,
         }
     }
 
@@ -100,6 +113,11 @@ impl TriggerContext {
 
     pub fn trigger_unit(mut self, trigger_unit: Option<Entity>) -> Self {
         self.trigger_unit = trigger_unit;
+        self
+    }
+
+    pub fn attack(mut self, attack: AttackMeta) -> Self {
+        self.attack = Some(attack);
         self
     }
 
@@ -337,12 +355,11 @@ impl EffectRunner<'_, '_> {
                     if let Some(amount) =
                         self.scaled_amount(ctx, amount.at(rank), scaling, target, cast_range)
                     {
-                        self.damage.write(DamageEvent::spell(
-                            ctx.caster,
-                            target,
-                            amount,
-                            damage_type,
-                        ));
+                        self.damage.write(if ctx.attack.is_some() {
+                            DamageEvent::attack_bonus(ctx.caster, target, amount, damage_type)
+                        } else {
+                            DamageEvent::spell(ctx.caster, target, amount, damage_type)
+                        });
                     }
                 }
             }
@@ -391,6 +408,7 @@ impl EffectRunner<'_, '_> {
                         burn: (burn_ratio > 0.0).then_some((burn_ratio, damage_type)),
                         to_source: (transfer_ratio > 0.0).then_some(transfer_ratio),
                         convert_to: None,
+                        from_attack: ctx.attack.is_some(),
                     });
                 }
             }
@@ -408,6 +426,7 @@ impl EffectRunner<'_, '_> {
                         burn: None,
                         to_source: None,
                         convert_to,
+                        from_attack: ctx.attack.is_some(),
                     });
                 }
             }

@@ -147,6 +147,14 @@ pub enum AbilityTrigger {
     Custom(&'static str),
 }
 
+impl AbilityTrigger {
+    /// Fired by a basic attack (release or landed hit); effects under it run with an
+    /// [`super::effects::AttackMeta`] on the context.
+    pub fn is_attack(self) -> bool {
+        matches!(self, Self::OnAttack | Self::OnAttackHit)
+    }
+}
+
 /// Hero attribute used by [`EffectScaling::CasterAttribute`] and item stat bonuses.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
