@@ -6,13 +6,12 @@ use crate::abilities::definition::{
     AbilityEffect, AbilityEffectEntry, AbilityTrigger, AreaRadius, Attribute, EffectTarget,
     PassiveStat,
 };
-use crate::abilities::effects::{AbilityTriggerEvent, AttackMeta, EffectSource, TriggerContext};
+use crate::abilities::effects::{AbilityTriggerEvent, EffectSource, TriggerContext};
 use crate::abilities::tooltip;
 use crate::actions::{
     ActionCooldown, ActionCost, ActionFiredEvent, ActionId, ActionSpec, DisableRule, TargetTeam,
     TargetType,
 };
-use crate::basic_attack::{BasicAttackLandedEvent, BasicAttackReleaseEvent};
 use crate::combat::flat_distance;
 use crate::components::{
     CastTarget, CombatStats, Health, HeroAttributes, Lifetime, Mana, PlayerHero, PlayerWallet,
@@ -1177,62 +1176,6 @@ fn item_use_trigger(
     )
     .at(position)
     .cast_target(target.unit())
-}
-
-/// `OnAttack` (release) and `OnAttackHit` (impact) for every distinct item the
-/// attacker owns that has entries for the trigger.
-pub(crate) fn item_attack_triggers(
-    mut releases: MessageReader<BasicAttackReleaseEvent>,
-    mut landed: MessageReader<BasicAttackLandedEvent>,
-    owners: Query<(&Transform, &Team, &Inventory)>,
-    targets: Query<&Transform>,
-    mut triggers: MessageWriter<AbilityTriggerEvent>,
-) {
-    let fired = releases
-        .read()
-        .map(|e| {
-            let meta = AttackMeta {
-                extra: e.extra,
-                crit: false,
-            };
-            (AbilityTrigger::OnAttack, e.attacker, e.target, meta)
-        })
-        .chain(landed.read().map(|e| {
-            let meta = AttackMeta {
-                extra: e.extra,
-                crit: e.crit,
-            };
-            (AbilityTrigger::OnAttackHit, e.attacker, e.target, meta)
-        }));
-    for (trigger, attacker, target, meta) in fired {
-        let Ok((owner_tf, team, inventory)) = owners.get(attacker) else {
-            continue;
-        };
-        let point = targets
-            .get(target)
-            .map_or(owner_tf.translation, |tf| tf.translation);
-        let mut seen: Vec<ItemId> = Vec::new();
-        for item in inventory.slots.iter().flatten() {
-            if seen.contains(&item.id) || item.id.definition().effects_for(trigger).next().is_none()
-            {
-                continue;
-            }
-            seen.push(item.id);
-            triggers.write(AbilityTriggerEvent(
-                TriggerContext::new(
-                    trigger,
-                    EffectSource::Item(item.id),
-                    attacker,
-                    *team,
-                    1,
-                    owner_tf.translation,
-                    point,
-                )
-                .trigger_unit(Some(target))
-                .attack(meta),
-            ));
-        }
-    }
 }
 
 /// Presentation only: a heal flash when the active affects its owner and a pulse ring

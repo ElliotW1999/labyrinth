@@ -15,6 +15,7 @@
 //! Items resolve their effect entries through the same trigger pipeline
 //! (`EffectSource::Item`).
 
+pub mod attack_triggers;
 pub mod casting;
 pub mod catalog;
 pub mod custom;
@@ -100,7 +101,7 @@ impl Plugin for AbilitiesPlugin {
                     execute_ability_casts,
                     action_channel_end_triggers,
                     projectile_hit_triggers,
-                    crate::items::item_attack_triggers,
+                    attack_triggers::attack_triggers,
                     // Before trigger resolution, so contact / end triggers fire this frame.
                     (tick_forced_movement, settle_grounded_units).chain(),
                     resolve_ability_triggers,
@@ -666,7 +667,7 @@ mod tests {
                     execute_ability_casts,
                     action_channel_end_triggers,
                     projectile_hit_triggers,
-                    crate::items::item_attack_triggers,
+                    attack_triggers::attack_triggers,
                     (tick_forced_movement, settle_grounded_units).chain(),
                     resolve_ability_triggers,
                     apply_heal_events,
@@ -1277,6 +1278,64 @@ mod tests {
             health(&app, target),
             950.0,
             "burn is attack damage: no spell amp"
+        );
+    }
+
+    #[test]
+    fn ability_on_attack_hit_needs_a_learned_rank() {
+        let mut app = test_app();
+        app.world_mut().resource_mut::<AbilityDefinitions>().insert(
+            AbilityDefinition::new(KIT[0]).on(
+                AbilityTrigger::OnAttackHit,
+                EffectTarget::Caster,
+                AbilityEffect::Heal {
+                    amount: RankValue::fixed(50.0),
+                    scaling: EffectScaling::None,
+                },
+            ),
+        );
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 500.0;
+
+        app.world_mut()
+            .get_mut::<AbilityLoadout>(caster)
+            .unwrap()
+            .slots[0]
+            .rank = 0;
+        write_attack_hit(&mut app, caster, target);
+        step(&mut app);
+        assert_eq!(
+            health(&app, caster),
+            500.0,
+            "unlearned abilities never trigger"
+        );
+
+        app.world_mut()
+            .get_mut::<AbilityLoadout>(caster)
+            .unwrap()
+            .slots[0]
+            .rank = 1;
+        write_attack_hit(&mut app, caster, target);
+        step(&mut app);
+        assert_eq!(health(&app, caster), 550.0);
+
+        let ctx = app
+            .world()
+            .resource::<Messages<AbilityTriggerEvent>>()
+            .iter_current_update_messages()
+            .next()
+            .unwrap()
+            .0
+            .clone();
+        assert_eq!(ctx.source, EffectSource::Ability(KIT[0]));
+        assert_eq!(ctx.rank, 1);
+        assert_eq!(
+            ctx.attack,
+            Some(effects::AttackMeta {
+                extra: false,
+                crit: false
+            })
         );
     }
 
