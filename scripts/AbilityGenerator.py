@@ -37,6 +37,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from generator_common import (  # noqa: E402
     ACTION_TEAMS,
     EFFECT_COLUMNS,
+    REACTIVE_NO_CAST_TARGET,
+    REACTIVE_NO_TRIGGER_UNIT,
+    REACTIVE_TRIGGER_NAMES,
     SKILLSHOT_TYPES,
     TARGET_TEAMS,
     EffectContext,
@@ -49,6 +52,8 @@ from generator_common import (  # noqa: E402
     f32,
     find_emitted_custom_triggers,
     find_registered_custom_effects,
+    reaction_triggers,
+    warn_duplicate_held_statuses,
     warn_unemitted_triggers,
     warn_unreachable_custom_triggers,
     parse_activation_spec,
@@ -109,8 +114,8 @@ use super::catalog::{nova_ring, shockwave_ring};
 #[allow(unused_imports)]
 use super::definition::{
     AbilityBehavior, AbilityDefinition, AbilityEffect, AbilityMechanic, AbilityTrigger,
-    AreaCenter, AreaRadius, Attribute, DisplacementKind, EffectScaling, EffectTarget,
-    LeashAnchorKind, PassiveStat, RankValue, StatusSpec, TargetTeam, TargetType,
+    AreaCenter, AreaRadius, Attribute, Condition, DisplacementKind, EffectScaling, EffectTarget,
+    LeashAnchorKind, PassiveStat, RankValue, StatusFilter, StatusSpec, TargetTeam, TargetType,
 };
 #[allow(unused_imports)]
 use crate::components::{AbilityId, DamageType};
@@ -244,6 +249,9 @@ def effect_context(a: Ability) -> EffectContext:
     if a.behavior != "Toggle":
         ctx.invalid_trigger["while_toggled"] = "while_toggled is only for ability_type toggle"
     if a.behavior == "Passive":
+        # Reactive triggers (damage, status, interval, while, ...) stay valid: a learned
+        # passive holds its entries like an item does. Only cast-driven ones are dead.
+        ctx.invalid_trigger["on_cooldown_ready"] = "passive abilities have no cooldown, so this trigger never fires"
         for trigger in ("on_cast", "on_projectile_hit", "on_impact", "on_unit_contact", "on_movement_end", "on_channel_tick", "on_channel_end", "on_channel_interrupted"):
             ctx.invalid_trigger[trigger] = "passive abilities are never cast, so this trigger never fires"
     else:
@@ -258,6 +266,12 @@ def effect_context(a: Ability) -> EffectContext:
         for trigger in ("on_cast", "on_projectile_hit", "on_unit_contact", "on_movement_end", "on_impact", "on_channel_tick", "on_channel_end", "on_channel_interrupted", "on_expire"):
             ctx.invalid_combo[(trigger, "cast_target")] = f"cast_target requires target_type unit (got {a.target_type})"
         ctx.invalid_combo[("on_cast", "trigger_unit")] = f"on_cast only has a trigger unit for unit-targeted abilities (got {a.target_type})"
+    for trigger in REACTIVE_NO_CAST_TARGET:
+        ctx.invalid_combo[(trigger, "cast_target")] = f"{trigger} has no cast target; use trigger_unit"
+    for trigger in REACTIVE_TRIGGER_NAMES:
+        ctx.invalid_combo[(trigger, "affected_units")] = f"{trigger} has no affected units; use units_in_radius"
+    for trigger in REACTIVE_NO_TRIGGER_UNIT:
+        ctx.invalid_combo[(trigger, "trigger_unit")] = f"{trigger} has no trigger unit"
     ctx.invalid_combo[("on_cast", "affected_units")] = "on_cast has no affected units; use units_in_radius"
     ctx.invalid_combo[("on_unit_contact", "affected_units")] = "on_unit_contact reports one unit at a time; use trigger_unit"
     ctx.invalid_combo[("on_impact", "trigger_unit")] = "on_impact fires when the projectile hit no unit; use affected_units or units_in_radius"
@@ -454,8 +468,10 @@ def load(abilities_csv: Path, effects_csv: Path, *, repo_root: Path | None = Non
         ctx = effect_context(ability)
         ctx.registered_custom = registered_custom
         ctx.owner_triggers = {e.trigger for e in by_owner.get(ability.id, [])}
+        ctx.reaction = reaction_triggers(by_owner.get(ability.id, []))
         warn_unreachable_custom_triggers(by_owner.get(ability.id, []), emitted_triggers, report)
         warn_unemitted_triggers(by_owner.get(ability.id, []), report)
+        warn_duplicate_held_statuses(by_owner.get(ability.id, []), report)
         for effect in by_owner.get(ability.id, []):
             rendered = effect_to_rust(effect, ctx, report)
             if rendered:

@@ -132,6 +132,10 @@ pub enum AbilityTrigger {
     /// upkeep system applies them as permanent statuses when the toggle turns on and
     /// removes them when it turns off.
     WhileToggled,
+    /// Held while the condition is true: only `ApplyStatus` entries are read. The statuses
+    /// are permanent, undispellable and reactive (they fire no status triggers) and are
+    /// removed exactly when the condition turns false, the source is lost or the owner dies.
+    While(Condition),
     /// Item stat bonuses held while the item is owned (applied on purchase, not resolved).
     Passive,
     /// An item was activated from the inventory.
@@ -140,11 +144,102 @@ pub enum AbilityTrigger {
     OnAttack,
     /// The owner's basic attack connected (trigger unit = the struck unit).
     OnAttackHit,
+    /// The owner's non-reactive, non-DoT damage reduced a unit's health or shield (trigger
+    /// unit = the victim). Resolves one frame after the damage.
+    OnDamageDealt,
+    /// The owner took non-reactive, non-DoT damage (trigger unit = the attacker, if any).
     OnDamageTaken,
+    /// The owner's damage killed a unit (trigger unit = the victim, which may already be
+    /// despawned: target the point or a radius).
     OnKill,
+    /// The owner died (trigger unit = the killer, if any).
     OnDeath,
+    /// One hit took the owner from at or above `percent` of its max health to below it, and
+    /// it survived. Rearms when health is back above the line (the check is stateless).
+    OnHealthBelow {
+        percent: u8,
+    },
+    /// A status matching the filter was applied to (or refreshed on) the owner. Trigger unit
+    /// = the applier, if it is someone else. Reactive and held statuses never fire it.
+    OnStatusApplied(StatusFilter),
+    /// A status matching the filter left the owner (expired, dispelled, removed or broken).
+    OnStatusRemoved(StatusFilter),
+    /// The owner moved (walking, dashing or forced movement; teleports do not count).
+    /// `TriggerContext::amount` is the distance covered that frame, so entries under it
+    /// are meant to be `Accumulate` gates ("every 1000 units").
+    OnMove,
+    /// A living, targetable enemy came within `radius` of the owner (units already in range
+    /// when the source is first held count as entering). Trigger unit = that enemy.
+    OnEnemyEnter {
+        radius: u32,
+    },
+    /// A tracked enemy left the radius or became untargetable. An enemy that died or
+    /// despawned is dropped silently.
+    OnEnemyLeave {
+        radius: u32,
+    },
+    /// This source's cooldown ran out (never for a zero cooldown). Not emitted for charge
+    /// restoration. Fires for abilities and active items; copies of one item share it.
+    OnCooldownReady,
+    /// Every `millis` of the owner's life while it holds the source (copies of an item share
+    /// one timer; it pauses while the owner is dead and fires at most once per frame).
+    OnInterval {
+        millis: u32,
+    },
+    /// The owner finished casting an ability. Fans out to every other source the owner
+    /// holds (never the cast ability itself); item uses are not spell casts.
+    OnSpellCast,
+    /// An effect of the owner's cast resolved onto an enemy (one per enemy per cast
+    /// context, damage or not). Resolves one frame later.
+    OnSpellHit,
     /// Emitted by a custom mechanic, e.g. `Custom("on_skewer_end")`.
     Custom(&'static str),
+}
+
+/// What a [`AbilityTrigger::While`] entry waits for. Evaluated once per frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Condition {
+    /// Health is strictly below `percent` of max.
+    HealthBelow {
+        percent: u8,
+    },
+    /// The owner moved last frame (walking, dashing or forced; not teleporting).
+    Moving,
+    Stationary,
+    /// At least `at_least` living, targetable enemies are within `radius`.
+    EnemiesNear {
+        radius: u32,
+        at_least: u8,
+    },
+    /// At least `at_least` other living, targetable allies are within `radius`.
+    AlliesNear {
+        radius: u32,
+        at_least: u8,
+    },
+    /// The owner has a status with this runtime id.
+    HasStatus(&'static str),
+}
+
+/// Which statuses an `OnStatusApplied` / `OnStatusRemoved` entry reacts to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StatusFilter {
+    Any,
+    Buff,
+    Debuff,
+    /// One status by its runtime id (e.g. `"stun"`).
+    Id(&'static str),
+}
+
+impl StatusFilter {
+    pub fn matches(self, id: &str, kind: crate::status::StatusKind) -> bool {
+        use crate::status::StatusKind;
+        match self {
+            Self::Any => true,
+            Self::Buff => kind == StatusKind::Buff,
+            Self::Debuff => kind == StatusKind::Debuff,
+            Self::Id(wanted) => wanted == id,
+        }
+    }
 }
 
 impl AbilityTrigger {
@@ -152,6 +247,39 @@ impl AbilityTrigger {
     /// [`super::effects::AttackMeta`] on the context.
     pub fn is_attack(self) -> bool {
         matches!(self, Self::OnAttack | Self::OnAttackHit)
+    }
+
+    /// Fired straight from a cast: the context's effects count as spell hits (see
+    /// [`AbilityTrigger::OnSpellHit`]) when they resolve onto an enemy at depth 0.
+    pub fn is_cast_phase(self) -> bool {
+        matches!(
+            self,
+            Self::OnCast
+                | Self::OnProjectileHit
+                | Self::OnImpact
+                | Self::OnUnitContact
+                | Self::OnMovementEnd
+                | Self::OnChannelTick
+                | Self::OnChannelEnd
+                | Self::OnChannelInterrupted
+                | Self::Custom(_)
+        )
+    }
+
+    /// Caused by damage or a status change. Contexts rooted in such a trigger are
+    /// reactions: the damage and statuses they produce are `reactive` and never fire
+    /// damage or status triggers again.
+    pub fn is_reaction(self) -> bool {
+        matches!(
+            self,
+            Self::OnDamageDealt
+                | Self::OnDamageTaken
+                | Self::OnHealthBelow { .. }
+                | Self::OnStatusApplied(_)
+                | Self::OnStatusRemoved(_)
+                | Self::OnKill
+                | Self::OnDeath
+        )
     }
 }
 
@@ -641,9 +769,14 @@ pub enum AbilityEffect {
     /// Gate: with probability `chance` (0..=1, one [`CombatRng`](crate::combat::CombatRng)
     /// draw per execution) re-fires this trigger's context under the custom trigger `then`.
     /// Entries tagged `then` hold the consequences, so one roll covers all of them.
+    ///
+    /// With `pseudo` the chance is pseudo-random (PRD): each failure raises the next roll
+    /// and a success resets it, so the long-run rate is still `chance` but streaks are
+    /// short. The failure count lives in `TriggerCounters`, per (owner, source, `then`).
     Proc {
         chance: RankValue,
         then: AbilityTrigger,
+        pseudo: bool,
     },
     /// Gate: every `every`th execution (counted per source and `then`) re-fires this
     /// trigger's context under the trigger `then`.
@@ -663,12 +796,20 @@ pub enum AbilityEffect {
         team: TargetTeam,
         then: AbilityTrigger,
     },
+    /// Gate: sums `TriggerContext::amount` over executions (damage taken, distance walked, or
+    /// 1 per occurrence) and, whenever the sum reaches `threshold`, re-fires this trigger's
+    /// context under `then` once and keeps the remainder. The sum is counted per source and
+    /// `then`.
+    Accumulate {
+        threshold: RankValue,
+        then: AbilityTrigger,
+    },
     /// Each resolved enemy gets an extra basic attack dealing `damage_ratio` (1.0 = 100%) of
     /// the caster's attack damage, ignoring cooldown, swing and range (instant attack, double
     /// attack, multi-target attack). The caster itself is never a target, nor the trigger unit
     /// when `exclude_trigger_unit` is set; at most `max_targets` are attacked, nearest first
     /// (0 = all). Does nothing under a trigger caused by an extra attack, so extra attacks
-    /// never chain.
+    /// never chain, nor under a reaction (damage- or status-class trigger).
     PerformAttack {
         damage_ratio: RankValue,
         max_targets: u32,
@@ -683,6 +824,21 @@ pub enum AbilityEffect {
         amount: RankValue,
         duration: RankValue,
     },
+}
+
+impl AbilityEffect {
+    /// Whether the effect does something to its targets, as opposed to gates (which only
+    /// re-fire the context) and passive stat entries.
+    pub fn acts_on_targets(&self) -> bool {
+        !matches!(
+            self,
+            Self::Proc { .. }
+                | Self::Counter { .. }
+                | Self::Accumulate { .. }
+                | Self::Chain { .. }
+                | Self::PassiveStat { .. }
+        )
+    }
 }
 
 /// One row of an ability's effect table: when `trigger` fires, apply `effect` to `target`.

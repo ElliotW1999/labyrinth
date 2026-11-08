@@ -200,6 +200,8 @@ IssueCommand (input / minimap / network host)
 | Attack range | `Modifier.attack_range` / `PassiveStat::AttackRange`: flat bonus to `attack_range`, also tracked in `attack_range_bonus`, so melee units stay melee (`CombatStats::is_melee`) |
 | Resource modifier | Timed regen / max / lifesteal / heal amp / cost modifier (`StatusSpec::ResourceModifier`); summed when read, never stored into stats (timed max health / mana is reconciled by `vitals::sync_status_resource_caps`) |
 
+**Lifecycle events:** every change to a unit's statuses is reported once as a `StatusLifecycleEvent { target, source, id, kind, change }` (`Applied` includes a refresh; `Expired`, `Dispelled` and `Removed` cover expiry, dispel / immunity purge, remove-by-id and the sleep break). The only writers are `apply_status_effect_events`, `tick_status_effects` and the sleep break in `apply_damage_events`, so nothing can change a status unseen. `OnStatusApplied` / `OnStatusRemoved` read them on the holder. A status that is `reactive` (applied by a reaction, or **held** by a toggle or a `while` row) and every change made by a reactive event is silent: no lifecycle event, so held statuses and reactions never fire status triggers. Held statuses are permanent and undispellable, and are removed exactly when the condition ends, the owner dies or the source is lost.
+
 Walking speed never drops below `scale::MIN_MOVE_SPEED` (100) however many slows stack; there is no upper cap, and units with a base speed of zero stay stationary.
 
 ### Damage mechanics (player terms → code)
@@ -287,7 +289,31 @@ spell projectile → ProjectileHitEvent { primary, splashed } → OnProjectileHi
 - **Derived triggers:** `AbilityEffect::Proc { chance, then }` and `Counter { every, then }` re-fire the same context under the custom trigger `then`. `resolve_ability_triggers` drains a FIFO queue, so derived contexts resolve in the same call; each carries `depth` and gates stop at `MAX_TRIGGER_DEPTH` (2). `Proc` makes one `CombatRng` draw per execution (one roll covers every entry under `then`); `Counter` state lives in `TriggerCounters`, per source and `then`
 - **Chain gate:** `AbilityEffect::Chain { jumps, radius, falloff, team, then }` jumps from each start unit to the nearest valid unit (alive, targetable, not yet hit, ties broken by `Entity`) and re-fires the context under `then` per hop with `TriggerContext::magnitude *= falloff^hop`; it works for abilities and items. Hops clear the attack metadata, so chained damage is spell damage
 - **Attack triggers:** `abilities/attack_triggers.rs` fires `OnAttack` (every release) and `OnAttackHit` (landed attacks only) for every distinct item and every learned ability (rank above 0), with `TriggerContext::attack = Some(AttackMeta { extra, crit })`
+- **Reactive triggers:** `abilities/reactive_triggers.rs` holds small dispatcher systems. Each reads one authoritative message and writes ordinary `AbilityTriggerEvent`s into the same queue (no dispatcher applies an effect). All of them share `owner_sources` (items in slot order, one per distinct item, then learned abilities), so every distinct item and learned ability gets one trigger per occurrence.
 - **Autocast:** not implemented (no CSV column or AI heuristic yet)
+
+#### Reactive triggers
+
+| Trigger (CSV) | Fires when | Source message | Resolves |
+| --- | --- | --- | --- |
+| `on_damage_dealt` | the owner's damage hurt a unit (trigger unit = victim) | `DamageAppliedEvent` | next frame |
+| `on_damage_taken` | the owner was hurt (trigger unit = attacker; `attacker` target) | `DamageAppliedEvent` | next frame |
+| `on_health_below:P` | one hit took the owner from at or above P% to below it and it survived; rearms once health is back above P% (stateless crossing) | `DamageAppliedEvent` | next frame |
+| `on_kill` / `on_death` | the hit that took health from above zero to zero (killer is the source of that hit, DoT sources included); once per death | `DamageAppliedEvent` | next frame |
+| `on_spell_cast` | the owner finished casting an ability; every other source reacts, never the cast ability itself; item uses do not count | `AbilityCastEvent` | same frame |
+| `on_spell_hit` | an effect of the owner's cast resolved onto an enemy (one per enemy per cast context, damage or not; derived, reactive and attack contexts never count) | `SpellHitEvent` | next frame |
+| `on_status_applied[:buff\|debuff\|id]` / `on_status_removed[:...]` | a status was applied to / left the owner | `StatusLifecycleEvent` | applied next frame, expiry same frame |
+| `on_cooldown_ready` | the source's cooldown finished (never for a zero cooldown or a charge restore) | `CooldownReadyEvent` | same frame |
+| `on_interval:S` | every S seconds (at least 0.1) of the owner's life; copies of an item share one timer; paused while dead; at most once per frame | `TriggerTracking` | same frame |
+| `on_move` | the owner moved; `amount` is the distance this frame (teleports excluded, forced movement counts) | `TriggerTracking` | same frame |
+| `on_enemy_enter:R` / `on_enemy_leave:R` | a living, targetable enemy came within / left R; units in range when the source is first held count as entering; a death or despawn drops silently | `TriggerTracking` | same frame |
+| `while:<condition>` | held `apply_status` / `stat_modifier` rows while the condition is true (`health_below:P`, `moving`, `stationary`, `enemies_near:R:N`, `allies_near:R:N`, `has_status:id`) | `sync_conditional_statuses` | same frame |
+
+**The reaction rule.** Triggers caused by damage or statuses (`on_damage_dealt`, `on_damage_taken`, `on_health_below`, `on_kill`, `on_death`, `on_status_applied`, `on_status_removed`) set `TriggerContext::reaction`, and derived contexts inherit it. Under a reaction `EffectRunner` stamps `reactive` on every `DamageEvent`, `ResourceDrainEvent`, `StatusEffectEvent` and applied `StatusEffect`. Reactive damage and statuses never fire dealt, taken or status triggers, so two thorn items cannot ping-pong. `PerformAttack` does nothing under a reaction. Kill, death and the health crossing still fire for reactive causes because each is a bounded edge. DoT ticks never fire dealt or taken but count for kill, death and low health. Custom effects receive `ctx.reaction` and must pass it on (a custom effect that emits damage or statuses should set `.reactive(ctx.reaction)`).
+
+**Frame delays.** Damage-class reactions, status application and spell hits resolve one frame after the cause (the same delay `PerformAttack` has); a reaction therefore cannot cancel the lethal hit. Cast, attack, cooldown, interval, move, proximity and expiry reactions resolve in the same frame.
+
+**Gates.** `Proc { chance, then, pseudo }` (a pseudo-random proc raises the chance by a constant after every failure and resets on success, so the long-run rate is still `chance` with short streaks; failures are kept in `TriggerCounters`, per owner, source and `then`), `Counter { every, then }`, and `Accumulate { threshold, then }`, which sums `TriggerContext::amount` (damage, distance, or 1) and fires once each time the sum reaches the threshold, keeping the remainder. `amount` is post-mitigation damage for damage triggers, the landed damage for `on_attack_hit`, the distance for `on_move`, otherwise 1. All gates stop at `MAX_TRIGGER_DEPTH`.
 
 ### Attack modifiers
 
@@ -305,8 +331,8 @@ Rules (binding):
 - **Order:** base damage (snapshotted at windup; extra attacks use `attack_damage x ratio`), crit on the main hit only, cleave / splash = ratio x post-crit main hit, then `apply_damage_events` (amp, shield, block (main hit only), armor, incoming amp, mana shield, HP), then leech from health actually removed
 - **Hit roll:** `miss = (1 - (1 - blind)(1 - evasion)) x (1 - accuracy)`; blind from the attacker, evasion from the target, accuracy from the attacker. One `CombatRng` draw; a miss stops everything (no damage, no landed event, no secondary hits, no `OnAttackHit`). An attacker that despawned mid-flight has no blind, accuracy or crit and does not cleave
 - **Stacking:** item / passive stats are additive and undo exactly; chances combine as `1 - prod(1 - c)`; `crit_multiplier` passive is a bonus on top of 2.0
-- **RNG:** only `CombatRng`, in fixed order (hit, crit per impact in message order; one draw per `Proc` in queue order); `CombatRng::roll` draws nothing at chance <= 0 or >= 1
-- **Recursion guards:** `PerformAttack` does nothing under a trigger caused by an extra attack (extra attacks still fire `OnAttack`, `OnAttackHit`, procs and counters); derived triggers stop at depth 2; cleave, splash, DoT, reflection and burn never send attack events; one trigger per distinct item and per learned ability per attack. Extra attacks start the frame after the effect that requested them
+- **RNG:** only `CombatRng`, in fixed order (hit, crit per impact in message order; one draw per `Proc` in queue order); `CombatRng::roll` draws nothing at chance <= 0 or >= 1. A `pseudo_proc` row uses the same single draw per execution, with a chance that grows with failures (PRD)
+- **Recursion guards:** `PerformAttack` does nothing under a trigger caused by an extra attack (extra attacks still fire `OnAttack`, `OnAttackHit`, procs and counters) and nothing under a reaction (see Reactive triggers); derived triggers stop at depth 2; cleave, splash, DoT, reflection and burn never send attack events; one trigger per distinct item and per learned ability per attack. Extra attacks start the frame after the effect that requested them
 
 Recipes (CSV rows, `trigger,target,effect_type,effect_id,value,...`):
 
@@ -322,6 +348,7 @@ Recipes (CSV rows, `trigger,target,effect_type,effect_id,value,...`):
 | Double attack | `on_attack_hit,attacker,proc,on_double,25` + `on_double,trigger_unit,perform_attack,,100` |
 | Multi-target attack | `on_attack,units_in_radius,perform_attack,exclude_trigger_unit,70,,,600,2` (value = damage %, radius, amount = max targets) |
 | Attack counter | `on_attack_hit,attacker,counter,on_fourth,4` + `on_fourth,...` rows |
+| Pseudo-random bash | `on_attack_hit,owner,pseudo_proc,on_bash,25` + `on_bash,...` rows (same columns as `proc`) |
 | Range / projectile speed | passive or timed `attack_range`; passive `attack_projectile_speed` |
 
 Samples: `basher`, `desolator`, `crit_blade`, `split_bow`, `mana_breaker`, `thunder_axe` in `data/examples/`. Out of scope: orb uniqueness, autocast orbs, bounce / pierce attack projectiles.
@@ -405,7 +432,7 @@ skewer,0,on_cast,caster,movement,dash,900,,0.6,,,,
 skewer,1,on_unit_contact,trigger_unit,movement,drag,,,,,,,
 ```
 
-- `trigger`: `on_cast`, `on_projectile_hit`, `on_unit_contact` (a dash or charge touched an enemy; trigger unit = that enemy), `on_movement_end` (a dash or charge ended; trigger unit = the chased unit if reached, affected units = everyone touched), `on_impact`, `on_channel_tick`, `on_channel_end` (channel completed), `on_channel_interrupted` (channel cut short by silence/stun/mute; a new order fires neither), `on_expire`, `while_toggled` (toggle abilities only: `stat_modifier` or `apply_status,mana_shield` on `caster`, no duration; applied while the toggle is on; the upkeep is the ability row's `toggle_mana_per_sec`), or any other `on_…` name raised by a custom mechanic
+- `trigger`: reactive triggers (below) and `on_cast`, `on_projectile_hit`, `on_unit_contact` (a dash or charge touched an enemy; trigger unit = that enemy), `on_movement_end` (a dash or charge ended; trigger unit = the chased unit if reached, affected units = everyone touched), `on_impact`, `on_channel_tick`, `on_channel_end` (channel completed), `on_channel_interrupted` (channel cut short by silence/stun/mute; a new order fires neither), `on_expire`, `while_toggled` (toggle abilities only: `stat_modifier` or `apply_status,mana_shield` on `caster`, no duration; applied while the toggle is on; the upkeep is the ability row's `toggle_mana_per_sec`), or any other `on_…` name raised by a custom mechanic
 - `effect_target`: `caster`, `cast_target`, `trigger_unit`, `affected_units`, `units_in_radius` (around the trigger point; `radius` or the ability AoE; team from the ability / effect polarity)
 - `effect_type` (+ `effect_id`): `damage` (`value` or `amount`, `damage_type` physical/magical/pure), `heal` (`effect_id=mana` restores mana), `apply_status` (`stun`, `root`, `silence`, `disarm`, `slow` (% from `amount`/`value`), `turn_rate_slow`, `turn_rate_bonus` (% from `amount`, 0..400), `phased`, `forceful`, `flying`, `leash` / `tether` (`value` = radius), `debuff_immunity`, or any id as a timed `stat_modifier`), `remove_status` (`buff`/`debuff` dispel, otherwise a status id), `movement` (`knockback`, `pull`, `pull_point`, `dash`, `charge`, `drag`, `cyclone`; `value` = distance, `duration`, `amount` = charge speed — see Forced movement below; `teleport` sends `caster` / `owner` / `cast_target` / `trigger_unit` to the cast's aim point — see Teleport below), `stat_modifier` (`effect_id` = stat, `amount`, `duration`), `custom` (registered id; receives `value`, `amount`, `duration`)
 - `chain` effect type (gate): `effect_id` = the custom `on_<name>` trigger fired per hop, `value` = jumps (integer, at least 1), `radius` = jump radius in world units (above 0), `amount` = percent of the amount kept per jump (above 0, at most 100); the target is the start unit (`cast_target`, `trigger_unit`, `caster`/`owner`, `attacker`). Put the damage in rows tagged with the custom trigger; see `chain_lightning` / `storm_charm` in `data/examples/`
@@ -427,6 +454,40 @@ skewer,1,on_unit_contact,trigger_unit,movement,drag,,,,,,,
 | `stat_modifier,{health_regen,mana_regen,max_health,max_mana}` timed or toggled | flat | blank | blank | passive path unchanged |
 
   Ratios are single numbers (no per-level lists). `stat_modifier` amps are fractions; `apply_status` percents are 0..100.
+
+#### Reactive triggers in CSV
+
+The `trigger` cell is `name[:arg[:arg]]`; the base name decides everything else (which owner may use it, which targets resolve). Both generators accept all of these for abilities (learned passives included) and items:
+
+| `trigger` cell | Rust | Rules |
+| --- | --- | --- |
+| `on_damage_dealt`, `on_damage_taken`, `on_kill`, `on_death` | plain variants | `attacker` target = the unit that caused it for `on_damage_taken` / `on_death` |
+| `on_health_below:30` | `OnHealthBelow { percent: 30 }` | whole number 1..=99 |
+| `on_spell_cast`, `on_spell_hit` | plain | |
+| `on_status_applied`, `on_status_removed` with `:buff`, `:debuff` or `:<status id>` | `(StatusFilter::Any / Buff / Debuff / Id)` | id is a status id (`stun`, ...) or a timed-stat `<owner>_<stat>` id |
+| `on_cooldown_ready` | plain | invalid on passive abilities and on items with no `on_use` |
+| `on_interval:5` | `OnInterval { millis: 5000 }` | seconds, at least 0.1 |
+| `on_move` | plain | every row must be `accumulate` |
+| `on_enemy_enter:600`, `on_enemy_leave:600` | `{ radius: 600 }` | radius above 0 |
+| `while:health_below:50`, `while:moving`, `while:stationary`, `while:enemies_near:600:2`, `while:allies_near:600:1`, `while:has_status:<id>` | `While(Condition::...)` | rows are `apply_status` (or a timed `stat_modifier`), blank `duration`, target `owner` / `caster`; `has_status` may not name the status the row holds |
+
+New effect types: `pseudo_proc` (same columns as `proc`) and `accumulate` (`effect_id` = custom `on_<name>` trigger, `value` = threshold above 0, levels allowed). Both feed the unreachable-custom-trigger warning like `proc`. The generator rejects `perform_attack` under reaction triggers (also under a custom trigger fed from one), and warns when two `while` rows of one owner hold the same status id: held statuses share an id and would fight, so give each its own.
+
+Recipes:
+
+| Mechanic | Rows |
+| --- | --- |
+| Thorns | `on_damage_taken,attacker,damage,,40,magical` |
+| Heal on kill | `on_kill,owner,heal,,150` (the victim may be gone next frame: target the owner or `units_in_radius`) |
+| Last stand | `on_health_below:25,owner,apply_status,shield,,,4,,300` |
+| Mana on cast | `on_spell_cast,owner,heal,mana,30` |
+| Pulse | `on_interval:3,units_in_radius,damage,,60,magical,,500` |
+| Every 1000 units walked | `on_move,owner,accumulate,on_far_walk,1000` + `on_far_walk,owner,apply_status,phased,,,2` |
+| Aura-ish slow | `on_enemy_enter:600,trigger_unit,apply_status,slow,,,2,,30` |
+| Conditional bonus | `while:health_below:50,owner,stat_modifier,attack_damage,40` |
+| Pseudo-random stun | `on_attack_hit,owner,pseudo_proc,on_bash,25` + `on_bash,trigger_unit,apply_status,stun,,,1.2` |
+
+Samples: `thorn_mail`, `bloodstone`, `aeon_charm`, `arcane_echo`, `pulse_core`, `phase_treads`, `sentinel_ward`, `berserker_blood`, `prd_basher` and the passive ability `thornskin` in `data/examples/`; the matching bad rows (`reactor`, `aura`) are in `data/examples/invalid/`.
 
 ### Generator validation
 
@@ -506,7 +567,7 @@ A hook is a composition: an ability with `projectile_type skillshot_single` and 
 
 ### Limitations
 
-Not yet expressible without engine changes: **autocast**; **cooldown reduction / reset**; **hero / creep / building** target masks; **channel ticks** (`on_channel_tick` is defined but the shared pipeline does not emit it — custom mechanics only); delayed effects; cooldown floors other than explicit level lists; item `projectile_type` / `projectile_speed` (CSV validated, not emitted — `ProjectilePayload` is ability-scoped); and the `on_damage_taken` / `on_kill` / `on_death` item triggers (validated, not emitted yet). Item charges are spent when the item fires and refill with the next unit of the stack; they never regenerate over time the way ability charges do, and `ItemGenerator` rejects a `charge_restore_time` on items. An instant item (no cast point and no channel) fires without joining the command queue, so Shift does not queue it.
+Not yet expressible without engine changes: **autocast**; **cooldown reduction / reset**; **hero / creep / building** target masks; **channel ticks** (`on_channel_tick` is defined but the shared pipeline does not emit it — custom mechanics only); delayed effects; cooldown floors other than explicit level lists; item `projectile_type` / `projectile_speed` (CSV validated, not emitted — `ProjectilePayload` is ability-scoped);; an internal-cooldown gate for reactive passives; aura statuses applied to other units; applier-side status triggers ("when I debuff someone"); cooldown-ready on charge restore; and `on_expire` (declared, never emitted — use `on_status_removed`). A reaction cannot cancel the lethal hit (reactions resolve a frame later). Item charges are spent when the item fires and refill with the next unit of the stack; they never regenerate over time the way ability charges do, and `ItemGenerator` rejects a `charge_restore_time` on items. An instant item (no cast point and no channel) fires without joining the command queue, so Shift does not queue it.
 
 ## What's included
 

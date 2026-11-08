@@ -268,7 +268,7 @@ python3 scripts/ItemGenerator.py --check
 2. Lifesteal on `AttackBonus` — yes.
 3. Extra attacks fire procs, counters, cleave, splash — yes; only `PerformAttack` guarded.
 4. Disabled attackers cannot take instant attacks — `can_attack()` required.
-5. Plain random, no PRD.
+5. ~~Plain random, no PRD.~~ **Superseded** by `docs/plans/2026-11-08-reactive-triggers.md`: `Proc` gained `pseudo` (PRD, `pseudo_proc` in CSV) with its failure streak kept in `TriggerCounters`; plain `proc` stays plain random.
 6. Orb uniqueness, autocast orbs, bounce/pierce projectiles — out of scope.
 7. Content: examples only in `data/examples/`.
 8. Cleave/splash radius constants picked and documented by implementer.

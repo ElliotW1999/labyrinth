@@ -174,6 +174,8 @@ pub struct ResourceDrainEvent {
     pub convert_to: Option<(ResourceKind, f32)>,
     /// Caused by a landed attack's on-hit effect: burn damage is attack bonus damage.
     pub from_attack: bool,
+    /// Caused by a reaction: the burn damage it deals is reactive too.
+    pub reactive: bool,
 }
 
 /// Remove resources and fan the result out. Spending health is non-lethal (floors at 1) and
@@ -221,13 +223,16 @@ pub fn apply_resource_drain_events(
         if let (Some((ratio, damage_type)), Some(source)) = (event.burn, event.source) {
             if ratio > 0.0 {
                 let amount = removed * ratio;
-                damage.write(DamageEvent::from_effect(
-                    source,
-                    event.target,
-                    amount,
-                    damage_type,
-                    event.from_attack,
-                ));
+                damage.write(
+                    DamageEvent::from_effect(
+                        source,
+                        event.target,
+                        amount,
+                        damage_type,
+                        event.from_attack,
+                    )
+                    .reactive(event.reactive),
+                );
             }
         }
         if let (Some(ratio), Some(source)) = (event.to_source, event.source) {
@@ -467,6 +472,7 @@ mod tests {
                 to_source: None,
                 convert_to: None,
                 from_attack: false,
+                reactive: false,
             }
         }
 
@@ -530,6 +536,7 @@ mod tests {
             world.write_message(ResourceDrainEvent {
                 convert_to: Some((ResourceKind::Mana, 0.5)),
                 from_attack: false,
+                reactive: false,
                 ..event(unit, unit, ResourceKind::Health, 80.0)
             });
             run(&mut world);
@@ -549,6 +556,7 @@ mod tests {
             world.write_message(ResourceDrainEvent {
                 convert_to: Some((ResourceKind::Health, 2.0)),
                 from_attack: false,
+                reactive: false,
                 ..event(unit, unit, ResourceKind::Mana, 50.0)
             });
             run(&mut world);

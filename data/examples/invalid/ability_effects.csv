@@ -20,3 +20,4 @@ leech,1,on_cast,cast_target,resource,mana_drain,100,,,,0.5,intelligence,1
 leech,2,on_cast,caster,resource,mana_drain,100,,,,0.5,,
 leech,3,on_cast,cast_target,chain,on_jump,0,,,300,75,,
 leech,4,on_jump,trigger_unit,damage,,10,magical,,,,,
+aura,1,on_cooldown_ready,caster,heal,,10,,,,,,

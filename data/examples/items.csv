@@ -17,3 +17,13 @@ mana_breaker,Mana Breaker,weapon,1900,950,2,uncommon,false,,false,,Landed attack
 thunder_axe,Thunder Axe,weapon,2600,1300,3,rare,false,,false,,Every fourth landed attack calls lightning,,,,,,,,,,
 storm_charm,Storm Charm,utility,1200,600,2,uncommon,false,,false,,Strikes an enemy and arcs to the nearest enemies nearby,20,,unit,enemy,700,,,,,
 lightning_staff,Lightning Staff,weapon,1800,900,2,rare,false,,false,,Launches a bolt that damages the enemy it strikes,25,,unit,enemy,800,0.2,,60,targeted,1200
+thorn_mail,Thorn Mail,armor,2300,1150,3,rare,false,,false,,Hurts whoever strikes the wearer,,,,,,,,,
+bloodstone,Bloodstone,accessory,2200,1100,3,rare,false,,false,,Heals the wearer whenever it lands a killing blow,,,,,,,,,
+aeon_charm,Aeon Charm,accessory,1800,900,2,rare,false,,false,,Wraps the wearer in a shield when health first drops below a quarter,,,,,,,,,
+arcane_echo,Arcane Echo,accessory,1400,700,2,uncommon,false,,false,,Casting an ability restores a little mana,,,,,,,,,
+pulse_core,Pulse Core,artifacts,2000,1000,2,rare,false,,false,,Shocks nearby enemies every three seconds,,,,,,,,,
+phase_treads,Phase Treads,accessory,1600,800,2,uncommon,false,,false,,Every 1000 units walked grants a burst of phasing,,,,,,,,,
+sentinel_ward,Sentinel Ward,utility,1200,600,2,uncommon,false,,false,,Slows enemies that walk up to the wearer,,,,,,,,,
+berserker_blood,Berserker Blood,weapon,2100,1050,2,rare,false,,false,,Hits harder while below half health,,,,,,,,,
+prd_basher,Steady Basher,weapon,2700,1350,3,rare,false,,false,,Attacks stun with a pseudo-random 25% chance (streaks stay short),,,,,,,,,
+storm_mail,Storm Mail,armor,2600,1300,3,rare,false,,false,,Every 300 damage taken arcs lightning from the attacker to nearby enemies,,,,,,,,,,

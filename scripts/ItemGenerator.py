@@ -48,6 +48,8 @@ from generator_common import (  # noqa: E402
     EFFECT_COLUMNS,
     ITEM_ACTIVATION_OPTIONAL,
     PROJECTILE_TYPES,
+    REACTIVE_NO_TRIGGER_UNIT,
+    REACTIVE_TRIGGER_NAMES,
     SKILLSHOT_TYPES,
     TARGET_TYPES,
     EffectContext,
@@ -59,6 +61,8 @@ from generator_common import (  # noqa: E402
     f32,
     find_emitted_custom_triggers,
     find_registered_custom_effects,
+    reaction_triggers,
+    warn_duplicate_held_statuses,
     warn_unemitted_triggers,
     warn_unreachable_custom_triggers,
     parse_bool,
@@ -119,7 +123,6 @@ RUST_TARGET_TYPES = {
 }
 RARITIES = {r: r.capitalize() for r in ("common", "uncommon", "rare", "epic", "legendary")}
 MAX_COMPONENTS = 5
-
 STAT_LABELS = {
     "max_health": "HP",
     "health": "HP",
@@ -149,8 +152,8 @@ GENERATED_HEADER = """\
 #[allow(unused_imports)]
 use crate::abilities::definition::{
     AbilityEffect, AbilityEffectEntry, AbilityMechanic, AbilityTrigger, AreaCenter, AreaRadius,
-    Attribute, DisplacementKind, EffectScaling, EffectTarget, LeashAnchorKind, PassiveStat, RankValue,
-    StatusSpec, TargetTeam, TargetType,
+    Attribute, Condition, DisplacementKind, EffectScaling, EffectTarget, LeashAnchorKind,
+    PassiveStat, RankValue, StatusFilter, StatusSpec, TargetTeam, TargetType,
 };
 #[allow(unused_imports)]
 use crate::components::DamageType;
@@ -345,7 +348,7 @@ def effect_context(item: Item) -> EffectContext:
     ctx.invalid_combo[("on_impact", "trigger_unit")] = "on_impact fires when the projectile hit no unit; use affected_units or units_in_radius"
     if item.projectile in SKILLSHOT_TYPES:
         ctx.invalid_combo[("on_projectile_hit", "affected_units")] = "skillshots report each unit they pass as trigger_unit (no splash)"
-    for trigger in ("passive", "on_use", "on_unit_contact", "on_movement_end", "on_attack", "on_attack_hit", "on_channel_end", "on_channel_interrupted", "on_damage_taken", "on_kill", "on_death"):
+    for trigger in ("passive", "on_use", "on_unit_contact", "on_movement_end", "on_attack", "on_attack_hit", "on_channel_end", "on_channel_interrupted", *REACTIVE_TRIGGER_NAMES):
         if trigger in ("on_use", "on_unit_contact", "on_movement_end") and target_type in ("unit", "self"):
             continue
         reason = (
@@ -359,8 +362,10 @@ def effect_context(item: Item) -> EffectContext:
     for target in ("trigger_unit", "affected_units", "attacker"):
         ctx.invalid_combo[("on_use", target)] = f"on_use has no {target.replace('_', ' ')}; use owner or units_in_radius"
     ctx.invalid_combo[("on_unit_contact", "affected_units")] = "on_unit_contact reports one unit at a time; use trigger_unit"
-    for trigger in ("on_attack", "on_attack_hit", "on_damage_taken", "on_kill", "on_death"):
+    for trigger in ("on_attack", "on_attack_hit", *REACTIVE_TRIGGER_NAMES):
         ctx.invalid_combo[(trigger, "affected_units")] = f"{trigger} has no affected units; use units_in_radius"
+    for trigger in REACTIVE_NO_TRIGGER_UNIT:
+        ctx.invalid_combo[(trigger, "trigger_unit")] = f"{trigger} has no trigger unit"
     return ctx
 
 
@@ -485,8 +490,12 @@ def load(items_csv: Path, effects_csv: Path, existing_ids: set[str], *, repo_roo
         ctx = effect_context(item)
         ctx.registered_custom = registered_custom
         ctx.owner_triggers = {e.trigger for e in effects}
+        ctx.reaction = reaction_triggers(effects)
+        if item.projectile == "none" and not any(e.trigger in ("on_use", "on_channel_end", "on_channel_interrupted") for e in effects):
+            ctx.invalid_trigger["on_cooldown_ready"] = "the item has no active (no on_use effect), so it has no cooldown to finish"
         warn_unreachable_custom_triggers(effects, emitted_triggers, report)
         warn_unemitted_triggers(effects, report)
+        warn_duplicate_held_statuses(effects, report)
         for effect in effects:
             if effect.trigger == "passive" and effect.effect_type != "stat_modifier":
                 report.error(effect.row.file, effect.row.line, "effect_type", effect.effect_type, "passive item effects must be stat_modifier (use on_use / on_attack_hit for the rest)")

@@ -27,7 +27,7 @@ use crate::dimensions::{area_contains, bounds_of};
 use crate::displacement::DisplacementEvent;
 use crate::items::ItemId;
 use crate::status::{
-    StatusChange, StatusEffect, StatusEffectEvent, StatusEffects, is_untargetable,
+    StatusChange, StatusEffect, StatusEffectEvent, StatusEffects, StatusKind, is_untargetable,
 };
 use crate::teleport::TeleportEvent;
 use crate::vitals::{self, HealKind, ResourceDrainEvent, ResourceKind};
@@ -39,25 +39,39 @@ pub enum EffectSource {
     Item(ItemId),
 }
 
-/// Derived triggers (`Proc` / `Counter`) may chain at most this deep; the gates beyond it do
+/// Derived triggers (`Proc` / `Counter` / `Accumulate`) may chain at most this deep; the gates beyond it do
 /// nothing. A trigger straight from a mechanic has depth 0.
 pub const MAX_TRIGGER_DEPTH: u8 = 2;
 
-/// How many times each `Counter` gate has run, per (source, `then` trigger).
+/// One gate's state is kept per (source, `then` trigger).
+type GateKey = (EffectSource, AbilityTrigger);
+
+/// Per-unit state of the stateful gates, keyed by (source, `then` trigger).
 #[derive(Component, Debug, Clone, Default, PartialEq)]
-pub struct TriggerCounters(pub Vec<((EffectSource, AbilityTrigger), u32)>);
+pub struct TriggerCounters {
+    /// How many times each `Counter` gate has run.
+    pub counts: Vec<(GateKey, u32)>,
+    /// Failures in a row of each pseudo-random `Proc` gate.
+    pub prd: Vec<(GateKey, u32)>,
+    /// Running sum of each `Accumulate` gate.
+    pub sums: Vec<(GateKey, f32)>,
+}
+
+fn entry_of<T: Default>(list: &mut Vec<(GateKey, T)>, key: GateKey) -> &mut T {
+    let index = match list.iter().position(|(k, _)| *k == key) {
+        Some(index) => index,
+        None => {
+            list.push((key, T::default()));
+            list.len() - 1
+        }
+    };
+    &mut list[index].1
+}
 
 impl TriggerCounters {
     /// Count one execution; true (and the count restarts) on every `every`th.
-    fn bump(&mut self, key: (EffectSource, AbilityTrigger), every: u32) -> bool {
-        let index = match self.0.iter().position(|(k, _)| *k == key) {
-            Some(index) => index,
-            None => {
-                self.0.push((key, 0));
-                self.0.len() - 1
-            }
-        };
-        let count = &mut self.0[index].1;
+    fn bump(&mut self, key: GateKey, every: u32) -> bool {
+        let count = entry_of(&mut self.counts, key);
         *count += 1;
         if *count >= every.max(1) {
             *count = 0;
@@ -66,6 +80,68 @@ impl TriggerCounters {
             false
         }
     }
+
+    /// One pseudo-random roll with nominal rate `chance`: the effective chance grows with
+    /// every failure in a row and the streak resets on success.
+    fn roll_pseudo(&mut self, key: GateKey, chance: f32, rng: &mut CombatRng) -> bool {
+        let failures = entry_of(&mut self.prd, key);
+        let effective = (prd_constant(chance) * (*failures as f32 + 1.0)).min(1.0);
+        let success = rng.roll(effective);
+        *failures = if success {
+            0
+        } else {
+            failures.saturating_add(1)
+        };
+        success
+    }
+
+    /// Add `amount` (negatives count as zero); true when the sum reached `threshold`, which
+    /// is then reduced by it (the remainder carries over).
+    fn accumulate(&mut self, key: GateKey, amount: f32, threshold: f32) -> bool {
+        if threshold <= 0.0 {
+            return false;
+        }
+        let sum = entry_of(&mut self.sums, key);
+        *sum += amount.max(0.0);
+        if *sum >= threshold {
+            *sum %= threshold;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// The per-roll step `C` of a pseudo-random distribution with long-run rate `p`: the chance
+/// on the `n`th roll since the last success is `min(1, C * n)`. Solved by bisection on the
+/// expected number of rolls per success, `sum over n of prod over k < n of (1 - C k)`.
+pub fn prd_constant(p: f32) -> f32 {
+    let p = f64::from(p);
+    if p <= 0.0 {
+        return 0.0;
+    }
+    if p >= 1.0 {
+        return 1.0;
+    }
+    let rate = |c: f64| {
+        let (mut expected, mut survive, mut n) = (0.0, 1.0, 1.0);
+        while survive > 0.0 {
+            expected += survive;
+            survive *= 1.0 - (c * n).min(1.0);
+            n += 1.0;
+        }
+        1.0 / expected
+    };
+    let (mut lo, mut hi) = (0.0, 1.0);
+    for _ in 0..60 {
+        let mid = (lo + hi) / 2.0;
+        if rate(mid) < p {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    ((lo + hi) / 2.0) as f32
 }
 
 /// What an attack-derived trigger knows about the attack that caused it.
@@ -75,6 +151,13 @@ pub struct AttackMeta {
     pub extra: bool,
     /// The main hit was a critical strike (`OnAttackHit` only).
     pub crit: bool,
+}
+
+/// Which status a status trigger (`OnStatusApplied` / `OnStatusRemoved`) is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatusMeta {
+    pub id: &'static str,
+    pub kind: StatusKind,
 }
 
 /// Who and where a trigger involved. Mechanics fill this in once so effects never
@@ -108,6 +191,15 @@ pub struct TriggerContext {
     /// Multiplier on the Damage, DrainHealth and Heal amounts of entries run under this
     /// context. 1.0 except for chain hops (falloff per jump); kept by derived contexts.
     pub magnitude: f32,
+    /// The size of the occurrence: post-mitigation damage for damage triggers, landed damage
+    /// for `OnAttackHit`, distance for `OnMove`, otherwise 1. Read by the `Accumulate` gate.
+    pub amount: f32,
+    /// Caused by damage or a status change. Effects resolved under a reaction emit
+    /// `reactive` damage, drains and statuses, which never fire damage or status triggers
+    /// again, and `PerformAttack` does nothing. Inherited by derived contexts.
+    pub reaction: bool,
+    /// The status a status trigger is about.
+    pub status: Option<StatusMeta>,
 }
 
 impl TriggerContext {
@@ -137,6 +229,9 @@ impl TriggerContext {
             attack: None,
             depth: 0,
             magnitude: 1.0,
+            amount: 1.0,
+            reaction: trigger.is_reaction(),
+            status: None,
         }
     }
 
@@ -170,6 +265,21 @@ impl TriggerContext {
         self
     }
 
+    pub fn amount(mut self, amount: f32) -> Self {
+        self.amount = amount;
+        self
+    }
+
+    pub fn reaction(mut self, reaction: bool) -> Self {
+        self.reaction = reaction;
+        self
+    }
+
+    pub fn status(mut self, status: StatusMeta) -> Self {
+        self.status = Some(status);
+        self
+    }
+
     pub fn affected(mut self, affected_units: Vec<Entity>) -> Self {
         self.affected_units = affected_units;
         self
@@ -178,6 +288,18 @@ impl TriggerContext {
 
 #[derive(Message, Debug, Clone, PartialEq)]
 pub struct AbilityTriggerEvent(pub TriggerContext);
+
+/// A cast's effects resolved onto an enemy (one per cast context and distinct enemy).
+/// Written by [`resolve_ability_triggers`]; the `OnSpellHit` dispatcher reads it next frame.
+#[derive(Message, Debug, Clone, Copy, PartialEq)]
+pub struct SpellHitEvent {
+    pub caster: Entity,
+    pub team: Team,
+    pub ability: AbilityId,
+    pub target: Entity,
+    /// Where the cast's trigger happened.
+    pub point: Vec3,
+}
 
 #[derive(Message, Debug, Clone, Copy, PartialEq)]
 pub struct HealEvent {
@@ -211,6 +333,11 @@ pub trait AbilityEffectAppExt {
     /// Register the system behind `AbilityEffect::Custom { id, .. }`. It receives the
     /// resolved targets and should emit shared gameplay events rather than mutating
     /// `Health` / stats directly.
+    ///
+    /// The input's `ctx.reaction` is true when the effect runs under a damage- or
+    /// status-class trigger. A custom effect must pass it on (`DamageEvent::reactive`,
+    /// `StatusEffectEvent::reactive`, `ResourceDrainEvent::reactive`) and must not start
+    /// attacks under it, or it bypasses the recursion guard.
     fn register_custom_effect<M>(
         &mut self,
         id: &'static str,
@@ -275,6 +402,13 @@ impl EffectRunner<'_, '_> {
             .get(entity)
             .is_ok_and(|(_, _, _, health, _)| health.is_alive())
             && (entity == ctx.caster || !is_untargetable(&self.statuses_of, entity))
+    }
+
+    /// Whether `entity` is a living unit of the team opposing the context's.
+    fn is_enemy(&self, ctx: &TriggerContext, entity: Entity) -> bool {
+        self.units
+            .get(entity)
+            .is_ok_and(|(_, _, team, health, _)| *team == ctx.team.enemy() && health.is_alive())
     }
 
     pub fn targets(
@@ -427,13 +561,16 @@ impl EffectRunner<'_, '_> {
                         self.scaled_amount(ctx, amount.at(rank), scaling, target, cast_range)
                     {
                         let amount = amount * ctx.magnitude;
-                        self.damage.write(DamageEvent::from_effect(
-                            ctx.caster,
-                            target,
-                            amount,
-                            damage_type,
-                            ctx.attack.is_some(),
-                        ));
+                        self.damage.write(
+                            DamageEvent::from_effect(
+                                ctx.caster,
+                                target,
+                                amount,
+                                damage_type,
+                                ctx.attack.is_some(),
+                            )
+                            .reactive(ctx.reaction),
+                        );
                     }
                 }
             }
@@ -450,7 +587,8 @@ impl EffectRunner<'_, '_> {
                         let amount = amount * ctx.magnitude;
                         self.damage.write(
                             DamageEvent::spell(ctx.caster, target, amount, damage_type)
-                                .drained(transfer_ratio),
+                                .drained(transfer_ratio)
+                                .reactive(ctx.reaction),
                         );
                     }
                 }
@@ -484,6 +622,7 @@ impl EffectRunner<'_, '_> {
                         to_source: (transfer_ratio > 0.0).then_some(transfer_ratio),
                         convert_to: None,
                         from_attack: ctx.attack.is_some(),
+                        reactive: ctx.reaction,
                     });
                 }
             }
@@ -502,6 +641,7 @@ impl EffectRunner<'_, '_> {
                         to_source: None,
                         convert_to,
                         from_attack: ctx.attack.is_some(),
+                        reactive: ctx.reaction,
                     });
                 }
             }
@@ -520,7 +660,7 @@ impl EffectRunner<'_, '_> {
                     source.and_then(|s| self.statuses_of.get(s).ok()),
                 );
                 for target in targets {
-                    let built = build_status_effect(
+                    let mut built = build_status_effect(
                         status,
                         rank,
                         duration.at(rank),
@@ -530,29 +670,31 @@ impl EffectRunner<'_, '_> {
                         self.attributes.get(target).ok(),
                         healer_amp,
                     );
-                    self.statuses.write(StatusEffectEvent {
-                        source,
-                        target,
-                        change: StatusChange::Apply(built),
-                    });
+                    built.reactive = ctx.reaction;
+                    self.statuses.write(
+                        StatusEffectEvent::new(source, target, StatusChange::Apply(built))
+                            .reactive(ctx.reaction),
+                    );
                 }
             }
             AbilityEffect::Dispel { kind, strength } => {
                 for target in targets {
-                    self.statuses.write(StatusEffectEvent {
-                        source,
-                        target,
-                        change: StatusChange::Dispel { kind, strength },
-                    });
+                    self.statuses.write(
+                        StatusEffectEvent::new(
+                            source,
+                            target,
+                            StatusChange::Dispel { kind, strength },
+                        )
+                        .reactive(ctx.reaction),
+                    );
                 }
             }
             AbilityEffect::RemoveStatus { id } => {
                 for target in targets {
-                    self.statuses.write(StatusEffectEvent {
-                        source,
-                        target,
-                        change: StatusChange::Remove(id),
-                    });
+                    self.statuses.write(
+                        StatusEffectEvent::new(source, target, StatusChange::Remove(id))
+                            .reactive(ctx.reaction),
+                    );
                 }
             }
             AbilityEffect::Displace {
@@ -588,8 +730,9 @@ impl EffectRunner<'_, '_> {
                 max_targets,
                 exclude_trigger_unit,
             } => {
-                // The one recursion guard: an extra attack never causes another.
-                if ctx.attack.is_some_and(|attack| attack.extra) {
+                // Recursion guards: an extra attack never causes another, and a reaction
+                // (damage- or status-class trigger) never starts attacks.
+                if ctx.reaction || ctx.attack.is_some_and(|attack| attack.extra) {
                     return;
                 }
                 let mut chosen: Vec<(f32, Entity)> = targets
@@ -615,8 +758,26 @@ impl EffectRunner<'_, '_> {
                     });
                 }
             }
-            AbilityEffect::Proc { chance, then } => {
-                if self.gate_open(ctx) && self.rng.roll(chance.at(rank)) {
+            AbilityEffect::Proc {
+                chance,
+                then,
+                pseudo,
+            } => {
+                if !self.gate_open(ctx) {
+                    return;
+                }
+                let chance = chance.at(rank);
+                let fired = if pseudo {
+                    let key = (ctx.source, then);
+                    match self.counters.get_mut(ctx.caster) {
+                        Ok(mut counters) => counters.roll_pseudo(key, chance, &mut self.rng),
+                        // No state to keep, so nothing to bias: a plain roll.
+                        Err(_) => self.rng.roll(chance),
+                    }
+                } else {
+                    self.rng.roll(chance)
+                };
+                if fired {
                     self.derived.push(ctx.derived(then));
                 }
             }
@@ -674,6 +835,18 @@ impl EffectRunner<'_, '_> {
                         next.magnitude = ctx.magnitude * falloff.powi(index as i32 + 1);
                         self.derived.push(next);
                     }
+                }
+            }
+            AbilityEffect::Accumulate { threshold, then } => {
+                if !self.gate_open(ctx) {
+                    return;
+                }
+                let key = (ctx.source, then);
+                let fired = self.counters.get_mut(ctx.caster).is_ok_and(|mut counters| {
+                    counters.accumulate(key, ctx.amount, threshold.at(rank))
+                });
+                if fired {
+                    self.derived.push(ctx.derived(then));
                 }
             }
             AbilityEffect::Custom {
@@ -786,6 +959,7 @@ pub fn resolve_ability_triggers(
     mut triggers: MessageReader<AbilityTriggerEvent>,
     defs: Res<AbilityDefinitions>,
     mut runner: EffectRunner,
+    mut spell_hits: MessageWriter<SpellHitEvent>,
 ) {
     // First in, first out: gates append derived contexts behind everything already queued,
     // so the order (and the RNG draw order) is fixed by message order.
@@ -795,13 +969,39 @@ pub fn resolve_ability_triggers(
         let Some(params) = source_params(ctx.source, &defs, ctx.rank) else {
             continue;
         };
+        // Only a cast's own contexts (not gates' derived ones, not reactions) can hit.
+        let spell = match ctx.source {
+            EffectSource::Ability(ability) if ctx.depth == 0 && ctx.trigger.is_cast_phase() => {
+                Some(ability)
+            }
+            _ => None,
+        };
+        let mut enemies_hit: Vec<Entity> = Vec::new();
         for entry in params
             .entries
             .iter()
             .filter(|entry| entry.trigger == ctx.trigger)
         {
             let targets = runner.targets(&ctx, entry.target, params.aoe_radius);
+            if spell.is_some() && entry.effect.acts_on_targets() {
+                for &target in &targets {
+                    if runner.is_enemy(&ctx, target) && !enemies_hit.contains(&target) {
+                        enemies_hit.push(target);
+                    }
+                }
+            }
             runner.execute(&ctx, &entry.effect, targets, params.cast_range);
+        }
+        if let Some(ability) = spell {
+            for target in enemies_hit {
+                spell_hits.write(SpellHitEvent {
+                    caster: ctx.caster,
+                    team: ctx.team,
+                    ability,
+                    target,
+                    point: ctx.point,
+                });
+            }
         }
         queue.extend(runner.take_derived());
     }
@@ -834,5 +1034,121 @@ pub fn apply_mana_restore_events(
         if let Ok(mut mana) = targets.get_mut(event.target) {
             mana.current = (mana.current + event.amount).min(mana.max);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(name: &'static str) -> GateKey {
+        (
+            EffectSource::Item(ItemId::HeartwoodBand),
+            AbilityTrigger::Custom(name),
+        )
+    }
+
+    #[test]
+    fn prd_constant_matches_known_values() {
+        assert!((prd_constant(0.25) - 0.0847).abs() < 1e-3);
+        assert!((prd_constant(0.5) - 0.3021).abs() < 1e-3);
+        assert!((prd_constant(0.1) - 0.01475).abs() < 1e-3);
+        assert_eq!(prd_constant(0.0), 0.0);
+        assert_eq!(prd_constant(1.0), 1.0);
+    }
+
+    #[test]
+    fn prd_long_run_rate_matches_nominal() {
+        let mut rng = CombatRng::default();
+        rng.seed(0x5EED);
+        let mut counters = TriggerCounters::default();
+        let rolls = 20_000;
+        let procs = (0..rolls)
+            .filter(|_| counters.roll_pseudo(key("on_bash"), 0.25, &mut rng))
+            .count();
+        let rate = procs as f32 / rolls as f32;
+        assert!((rate - 0.25).abs() < 0.01, "long-run rate was {rate}");
+    }
+
+    #[test]
+    fn prd_failures_reset_on_success_and_are_per_source() {
+        let mut rng = CombatRng::default();
+        rng.seed(7);
+        let mut counters = TriggerCounters::default();
+        let failures = |counters: &TriggerCounters, k| {
+            counters
+                .prd
+                .iter()
+                .find(|(key, _)| *key == k)
+                .map_or(0, |(_, n)| *n)
+        };
+        let mut streak = 0;
+        let mut saw_success = false;
+        for _ in 0..200 {
+            let success = counters.roll_pseudo(key("on_a"), 0.25, &mut rng);
+            streak = if success { 0 } else { streak + 1 };
+            assert_eq!(failures(&counters, key("on_a")), streak);
+            saw_success |= success;
+        }
+        assert!(
+            saw_success,
+            "a 25% pseudo-random proc succeeds within 200 rolls"
+        );
+        assert_eq!(
+            failures(&counters, key("on_b")),
+            0,
+            "other gates keep their own streak"
+        );
+        // A guaranteed proc never builds a streak.
+        assert!(counters.roll_pseudo(key("on_b"), 1.0, &mut rng));
+        assert_eq!(failures(&counters, key("on_b")), 0);
+    }
+
+    #[test]
+    fn accumulate_fires_at_threshold_and_keeps_remainder() {
+        let mut counters = TriggerCounters::default();
+        let mut push = |amount| counters.accumulate(key("on_full"), amount, 100.0);
+        assert!(!push(60.0));
+        assert!(push(60.0), "120 reaches 100");
+        assert!(!push(70.0), "20 carried over + 70 = 90");
+        assert!(!push(-500.0), "negative amounts count as zero");
+        assert!(push(10.0), "exactly 100 again");
+        assert!(!push(0.0));
+        let mut zero = TriggerCounters::default();
+        assert!(
+            !zero.accumulate(key("on_never"), 5.0, 0.0),
+            "no threshold, no fire"
+        );
+    }
+
+    #[test]
+    fn derived_context_inherits_reaction() {
+        let caster = Entity::from_raw_u32(1).unwrap();
+        let root = TriggerContext::new(
+            AbilityTrigger::OnDamageTaken,
+            EffectSource::Item(ItemId::HeartwoodBand),
+            caster,
+            Team::Radiant,
+            1,
+            Vec3::ZERO,
+            Vec3::ZERO,
+        )
+        .amount(42.0);
+        assert!(root.reaction, "damage taken is a reaction trigger");
+        let derived = root.derived(AbilityTrigger::Custom("on_thorns"));
+        assert!(derived.reaction);
+        assert_eq!(derived.depth, 1);
+        assert_eq!(derived.amount, 42.0, "the occurrence size carries over");
+
+        let attack = TriggerContext::new(
+            AbilityTrigger::OnAttackHit,
+            EffectSource::Item(ItemId::HeartwoodBand),
+            caster,
+            Team::Radiant,
+            1,
+            Vec3::ZERO,
+            Vec3::ZERO,
+        );
+        assert!(!attack.derived(AbilityTrigger::Custom("on_x")).reaction);
     }
 }
