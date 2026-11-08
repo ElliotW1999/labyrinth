@@ -71,6 +71,7 @@ impl Plugin for AbilitiesPlugin {
             .add_message::<AbilityCastEvent>()
             .add_message::<AbilityTriggerEvent>()
             .add_message::<crate::abilities::effects::SpellHitEvent>()
+            .add_message::<crate::abilities::reactive_triggers::CooldownReadyEvent>()
             .add_message::<HealEvent>()
             .add_message::<ManaRestoreEvent>()
             .add_message::<vitals::ResourceDrainEvent>()
@@ -109,6 +110,8 @@ impl Plugin for AbilitiesPlugin {
                     (
                         attack_triggers::attack_triggers,
                         (tick_forced_movement, settle_grounded_units).chain(),
+                        reactive_triggers::interval_triggers,
+                        reactive_triggers::cooldown_triggers,
                         reactive_triggers::cast_triggers,
                         reactive_triggers::damage_triggers,
                         reactive_triggers::status_triggers
@@ -173,11 +176,20 @@ struct AoeIndicator;
 #[derive(Component)]
 struct TrajectoryIndicator;
 
-fn tick_ability_cooldowns(time: Res<Time>, mut query: Query<&mut AbilityLoadout>) {
+fn tick_ability_cooldowns(
+    time: Res<Time>,
+    mut query: Query<(Entity, &mut AbilityLoadout)>,
+    mut ready: MessageWriter<reactive_triggers::CooldownReadyEvent>,
+) {
     let dt = time.delta_secs();
-    for mut loadout in &mut query {
+    for (owner, mut loadout) in &mut query {
         for slot in &mut loadout.slots {
-            slot.cooldown.tick(dt);
+            if slot.cooldown.tick(dt) {
+                ready.write(reactive_triggers::CooldownReadyEvent {
+                    owner,
+                    source: effects::EffectSource::Ability(slot.id),
+                });
+            }
         }
     }
 }
@@ -651,6 +663,7 @@ mod tests {
             .add_message::<AbilityCastEvent>()
             .add_message::<AbilityTriggerEvent>()
             .add_message::<crate::abilities::effects::SpellHitEvent>()
+            .add_message::<crate::abilities::reactive_triggers::CooldownReadyEvent>()
             .add_message::<HealEvent>()
             .add_message::<ManaRestoreEvent>()
             .add_message::<vitals::ResourceDrainEvent>()
@@ -687,6 +700,8 @@ mod tests {
                     (
                         attack_triggers::attack_triggers,
                         (tick_forced_movement, settle_grounded_units).chain(),
+                        reactive_triggers::interval_triggers,
+                        reactive_triggers::cooldown_triggers,
                         reactive_triggers::cast_triggers,
                         reactive_triggers::damage_triggers,
                         reactive_triggers::status_triggers
@@ -4494,5 +4509,135 @@ mod tests {
         assert_eq!(fired.len(), 1, "one reaction, no loop: {fired:?}");
         let statuses = app.world().get::<StatusEffects>(holder).unwrap();
         assert!(statuses.is_stunned(), "the reaction itself took effect");
+    }
+
+    // --- Cooldown and interval triggers ---
+
+    fn interval(millis: u32) -> AbilityTrigger {
+        AbilityTrigger::OnInterval { millis }
+    }
+
+    fn set_item_cooldowns(app: &mut App, unit: Entity, remaining: f32) {
+        let mut inventory = app.world_mut().get_mut::<Inventory>(unit).unwrap();
+        for item in inventory.slots.iter_mut().flatten() {
+            item.cooldown.remaining = remaining;
+        }
+    }
+
+    #[test]
+    fn cooldown_ready_fires_once_when_reaching_zero() {
+        let mut app = test_app();
+        app.add_systems(
+            Update,
+            tick_ability_cooldowns.before(reactive_triggers::cooldown_triggers),
+        );
+        let _defs = install_test_item_definitions([item_with_effects(vec![marker_effect(
+            AbilityTrigger::OnCooldownReady,
+        )])]);
+        with_definitions(
+            &mut app,
+            [AbilityDefinition::new(AbilityId::Shockwave).on(
+                AbilityTrigger::OnCooldownReady,
+                EffectTarget::Caster,
+                fixed_magical_damage(1.0),
+            )],
+        );
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        // Two copies, each on its own cooldown: still one trigger for the item.
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        set_item_cooldowns(&mut app, caster, 0.12);
+        app.world_mut()
+            .get_mut::<AbilityLoadout>(caster)
+            .unwrap()
+            .slots[0]
+            .cooldown
+            .remaining = 0.12;
+
+        let fired = run_collecting(&mut app, 2);
+        assert!(fired.is_empty(), "0.10 s of a 0.12 s cooldown: not yet");
+        let fired = run_collecting(&mut app, 6);
+        let ready = of_trigger(&fired, AbilityTrigger::OnCooldownReady);
+        let sources: Vec<_> = ready.iter().map(|c| c.source).collect();
+        assert_eq!(
+            sources.len(),
+            2,
+            "each source once, not again on later frames"
+        );
+        assert!(sources.contains(&EffectSource::Item(ItemId::HeartwoodBand)));
+        assert!(sources.contains(&EffectSource::Ability(AbilityId::Shockwave)));
+    }
+
+    #[test]
+    fn zero_cooldown_never_fires_ready() {
+        let mut app = test_app();
+        app.add_systems(
+            Update,
+            tick_ability_cooldowns.before(reactive_triggers::cooldown_triggers),
+        );
+        let _defs = install_test_item_definitions([item_with_effects(vec![marker_effect(
+            AbilityTrigger::OnCooldownReady,
+        )])]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        set_item_cooldowns(&mut app, caster, 0.0);
+        assert!(run_collecting(&mut app, 6).is_empty());
+    }
+
+    #[test]
+    fn interval_fires_every_period_and_pauses_while_dead() {
+        let mut app = test_app();
+        let _defs =
+            install_test_item_definitions([item_with_effects(vec![marker_effect(interval(140))])]);
+        let holder = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+
+        // 50 ms frames against a 140 ms period: fires on frames 3, 6 and 9.
+        let pattern: Vec<usize> = (0..9).map(|_| run_collecting(&mut app, 1).len()).collect();
+        assert_eq!(pattern, [0, 0, 1, 0, 0, 1, 0, 0, 1]);
+
+        // A dead owner's timer neither fires nor advances (30 ms in when it died)...
+        app.world_mut().get_mut::<Health>(holder).unwrap().current = 0.0;
+        assert!(run_collecting(&mut app, 8).is_empty());
+        // ...so after reviving it needs three more frames, not one.
+        app.world_mut().get_mut::<Health>(holder).unwrap().current = 100.0;
+        let pattern: Vec<usize> = (0..3).map(|_| run_collecting(&mut app, 1).len()).collect();
+        assert_eq!(pattern, [0, 0, 1]);
+    }
+
+    #[test]
+    fn two_copies_of_an_item_share_one_interval() {
+        let mut app = test_app();
+        let _defs =
+            install_test_item_definitions([item_with_effects(vec![marker_effect(interval(100))])]);
+        let holder = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+        give_item(&mut app, holder, ItemId::HeartwoodBand);
+
+        let fired = run_collecting(&mut app, 10);
+        assert_eq!(fired.len(), 5, "one trigger per 100 ms, not two");
+        let tracking = app
+            .world()
+            .get::<reactive_triggers::TriggerTracking>(holder);
+        assert_eq!(tracking.unwrap().intervals.len(), 1);
+    }
+
+    #[test]
+    fn sold_item_interval_is_pruned() {
+        let mut app = test_app();
+        let _defs =
+            install_test_item_definitions([item_with_effects(vec![marker_effect(interval(100))])]);
+        let holder = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+        run_collecting(&mut app, 1);
+        let tracked = |app: &App| {
+            app.world()
+                .get::<reactive_triggers::TriggerTracking>(holder)
+                .unwrap()
+                .intervals
+                .len()
+        };
+        assert_eq!(tracked(&app), 1);
+
+        app.world_mut().get_mut::<Inventory>(holder).unwrap().slots = Default::default();
+        assert!(run_collecting(&mut app, 4).is_empty());
+        assert_eq!(tracked(&app), 0, "the timer left with the item");
     }
 }

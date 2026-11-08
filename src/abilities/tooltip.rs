@@ -206,6 +206,8 @@ pub(crate) fn trigger_tag(trigger: AbilityTrigger) -> &'static str {
         AbilityTrigger::OnHealthBelow { .. } => "at low health",
         AbilityTrigger::OnStatusApplied(_) => "when afflicted",
         AbilityTrigger::OnStatusRemoved(_) => "when a status ends",
+        AbilityTrigger::OnCooldownReady => "when ready",
+        AbilityTrigger::OnInterval { .. } => "periodically",
         AbilityTrigger::OnSpellCast => "on spell cast",
         AbilityTrigger::OnSpellHit => "on spell hit",
         AbilityTrigger::OnKill => "on kill",

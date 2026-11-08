@@ -35,6 +35,7 @@ fn sim_app() -> App {
         .add_message::<ActionFiredEvent>()
         .add_message::<ActionChannelEndEvent>()
         .add_message::<AbilityCastEvent>()
+        .add_message::<crate::abilities::reactive_triggers::CooldownReadyEvent>()
         .add_plugins((MovementPlugin, UnitCommandsPlugin))
         .add_systems(Update, assign_attack_positions.in_set(SimSet::Ai))
         .add_systems(

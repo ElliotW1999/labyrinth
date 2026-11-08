@@ -721,6 +721,7 @@ mod tests {
                 .add_message::<crate::status::StatusLifecycleEvent>()
                 .add_message::<AbilityTriggerEvent>()
                 .add_message::<crate::abilities::effects::SpellHitEvent>()
+                .add_message::<crate::abilities::reactive_triggers::CooldownReadyEvent>()
                 .add_plugins(MovementPlugin)
                 .add_systems(
                     Update,

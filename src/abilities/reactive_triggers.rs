@@ -13,7 +13,7 @@ use super::effects::{
     AbilityTriggerEvent, EffectSource, SpellHitEvent, StatusMeta, TriggerContext,
 };
 use crate::combat::{DamageAppliedEvent, DamageKind};
-use crate::components::{AbilityLoadout, Team};
+use crate::components::{AbilityLoadout, Health, Team};
 use crate::items::{Inventory, ItemId};
 use crate::status::{StatusLifecycle, StatusLifecycleEvent};
 
@@ -75,6 +75,22 @@ pub(crate) fn source_has_trigger(
     !source_triggers(source, defs, |t| t == trigger).is_empty()
 }
 
+/// A source's cooldown just finished (written by the two cooldown tick systems).
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CooldownReadyEvent {
+    pub owner: Entity,
+    pub source: EffectSource,
+}
+
+/// Per-unit state of the time- and position-based reactive triggers, next to
+/// [`super::effects::TriggerCounters`]. Entries for sources the owner no longer holds are
+/// pruned every frame.
+#[derive(Component, Debug, Clone, Default, PartialEq)]
+pub struct TriggerTracking {
+    /// Seconds accumulated towards each `OnInterval` entry, per (source, trigger).
+    pub intervals: Vec<((EffectSource, AbilityTrigger), f32)>,
+}
+
 type OwnerQuery<'w, 's> = Query<
     'w,
     's,
@@ -112,6 +128,114 @@ fn fan_out(
                 owner_tf.translation,
             );
             triggers.write(AbilityTriggerEvent(build(ctx)));
+        }
+    }
+}
+
+/// `OnCooldownReady` for the source whose cooldown just finished. Copies of one item raise
+/// one trigger per frame.
+pub(crate) fn cooldown_triggers(
+    mut ready: MessageReader<CooldownReadyEvent>,
+    defs: Res<AbilityDefinitions>,
+    owners: OwnerQuery,
+    mut triggers: MessageWriter<AbilityTriggerEvent>,
+) {
+    let mut seen: Vec<(Entity, EffectSource)> = Vec::new();
+    for event in ready.read() {
+        if seen.contains(&(event.owner, event.source)) {
+            continue;
+        }
+        seen.push((event.owner, event.source));
+        let Ok((owner_tf, team, inventory, loadout)) = owners.get(event.owner) else {
+            continue;
+        };
+        // Only a source the owner still holds (and has learned) reacts.
+        let Some((source, rank)) =
+            owner_sources(inventory, loadout).find(|(source, _)| *source == event.source)
+        else {
+            continue;
+        };
+        if source_has_trigger(source, &defs, AbilityTrigger::OnCooldownReady) {
+            triggers.write(AbilityTriggerEvent(TriggerContext::new(
+                AbilityTrigger::OnCooldownReady,
+                source,
+                event.owner,
+                *team,
+                rank,
+                owner_tf.translation,
+                owner_tf.translation,
+            )));
+        }
+    }
+}
+
+/// `OnInterval { millis }` for each source the owner holds. Timers run on game time, are
+/// shared by copies of an item, pause while the owner is dead, and fire at most once per
+/// frame (any excess carries to the next frame).
+pub(crate) fn interval_triggers(
+    time: Res<Time>,
+    defs: Res<AbilityDefinitions>,
+    mut owners: Query<(
+        Entity,
+        &Transform,
+        &Team,
+        Option<&Health>,
+        Option<&Inventory>,
+        Option<&AbilityLoadout>,
+        &mut TriggerTracking,
+    )>,
+    mut triggers: MessageWriter<AbilityTriggerEvent>,
+) {
+    let dt = time.delta_secs();
+    for (owner, owner_tf, team, health, inventory, loadout, mut tracking) in &mut owners {
+        if inventory.is_none() && loadout.is_none() {
+            continue;
+        }
+        let alive = health.is_none_or(|health| health.is_alive());
+        let mut held: Vec<(EffectSource, u32, AbilityTrigger)> = Vec::new();
+        for (source, rank) in owner_sources(inventory, loadout) {
+            for trigger in source_triggers(
+                source,
+                &defs,
+                |t| matches!(t, AbilityTrigger::OnInterval { millis } if millis > 0),
+            ) {
+                held.push((source, rank, trigger));
+            }
+        }
+        // Drop timers of sources the owner no longer holds.
+        tracking
+            .intervals
+            .retain(|(key, _)| held.iter().any(|(s, _, t)| *key == (*s, *t)));
+        if !alive {
+            continue;
+        }
+        for (source, rank, trigger) in held {
+            let AbilityTrigger::OnInterval { millis } = trigger else {
+                continue;
+            };
+            let period = millis as f32 / 1000.0;
+            let key = (source, trigger);
+            let index = match tracking.intervals.iter().position(|(k, _)| *k == key) {
+                Some(index) => index,
+                None => {
+                    tracking.intervals.push((key, 0.0));
+                    tracking.intervals.len() - 1
+                }
+            };
+            let elapsed = &mut tracking.intervals[index].1;
+            *elapsed += dt;
+            if *elapsed >= period {
+                *elapsed -= period;
+                triggers.write(AbilityTriggerEvent(TriggerContext::new(
+                    trigger,
+                    source,
+                    owner,
+                    *team,
+                    rank,
+                    owner_tf.translation,
+                    owner_tf.translation,
+                )));
+            }
         }
     }
 }

@@ -1083,11 +1083,20 @@ fn spawn_shops(
 
 /// Ticks in the `AbilitiesPlugin` chain next to the ability cooldowns, so both sources
 /// share the authority gate. Charges do not regenerate.
-pub(crate) fn tick_item_cooldowns(time: Res<Time>, mut inventories: Query<&mut Inventory>) {
+pub(crate) fn tick_item_cooldowns(
+    time: Res<Time>,
+    mut inventories: Query<(Entity, &mut Inventory)>,
+    mut ready: MessageWriter<crate::abilities::reactive_triggers::CooldownReadyEvent>,
+) {
     let dt = time.delta_secs();
-    for mut inv in &mut inventories {
+    for (owner, mut inv) in &mut inventories {
         for item in inv.slots.iter_mut().flatten() {
-            item.cooldown.tick(dt);
+            if item.cooldown.tick(dt) {
+                ready.write(crate::abilities::reactive_triggers::CooldownReadyEvent {
+                    owner,
+                    source: crate::abilities::effects::EffectSource::Item(item.id),
+                });
+            }
         }
     }
 }
@@ -2896,6 +2905,7 @@ mod tests {
             .add_message::<crate::actions::ActionChannelEndEvent>()
             .add_message::<AbilityTriggerEvent>()
             .add_message::<crate::abilities::effects::SpellHitEvent>()
+            .add_message::<crate::abilities::reactive_triggers::CooldownReadyEvent>()
             .add_message::<HealEvent>()
             .add_message::<crate::abilities::effects::ManaRestoreEvent>()
             .add_message::<crate::vitals::ResourceDrainEvent>()

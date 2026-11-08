@@ -160,6 +160,14 @@ pub enum AbilityTrigger {
     OnStatusApplied(StatusFilter),
     /// A status matching the filter left the owner (expired, dispelled, removed or broken).
     OnStatusRemoved(StatusFilter),
+    /// This source's cooldown ran out (never for a zero cooldown). Not emitted for charge
+    /// restoration. Fires for abilities and active items; copies of one item share it.
+    OnCooldownReady,
+    /// Every `millis` of the owner's life while it holds the source (copies of an item share
+    /// one timer; it pauses while the owner is dead and fires at most once per frame).
+    OnInterval {
+        millis: u32,
+    },
     /// The owner finished casting an ability. Fans out to every other source the owner
     /// holds (never the cast ability itself); item uses are not spell casts.
     OnSpellCast,
