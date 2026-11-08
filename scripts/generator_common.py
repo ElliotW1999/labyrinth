@@ -230,7 +230,9 @@ GLOBAL_RANGE_KEYWORD = "global"
 GLOBAL_CAST_RANGE = 25_000.0
 
 TARGET_TYPES = ("unit", "point", "direction", "no_target", "self")
-PROJECTILE_TYPES = ("none", "targeted", "skillshot", "skillshot_single")
+# `targeted_each` sends one homing projectile at every unit of target_team inside aoe_radius
+# (abilities only: no_target around the caster, or point around the aim).
+PROJECTILE_TYPES = ("none", "targeted", "targeted_each", "skillshot", "skillshot_single")
 # Skillshots fly the cast range; `skillshot_single` stops at the first enemy it strikes (a hook).
 SKILLSHOT_TYPES = ("skillshot", "skillshot_single")
 
@@ -673,6 +675,16 @@ def validate_activation(
         err("projectile_speed", "projectile_speed requires projectile_type targeted, skillshot, or skillshot_single")
     if spec.projectile_type == "targeted" and spec.target_type != "unit":
         err("projectile_type", f"targeted projectiles home in on a unit; target_type is {spec.target_type}")
+    if spec.projectile_type == "targeted_each":
+        if kind == "item":
+            err("projectile_type", "targeted_each needs an aoe_radius, which items do not have yet; use targeted")
+        else:
+            if spec.target_type not in ("no_target", "point"):
+                err("projectile_type", f"targeted_each is centred on the caster (no_target) or the aim (point); target_type is {spec.target_type}")
+            if not (spec.aoe_radius and all(r > 0 for r in spec.aoe_radius)):
+                err("aoe_radius", "targeted_each needs a non-zero aoe_radius at every rank (the area the projectiles are sent into)")
+            if spec.target_team == "self":
+                err("target_team", "targeted_each sends projectiles at other units; use enemy, ally or both")
     if spec.projectile_type in SKILLSHOT_TYPES and spec.target_type not in ("point", "direction"):
         err("projectile_type", f"skillshots fly toward a point or direction; target_type is {spec.target_type}")
 
@@ -725,6 +737,16 @@ def projectile_mechanic_rust(
         "AbilityMechanic::Projectile { "
         f"splash_radius: AreaRadius::Ability, speed: {speed}, skillshot: {skillshot}, "
         f"first_hit: {first_hit}, end_radius: {end} }}"
+    )
+
+
+def projectile_each_mechanic_rust(target_type: str, target_team: str, projectile_speed: float | None) -> str:
+    """`AbilityMechanic::ProjectileToEach { ... }` for projectile_type targeted_each."""
+    center = "Caster" if target_type == "no_target" else "Aim"
+    speed = f"Some({f32(projectile_speed)})" if projectile_speed else "None"
+    return (
+        f"AbilityMechanic::ProjectileToEach {{ center: AreaCenter::{center}, "
+        f"team: TargetTeam::{ACTION_TEAMS[target_team]}, speed: {speed} }}"
     )
 
 

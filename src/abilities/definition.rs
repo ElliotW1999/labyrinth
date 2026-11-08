@@ -903,6 +903,16 @@ pub enum AbilityMechanic {
         /// end of its flight. `None` keeps the width constant.
         end_radius: Option<RankValue>,
     },
+    /// One homing spell projectile per living, targetable unit of `team` inside the ability's
+    /// `aoe_radius` around `center` (the caster is never one). Each projectile carries the
+    /// cast's payload with that unit as its cast target, and its hit fires `OnProjectileHit`
+    /// with the struck unit as the trigger unit. No splash.
+    ProjectileToEach {
+        center: AreaCenter,
+        team: TargetTeam,
+        /// World units per second; `None` uses the default spell projectile speed.
+        speed: Option<f32>,
+    },
     /// Caster follows up with auto-attacks on the unit target.
     AttackUnitTarget,
     RingFx {

@@ -28,6 +28,7 @@ from generator_common import (  # noqa: E402
     warn_unemitted_triggers,
     warn_unreachable_custom_triggers,
     parse_activation_spec,
+    projectile_each_mechanic_rust,
     projectile_mechanic_rust,
     validate_activation,
 )
@@ -498,6 +499,46 @@ class ProjectileTypeTests(unittest.TestCase):
     def test_items_reject_end_radius_until_they_have_an_aoe_radius(self) -> None:
         _, report = self._end_radius(kind="item", aoe_radius="")
         self.assertIn("items have no aoe_radius", report.errors[0].message)
+
+    def _each(self, kind: str = "ability", **overrides: str):
+        cells = {
+            "target_type": "no_target",
+            "target_team": "enemy",
+            "aoe_radius": "600",
+            "projectile_type": "targeted_each",
+            "projectile_speed": "900",
+        }
+        if kind == "item":
+            del cells["aoe_radius"]
+        cells.update(overrides)
+        report = Report()
+        spec = parse_activation_spec(row(cells), kind=kind, has_active_effects=True, report=report, levels=kind == "ability")
+        validate_activation(row(cells), spec, kind=kind, ability_type="active", report=report)
+        return spec, report
+
+    def test_targeted_each_accepts_no_target_and_point_abilities(self) -> None:
+        for target_type, center in (("no_target", "Caster"), ("point", "Aim")):
+            spec, report = self._each(target_type=target_type, cast_range="900")
+            self.assertFalse(report.errors, target_type)
+            rust = projectile_each_mechanic_rust(target_type, "enemy", spec.projectile_speed)
+            self.assertIn(f"center: AreaCenter::{center}", rust)
+            self.assertIn("team: TargetTeam::Enemy", rust)
+            self.assertIn("speed: Some(900.0)", rust)
+
+    def test_targeted_each_needs_aoe_radius_and_a_valid_target_type(self) -> None:
+        _, report = self._each(aoe_radius="")
+        self.assertEqual(report.errors[0].field, "aoe_radius")
+        _, report = self._each(aoe_radius="0")
+        self.assertEqual(report.errors[0].field, "aoe_radius")
+        _, report = self._each(target_type="unit", cast_range="600")
+        self.assertEqual(report.errors[0].field, "projectile_type")
+        _, report = self._each(target_team="self")
+        self.assertTrue(report.errors)
+
+    def test_items_reject_targeted_each(self) -> None:
+        _, report = self._each(kind="item", target_type="no_target", target_team="enemy")
+        self.assertEqual(report.errors[0].field, "projectile_type")
+        self.assertIn("items do not have yet", report.errors[0].message)
 
 
 def _effect(

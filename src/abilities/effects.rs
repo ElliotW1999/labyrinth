@@ -16,7 +16,7 @@ use bevy::prelude::*;
 use super::catalog::AbilityDefinitions;
 use super::definition::{
     AbilityEffect, AbilityEffectEntry, AbilityTrigger, AreaCenter, AreaRadius, Attribute,
-    EffectScaling, EffectTarget, StatusBuildContext,
+    EffectScaling, EffectTarget, StatusBuildContext, TargetTeam,
 };
 use super::mechanics::{ChainCandidate, chain_hops};
 use crate::actions::{ActionId, team_allows};
@@ -372,6 +372,28 @@ type UnitQuery<'w, 's> = Query<
     ),
 >;
 
+/// The one "is this unit inside the area" predicate behind `EffectTarget::UnitsInRadius` and
+/// `AbilityMechanic::ProjectileToEach`: alive, not held out of play (`untargetable`, which the
+/// caller waives for the caster itself), on a team `team_rule` allows relative to
+/// `caster_team`, and within `radius` of `center` (the unit's bounds count).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn unit_in_area(
+    team_rule: TargetTeam,
+    caster_team: Team,
+    unit_team: Team,
+    health: &Health,
+    bound: Option<&BoundRadius>,
+    position: Vec3,
+    untargetable: bool,
+    center: Vec3,
+    radius: f32,
+) -> bool {
+    health.is_alive()
+        && !untargetable
+        && team_allows(team_rule, caster_team, unit_team)
+        && area_contains(center, radius, position, bounds_of(bound))
+}
+
 /// Where a bounded teleport lands: `aim`, with its flat distance from `origin` clamped to
 /// `min..=max` along the same line. An aim on top of `origin` (when a minimum applies) uses
 /// `facing`. With no bounds the destination is exactly `aim`.
@@ -482,10 +504,17 @@ impl EffectRunner<'_, '_> {
                 self.units
                     .iter()
                     .filter(|(e, tf, unit_team, health, bound)| {
-                        health.is_alive()
-                            && (*e == ctx.caster || !is_untargetable(&self.statuses_of, *e))
-                            && team_allows(team, ctx.team, **unit_team)
-                            && area_contains(center, radius, tf.translation, bounds_of(*bound))
+                        unit_in_area(
+                            team,
+                            ctx.team,
+                            **unit_team,
+                            health,
+                            *bound,
+                            tf.translation,
+                            *e != ctx.caster && is_untargetable(&self.statuses_of, *e),
+                            center,
+                            radius,
+                        )
                     })
                     .map(|(e, ..)| e)
                     .collect()

@@ -58,6 +58,7 @@ from generator_common import (  # noqa: E402
     warn_unemitted_triggers,
     warn_unreachable_custom_triggers,
     parse_activation_spec,
+    projectile_each_mechanic_rust,
     projectile_mechanic_rust,
     parse_effect_rows,
     parse_enum,
@@ -292,6 +293,8 @@ def effect_context(a: Ability) -> EffectContext:
         ctx.invalid_combo[(trigger, "affected_units")] = f"{trigger} has no affected units"
     if a.projectile in SKILLSHOT_TYPES:
         ctx.invalid_combo[("on_projectile_hit", "affected_units")] = "skillshots report each unit they pass as trigger_unit (no splash)"
+    if a.projectile == "targeted_each":
+        ctx.invalid_combo[("on_projectile_hit", "affected_units")] = "targeted_each projectiles report the struck unit as trigger_unit (no splash)"
     return ctx
 
 
@@ -318,7 +321,11 @@ def ability_fn(a: Ability) -> str:
         lines.append(f"        .toggle_upkeep({rank_value(a.toggle_mana_per_sec)})")
     if a.max_charges:
         lines.append(f"        .charges({a.max_charges}, {f32(a.charge_restore_time or 0.0)})")
-    if a.projectile != "none":
+    if a.projectile == "targeted_each":
+        if a.rust_target_type == "NoTarget":
+            lines.append("        .mechanic(shockwave_ring())")
+        lines.append(f"        .mechanic({projectile_each_mechanic_rust(a.target_type, a.target_team, a.projectile_speed)})")
+    elif a.projectile != "none":
         lines.append(f"        .mechanic({projectile_mechanic_rust(a.projectile, a.projectile_speed, a.projectile_end_radius)})")
     elif a.behavior == "Active" and a.aoe_radius and any(a.aoe_radius):
         if a.rust_target_type in ("NoTarget", "SelfTarget"):

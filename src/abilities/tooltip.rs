@@ -123,6 +123,11 @@ fn kind_line(def: &AbilityDefinition) -> String {
                 skillshot: true, ..
             } => "Skillshot",
             AbilityMechanic::Projectile { .. } => "Projectile",
+            AbilityMechanic::ProjectileToEach { team, .. } => match team {
+                TargetTeam::Enemy => "Projectile at each enemy in radius",
+                TargetTeam::Ally | TargetTeam::SelfOnly => "Projectile at each ally in radius",
+                TargetTeam::Any => "Projectile at each unit in radius",
+            },
             AbilityMechanic::AttackUnitTarget => "Attack",
             AbilityMechanic::RingFx { .. } => continue,
         };

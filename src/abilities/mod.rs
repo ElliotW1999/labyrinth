@@ -2153,6 +2153,109 @@ mod tests {
         spawned
     }
 
+    fn scream_ability() -> AbilityDefinition {
+        AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(
+                TargetType::NoTarget,
+                RankValue::ZERO,
+                RankValue::fixed(600.0),
+            )
+            .team(TargetTeam::Enemy)
+            .costs(RankValue::fixed(8.0), RankValue::fixed(100.0))
+            .mechanic(AbilityMechanic::ProjectileToEach {
+                center: super::definition::AreaCenter::Caster,
+                team: TargetTeam::Enemy,
+                speed: Some(900.0),
+            })
+            .on(
+                AbilityTrigger::OnProjectileHit,
+                EffectTarget::TriggerUnit,
+                fixed_magical_damage(100.0),
+            )
+    }
+
+    /// Casts the scream from the origin; returns the projectiles spawned.
+    fn cast_scream(app: &mut App, caster: Entity) -> Vec<SpawnProjectileEvent> {
+        request(app, caster, 3, CastTarget::None);
+        let mut spawned = Vec::new();
+        for _ in 0..12 {
+            step(app);
+            let messages = app.world().resource::<Messages<SpawnProjectileEvent>>();
+            spawned.extend(messages.iter_current_update_messages().copied());
+        }
+        spawned
+    }
+
+    #[test]
+    fn projectile_to_each_sends_one_homing_projectile_per_valid_unit() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(scream_ability());
+        let caster = spawn_caster(&mut app, KIT);
+        let inside: Vec<_> = [100.0, 200.0, 300.0]
+            .into_iter()
+            .map(|x| spawn_unit(&mut app, Team::Dire, Vec3::new(x, 0.0, 0.0)))
+            .collect();
+        let _outside = spawn_unit(&mut app, Team::Dire, Vec3::new(900.0, 0.0, 0.0));
+        let _ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(150.0, 0.0, 0.0));
+        let cycloned = spawn_unit(&mut app, Team::Dire, Vec3::new(250.0, 0.0, 0.0));
+        app.world_mut()
+            .entity_mut(cycloned)
+            .insert(crate::status::StatusEffects {
+                effects: vec![crate::status::StatusEffect::buff("cyclone", 5.0)],
+            });
+
+        let spawned = cast_scream(&mut app, caster);
+        let mut targets: Vec<_> = spawned.iter().filter_map(|p| p.target).collect();
+        targets.sort();
+        let mut expected = inside.clone();
+        expected.sort();
+        assert_eq!(
+            targets, expected,
+            "3 inside; outside, ally, cycloned and caster skipped"
+        );
+        for projectile in &spawned {
+            assert_eq!(projectile.splash_radius, 0.0);
+            assert_eq!(projectile.speed, Some(900.0));
+            assert_eq!(projectile.skillshot_width, None);
+            assert_eq!(projectile.payload.caster, caster);
+            assert_eq!(
+                projectile.payload.source,
+                EffectSource::Ability(AbilityId::Bulwark)
+            );
+            assert_eq!(projectile.payload.cast_target, projectile.target);
+        }
+    }
+
+    #[test]
+    fn projectile_to_each_hits_fire_on_projectile_hit_once_per_unit() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(scream_ability());
+        let caster = spawn_caster(&mut app, KIT);
+        let inside: Vec<_> = [100.0, 200.0, 300.0]
+            .into_iter()
+            .map(|x| spawn_unit(&mut app, Team::Dire, Vec3::new(x, 0.0, 0.0)))
+            .collect();
+        let spawned = cast_scream(&mut app, caster);
+        assert_eq!(spawned.len(), 3);
+        for projectile in &spawned {
+            let unit = projectile.target.unwrap();
+            app.world_mut().write_message(hit(
+                projectile.payload,
+                Vec3::X * 100.0,
+                Some(unit),
+                Vec::new(),
+            ));
+        }
+        step(&mut app);
+        for unit in inside {
+            assert_eq!(health(&app, unit), 900.0, "each unit is hit exactly once");
+        }
+    }
+
     #[test]
     fn execute_bonus_comes_from_effect_data() {
         let mut app = test_app();

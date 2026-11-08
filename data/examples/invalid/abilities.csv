@@ -6,3 +6,4 @@ nova,Nova,X,channelled,area,foes,,300,0.2,,10,100,,,none,,Unknown enums
 aura,Aura,innate,passive,no_target,self,,,,,,,,,none,,Passive ability with an active-only trigger
 leech,Leech,Q,active,unit,enemy,600,,0.2,,10,50,,,none,,Resource effect errors
 spear,Spear,R,active,unit,enemy,700,,0.2,,10|9|8,100,,,targeted,,Targeted ability with an end radius,450
+pulse,Pulse,E,active,no_target,enemy,,,0,,10,50,,,targeted_each,,Targeted each without aoe_radius,
