@@ -20,6 +20,7 @@ use crate::components::{
 };
 use crate::resources::SharedAssets;
 use crate::scale;
+use crate::vitals::MaxChangeRule;
 
 pub struct ItemsPlugin;
 
@@ -927,13 +928,9 @@ fn adjust_passives(
     attrs.intelligence += passives.intelligence * count;
     HeroAttributes::apply_delta(&before, attrs, health, mana, stats);
 
-    let max_health = passives.max_health * count;
-    health.max = (health.max + max_health).max(1.0);
-    health.current = (health.current + max_health.max(0.0)).min(health.max);
+    health.change_max(passives.max_health * count, MaxChangeRule::KeepMissing);
     health.regen_per_sec = (health.regen_per_sec + passives.health_regen * count).max(0.0);
-    let max_mana = passives.max_mana * count;
-    mana.max = (mana.max + max_mana).max(0.0);
-    mana.current = (mana.current + max_mana.max(0.0)).min(mana.max);
+    mana.change_max(passives.max_mana * count, MaxChangeRule::KeepMissing);
     mana.regen_per_sec = (mana.regen_per_sec + passives.mana_regen * count).max(0.0);
     stats.attack_damage += passives.attack_damage * count;
     stats.armor += passives.armor * count;
@@ -2307,6 +2304,46 @@ mod tests {
             heal_amp,
             heal_received_amp,
         ]
+    }
+
+    #[test]
+    fn passive_max_health_keeps_missing_rule() {
+        use crate::vitals::MaxChangeRule;
+        let mut health = Health {
+            current: 400.0,
+            max: 1000.0,
+            regen_per_sec: 0.0,
+        };
+        health.change_max(200.0, MaxChangeRule::KeepMissing);
+        assert_eq!((health.current, health.max), (600.0, 1200.0), "a gain adds");
+        health.change_max(-900.0, MaxChangeRule::KeepMissing);
+        assert_eq!(
+            (health.current, health.max),
+            (300.0, 300.0),
+            "a loss only clamps"
+        );
+        health.change_max(-900.0, MaxChangeRule::KeepMissing);
+        assert_eq!((health.current, health.max), (1.0, 1.0), "never below 1");
+
+        let mut mana = Mana::new(100.0, 0.0);
+        mana.current = 20.0;
+        mana.change_max(50.0, MaxChangeRule::KeepMissing);
+        assert_eq!((mana.current, mana.max), (70.0, 150.0));
+        mana.change_max(-500.0, MaxChangeRule::KeepMissing);
+        assert_eq!((mana.current, mana.max), (0.0, 0.0));
+    }
+
+    #[test]
+    fn preserve_ratio_never_kills_a_living_unit() {
+        use crate::vitals::MaxChangeRule;
+        let mut health = Health {
+            current: 1.0,
+            max: 1000.0,
+            regen_per_sec: 0.0,
+        };
+        health.change_max(-900.0, MaxChangeRule::PreserveRatio);
+        assert_eq!(health.max, 100.0);
+        assert_eq!(health.current, 1.0);
     }
 
     #[test]

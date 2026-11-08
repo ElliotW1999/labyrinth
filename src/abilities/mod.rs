@@ -108,6 +108,7 @@ impl Plugin for AbilitiesPlugin {
                         apply_mana_restore_events,
                         apply_displacement_events,
                         apply_status_effect_events,
+                        crate::vitals::sync_status_resource_caps,
                         // Before the AI and navigation stages, so the orders it drops
                         // are gone before they are replanned or re-issued.
                         apply_teleport_events.before(crate::movement::SimSet::Ai),
@@ -166,13 +167,21 @@ fn tick_ability_cooldowns(time: Res<Time>, mut query: Query<&mut AbilityLoadout>
     }
 }
 
-fn regen_mana(time: Res<Time>, mut query: Query<(&mut Mana, Option<&Health>)>) {
+fn regen_mana(
+    time: Res<Time>,
+    mut query: Query<(&mut Mana, Option<&Health>, Option<&StatusEffects>)>,
+) {
     let dt = time.delta_secs();
-    for (mut mana, health) in &mut query {
+    for (mut mana, health, statuses) in &mut query {
         if health.is_some_and(|h| !h.is_alive()) {
             continue;
         }
-        mana.current = (mana.current + mana.regen_per_sec * dt).min(mana.max);
+        let regen = (mana.regen_per_sec
+            + statuses
+                .map(|s| s.resource_sum(crate::vitals::ResourceStat::ManaRegen))
+                .unwrap_or(0.0))
+        .max(0.0);
+        mana.current = (mana.current + regen * dt).min(mana.max);
     }
 }
 
@@ -658,7 +667,11 @@ mod tests {
                     apply_heal_events,
                     apply_mana_restore_events,
                     apply_displacement_events,
-                    apply_status_effect_events,
+                    (
+                        apply_status_effect_events,
+                        crate::vitals::sync_status_resource_caps,
+                    )
+                        .chain(),
                     apply_teleport_events,
                     apply_damage_events,
                 )
@@ -1360,6 +1373,41 @@ mod tests {
         app.update();
         assert_eq!(health(&app, dead), 0.0);
         assert_eq!(health(&app, alive), 350.0);
+    }
+
+    #[test]
+    fn timed_mana_regen_modifier_adds_and_expires() {
+        use crate::vitals::ResourceStat;
+        let mut app = test_app();
+        let unit = spawn_unit(&mut app, Team::Radiant, Vec3::ZERO);
+        app.world_mut().entity_mut(unit).insert(Mana {
+            current: 0.0,
+            max: 1000.0,
+            regen_per_sec: 1.0,
+        });
+        app.world_mut()
+            .get_mut::<StatusEffects>(unit)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::resource_modifier(
+                "mana_buff",
+                crate::status::StatusKind::Buff,
+                ResourceStat::ManaRegen,
+                4.0,
+                5.0,
+            ));
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(std::time::Duration::from_secs(1));
+        bevy::ecs::system::RunSystemOnce::run_system_once(app.world_mut(), regen_mana).unwrap();
+        assert_eq!(app.world().get::<Mana>(unit).unwrap().current, 5.0);
+        app.world_mut()
+            .get_mut::<StatusEffects>(unit)
+            .unwrap()
+            .effects
+            .clear();
+        bevy::ecs::system::RunSystemOnce::run_system_once(app.world_mut(), regen_mana).unwrap();
+        assert_eq!(app.world().get::<Mana>(unit).unwrap().current, 6.0);
     }
 
     #[test]

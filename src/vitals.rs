@@ -7,7 +7,9 @@
 // Some items are consumed only by later pipeline stages.
 #![allow(dead_code)]
 
-use crate::components::{CombatStats, Health};
+use bevy::prelude::*;
+
+use crate::components::{CombatStats, Health, Mana};
 use crate::status::StatusEffects;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,6 +146,64 @@ pub fn apply_heal(health: &mut Health, raw: f32, factor: f32) -> HealOutcome {
     HealOutcome {
         applied,
         overheal: amount - applied,
+    }
+}
+
+/// Timed max-health / max-mana modifiers already folded into `Health::max` / `Mana::max`.
+/// Inserted lazily by [`sync_status_resource_caps`].
+#[derive(Component, Debug, Clone, Copy, Default, PartialEq)]
+pub struct AppliedStatusCaps {
+    pub health: f32,
+    pub mana: f32,
+}
+
+/// Reconcile `Health::max` / `Mana::max` with the timed max modifiers every frame.
+/// Applies the difference from what was last folded in using [`MaxChangeRule::PreserveRatio`],
+/// so no removal path (expiry, dispel, refresh, immunity purge) can leak or lose max.
+pub fn sync_status_resource_caps(
+    mut commands: Commands,
+    mut units: Query<(
+        Entity,
+        &mut Health,
+        Option<&mut Mana>,
+        &StatusEffects,
+        Option<&mut AppliedStatusCaps>,
+    )>,
+) {
+    for (entity, mut health, mana, statuses, applied) in &mut units {
+        let want_health = statuses.resource_sum(ResourceStat::MaxHealth);
+        let want_mana = statuses.resource_sum(ResourceStat::MaxMana);
+        let Some(mut applied) = applied else {
+            if want_health == 0.0 && want_mana == 0.0 {
+                continue;
+            }
+            let mut caps = AppliedStatusCaps::default();
+            fold_caps(&mut caps, &mut health, mana, want_health, want_mana);
+            commands.entity(entity).insert(caps);
+            continue;
+        };
+        fold_caps(&mut applied, &mut health, mana, want_health, want_mana);
+    }
+}
+
+fn fold_caps(
+    applied: &mut AppliedStatusCaps,
+    health: &mut Health,
+    mana: Option<Mut<Mana>>,
+    want_health: f32,
+    want_mana: f32,
+) {
+    let d_health = want_health - applied.health;
+    if d_health != 0.0 {
+        health.change_max(d_health, MaxChangeRule::PreserveRatio);
+        applied.health = want_health;
+    }
+    let d_mana = want_mana - applied.mana;
+    if d_mana != 0.0 {
+        if let Some(mut mana) = mana {
+            mana.change_max(d_mana, MaxChangeRule::PreserveRatio);
+        }
+        applied.mana = want_mana;
     }
 }
 

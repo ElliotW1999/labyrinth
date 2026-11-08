@@ -2,6 +2,8 @@
 
 use bevy::prelude::*;
 
+use crate::vitals::MaxChangeRule;
+
 /// Faction affiliation. Friendly fire is disabled across systems.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Team {
@@ -37,6 +39,39 @@ impl Health {
     pub fn is_alive(self) -> bool {
         self.current > 0.0
     }
+
+    /// Change `max` by `delta` under `rule`. Never kills a living unit and never revives
+    /// a dead one; max stays at least 1.
+    pub fn change_max(&mut self, delta: f32, rule: MaxChangeRule) {
+        let old_max = self.max;
+        self.max = (self.max + delta).max(1.0);
+        if !self.is_alive() {
+            self.current = self.current.min(self.max);
+            return;
+        }
+        let next = rescale_current(self.current, old_max, self.max, delta, rule);
+        self.current = match rule {
+            MaxChangeRule::KeepMissing => next,
+            // A ratio can round a nearly empty unit down to nothing; keep it alive.
+            MaxChangeRule::PreserveRatio => next.max(1.0f32.min(self.max)),
+        };
+    }
+}
+
+/// The new `current` after a max change; shared by [`Health`] and [`Mana`].
+fn rescale_current(
+    current: f32,
+    old_max: f32,
+    new_max: f32,
+    delta: f32,
+    rule: MaxChangeRule,
+) -> f32 {
+    let next = match rule {
+        MaxChangeRule::KeepMissing => current + delta.max(0.0),
+        MaxChangeRule::PreserveRatio if old_max > 0.0 => current / old_max * new_max,
+        MaxChangeRule::PreserveRatio => current,
+    };
+    next.min(new_max)
 }
 
 #[derive(Component, Debug, Clone, Copy)]
@@ -47,6 +82,13 @@ pub struct Mana {
 }
 
 impl Mana {
+    /// Change `max` by `delta` under `rule`; max stays at least 0.
+    pub fn change_max(&mut self, delta: f32, rule: MaxChangeRule) {
+        let old_max = self.max;
+        self.max = (self.max + delta).max(0.0);
+        self.current = rescale_current(self.current, old_max, self.max, delta, rule);
+    }
+
     pub fn new(max: f32, regen_per_sec: f32) -> Self {
         Self {
             current: max,

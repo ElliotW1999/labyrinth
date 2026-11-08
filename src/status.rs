@@ -14,7 +14,9 @@ impl Plugin for StatusPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<StatusEffectEvent>().add_systems(
             Update,
-            tick_status_effects.before(crate::combat::apply_damage_events),
+            tick_status_effects
+                .before(crate::combat::apply_damage_events)
+                .before(crate::vitals::sync_status_resource_caps),
         );
     }
 }
@@ -984,6 +986,168 @@ mod tests {
             .advance_by(Duration::from_secs(1));
         app.update();
         assert_eq!(app.world().get::<Health>(dead).unwrap().current, 0.0);
+    }
+
+    mod max_caps {
+        use super::*;
+        use crate::components::Mana;
+        use crate::vitals::{ResourceStat, sync_status_resource_caps};
+        use std::time::Duration;
+
+        fn app() -> App {
+            let mut app = App::new();
+            app.init_resource::<Time>()
+                .add_message::<StatusEffectEvent>()
+                .add_message::<DamageEvent>()
+                .add_systems(
+                    Update,
+                    (
+                        apply_status_effect_events,
+                        tick_status_effects,
+                        sync_status_resource_caps,
+                    )
+                        .chain(),
+                );
+            app
+        }
+
+        fn unit(app: &mut App, current: f32, max: f32) -> Entity {
+            app.world_mut()
+                .spawn((
+                    StatusEffects::default(),
+                    CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 300.0),
+                    Health {
+                        current,
+                        max,
+                        regen_per_sec: 0.0,
+                    },
+                    Mana {
+                        current: 50.0,
+                        max: 100.0,
+                        regen_per_sec: 0.0,
+                    },
+                ))
+                .id()
+        }
+
+        fn buff(id: &'static str, stat: ResourceStat, amount: f32, secs: f32) -> StatusEffect {
+            StatusEffect::resource_modifier(id, StatusKind::Buff, stat, amount, secs)
+        }
+
+        fn send(app: &mut App, target: Entity, change: StatusChange) {
+            app.world_mut().write_message(StatusEffectEvent {
+                source: None,
+                target,
+                change,
+            });
+        }
+
+        fn step(app: &mut App, secs: f32) {
+            app.world_mut()
+                .resource_mut::<Time>()
+                .advance_by(Duration::from_secs_f32(secs));
+            app.update();
+        }
+
+        fn hp(app: &App, e: Entity) -> (f32, f32) {
+            let h = app.world().get::<Health>(e).unwrap();
+            (h.current, h.max)
+        }
+
+        #[test]
+        fn timed_max_health_preserves_ratio_on_apply_expire_and_dispel() {
+            let mut app = app();
+            let a = unit(&mut app, 500.0, 1000.0);
+            send(
+                &mut app,
+                a,
+                StatusChange::Apply(buff("hp_buff", ResourceStat::MaxHealth, 1000.0, 2.0)),
+            );
+            step(&mut app, 0.0);
+            assert_eq!(hp(&app, a), (1000.0, 2000.0), "apply keeps the 50% ratio");
+            // Expiry
+            step(&mut app, 2.5);
+            step(&mut app, 0.0);
+            assert_eq!(
+                hp(&app, a),
+                (500.0, 1000.0),
+                "expiry: no free heal, no extra loss"
+            );
+
+            // Dispel
+            let b = unit(&mut app, 250.0, 1000.0);
+            send(
+                &mut app,
+                b,
+                StatusChange::Apply(buff("hp_buff", ResourceStat::MaxHealth, 1000.0, 30.0)),
+            );
+            step(&mut app, 0.0);
+            assert_eq!(hp(&app, b), (500.0, 2000.0));
+            send(
+                &mut app,
+                b,
+                StatusChange::Dispel {
+                    kind: StatusKind::Buff,
+                    strength: DispelStrength::Basic,
+                },
+            );
+            step(&mut app, 0.0);
+            assert_eq!(hp(&app, b), (250.0, 1000.0));
+        }
+
+        #[test]
+        fn refresh_and_remove_do_not_leak_max() {
+            let mut app = app();
+            let u = unit(&mut app, 1000.0, 1000.0);
+            for _ in 0..3 {
+                send(
+                    &mut app,
+                    u,
+                    StatusChange::Apply(buff("hp_buff", ResourceStat::MaxHealth, 300.0, 30.0)),
+                );
+                step(&mut app, 0.0);
+            }
+            assert_eq!(
+                hp(&app, u).1,
+                1300.0,
+                "refreshing the same id does not stack"
+            );
+            send(&mut app, u, StatusChange::Remove("hp_buff"));
+            step(&mut app, 0.0);
+            assert_eq!(hp(&app, u), (1000.0, 1000.0));
+        }
+
+        #[test]
+        fn timed_max_mana_and_unrelated_stats_are_independent() {
+            let mut app = app();
+            let u = unit(&mut app, 100.0, 1000.0);
+            send(
+                &mut app,
+                u,
+                StatusChange::Apply(buff("mp_buff", ResourceStat::MaxMana, 100.0, 1.0)),
+            );
+            step(&mut app, 0.0);
+            let mana = *app.world().get::<Mana>(u).unwrap();
+            assert_eq!((mana.current, mana.max), (100.0, 200.0));
+            assert_eq!(hp(&app, u), (100.0, 1000.0));
+            step(&mut app, 1.5);
+            step(&mut app, 0.0);
+            let mana = *app.world().get::<Mana>(u).unwrap();
+            assert_eq!((mana.current, mana.max), (50.0, 100.0));
+        }
+
+        #[test]
+        fn a_dead_unit_stays_dead_when_max_changes() {
+            let mut app = app();
+            let u = unit(&mut app, 0.0, 1000.0);
+            send(
+                &mut app,
+                u,
+                StatusChange::Apply(buff("hp_buff", ResourceStat::MaxHealth, 500.0, 5.0)),
+            );
+            step(&mut app, 0.0);
+            assert_eq!(hp(&app, u), (0.0, 1500.0));
+        }
     }
 
     mod heal_statuses {
