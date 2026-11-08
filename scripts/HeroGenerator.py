@@ -12,7 +12,8 @@ Optional hero columns: base_health, base_health_regen, base_mana, base_mana_rege
 attack_damage, attack_range (`is_melee` must match it: base ranges up to 250 are melee),
 base_attack_time, attack_point, attack_backswing (0..1.0), armor, magic_resist, move_speed and attack_projectile_speed (ranged heroes only, > 0: the
 absolute projectile speed of the hero's basic attack; blank keeps the speed derived from
-the attack range). Blank cells take the defaults.
+the attack range) and turn_rate (> 0, blank keeps facing::HERO_TURN_RATE). Blank cells take
+the defaults.
 
 Usage:
   python3 scripts/HeroGenerator.py data/heroes.csv
@@ -88,6 +89,8 @@ class HeroRow:
     move_speed: float
     # Ranged heroes only: absolute attack projectile speed (None = derived from attack range).
     attack_projectile_speed: float | None = None
+    # Optional per-hero turn rate (None = facing::HERO_TURN_RATE).
+    turn_rate: float | None = None
 
 
 def to_pascal_case(name: str) -> str:
@@ -163,6 +166,16 @@ def parse_projectile_speed(row: dict[str, str], is_melee: bool, line: int) -> fl
             file=sys.stderr,
         )
         return None
+    return value
+
+
+def parse_turn_rate(row: dict[str, str], line: int) -> float | None:
+    """Optional `turn_rate` (> 0). Blank keeps the shared hero default."""
+    if not (row.get("turn_rate") or "").strip():
+        return None
+    value = parse_float(row, "turn_rate")
+    if value <= 0:
+        raise SystemExit(f"Row {line}: turn_rate must be above 0, got {value}")
     return value
 
 
@@ -286,6 +299,7 @@ def load_csv(path: Path) -> list[HeroRow]:
                     ),
                     move_speed=parse_float(row, "move_speed", 300.0),
                     attack_projectile_speed=parse_projectile_speed(row, is_melee, i),
+                    turn_rate=parse_turn_rate(row, i),
                 )
             )
         return rows
@@ -354,6 +368,10 @@ def rust_option_f32(value: float | None) -> str:
     return "None" if value is None else f"Some({f32(value)})"
 
 
+def rust_turn_rate(value: float | None) -> str:
+    return "crate::facing::HERO_TURN_RATE" if value is None else f32(value)
+
+
 def hero_def_arm(hero: HeroRow) -> str:
     return f"""            HeroId::{hero.rust_id} => HeroDef {{
                 id: self,
@@ -375,7 +393,7 @@ def hero_def_arm(hero: HeroRow) -> str:
                     {f32(hero.base_attack_time)},
                     {f32(hero.attack_point)},
                     {f32(hero.attack_backswing)},
-                    crate::facing::HERO_TURN_RATE,
+                    {rust_turn_rate(hero.turn_rate)},
                     {f32(hero.armor)},
                     {f32(hero.magic_resist)},
                     {f32(hero.move_speed)},

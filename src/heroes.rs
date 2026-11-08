@@ -736,6 +736,25 @@ mod tests {
     }
 
     #[test]
+    fn hero_combat_carries_a_per_hero_turn_rate() {
+        let c = hero_combat(61.0, 200.0, 1.8, 0.5, 0.84, 0.8, 0.0, 0.0, 305.0, None);
+        assert_eq!(c.turn_rate, 0.8);
+        let c = hero_combat(
+            61.0,
+            200.0,
+            1.8,
+            0.5,
+            0.84,
+            crate::facing::HERO_TURN_RATE,
+            0.0,
+            0.0,
+            305.0,
+            None,
+        );
+        assert_eq!(c.turn_rate, 0.6);
+    }
+
+    #[test]
     fn hero_combat_attack_projectile_speed_override() {
         let c = hero_combat(
             50.0,

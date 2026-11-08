@@ -1510,6 +1510,20 @@ class HeroGeneratorTests(unittest.TestCase):
         self.assertEqual(self._load("true", "")[0].attack_range, 128.0)
         self.assertEqual(self._load("false", "550")[0].attack_range, 550.0)
 
+    def test_turn_rate_is_optional_and_positive(self) -> None:
+        import HeroGenerator
+
+        hero = self._load("true", "150", ",turn_rate", ",0.8")[0]
+        self.assertEqual(hero.turn_rate, 0.8)
+        self.assertIn("                    0.8,\n", HeroGenerator.hero_def_arm(hero))
+        blank = self._load("true", "150", ",turn_rate", ",")[0]
+        self.assertIsNone(blank.turn_rate)
+        self.assertIn("crate::facing::HERO_TURN_RATE", HeroGenerator.hero_def_arm(blank))
+        for bad in ("0", "-0.5"):
+            with self.assertRaises(SystemExit) as ctx:
+                self._load("true", "150", ",turn_rate", "," + bad)
+            self.assertIn("turn_rate must be above 0", str(ctx.exception))
+
     def test_is_melee_must_match_attack_range(self) -> None:
         with self.assertRaises(SystemExit) as ctx:
             self._load("true", "400")
