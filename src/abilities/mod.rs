@@ -110,6 +110,8 @@ impl Plugin for AbilitiesPlugin {
                     (
                         attack_triggers::attack_triggers,
                         (tick_forced_movement, settle_grounded_units).chain(),
+                        reactive_triggers::track_travel,
+                        reactive_triggers::proximity_triggers,
                         reactive_triggers::interval_triggers,
                         reactive_triggers::cooldown_triggers,
                         reactive_triggers::cast_triggers,
@@ -700,6 +702,8 @@ mod tests {
                     (
                         attack_triggers::attack_triggers,
                         (tick_forced_movement, settle_grounded_units).chain(),
+                        reactive_triggers::track_travel,
+                        reactive_triggers::proximity_triggers,
                         reactive_triggers::interval_triggers,
                         reactive_triggers::cooldown_triggers,
                         reactive_triggers::cast_triggers,
@@ -4639,5 +4643,227 @@ mod tests {
         app.world_mut().get_mut::<Inventory>(holder).unwrap().slots = Default::default();
         assert!(run_collecting(&mut app, 4).is_empty());
         assert_eq!(tracked(&app), 0, "the timer left with the item");
+    }
+
+    // --- Movement and proximity triggers ---
+
+    fn far_gate(threshold: f32) -> AbilityEffectEntry {
+        entry(
+            AbilityTrigger::OnMove,
+            EffectTarget::Caster,
+            AbilityEffect::Accumulate {
+                threshold: RankValue::fixed(threshold),
+                then: AbilityTrigger::Custom("on_far"),
+            },
+        )
+    }
+
+    fn walk_to(app: &mut App, unit: Entity, x: f32) {
+        app.world_mut()
+            .get_mut::<Transform>(unit)
+            .unwrap()
+            .translation
+            .x = x;
+    }
+
+    #[test]
+    fn distance_traveled_fires_every_n_units_via_accumulate() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            far_gate(100.0),
+            marker_effect(AbilityTrigger::Custom("on_far")),
+        ])]);
+        let unit = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+        run_collecting(&mut app, 1); // the first frame only records the starting point
+
+        let mut fired = Vec::new();
+        for i in 1..=10 {
+            walk_to(&mut app, unit, 30.0 * i as f32);
+            fired.extend(run_collecting(&mut app, 1));
+        }
+        // Derived contexts never leave the resolver; each fire cost the unit one health.
+        assert_eq!(health(&app, unit), 997.0, "300 units walked, one every 100");
+        let moves = of_trigger(&fired, AbilityTrigger::OnMove);
+        assert_eq!(moves.len(), 10);
+        assert!(moves.iter().all(|c| (c.amount - 30.0).abs() < 1e-3));
+        // Standing still is not movement.
+        assert!(run_collecting(&mut app, 3).is_empty());
+    }
+
+    #[test]
+    fn teleport_distance_not_counted() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            far_gate(100.0),
+            marker_effect(AbilityTrigger::Custom("on_far")),
+        ])]);
+        let unit = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+        run_collecting(&mut app, 1);
+
+        walk_to(&mut app, unit, 5000.0);
+        app.world_mut().write_message(TeleportCompletedEvent {
+            target: unit,
+            caster: unit,
+            from: Vec3::ZERO,
+            to: Vec3::new(5000.0, 0.0, 0.0),
+        });
+        assert!(
+            run_collecting(&mut app, 2).is_empty(),
+            "a jump is not a walk"
+        );
+
+        walk_to(&mut app, unit, 5040.0);
+        let fired = run_collecting(&mut app, 1);
+        assert_eq!(of_trigger(&fired, AbilityTrigger::OnMove)[0].amount, 40.0);
+    }
+
+    #[test]
+    fn forced_movement_counts() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            far_gate(100.0),
+            marker_effect(AbilityTrigger::Custom("on_far")),
+        ])]);
+        with_definitions(
+            &mut app,
+            [AbilityDefinition::new(AbilityId::Bulwark)
+                .targeting(TargetType::Unit, RankValue::fixed(600.0), RankValue::ZERO)
+                .costs(RankValue::ZERO, RankValue::ZERO)
+                .timing(0.0, 0.0)
+                .on(
+                    AbilityTrigger::OnCast,
+                    EffectTarget::CastTarget,
+                    AbilityEffect::Displace {
+                        kind: DisplacementKind::Pull,
+                        distance: None,
+                        duration: RankValue::fixed(0.3),
+                        speed: None,
+                    },
+                )],
+        );
+        let caster = spawn_caster(&mut app, KIT);
+        let victim = spawn_item_holder(&mut app, Team::Dire, Vec3::new(400.0, 0.0, 0.0));
+        for unit in [caster, victim] {
+            app.world_mut().entity_mut(unit).insert(BoundRadius(24.0));
+        }
+
+        request(&mut app, caster, 3, CastTarget::Unit(victim));
+        let fired = run_collecting(&mut app, 30);
+        let walked: f32 = of_trigger(&fired, AbilityTrigger::OnMove)
+            .iter()
+            .map(|c| c.amount)
+            .sum();
+        assert!((walked - 352.0).abs() < 1.0, "pulled 400 -> 48: {walked}");
+        assert_eq!(
+            health(&app, victim),
+            997.0,
+            "352 units pulled, one fire every 100"
+        );
+    }
+
+    fn enter(radius: u32) -> AbilityTrigger {
+        AbilityTrigger::OnEnemyEnter { radius }
+    }
+
+    fn leave(radius: u32) -> AbilityTrigger {
+        AbilityTrigger::OnEnemyLeave { radius }
+    }
+
+    fn trigger_units(contexts: &[&TriggerContext]) -> Vec<Entity> {
+        contexts.iter().filter_map(|c| c.trigger_unit).collect()
+    }
+
+    #[test]
+    fn enemy_enter_and_leave_fire_once_in_entity_order() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            marker_effect(enter(600)),
+            marker_effect(leave(600)),
+        ])]);
+        let holder = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+        let first = spawn_unit(&mut app, Team::Dire, Vec3::new(2000.0, 0.0, 0.0));
+        let second = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, 2000.0));
+        assert!(run_collecting(&mut app, 2).is_empty());
+
+        // Both walk in on the same frame: one enter each, lowest Entity first, no repeats.
+        walk_to(&mut app, first, 300.0);
+        app.world_mut()
+            .get_mut::<Transform>(second)
+            .unwrap()
+            .translation = Vec3::new(0.0, 0.0, 400.0);
+        let fired = run_collecting(&mut app, 3);
+        let enters = of_trigger(&fired, enter(600));
+        let mut expected = vec![first, second];
+        expected.sort();
+        assert_eq!(trigger_units(&enters), expected);
+        assert!(
+            enters
+                .iter()
+                .all(|c| c.caster == holder && c.reaction == false)
+        );
+        assert!(of_trigger(&fired, leave(600)).is_empty());
+
+        // And both walk out again.
+        walk_to(&mut app, first, 3000.0);
+        app.world_mut()
+            .get_mut::<Transform>(second)
+            .unwrap()
+            .translation = Vec3::new(0.0, 0.0, 3000.0);
+        let fired = run_collecting(&mut app, 3);
+        assert_eq!(trigger_units(&of_trigger(&fired, leave(600))), expected);
+        assert!(of_trigger(&fired, enter(600)).is_empty());
+    }
+
+    #[test]
+    fn units_in_range_at_acquire_fire_enter() {
+        let mut app = test_app();
+        let _defs =
+            install_test_item_definitions([item_with_effects(vec![marker_effect(enter(600))])]);
+        let holder = spawn_unit(&mut app, Team::Radiant, Vec3::ZERO);
+        app.world_mut()
+            .entity_mut(holder)
+            .insert(Inventory::empty());
+        let already_there = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        assert!(run_collecting(&mut app, 2).is_empty(), "nothing held yet");
+
+        give_item(&mut app, holder, ItemId::HeartwoodBand);
+        let fired = run_collecting(&mut app, 3);
+        let enters = of_trigger(&fired, enter(600));
+        assert_eq!(trigger_units(&enters), vec![already_there]);
+    }
+
+    #[test]
+    fn dead_member_dropped_silently() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            marker_effect(enter(600)),
+            marker_effect(leave(600)),
+        ])]);
+        let _holder = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+        let dying = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        let despawning = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, 100.0));
+        let fired = run_collecting(&mut app, 2);
+        assert_eq!(of_trigger(&fired, enter(600)).len(), 2);
+
+        app.world_mut().get_mut::<Health>(dying).unwrap().current = 0.0;
+        app.world_mut().despawn(despawning);
+        assert!(
+            of_trigger(&run_collecting(&mut app, 3), leave(600)).is_empty(),
+            "death and despawn are not leaving"
+        );
+    }
+
+    #[test]
+    fn allies_never_tracked() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            marker_effect(enter(600)),
+            marker_effect(leave(600)),
+        ])]);
+        let _holder = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(100.0, 0.0, 0.0));
+        assert!(run_collecting(&mut app, 2).is_empty());
+        walk_to(&mut app, ally, 5000.0);
+        assert!(run_collecting(&mut app, 2).is_empty());
     }
 }

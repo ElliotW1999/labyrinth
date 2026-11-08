@@ -160,6 +160,20 @@ pub enum AbilityTrigger {
     OnStatusApplied(StatusFilter),
     /// A status matching the filter left the owner (expired, dispelled, removed or broken).
     OnStatusRemoved(StatusFilter),
+    /// The owner moved (walking, dashing or forced movement; teleports do not count).
+    /// `TriggerContext::amount` is the distance covered that frame, so entries under it
+    /// are meant to be `Accumulate` gates ("every 1000 units").
+    OnMove,
+    /// A living, targetable enemy came within `radius` of the owner (units already in range
+    /// when the source is first held count as entering). Trigger unit = that enemy.
+    OnEnemyEnter {
+        radius: u32,
+    },
+    /// A tracked enemy left the radius or became untargetable. An enemy that died or
+    /// despawned is dropped silently.
+    OnEnemyLeave {
+        radius: u32,
+    },
     /// This source's cooldown ran out (never for a zero cooldown). Not emitted for charge
     /// restoration. Fires for abilities and active items; copies of one item share it.
     OnCooldownReady,

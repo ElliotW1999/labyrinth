@@ -12,10 +12,14 @@ use super::definition::AbilityTrigger;
 use super::effects::{
     AbilityTriggerEvent, EffectSource, SpellHitEvent, StatusMeta, TriggerContext,
 };
+use crate::combat::flat_distance;
 use crate::combat::{DamageAppliedEvent, DamageKind};
-use crate::components::{AbilityLoadout, Health, Team};
+use crate::components::{AbilityLoadout, BoundRadius, Health, Team};
+use crate::dimensions::{area_contains, bounds_of};
 use crate::items::{Inventory, ItemId};
+use crate::status::{StatusEffects, is_untargetable};
 use crate::status::{StatusLifecycle, StatusLifecycleEvent};
+use crate::teleport::TeleportCompletedEvent;
 
 /// Every effect source the owner holds: items in slot order (one per distinct [`ItemId`],
 /// however many copies are carried), then learned ability slots (rank > 0). Items use rank 1.
@@ -89,7 +93,17 @@ pub struct CooldownReadyEvent {
 pub struct TriggerTracking {
     /// Seconds accumulated towards each `OnInterval` entry, per (source, trigger).
     pub intervals: Vec<((EffectSource, AbilityTrigger), f32)>,
+    /// Where the owner was when `track_travel` last looked (`None` until the first frame).
+    pub last_pos: Option<Vec3>,
+    /// Flat distance the owner covered last frame (teleports excluded).
+    pub moved: f32,
+    /// Enemies within the radius of each `OnEnemyEnter` / `OnEnemyLeave` entry, sorted by
+    /// `Entity`, per (source, trigger).
+    pub proximity: Vec<((EffectSource, AbilityTrigger), Vec<Entity>)>,
 }
+
+/// Distances below this are not movement.
+const MOVE_EPSILON: f32 = 0.01;
 
 type OwnerQuery<'w, 's> = Query<
     'w,
@@ -128,6 +142,164 @@ fn fan_out(
                 owner_tf.translation,
             );
             triggers.write(AbilityTriggerEvent(build(ctx)));
+        }
+    }
+}
+
+/// `OnMove`: the flat distance each owner covered since last frame, as the context amount.
+/// Teleports re-anchor the position instead of counting. Runs for every owner with a
+/// source (the distance also feeds the `Moving` / `Stationary` conditions).
+pub(crate) fn track_travel(
+    mut teleported: MessageReader<TeleportCompletedEvent>,
+    defs: Res<AbilityDefinitions>,
+    mut owners: Query<(
+        Entity,
+        &Transform,
+        &Team,
+        Option<&Health>,
+        Option<&Inventory>,
+        Option<&AbilityLoadout>,
+        &mut TriggerTracking,
+    )>,
+    mut triggers: MessageWriter<AbilityTriggerEvent>,
+) {
+    let jumped: Vec<Entity> = teleported.read().map(|event| event.target).collect();
+    for (owner, owner_tf, team, health, inventory, loadout, mut tracking) in &mut owners {
+        if inventory.is_none() && loadout.is_none() {
+            continue;
+        }
+        let here = owner_tf.translation;
+        let distance = match tracking.last_pos {
+            Some(previous) if !jumped.contains(&owner) => flat_distance(previous, here),
+            _ => 0.0,
+        };
+        tracking.last_pos = Some(here);
+        tracking.moved = distance;
+        if distance <= MOVE_EPSILON || health.is_some_and(|health| !health.is_alive()) {
+            continue;
+        }
+        for (source, rank) in owner_sources(inventory, loadout) {
+            if source_has_trigger(source, &defs, AbilityTrigger::OnMove) {
+                triggers.write(AbilityTriggerEvent(
+                    TriggerContext::new(
+                        AbilityTrigger::OnMove,
+                        source,
+                        owner,
+                        *team,
+                        rank,
+                        here,
+                        here,
+                    )
+                    .amount(distance),
+                ));
+            }
+        }
+    }
+}
+
+/// `OnEnemyEnter` / `OnEnemyLeave`: each entry tracks the living, targetable enemies within
+/// its radius and fires for the difference since last frame, in `Entity` order. A tracked
+/// enemy that died or despawned is dropped without a leave.
+pub(crate) fn proximity_triggers(
+    defs: Res<AbilityDefinitions>,
+    mut owners: Query<(
+        Entity,
+        &Transform,
+        &Team,
+        Option<&Health>,
+        Option<&Inventory>,
+        Option<&AbilityLoadout>,
+        &mut TriggerTracking,
+    )>,
+    units: Query<(Entity, &Transform, &Team, &Health, Option<&BoundRadius>)>,
+    statuses: Query<&StatusEffects>,
+    mut triggers: MessageWriter<AbilityTriggerEvent>,
+) {
+    for (owner, owner_tf, team, health, inventory, loadout, mut tracking) in &mut owners {
+        if inventory.is_none() && loadout.is_none() {
+            continue;
+        }
+        let mut held: Vec<(EffectSource, u32, AbilityTrigger)> = Vec::new();
+        for (source, rank) in owner_sources(inventory, loadout) {
+            for trigger in source_triggers(source, &defs, |t| {
+                matches!(
+                    t,
+                    AbilityTrigger::OnEnemyEnter { radius }
+                        | AbilityTrigger::OnEnemyLeave { radius } if radius > 0
+                )
+            }) {
+                held.push((source, rank, trigger));
+            }
+        }
+        tracking
+            .proximity
+            .retain(|(key, _)| held.iter().any(|(s, _, t)| *key == (*s, *t)));
+        if health.is_some_and(|health| !health.is_alive()) {
+            continue;
+        }
+        for (source, rank, trigger) in held {
+            let (AbilityTrigger::OnEnemyEnter { radius } | AbilityTrigger::OnEnemyLeave { radius }) =
+                trigger
+            else {
+                continue;
+            };
+            let mut inside: Vec<Entity> = units
+                .iter()
+                .filter(|(entity, tf, unit_team, unit_health, bound)| {
+                    **unit_team == team.enemy()
+                        && unit_health.is_alive()
+                        && !is_untargetable(&statuses, *entity)
+                        && area_contains(
+                            owner_tf.translation,
+                            radius as f32,
+                            tf.translation,
+                            bounds_of(*bound),
+                        )
+                })
+                .map(|(entity, ..)| entity)
+                .collect();
+            inside.sort();
+
+            let key = (source, trigger);
+            let index = match tracking.proximity.iter().position(|(k, _)| *k == key) {
+                Some(index) => index,
+                None => {
+                    tracking.proximity.push((key, Vec::new()));
+                    tracking.proximity.len() - 1
+                }
+            };
+            let previous = std::mem::replace(&mut tracking.proximity[index].1, inside.clone());
+            let changed: Vec<Entity> = match trigger {
+                AbilityTrigger::OnEnemyEnter { .. } => inside
+                    .iter()
+                    .copied()
+                    .filter(|e| !previous.contains(e))
+                    .collect(),
+                _ => previous
+                    .iter()
+                    .copied()
+                    // Dead or despawned members fall out of `units`' living set silently.
+                    .filter(|e| !inside.contains(e) && units.get(*e).is_ok_and(|u| u.3.is_alive()))
+                    .collect(),
+            };
+            for unit in changed {
+                let at = units
+                    .get(unit)
+                    .map_or(owner_tf.translation, |u| u.1.translation);
+                triggers.write(AbilityTriggerEvent(
+                    TriggerContext::new(
+                        trigger,
+                        source,
+                        owner,
+                        *team,
+                        rank,
+                        owner_tf.translation,
+                        at,
+                    )
+                    .trigger_unit(Some(unit))
+                    .at(at),
+                ));
+            }
         }
     }
 }
