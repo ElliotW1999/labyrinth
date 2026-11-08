@@ -3766,6 +3766,7 @@ mod tests {
                     duration: RankValue::fixed(0.3),
                     speed: None,
                     contact_radius: None,
+                    forward_offset: None,
                 },
             );
         app.world_mut()
@@ -3814,6 +3815,7 @@ mod tests {
                     duration: RankValue::fixed(0.3),
                     speed: None,
                     contact_radius: None,
+                    forward_offset: None,
                 },
             );
         app.world_mut()
@@ -4013,6 +4015,7 @@ mod tests {
                 duration: RankValue::ZERO,
                 speed: None,
                 contact_radius: None,
+                forward_offset: None,
             },
         );
         app.world_mut()
@@ -4089,6 +4092,7 @@ mod tests {
                         duration: RankValue::fixed(0.25),
                         speed: None,
                         contact_radius: None,
+                        forward_offset: None,
                     },
                 },
                 AbilityEffectEntry {
@@ -4147,6 +4151,7 @@ mod tests {
                     duration: RankValue::fixed(3.0),
                     speed: Some(RankValue::fixed(900.0)),
                     contact_radius: None,
+                    forward_offset: None,
                 },
             )
             .on(
@@ -5856,6 +5861,7 @@ mod tests {
                         duration: RankValue::fixed(0.3),
                         speed: None,
                         contact_radius: None,
+                        forward_offset: None,
                     },
                 )],
         );
@@ -6486,6 +6492,7 @@ mod tests {
                 duration: RankValue::fixed(1.0),
                 speed: None,
                 contact_radius: None,
+                forward_offset: None,
             },
         )])]);
         let victim = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
@@ -6522,6 +6529,7 @@ mod tests {
                     duration: RankValue::fixed(0.25),
                     speed: None,
                     contact_radius: None,
+                    forward_offset: None,
                 },
             ),
             entry(
@@ -6577,6 +6585,7 @@ mod tests {
                 duration: RankValue::fixed(1.0),
                 speed: None,
                 contact_radius: None,
+                forward_offset: None,
             },
         )])]);
         let caster = spawn_caster_with_inventory(&mut app, KIT);
@@ -7161,5 +7170,101 @@ mod tests {
             step(&mut app);
         }
         assert!((attack_damage(&app, creep) - 60.0).abs() < 1e-3);
+    }
+
+    /// A no-target ability that pulls every enemy in its 430 radius to `forward_offset` in
+    /// front of the caster.
+    fn gather_ability(forward_offset: Option<f32>) -> AbilityDefinition {
+        AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(
+                TargetType::NoTarget,
+                RankValue::ZERO,
+                RankValue::fixed(430.0),
+            )
+            .team(TargetTeam::Enemy)
+            .costs(RankValue::fixed(8.0), RankValue::fixed(10.0))
+            .on(
+                AbilityTrigger::OnCast,
+                EffectTarget::UnitsInRadius {
+                    center: super::definition::AreaCenter::Caster,
+                    radius: super::definition::AreaRadius::Ability,
+                    team: TargetTeam::Enemy,
+                },
+                AbilityEffect::Displace {
+                    kind: DisplacementKind::PullToPoint,
+                    distance: None,
+                    duration: RankValue::fixed(0.05),
+                    speed: None,
+                    contact_radius: None,
+                    forward_offset: forward_offset.map(RankValue::fixed),
+                },
+            )
+    }
+
+    fn position(app: &App, unit: Entity) -> Vec3 {
+        app.world().get::<Transform>(unit).unwrap().translation
+    }
+
+    #[test]
+    fn pull_point_with_a_forward_offset_gathers_enemies_in_front_of_the_caster() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(gather_ability(Some(250.0)));
+        let caster = spawn_caster(&mut app, KIT);
+        // Face +X.
+        app.world_mut()
+            .get_mut::<Transform>(caster)
+            .unwrap()
+            .rotation = Transform::default().looking_to(Vec3::X, Vec3::Y).rotation;
+        let behind = spawn_unit(&mut app, Team::Dire, Vec3::new(-200.0, 0.0, 0.0));
+        let side = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, 400.0));
+        let ahead = spawn_unit(&mut app, Team::Dire, Vec3::new(420.0, 0.0, 0.0));
+        let outside = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, -520.0));
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(0.0, 0.0, 300.0));
+        request(&mut app, caster, 3, CastTarget::None);
+        for _ in 0..16 {
+            step(&mut app);
+        }
+        let gather = Vec3::new(250.0, 0.0, 0.0);
+        for unit in [behind, side, ahead] {
+            assert!(
+                position(&app, unit).distance(gather) < 1.0,
+                "{unit:?} ended at {}",
+                position(&app, unit)
+            );
+        }
+        assert_eq!(position(&app, outside), Vec3::new(0.0, 0.0, -520.0));
+        assert_eq!(position(&app, ally), Vec3::new(0.0, 0.0, 300.0));
+        assert_eq!(position(&app, caster), Vec3::ZERO);
+    }
+
+    #[test]
+    fn pull_point_without_an_offset_still_pulls_to_the_trigger_point() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(gather_ability(None));
+        let caster = spawn_caster(&mut app, KIT);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, 400.0));
+        request(&mut app, caster, 3, CastTarget::None);
+        for _ in 0..16 {
+            step(&mut app);
+        }
+        // The trigger point of a no-target cast is the caster's own position.
+        assert!(position(&app, enemy).distance(Vec3::ZERO) < 1.0);
+    }
+
+    #[test]
+    fn forward_point_follows_the_flat_facing() {
+        use super::effects::forward_point;
+        let origin = Vec3::new(10.0, 3.0, 10.0);
+        assert!(forward_point(origin, Vec3::X, 250.0).distance(Vec3::new(260.0, 3.0, 10.0)) < 1e-4);
+        assert!(
+            forward_point(origin, Vec3::new(0.0, 5.0, 2.0), 100.0)
+                .distance(Vec3::new(10.0, 3.0, 110.0))
+                < 1e-4
+        );
+        assert!(forward_point(origin, Vec3::Y, 100.0).distance(Vec3::new(10.0, 3.0, -90.0)) < 1e-4);
     }
 }

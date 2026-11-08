@@ -442,6 +442,7 @@ fn sonic_wave() -> AbilityDefinition {
                 duration: RankValue::fixed(1.4),
                 speed: None,
                 contact_radius: None,
+                forward_offset: None,
             },
         )
 }

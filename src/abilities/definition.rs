@@ -812,6 +812,9 @@ pub enum AbilityEffect {
         /// Dash and charge only: the reach from the mover's centre (plus the other unit's
         /// bound) within which it contacts enemies. `None` is body contact.
         contact_radius: Option<RankValue>,
+        /// `PullToPoint` only: pull to a point this far in front of the caster (along its
+        /// facing) instead of the trigger point. `None` keeps the trigger point.
+        forward_offset: Option<RankValue>,
     },
     /// Instantly relocates each target to the trigger's aim point, validated against the
     /// map, static obstacles, and unit overlap (see `crate::teleport`). Rejected

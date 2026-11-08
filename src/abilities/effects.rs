@@ -425,6 +425,13 @@ pub(crate) fn teleport_destination(
     destination
 }
 
+/// The point `distance` in front of `origin` along the flat `facing` (`-Z` when it has no
+/// flat direction), at the height of `origin`.
+pub(crate) fn forward_point(origin: Vec3, facing: Vec3, distance: f32) -> Vec3 {
+    let direction = Vec3::new(facing.x, 0.0, facing.z).normalize_or(Vec3::NEG_Z);
+    origin + direction * distance.max(0.0)
+}
+
 /// Resolves effect targets and executes [`AbilityEffect`]s as gameplay events.
 #[derive(SystemParam)]
 pub struct EffectRunner<'w, 's> {
@@ -768,19 +775,31 @@ impl EffectRunner<'_, '_> {
                 duration,
                 speed,
                 contact_radius,
+                forward_offset,
             } => {
+                // Pull-to-point gathers in front of the caster (same facing source as a
+                // bounded teleport), measured from where the caster stood at the trigger.
+                let gather_point = forward_offset.map(|offset| {
+                    let facing = self
+                        .units
+                        .get(ctx.caster)
+                        .map_or(Vec3::NEG_Z, |(_, tf, ..)| tf.forward().as_vec3());
+                    forward_point(ctx.origin, facing, offset.at(rank))
+                });
                 for target in targets {
-                    self.displacements.write(
-                        DisplacementEvent::from_ctx(
-                            ctx,
-                            target,
-                            kind,
-                            distance.map(|d| d.at(rank)),
-                            duration.at(rank),
-                            speed.map(|s| s.at(rank)),
-                        )
-                        .with_contact_radius(contact_radius.map(|r| r.at(rank))),
-                    );
+                    let mut event = DisplacementEvent::from_ctx(
+                        ctx,
+                        target,
+                        kind,
+                        distance.map(|d| d.at(rank)),
+                        duration.at(rank),
+                        speed.map(|s| s.at(rank)),
+                    )
+                    .with_contact_radius(contact_radius.map(|r| r.at(rank)));
+                    if let Some(point) = gather_point {
+                        event.point = point;
+                    }
+                    self.displacements.write(event);
                 }
             }
             AbilityEffect::Teleport {

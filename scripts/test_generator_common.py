@@ -1609,6 +1609,32 @@ class DashContactRadiusTests(unittest.TestCase):
         self.assertIn("contact_radius: None", str(abilities[0].effects))
 
 
+class PullPointForwardOffsetTests(unittest.TestCase):
+    @staticmethod
+    def _pull(**cells: str):
+        effect = {
+            "effect_type": "movement", "effect_id": "pull_point", "effect_target": "units_in_radius",
+            "duration": "0.05", "radius": "430",
+        }
+        effect.update(cells)
+        return load_test_ability({"aoe_radius": "430"}, [effect])
+
+    def test_amount_is_the_forward_offset(self) -> None:
+        abilities, report = self._pull(amount="250")
+        self.assertEqual(report.errors, [])
+        self.assertEqual([w for w in report.warnings if w.field == "amount"], [])
+        self.assertIn("forward_offset: Some(RankValue::fixed(250.0))", str(abilities[0].effects))
+
+    def test_blank_amount_keeps_the_trigger_point(self) -> None:
+        abilities, report = self._pull()
+        self.assertEqual(report.errors, [])
+        self.assertIn("forward_offset: None", str(abilities[0].effects))
+
+    def test_negative_offset_is_rejected(self) -> None:
+        _, report = self._pull(amount="-50")
+        self.assertTrue(any("forward offset cannot be negative" in e.message for e in report.errors))
+
+
 class HeroGeneratorTests(unittest.TestCase):
     HEADER = (
         "Hero_name,is_melee,Ability_Q_Name,Ability_W_Name,Ability_E_Name,Ability_R_Name,"

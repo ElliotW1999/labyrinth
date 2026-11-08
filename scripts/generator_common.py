@@ -1057,7 +1057,8 @@ def _displacement_effect(
     """`AbilityEffect::Displace` for the forced-movement kinds, validated per kind.
 
     Columns: `value` = distance, `duration` = seconds, `amount` = speed (charge only),
-    `radius` = contact radius (dash and charge only).
+    `radius` = contact radius (dash and charge only), `amount` = forward offset (pull_point
+    only: pull to a point this far in front of the caster).
     """
     row = e.row
     kind = MOVEMENTS[effect_id]
@@ -1117,8 +1118,14 @@ def _displacement_effect(
         contact_radius = f"Some({rank_value(radius)})"
     elif radius and e.target != "units_in_radius":
         _unused(e, report, "radius")
+    forward_offset = "None"
+    if effect_id == "pull_point" and amount:
+        if any(a < 0 for a in amount):
+            report.error(row.file, row.line, "amount", row.get("amount"), "the pull_point forward offset cannot be negative")
+            return None
+        forward_offset = f"Some({rank_value(amount)})"
     unused = ["damage_type"]
-    if effect_id != "charge":
+    if effect_id not in ("charge", "pull_point"):
         unused.append("amount")
     if effect_id in ("cyclone", "drag"):
         unused.append("value")
@@ -1127,7 +1134,7 @@ def _displacement_effect(
     return (
         f"AbilityEffect::Displace {{ kind: DisplacementKind::{kind}, "
         f"distance: {distance}, duration: {rank_value(duration or [default_duration])}, speed: {speed}, "
-        f"contact_radius: {contact_radius} }}"
+        f"contact_radius: {contact_radius}, forward_offset: {forward_offset} }}"
     )
 
 
