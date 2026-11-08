@@ -102,9 +102,14 @@ impl Plugin for AbilitiesPlugin {
                     execute_ability_casts,
                     action_channel_end_triggers,
                     projectile_hit_triggers,
-                    attack_triggers::attack_triggers,
-                    // Before trigger resolution, so contact / end triggers fire this frame.
-                    (tick_forced_movement, settle_grounded_units).chain(),
+                    // Before trigger resolution, so contact / end / reactive triggers fire this
+                    // frame. The reactive dispatchers run last, in this order.
+                    (
+                        attack_triggers::attack_triggers,
+                        (tick_forced_movement, settle_grounded_units).chain(),
+                        reactive_triggers::damage_triggers,
+                    )
+                        .chain(),
                     resolve_ability_triggers,
                     spawn_requested_projectiles,
                     (
@@ -650,6 +655,7 @@ mod tests {
             .add_message::<TeleportRejectedEvent>()
             .init_resource::<NavGrid>()
             .add_message::<DamageEvent>()
+            .add_message::<crate::combat::DamageAppliedEvent>()
             .add_message::<SpawnProjectileEvent>()
             .add_message::<ProjectileHitEvent>()
             .add_message::<crate::basic_attack::BasicAttackReleaseEvent>()
@@ -670,8 +676,12 @@ mod tests {
                     execute_ability_casts,
                     action_channel_end_triggers,
                     projectile_hit_triggers,
-                    attack_triggers::attack_triggers,
-                    (tick_forced_movement, settle_grounded_units).chain(),
+                    (
+                        attack_triggers::attack_triggers,
+                        (tick_forced_movement, settle_grounded_units).chain(),
+                        reactive_triggers::damage_triggers,
+                    )
+                        .chain(),
                     resolve_ability_triggers,
                     apply_heal_events,
                     (
@@ -3767,5 +3777,249 @@ mod tests {
         assert_eq!(contexts.len(), 1);
         assert_eq!(contexts[0].0.amount, 10.0);
         assert!(!contexts[0].0.reaction);
+    }
+
+    // --- Damage triggers ---
+
+    /// Run `frames` frames, collecting every trigger context that was written.
+    fn run_collecting(app: &mut App, frames: usize) -> Vec<TriggerContext> {
+        let mut seen = Vec::new();
+        for _ in 0..frames {
+            step(app);
+            seen.extend(
+                current_messages::<AbilityTriggerEvent>(app)
+                    .into_iter()
+                    .map(|event| event.0),
+            );
+        }
+        seen
+    }
+
+    fn of_trigger(contexts: &[TriggerContext], trigger: AbilityTrigger) -> Vec<&TriggerContext> {
+        contexts.iter().filter(|c| c.trigger == trigger).collect()
+    }
+
+    /// A unit holding the (overridden) test item.
+    fn spawn_item_holder(app: &mut App, team: Team, pos: Vec3) -> Entity {
+        let unit = spawn_unit(app, team, pos);
+        app.world_mut().entity_mut(unit).insert(Inventory::empty());
+        give_item(app, unit, ItemId::HeartwoodBand);
+        unit
+    }
+
+    fn marker_effect(trigger: AbilityTrigger) -> AbilityEffectEntry {
+        entry(trigger, EffectTarget::Caster, fixed_magical_damage(1.0))
+    }
+
+    fn strike(app: &mut App, source: Option<Entity>, target: Entity, amount: f32) {
+        app.world_mut().write_message(match source {
+            Some(source) => DamageEvent::spell(source, target, amount, DamageType::Pure),
+            None => DamageEvent::new(target, amount, DamageType::Pure),
+        });
+    }
+
+    #[test]
+    fn damage_taken_fires_with_attacker_as_trigger_unit() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![marker_effect(
+            AbilityTrigger::OnDamageTaken,
+        )])]);
+        let victim = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+        let attacker = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+
+        strike(&mut app, Some(attacker), victim, 100.0);
+        step(&mut app);
+        assert!(
+            current_messages::<AbilityTriggerEvent>(&app).is_empty(),
+            "reactions resolve one frame after the damage"
+        );
+        let fired = run_collecting(&mut app, 1);
+        let taken = of_trigger(&fired, AbilityTrigger::OnDamageTaken);
+        assert_eq!(taken.len(), 1);
+        assert_eq!(taken[0].caster, victim);
+        assert_eq!(taken[0].trigger_unit, Some(attacker));
+        assert_eq!(taken[0].amount, 100.0);
+        assert!(taken[0].reaction);
+    }
+
+    #[test]
+    fn damage_dealt_fires_for_source_owner_next_frame() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![marker_effect(
+            AbilityTrigger::OnDamageDealt,
+        )])]);
+        let attacker = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+        let victim = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+
+        strike(&mut app, Some(attacker), victim, 60.0);
+        step(&mut app);
+        let fired = run_collecting(&mut app, 1);
+        let dealt = of_trigger(&fired, AbilityTrigger::OnDamageDealt);
+        assert_eq!(dealt.len(), 1);
+        assert_eq!(dealt[0].caster, attacker);
+        assert_eq!(dealt[0].trigger_unit, Some(victim));
+        assert_eq!(dealt[0].point, Vec3::new(80.0, 0.0, 0.0));
+        assert_eq!(dealt[0].amount, 60.0);
+    }
+
+    #[test]
+    fn reactive_damage_fires_no_damage_triggers() {
+        // Two units wearing thorns: each reflects damage taken at its attacker.
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            entry(
+                AbilityTrigger::OnDamageTaken,
+                EffectTarget::TriggerUnit,
+                fixed_magical_damage(10.0),
+            ),
+            marker_effect(AbilityTrigger::OnDamageDealt),
+        ])]);
+        let a = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+        let b = spawn_item_holder(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+
+        strike(&mut app, Some(a), b, 100.0);
+        run_collecting(&mut app, 10);
+
+        // b took the opening hit (100). a took exactly one thorn (10) plus the one-point
+        // marker its own on-dealt entry deals to itself: the thorn is reactive, so neither
+        // a's thorns nor b's on-dealt entry answer it, and nothing ping-pongs.
+        assert_eq!(health(&app, b), 900.0);
+        assert_eq!(health(&app, a), 989.0);
+    }
+
+    #[test]
+    fn dot_ticks_do_not_fire_damage_taken() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            marker_effect(AbilityTrigger::OnDamageTaken),
+            marker_effect(AbilityTrigger::OnDamageDealt),
+        ])]);
+        let victim = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+        let source = spawn_item_holder(&mut app, Team::Dire, Vec3::X);
+
+        app.world_mut().write_message(DamageEvent::dot(
+            Some(source),
+            victim,
+            50.0,
+            DamageType::Magical,
+        ));
+        let fired = run_collecting(&mut app, 3);
+        assert_eq!(health(&app, victim), 950.0, "the tick landed");
+        assert!(fired.is_empty(), "but fired nothing: {fired:?}");
+    }
+
+    #[test]
+    fn fully_absorbed_by_invulnerability_fires_nothing() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            marker_effect(AbilityTrigger::OnDamageTaken),
+            marker_effect(AbilityTrigger::OnDamageDealt),
+        ])]);
+        let victim = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+        let attacker = spawn_item_holder(&mut app, Team::Dire, Vec3::X);
+        app.world_mut()
+            .get_mut::<StatusEffects>(victim)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::invulnerable(10.0));
+
+        strike(&mut app, Some(attacker), victim, 500.0);
+        let fired = run_collecting(&mut app, 3);
+        assert_eq!(health(&app, victim), 1000.0);
+        assert!(fired.is_empty(), "{fired:?}");
+    }
+
+    #[test]
+    fn kill_and_death_fire_once_with_killer_attribution() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            marker_effect(AbilityTrigger::OnKill),
+            marker_effect(AbilityTrigger::OnDeath),
+        ])]);
+        let killer = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+        let victim = spawn_item_holder(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        app.world_mut().get_mut::<Health>(victim).unwrap().current = 100.0;
+
+        // Overkill, then a second hit on the corpse in the same batch.
+        strike(&mut app, Some(killer), victim, 500.0);
+        strike(&mut app, Some(killer), victim, 500.0);
+        let fired = run_collecting(&mut app, 5);
+
+        let kills = of_trigger(&fired, AbilityTrigger::OnKill);
+        assert_eq!(kills.len(), 1, "once per death");
+        assert_eq!(kills[0].caster, killer);
+        assert_eq!(kills[0].trigger_unit, Some(victim));
+        assert_eq!(kills[0].point, Vec3::new(80.0, 0.0, 0.0));
+        let deaths = of_trigger(&fired, AbilityTrigger::OnDeath);
+        assert_eq!(deaths.len(), 1);
+        assert_eq!(deaths[0].caster, victim);
+        assert_eq!(deaths[0].trigger_unit, Some(killer));
+    }
+
+    #[test]
+    fn dot_kill_credits_dot_source() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            marker_effect(AbilityTrigger::OnKill),
+            marker_effect(AbilityTrigger::OnDeath),
+        ])]);
+        let source = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+        let victim = spawn_item_holder(&mut app, Team::Dire, Vec3::X);
+        app.world_mut().get_mut::<Health>(victim).unwrap().current = 10.0;
+
+        app.world_mut().write_message(DamageEvent::dot(
+            Some(source),
+            victim,
+            50.0,
+            DamageType::Magical,
+        ));
+        let fired = run_collecting(&mut app, 3);
+        let kills = of_trigger(&fired, AbilityTrigger::OnKill);
+        assert_eq!(kills.len(), 1, "a DoT kill still counts");
+        assert_eq!(kills[0].caster, source);
+        assert_eq!(of_trigger(&fired, AbilityTrigger::OnDeath).len(), 1);
+    }
+
+    fn below(percent: u8) -> AbilityTrigger {
+        AbilityTrigger::OnHealthBelow { percent }
+    }
+
+    #[test]
+    fn health_below_fires_on_crossing_only_and_rearms_after_heal() {
+        let mut app = test_app();
+        let _defs =
+            install_test_item_definitions([item_with_effects(vec![marker_effect(below(50))])]);
+        let unit = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+        let foe = spawn_unit(&mut app, Team::Dire, Vec3::X);
+        let mut crossings = |app: &mut App, damage: f32| {
+            strike(app, Some(foe), unit, damage);
+            step(app);
+            run_collecting(app, 1).len()
+        };
+
+        assert_eq!(crossings(&mut app, 400.0), 0, "60% is still above the line");
+        assert_eq!(crossings(&mut app, 200.0), 1, "40%: crossed");
+        assert_eq!(
+            crossings(&mut app, 100.0),
+            0,
+            "30%: already below, no refire"
+        );
+
+        app.world_mut().get_mut::<Health>(unit).unwrap().current = 800.0;
+        assert_eq!(crossings(&mut app, 400.0), 1, "healed above, so it rearmed");
+    }
+
+    #[test]
+    fn lethal_hit_does_not_fire_health_below() {
+        let mut app = test_app();
+        let _defs =
+            install_test_item_definitions([item_with_effects(vec![marker_effect(below(50))])]);
+        let unit = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+        let foe = spawn_unit(&mut app, Team::Dire, Vec3::X);
+
+        strike(&mut app, Some(foe), unit, 5000.0);
+        let fired = run_collecting(&mut app, 3);
+        assert!(health(&app, unit) <= 0.0);
+        assert!(of_trigger(&fired, below(50)).is_empty());
     }
 }

@@ -2900,6 +2900,7 @@ mod tests {
             .add_message::<crate::vitals::ResourceDrainEvent>()
             .add_message::<crate::status::StatusEffectEvent>()
             .add_message::<crate::combat::DamageEvent>()
+            .add_message::<crate::combat::DamageAppliedEvent>()
             .add_message::<DisplacementEvent>()
             .add_message::<TeleportEvent>()
             .add_systems(

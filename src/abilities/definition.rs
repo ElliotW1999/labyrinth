@@ -140,9 +140,21 @@ pub enum AbilityTrigger {
     OnAttack,
     /// The owner's basic attack connected (trigger unit = the struck unit).
     OnAttackHit,
+    /// The owner's non-reactive, non-DoT damage reduced a unit's health or shield (trigger
+    /// unit = the victim). Resolves one frame after the damage.
+    OnDamageDealt,
+    /// The owner took non-reactive, non-DoT damage (trigger unit = the attacker, if any).
     OnDamageTaken,
+    /// The owner's damage killed a unit (trigger unit = the victim, which may already be
+    /// despawned: target the point or a radius).
     OnKill,
+    /// The owner died (trigger unit = the killer, if any).
     OnDeath,
+    /// One hit took the owner from at or above `percent` of its max health to below it, and
+    /// it survived. Rearms when health is back above the line (the check is stateless).
+    OnHealthBelow {
+        percent: u8,
+    },
     /// Emitted by a custom mechanic, e.g. `Custom("on_skewer_end")`.
     Custom(&'static str),
 }
@@ -158,7 +170,14 @@ impl AbilityTrigger {
     /// reactions: the damage and statuses they produce are `reactive` and never fire
     /// damage or status triggers again.
     pub fn is_reaction(self) -> bool {
-        matches!(self, Self::OnDamageTaken | Self::OnKill | Self::OnDeath)
+        matches!(
+            self,
+            Self::OnDamageDealt
+                | Self::OnDamageTaken
+                | Self::OnHealthBelow { .. }
+                | Self::OnKill
+                | Self::OnDeath
+        )
     }
 }
 

@@ -1091,6 +1091,7 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<Time>()
             .add_message::<DamageEvent>()
+            .add_message::<crate::combat::DamageAppliedEvent>()
             .add_systems(Update, tick_status_effects);
         let mut statuses = StatusEffects::default();
         statuses.effects.push(StatusEffect {
@@ -1127,6 +1128,7 @@ mod tests {
             app.init_resource::<Time>()
                 .add_message::<StatusEffectEvent>()
                 .add_message::<DamageEvent>()
+                .add_message::<crate::combat::DamageAppliedEvent>()
                 .add_systems(
                     Update,
                     (
@@ -1308,6 +1310,7 @@ mod tests {
             app.init_resource::<Time>()
                 .add_message::<StatusEffectEvent>()
                 .add_message::<DamageEvent>()
+                .add_message::<crate::combat::DamageAppliedEvent>()
                 .add_systems(
                     Update,
                     (apply_status_effect_events, tick_status_effects).chain(),
@@ -1479,6 +1482,7 @@ mod tests {
             app.init_resource::<Time>()
                 .add_message::<StatusEffectEvent>()
                 .add_message::<DamageEvent>()
+                .add_message::<crate::combat::DamageAppliedEvent>()
                 .add_systems(
                     Update,
                     (apply_status_effect_events, tick_status_effects).chain(),
@@ -1648,6 +1652,7 @@ mod tests {
             app.init_resource::<Time>()
                 .add_message::<StatusEffectEvent>()
                 .add_message::<DamageEvent>()
+                .add_message::<crate::combat::DamageAppliedEvent>()
                 .add_systems(
                     Update,
                     (
@@ -1935,6 +1940,7 @@ mod tests {
             let mut app = App::new();
             app.init_resource::<Time>()
                 .add_message::<DamageEvent>()
+                .add_message::<crate::combat::DamageAppliedEvent>()
                 .add_plugins(StatusPlugin);
             let u = unit(&mut app);
             app.world_mut()

@@ -4,10 +4,13 @@
 //! ready, ...) and writes ordinary [`super::effects::AbilityTriggerEvent`]s, which the
 //! existing `resolve_ability_triggers` queue resolves. Dispatchers never apply effects.
 
+use bevy::prelude::*;
+
 use super::catalog::AbilityDefinitions;
 use super::definition::AbilityTrigger;
-use super::effects::EffectSource;
-use crate::components::AbilityLoadout;
+use super::effects::{AbilityTriggerEvent, EffectSource, TriggerContext};
+use crate::combat::{DamageAppliedEvent, DamageKind};
+use crate::components::{AbilityLoadout, Team};
 use crate::items::{Inventory, ItemId};
 
 /// Every effect source the owner holds: items in slot order (one per distinct [`ItemId`],
@@ -66,6 +69,147 @@ pub(crate) fn source_has_trigger(
     trigger: AbilityTrigger,
 ) -> bool {
     !source_triggers(source, defs, |t| t == trigger).is_empty()
+}
+
+type OwnerQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static Transform,
+        &'static Team,
+        Option<&'static Inventory>,
+        Option<&'static AbilityLoadout>,
+    ),
+>;
+
+/// Writes one trigger per source of `owner` that has entries for `trigger`. `build` fills
+/// in the occurrence-specific parts of the context.
+fn fan_out(
+    owner: Entity,
+    trigger: AbilityTrigger,
+    owners: &OwnerQuery,
+    defs: &AbilityDefinitions,
+    triggers: &mut MessageWriter<AbilityTriggerEvent>,
+    build: impl Fn(TriggerContext) -> TriggerContext,
+) {
+    let Ok((owner_tf, team, inventory, loadout)) = owners.get(owner) else {
+        return;
+    };
+    for (source, rank) in owner_sources(inventory, loadout) {
+        if source_has_trigger(source, defs, trigger) {
+            let ctx = TriggerContext::new(
+                trigger,
+                source,
+                owner,
+                *team,
+                rank,
+                owner_tf.translation,
+                owner_tf.translation,
+            );
+            triggers.write(AbilityTriggerEvent(build(ctx)));
+        }
+    }
+}
+
+/// Damage, kill, death and low-health triggers from [`DamageAppliedEvent`] (written by last
+/// frame's `apply_damage_events`).
+///
+/// - Dealt / taken skip reactive damage, DoT ticks, nothing-done hits and self damage, so a
+///   reaction can never start another.
+/// - Low health fires on the hit that crosses the line while the unit survives.
+/// - Kill and death fire once, on the hit that takes health from above zero to zero.
+///   They ignore `reactive` and the damage kind: they are bounded edges.
+pub(crate) fn damage_triggers(
+    mut applied: MessageReader<DamageAppliedEvent>,
+    defs: Res<AbilityDefinitions>,
+    owners: OwnerQuery,
+    mut triggers: MessageWriter<AbilityTriggerEvent>,
+) {
+    for hit in applied.read() {
+        let at = hit.target_pos;
+        let amount = hit.amount;
+        let ordinary = !hit.reactive
+            && hit.kind != DamageKind::Dot
+            && hit.amount > 0.0
+            && hit.source != Some(hit.target);
+
+        if ordinary {
+            if let Some(source) = hit.source {
+                fan_out(
+                    source,
+                    AbilityTrigger::OnDamageDealt,
+                    &owners,
+                    &defs,
+                    &mut triggers,
+                    |ctx| ctx.trigger_unit(Some(hit.target)).at(at).amount(amount),
+                );
+            }
+            fan_out(
+                hit.target,
+                AbilityTrigger::OnDamageTaken,
+                &owners,
+                &defs,
+                &mut triggers,
+                |ctx| ctx.trigger_unit(hit.source).at(at).amount(amount),
+            );
+        }
+
+        let max = hit.max_health.max(1.0);
+        let died = hit.health_before > 0.0 && hit.health_after <= 0.0;
+        if hit.health_after > 0.0 && hit.health_after < hit.health_before {
+            let (before, after) = (
+                hit.health_before / max * 100.0,
+                hit.health_after / max * 100.0,
+            );
+            if let Ok((_, _, inventory, loadout)) = owners.get(hit.target) {
+                // Each distinct threshold of each source fires once for the hit.
+                for (source, rank) in owner_sources(inventory, loadout) {
+                    for trigger in source_triggers(source, &defs, |t| {
+                        matches!(t, AbilityTrigger::OnHealthBelow { percent }
+                            if before >= f32::from(percent) && f32::from(percent) > after)
+                    }) {
+                        let Ok((owner_tf, team, ..)) = owners.get(hit.target) else {
+                            continue;
+                        };
+                        triggers.write(AbilityTriggerEvent(
+                            TriggerContext::new(
+                                trigger,
+                                source,
+                                hit.target,
+                                *team,
+                                rank,
+                                owner_tf.translation,
+                                at,
+                            )
+                            .trigger_unit(hit.source)
+                            .amount(amount),
+                        ));
+                    }
+                }
+            }
+        }
+
+        if died {
+            if let Some(killer) = hit.source.filter(|&k| k != hit.target) {
+                fan_out(
+                    killer,
+                    AbilityTrigger::OnKill,
+                    &owners,
+                    &defs,
+                    &mut triggers,
+                    |ctx| ctx.trigger_unit(Some(hit.target)).at(at).amount(amount),
+                );
+            }
+            fan_out(
+                hit.target,
+                AbilityTrigger::OnDeath,
+                &owners,
+                &defs,
+                &mut triggers,
+                |ctx| ctx.trigger_unit(hit.source).at(at).amount(amount),
+            );
+        }
+    }
 }
 
 #[cfg(test)]

@@ -709,6 +709,7 @@ mod tests {
             .add_message::<StatusEffectEvent>()
             .add_message::<AbilityTriggerEvent>()
             .add_message::<DamageEvent>()
+            .add_message::<crate::combat::DamageAppliedEvent>()
             .add_message::<TeleportEvent>()
             .add_message::<TeleportCompletedEvent>()
             .add_message::<TeleportRejectedEvent>()
