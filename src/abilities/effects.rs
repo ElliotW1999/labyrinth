@@ -18,6 +18,7 @@ use super::definition::{
     AbilityEffect, AbilityEffectEntry, AbilityTrigger, AreaCenter, AreaRadius, Attribute,
     EffectScaling, EffectTarget, StatusBuildContext,
 };
+use super::mechanics::{ChainCandidate, chain_hops};
 use crate::actions::{ActionId, team_allows};
 use crate::basic_attack::ExtraAttackEvent;
 use crate::combat::{CombatRng, DamageEvent};
@@ -25,7 +26,9 @@ use crate::components::{AbilityId, BoundRadius, CombatStats, Health, HeroAttribu
 use crate::dimensions::{area_contains, bounds_of};
 use crate::displacement::DisplacementEvent;
 use crate::items::ItemId;
-use crate::status::{StatusChange, StatusEffectEvent, StatusEffects, StatusKind, is_untargetable};
+use crate::status::{
+    StatusChange, StatusEffect, StatusEffectEvent, StatusEffects, StatusKind, is_untargetable,
+};
 use crate::teleport::TeleportEvent;
 use crate::vitals::{self, HealKind, ResourceDrainEvent, ResourceKind};
 
@@ -183,8 +186,11 @@ pub struct TriggerContext {
     /// Set for triggers caused by a basic attack. Damage dealt under such a context is
     /// attack bonus damage rather than spell damage.
     pub attack: Option<AttackMeta>,
-    /// How many `Proc` / `Counter` hops produced this context (0 = straight from a mechanic).
+    /// How many `Proc` / `Counter` / `Chain` hops produced this context (0 = straight from a mechanic).
     pub depth: u8,
+    /// Multiplier on the Damage, DrainHealth and Heal amounts of entries run under this
+    /// context. 1.0 except for chain hops (falloff per jump); kept by derived contexts.
+    pub magnitude: f32,
     /// The size of the occurrence: post-mitigation damage for damage triggers, landed damage
     /// for `OnAttackHit`, distance for `OnMove`, otherwise 1. Read by the `Accumulate` gate.
     pub amount: f32,
@@ -222,14 +228,15 @@ impl TriggerContext {
             affected_units: Vec::new(),
             attack: None,
             depth: 0,
+            magnitude: 1.0,
             amount: 1.0,
             reaction: trigger.is_reaction(),
             status: None,
         }
     }
 
-    /// The same context re-fired under `trigger` one hop deeper (by `Proc` / `Counter`).
-    fn derived(&self, trigger: AbilityTrigger) -> Self {
+    /// The same context re-fired under `trigger` one hop deeper (by `Proc` / `Counter` / `Chain`).
+    pub(super) fn derived(&self, trigger: AbilityTrigger) -> Self {
         Self {
             trigger,
             depth: self.depth + 1,
@@ -553,12 +560,15 @@ impl EffectRunner<'_, '_> {
                     if let Some(amount) =
                         self.scaled_amount(ctx, amount.at(rank), scaling, target, cast_range)
                     {
+                        let amount = amount * ctx.magnitude;
                         self.damage.write(
-                            if ctx.attack.is_some() {
-                                DamageEvent::attack_bonus(ctx.caster, target, amount, damage_type)
-                            } else {
-                                DamageEvent::spell(ctx.caster, target, amount, damage_type)
-                            }
+                            DamageEvent::from_effect(
+                                ctx.caster,
+                                target,
+                                amount,
+                                damage_type,
+                                ctx.attack.is_some(),
+                            )
                             .reactive(ctx.reaction),
                         );
                     }
@@ -574,6 +584,7 @@ impl EffectRunner<'_, '_> {
                     if let Some(amount) =
                         self.scaled_amount(ctx, amount.at(rank), scaling, target, cast_range)
                     {
+                        let amount = amount * ctx.magnitude;
                         self.damage.write(
                             DamageEvent::spell(ctx.caster, target, amount, damage_type)
                                 .drained(transfer_ratio)
@@ -590,7 +601,7 @@ impl EffectRunner<'_, '_> {
                         self.heals.write(HealEvent {
                             source,
                             target,
-                            amount,
+                            amount: amount * ctx.magnitude,
                         });
                     }
                 }
@@ -643,36 +654,22 @@ impl EffectRunner<'_, '_> {
                 }
             }
             AbilityEffect::ApplyStatus { status, duration } => {
+                // The healer's amp is taken once, here; the tick applies none.
+                let healer_amp = vitals::outgoing_heal_amp(
+                    source.and_then(|s| self.stats.get(s).ok()),
+                    source.and_then(|s| self.statuses_of.get(s).ok()),
+                );
                 for target in targets {
-                    let move_speed = self.stats.get(target).map_or(0.0, |s| s.move_speed);
-                    let agility = self
-                        .attributes
-                        .get(target)
-                        .map(|a| a.agility)
-                        .unwrap_or(0.0);
-                    let fear_source = match status {
-                        super::definition::StatusSpec::Fear => Some(ctx.caster),
-                        _ => None,
-                    };
-                    let mut built = status.build(
+                    let mut built = build_status_effect(
+                        status,
                         rank,
                         duration.at(rank),
-                        StatusBuildContext {
-                            move_speed,
-                            agility,
-                            fear_source,
-                            source,
-                            point: ctx.point,
-                        },
+                        source,
+                        ctx.point,
+                        self.stats.get(target).ok(),
+                        self.attributes.get(target).ok(),
+                        healer_amp,
                     );
-                    built.dot_source = source;
-                    if built.heal_per_sec > 0.0 {
-                        // The healer's amp is taken once, here; the tick applies none.
-                        let healer_stats = source.and_then(|s| self.stats.get(s).ok());
-                        let healer_statuses = source.and_then(|s| self.statuses_of.get(s).ok());
-                        let amp = vitals::outgoing_heal_amp(healer_stats, healer_statuses);
-                        built.heal_per_sec *= (1.0 + amp).max(0.0);
-                    }
                     built.reactive = ctx.reaction;
                     self.statuses.write(
                         StatusEffectEvent::new(source, target, StatusChange::Apply(built))
@@ -797,6 +794,49 @@ impl EffectRunner<'_, '_> {
                     self.derived.push(ctx.derived(then));
                 }
             }
+            AbilityEffect::Chain {
+                jumps,
+                radius,
+                falloff,
+                team,
+                then,
+            } => {
+                if !self.gate_open(ctx) {
+                    return;
+                }
+                let radius = radius.at(rank);
+                let candidates: Vec<ChainCandidate> = self
+                    .units
+                    .iter()
+                    .filter(|(e, _, unit_team, health, _)| {
+                        health.is_alive()
+                            && (*e == ctx.caster || !is_untargetable(&self.statuses_of, *e))
+                            && team_allows(team, ctx.team, **unit_team)
+                    })
+                    .map(|(entity, tf, _, _, bound)| ChainCandidate {
+                        entity,
+                        position: tf.translation,
+                        bounds: bounds_of(bound),
+                    })
+                    .collect();
+                for start in targets {
+                    let Ok((_, start_tf, ..)) = self.units.get(start) else {
+                        continue;
+                    };
+                    let hops = chain_hops(start, start_tf.translation, &candidates, jumps, radius);
+                    for (index, hop) in hops.into_iter().enumerate() {
+                        let mut next = ctx
+                            .derived(then)
+                            .trigger_unit(Some(hop.entity))
+                            .at(hop.position)
+                            .affected(Vec::new());
+                        // Chained damage is spell damage, not attack bonus (D1).
+                        next.attack = None;
+                        next.magnitude = ctx.magnitude * falloff.powi(index as i32 + 1);
+                        self.derived.push(next);
+                    }
+                }
+            }
             AbilityEffect::Accumulate { threshold, then } => {
                 if !self.gate_open(ctx) {
                     return;
@@ -832,6 +872,43 @@ impl EffectRunner<'_, '_> {
             }
         }
     }
+}
+
+/// The one place a [`super::definition::StatusSpec`] becomes a runtime [`StatusEffect`], for
+/// timed effects (`ApplyStatus`) and toggle upkeep (`WhileToggled`) alike. `caster` is the unit
+/// that causes the status (damage-over-time source, fear origin); `healer_amp` is the caster's
+/// outgoing heal amplification, applied once to heal-over-time statuses. Callers set whatever
+/// only they know (for example the undispellable flags of a toggle).
+pub(crate) fn build_status_effect(
+    spec: super::definition::StatusSpec,
+    rank: u32,
+    duration: f32,
+    caster: Option<Entity>,
+    point: Vec3,
+    target_stats: Option<&CombatStats>,
+    target_attrs: Option<&HeroAttributes>,
+    healer_amp: f32,
+) -> StatusEffect {
+    let fear_source = match spec {
+        super::definition::StatusSpec::Fear => caster,
+        _ => None,
+    };
+    let mut built = spec.build(
+        rank,
+        duration,
+        StatusBuildContext {
+            move_speed: target_stats.map_or(0.0, |s| s.move_speed),
+            agility: target_attrs.map_or(0.0, |a| a.agility),
+            fear_source,
+            source: caster,
+            point,
+        },
+    );
+    built.dot_source = caster;
+    if built.heal_per_sec > 0.0 {
+        built.heal_per_sec *= (1.0 + healer_amp).max(0.0);
+    }
+    built
 }
 
 impl From<ActionId> for EffectSource {

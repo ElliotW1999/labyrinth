@@ -88,6 +88,9 @@ REACTION_TRIGGERS = {
 }
 # Effect types that re-fire the row's context under a custom `on_<name>` trigger.
 GATE_TYPES = ("proc", "pseudo_proc", "counter", "accumulate")
+# Every effect type that fires a custom trigger: the gates plus the Chain mechanic gate (one
+# derived context per hop). Used for reachability and reaction propagation.
+CUSTOM_TRIGGER_FEEDERS = (*GATE_TYPES, "chain")
 # Triggers whose resolved target is the unit that caused them (the `attacker` target).
 ATTACKER_TRIGGERS = ("on_damage_taken", "on_death")
 
@@ -118,8 +121,17 @@ ITEM_TRIGGERS = {
     "on_attack_hit": "OnAttackHit",
     "on_channel_end": "OnChannelEnd",
     "on_channel_interrupted": "OnChannelInterrupted",
+    # Only with a projectile_type: the item launches the same projectile mechanic abilities use.
+    "on_projectile_hit": "OnProjectileHit",
+    "on_impact": "OnImpact",
     **REACTIVE_PLAIN_TRIGGERS,
     **REACTIVE_PARAM_TRIGGERS,
+}
+
+# Triggers that parse but that no game system emits yet; rows using them never fire.
+NOT_EMITTED_TRIGGERS = {
+    "on_channel_tick": "not emitted by the game yet; the effect will never fire",
+    "on_expire": "not emitted by the game yet; the effect will never fire",
 }
 
 EFFECT_TARGETS = {
@@ -148,6 +160,8 @@ EFFECT_TYPES = {
     "pseudo_proc",
     "counter",
     "accumulate",
+    # Mechanic gate: jump from the start unit to nearby units, re-firing a custom trigger per hop.
+    "chain",
     # Extra basic attacks (instant / double / multi-target attack).
     "perform_attack",
 }
@@ -600,14 +614,6 @@ def parse_activation_spec(
     if kind == "item" and target_type is None:
         return None
 
-    if kind == "item" and projectile != "none":
-        report.warn(
-            row.file,
-            row.line,
-            "projectile_type",
-            row.get("projectile_type"),
-            "item projectiles are not emitted by the runtime yet (ProjectilePayload is ability-scoped); reserved for a future pipeline",
-        )
     if kind == "item" and speed is not None and projectile == "none":
         report.error(row.file, row.line, "projectile_speed", row.get("projectile_speed"), "projectile_speed requires projectile_type targeted or skillshot")
 
@@ -704,7 +710,7 @@ def find_emitted_custom_triggers(repo_root: Path) -> set[str]:
 
 def warn_unreachable_custom_triggers(effects: list["EffectRow"], emitted: set[str] | None, report: Report) -> None:
     """A custom trigger only fires when a proc / counter row names it or Rust emits it."""
-    fed = {e.row.get("effect_id").lower() for e in effects if e.effect_type in GATE_TYPES}
+    fed = {e.row.get("effect_id").lower() for e in effects if e.effect_type in CUSTOM_TRIGGER_FEEDERS}
     for e in effects:
         if e.trigger in ABILITY_TRIGGERS or e.trigger in ITEM_TRIGGERS:
             continue
@@ -715,8 +721,16 @@ def warn_unreachable_custom_triggers(effects: list["EffectRow"], emitted: set[st
             e.row.line,
             "trigger",
             e.trigger,
-            "custom trigger is never fired: no proc / counter / accumulate row names it and no Rust code emits it",
+            "custom trigger is never fired: no proc / counter / accumulate / chain row names it and no Rust code emits it",
         )
+
+
+def warn_unemitted_triggers(effects: list["EffectRow"], report: Report) -> None:
+    """Warn on rows whose (valid) trigger no game system emits. Shared by both generators."""
+    for e in effects:
+        message = NOT_EMITTED_TRIGGERS.get(e.trigger)
+        if message:
+            report.warn(e.row.file, e.row.line, "trigger", e.trigger, message)
 
 
 def find_registered_custom_effects(repo_root: Path) -> set[str]:
@@ -818,6 +832,8 @@ class EffectContext:
     owner_triggers: set[str] | None = None
     #: Triggers whose effects run as reactions (see `reaction_triggers`); None = just the built-ins.
     reaction: set[str] | None = None
+    #: Custom triggers fed (directly or through gates) by a `chain` row (see `chain_fed_triggers`).
+    chain_fed: set[str] | None = None
 
 
 def _levels(e: EffectRow, name: str, ctx: EffectContext, report: Report, **kwargs) -> list[float] | None:
@@ -1165,10 +1181,30 @@ def reaction_triggers(effects: list[EffectRow]) -> set[str]:
         changed = False
         for e in effects:
             fed = e.row.get("effect_id").lower()
-            if e.effect_type in GATE_TYPES and e.trigger in reaction and fed not in reaction:
+            if e.effect_type in CUSTOM_TRIGGER_FEEDERS and e.trigger in reaction and fed not in reaction:
                 reaction.add(fed)
                 changed = True
     return reaction
+
+
+def chain_fed_triggers(effects: list[EffectRow]) -> set[str]:
+    """Custom triggers fed by a `chain` row, directly or through further gates.
+
+    Chain hops carry no `AttackMeta`, so a `perform_attack` under such a trigger would start an
+    attack whose hit re-fires the trigger that fed the chain: an unbounded loop (F7).
+    """
+    fed_triggers: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for e in effects:
+            fed = e.row.get("effect_id").lower()
+            if e.effect_type not in CUSTOM_TRIGGER_FEEDERS or fed in fed_triggers:
+                continue
+            if e.effect_type == "chain" or e.trigger in fed_triggers:
+                fed_triggers.add(fed)
+                changed = True
+    return fed_triggers
 
 
 def warn_duplicate_held_statuses(effects: list[EffectRow], report: Report) -> None:
@@ -1298,6 +1334,16 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             "effect_type",
             e.effect_type,
             f"{e.trigger} reacts to damage or statuses, and reactions never start attacks",
+        )
+        return None
+    if e.effect_type == "perform_attack" and e.trigger in (ctx.chain_fed or ()):
+        report.error(
+            row.file,
+            row.line,
+            "effect_type",
+            e.effect_type,
+            f"{e.trigger} is fed by a chain row; a chain hop carries no attack, so perform_attack here "
+            "could re-fire the trigger that fed the chain without end",
         )
         return None
 
@@ -1652,6 +1698,45 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
                 report.error(row.file, row.line, "value", row.get("value"), "counter needs a single integer of at least 2")
                 return None
             effect = f"AbilityEffect::Counter {{ every: {int(value[0])}, then: AbilityTrigger::Custom(\"{effect_id}\") }}"
+    elif t == "chain":
+        if not _require(e, "effect_id", report, "the custom trigger to fire per hop (on_<name>)"):
+            return None
+        if not CUSTOM_TRIGGER_PATTERN.match(effect_id) or effect_id in ABILITY_TRIGGERS or effect_id in ITEM_TRIGGERS:
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), "must be a custom on_<name> trigger, not a built-in trigger")
+            return None
+        if effect_id == e.trigger:
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), "a chain cannot fire its own trigger")
+            return None
+        if e.target in ("affected_units", "units_in_radius"):
+            report.error(row.file, row.line, "effect_target", e.target, "a chain starts from one unit; use cast_target, trigger_unit, attacker, owner, or caster")
+            return None
+        if ctx.owner_triggers is not None and effect_id not in ctx.owner_triggers:
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), f"no row of {e.owner!r} uses trigger {effect_id}, so this chain would do nothing")
+            return None
+        if not no_scaling():
+            return None
+        if not _require(e, "value", report, "number of jumps (integer, at least 1)"):
+            return None
+        if len(value) != 1 or not float(value[0]).is_integer() or value[0] < 1:
+            report.error(row.file, row.line, "value", row.get("value"), "chain needs a single integer number of jumps of at least 1")
+            return None
+        if not _require(e, "radius", report, "jump radius in world units"):
+            return None
+        if any(r <= 0 for r in radius):
+            report.error(row.file, row.line, "radius", row.get("radius"), "chain jump radius must be above 0")
+            return None
+        if not _require(e, "amount", report, "percent of the magnitude kept per jump (above 0, at most 100)"):
+            return None
+        if len(amount) != 1 or not 0 < amount[0] <= 100:
+            report.error(row.file, row.line, "amount", row.get("amount"), "chain needs a single percent above 0 and at most 100")
+            return None
+        _unused(e, report, "damage_type", "duration")
+        chain_team = ctx.team if ctx.team in ("Enemy", "Ally", "Any") else "Enemy"
+        effect = (
+            f"AbilityEffect::Chain {{ jumps: {int(value[0])}, radius: {rank_value(radius)}, "
+            f"falloff: {f32(amount[0] / 100)}, team: TargetTeam::{chain_team}, "
+            f'then: AbilityTrigger::Custom("{effect_id}") }}'
+        )
     elif t == "perform_attack":
         if effect_id not in ("", "exclude_trigger_unit"):
             report.error(row.file, row.line, "effect_id", row.get("effect_id"), "perform_attack effect_id must be blank or exclude_trigger_unit")
@@ -1697,7 +1782,7 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
     else:  # pragma: no cover - parse_enum already rejected it
         return None
 
-    if t not in ("movement",) and e.target != "units_in_radius" and row.get("radius"):
+    if t not in ("movement", "chain") and e.target != "units_in_radius" and row.get("radius"):
         report.warn(row.file, row.line, "radius", row.get("radius"), "only used by units_in_radius targets")
 
     # --- target

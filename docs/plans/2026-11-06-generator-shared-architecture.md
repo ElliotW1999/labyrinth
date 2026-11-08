@@ -149,7 +149,7 @@ From shared-effects pipeline audit — implementers should not emit CSV that req
 | Item projectiles / `on_projectile_hit` | Ability-only triggers rejected for items | `ProjectilePayload` ability-scoped |
 | `on_damage_taken` / `on_kill` / `on_death` | ~~Warn only (`NOT_EMITTED`)~~ **Resolved** (2026-11-08 reactive triggers): accepted without a warning for items and abilities | Emitted by `reactive_triggers::damage_triggers` from `DamageAppliedEvent`, one frame after the damage (`docs/plans/2026-11-08-reactive-triggers.md`) |
 
-Generators warned on these until runtime landed; the `NOT_EMITTED` table is gone now that they, and the other reactive triggers, are emitted.
+Generators warned on these until runtime landed; `NOT_EMITTED_TRIGGERS` survives with two entries (`on_channel_tick`, `on_expire`) now that the reactive triggers are emitted (2026-11-08 merge of reactive triggers into the composition layers).
 
 ---
 

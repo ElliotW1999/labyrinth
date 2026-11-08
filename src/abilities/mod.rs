@@ -57,7 +57,9 @@ use effects::{
     AbilityTriggerEvent, CustomAbilityEffects, HealEvent, ManaRestoreEvent, apply_heal_events,
     apply_mana_restore_events, resolve_ability_triggers, source_params,
 };
-use mechanics::{CustomAbilityBehaviors, execute_ability_casts, projectile_hit_triggers};
+use mechanics::{
+    CustomAbilityBehaviors, execute_ability_casts, execute_item_mechanics, projectile_hit_triggers,
+};
 use passive::{sync_ability_passives, tick_toggle_upkeep};
 
 pub struct AbilitiesPlugin;
@@ -101,7 +103,7 @@ impl Plugin for AbilitiesPlugin {
                     validate_activation_requests,
                     (refresh_activation_aims, tick_activations).chain(),
                     emit_ability_casts,
-                    crate::items::resolve_item_uses,
+                    (crate::items::resolve_item_uses, execute_item_mechanics).chain(),
                     execute_ability_casts,
                     action_channel_end_triggers,
                     projectile_hit_triggers,
@@ -696,7 +698,7 @@ mod tests {
                     refresh_activation_aims,
                     tick_activations,
                     emit_ability_casts,
-                    crate::items::resolve_item_uses,
+                    (crate::items::resolve_item_uses, execute_item_mechanics).chain(),
                     execute_ability_casts,
                     action_channel_end_triggers,
                     projectile_hit_triggers,
@@ -830,6 +832,7 @@ mod tests {
             color: [1.0, 1.0, 1.0],
             description: "test",
             effects,
+            mechanics: &[],
         }
     }
 
@@ -871,6 +874,7 @@ mod tests {
             color: [1.0, 1.0, 1.0],
             description: "test",
             effects,
+            mechanics: &[],
         }
     }
 
@@ -2185,7 +2189,7 @@ mod tests {
         let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(200.0, 0.0, 0.0));
         let payload = ProjectilePayload {
             caster,
-            ability: AbilityId::Bolt,
+            source: EffectSource::Ability(AbilityId::Bolt),
             rank: 1,
             cast_target: None,
             aim: Vec3::X * 200.0,
@@ -2194,6 +2198,784 @@ mod tests {
             .write_message(hit(payload, Vec3::X * 200.0, None, vec![enemy]));
         step(&mut app);
         assert!((health(&app, enemy) - (1000.0 - 120.0)).abs() < 1e-3);
+    }
+
+    /// Land a rank-1 Bolt on `primary` (no splash) and run one frame.
+    fn land_bolt(app: &mut App, caster: Entity, primary: Entity) {
+        let payload = ProjectilePayload {
+            caster,
+            source: EffectSource::Ability(AbilityId::Bolt),
+            rank: 1,
+            cast_target: Some(primary),
+            aim: Vec3::X * 200.0,
+        };
+        app.world_mut()
+            .write_message(hit(payload, Vec3::X * 200.0, Some(primary), Vec::new()));
+        step(app);
+    }
+
+    fn enemy_at(app: &mut App, x: f32) -> Entity {
+        spawn_unit(app, Team::Dire, Vec3::new(scale::u(x), 0.0, 0.0))
+    }
+
+    #[test]
+    fn bolt_chain_hits_the_two_nearest_enemies_with_compounding_falloff() {
+        let mut app = test_app();
+        let caster = spawn_caster(&mut app, KIT);
+        let primary = enemy_at(&mut app, 300.0);
+        let near = enemy_at(&mut app, 500.0);
+        let next = enemy_at(&mut app, 800.0);
+        let spare = enemy_at(&mut app, 1100.0);
+
+        land_bolt(&mut app, caster, primary);
+
+        // Rank 1: projectile 120; chain base 45 + 12 = 57, x0.75 per hop.
+        assert!((health(&app, primary) - (1000.0 - 120.0)).abs() < 1e-3);
+        assert!((health(&app, near) - (1000.0 - 57.0 * 0.75)).abs() < 1e-3);
+        assert!((health(&app, next) - (1000.0 - 57.0 * 0.75 * 0.75)).abs() < 1e-3);
+        assert_eq!(health(&app, spare), 1000.0, "only two jumps");
+    }
+
+    #[test]
+    fn bolt_chain_stops_when_no_enemy_is_within_the_jump_radius() {
+        let mut app = test_app();
+        let caster = spawn_caster(&mut app, KIT);
+        let primary = enemy_at(&mut app, 300.0);
+        let far = enemy_at(&mut app, 300.0 + 460.0);
+
+        land_bolt(&mut app, caster, primary);
+
+        assert_eq!(health(&app, far), 1000.0, "beyond the 450 jump radius");
+        assert!((health(&app, primary) - (1000.0 - 120.0)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn bolt_chain_never_revisits_a_unit() {
+        let mut app = test_app();
+        let caster = spawn_caster(&mut app, KIT);
+        let primary = enemy_at(&mut app, 300.0);
+        let only = enemy_at(&mut app, 500.0);
+
+        land_bolt(&mut app, caster, primary);
+
+        assert!(
+            (health(&app, only) - (1000.0 - 57.0 * 0.75)).abs() < 1e-3,
+            "hit once, not again on the second jump"
+        );
+        assert!(
+            (health(&app, primary) - (1000.0 - 120.0)).abs() < 1e-3,
+            "the primary target is not chained back to"
+        );
+    }
+
+    fn chain_entry(
+        trigger: AbilityTrigger,
+        target: EffectTarget,
+        jumps: u32,
+        falloff: f32,
+        then: &'static str,
+    ) -> AbilityEffectEntry {
+        AbilityEffectEntry {
+            trigger,
+            target,
+            effect: AbilityEffect::Chain {
+                jumps,
+                radius: RankValue::fixed(scale::u(450.0)),
+                falloff,
+                team: TargetTeam::Enemy,
+                then: AbilityTrigger::Custom(then),
+            },
+        }
+    }
+
+    fn damage_entry(
+        trigger: AbilityTrigger,
+        target: EffectTarget,
+        amount: f32,
+    ) -> AbilityEffectEntry {
+        AbilityEffectEntry {
+            trigger,
+            target,
+            effect: fixed_magical_damage(amount),
+        }
+    }
+
+    /// The chain rows an ability (under `OnCast`) and an item (under `OnUse`) share.
+    fn chain_rows(start: AbilityTrigger) -> Vec<AbilityEffectEntry> {
+        vec![
+            chain_entry(start, EffectTarget::CastTarget, 2, 0.5, "on_chain_hit"),
+            damage_entry(
+                AbilityTrigger::Custom("on_chain_hit"),
+                EffectTarget::TriggerUnit,
+                100.0,
+            ),
+        ]
+    }
+
+    fn chain_line(app: &mut App) -> (Entity, Entity, Entity) {
+        (
+            enemy_at(app, 300.0),
+            enemy_at(app, 500.0),
+            enemy_at(app, 800.0),
+        )
+    }
+
+    #[test]
+    fn bolt_chain_skips_cycloned_units() {
+        let mut app = test_app();
+        let caster = spawn_caster(&mut app, KIT);
+        let primary = enemy_at(&mut app, 300.0);
+        let lifted = enemy_at(&mut app, 400.0);
+        let next = enemy_at(&mut app, 600.0);
+        app.world_mut()
+            .get_mut::<StatusEffects>(lifted)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::cyclone(10.0, true));
+
+        land_bolt(&mut app, caster, primary);
+
+        assert_eq!(
+            health(&app, lifted),
+            1000.0,
+            "untargetable units are skipped"
+        );
+        assert!((health(&app, next) - (1000.0 - 57.0 * 0.75)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn chain_hops_break_ties_by_entity() {
+        use super::mechanics::{ChainCandidate, chain_hops};
+        let mut world = World::new();
+        let (a, b, start) = (
+            world.spawn_empty().id(),
+            world.spawn_empty().id(),
+            world.spawn_empty().id(),
+        );
+        let at = |entity, x: f32, z: f32| ChainCandidate {
+            entity,
+            position: Vec3::new(x, 0.0, z),
+            bounds: 0.0,
+        };
+        // Equally near on opposite sides: the lower entity wins whatever the list order.
+        let first = chain_hops(
+            start,
+            Vec3::ZERO,
+            &[at(b, 10.0, 0.0), at(a, -10.0, 0.0)],
+            1,
+            50.0,
+        );
+        let second = chain_hops(
+            start,
+            Vec3::ZERO,
+            &[at(a, -10.0, 0.0), at(b, 10.0, 0.0)],
+            1,
+            50.0,
+        );
+        let lower = a.min(b);
+        assert_eq!(
+            first.iter().map(|c| c.entity).collect::<Vec<_>>(),
+            vec![lower]
+        );
+        assert_eq!(
+            second.iter().map(|c| c.entity).collect::<Vec<_>>(),
+            vec![lower]
+        );
+        // The start is never revisited and hops measure from the previous unit.
+        let line = chain_hops(
+            start,
+            Vec3::ZERO,
+            &[at(start, 0.0, 0.0), at(a, 40.0, 0.0), at(b, 80.0, 0.0)],
+            5,
+            50.0,
+        );
+        assert_eq!(
+            line.iter().map(|c| c.entity).collect::<Vec<_>>(),
+            vec![a, b]
+        );
+    }
+
+    #[test]
+    fn item_and_ability_chain_emit_identical_damage() {
+        // Ability: an OnCast chain from the cast target.
+        let mut ability_app = test_app();
+        let chain_ability = chain_rows(AbilityTrigger::OnCast).into_iter().fold(
+            AbilityDefinition::new(AbilityId::Bulwark)
+                .targeting(
+                    TargetType::Unit,
+                    RankValue::fixed(scale::u(600.0)),
+                    RankValue::ZERO,
+                )
+                .costs(RankValue::fixed(8.0), RankValue::fixed(1.0)),
+            |def, entry| def.on(entry.trigger, entry.target, entry.effect),
+        );
+        ability_app
+            .world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(chain_ability);
+        let caster = spawn_caster(&mut ability_app, KIT);
+        let (p, n1, n2) = chain_line(&mut ability_app);
+        request(&mut ability_app, caster, 3, CastTarget::Unit(p));
+        for _ in 0..6 {
+            step(&mut ability_app);
+        }
+        let ability_hp = [p, n1, n2].map(|e| health(&ability_app, e));
+
+        // Item: the same rows under OnUse.
+        let mut item_app = test_app();
+        let effects: &'static [AbilityEffectEntry] =
+            Box::leak(chain_rows(AbilityTrigger::OnUse).into_boxed_slice());
+        let _defs = install_test_item_definitions([item_with(
+            effects,
+            TargetType::Unit,
+            TargetTeam::Enemy,
+            scale::u(600.0),
+        )]);
+        let caster = spawn_caster_with_inventory(&mut item_app, KIT);
+        give_item(&mut item_app, caster, ItemId::HeartwoodBand);
+        let (p, n1, n2) = chain_line(&mut item_app);
+        request_item(&mut item_app, caster, 0, CastTarget::Unit(p));
+        for _ in 0..6 {
+            step(&mut item_app);
+        }
+        let item_hp = [p, n1, n2].map(|e| health(&item_app, e));
+
+        assert_eq!(ability_hp, item_hp);
+        assert_eq!(ability_hp[0], 1000.0, "the start unit is not re-fired");
+        assert!((ability_hp[1] - 950.0).abs() < 1e-3, "first hop at 50%");
+        assert!((ability_hp[2] - 975.0).abs() < 1e-3, "second hop at 25%");
+    }
+
+    #[test]
+    fn chain_respects_max_trigger_depth() {
+        let mut app = test_app();
+        let entries = vec![
+            chain_entry(
+                AbilityTrigger::OnUse,
+                EffectTarget::CastTarget,
+                1,
+                1.0,
+                "on_a",
+            ),
+            chain_entry(
+                AbilityTrigger::Custom("on_a"),
+                EffectTarget::TriggerUnit,
+                1,
+                1.0,
+                "on_b",
+            ),
+            damage_entry(
+                AbilityTrigger::Custom("on_b"),
+                EffectTarget::TriggerUnit,
+                10.0,
+            ),
+            chain_entry(
+                AbilityTrigger::Custom("on_b"),
+                EffectTarget::TriggerUnit,
+                1,
+                1.0,
+                "on_c",
+            ),
+            damage_entry(
+                AbilityTrigger::Custom("on_c"),
+                EffectTarget::TriggerUnit,
+                10.0,
+            ),
+        ];
+        let effects: &'static [AbilityEffectEntry] = Box::leak(entries.into_boxed_slice());
+        let _defs = install_test_item_definitions([item_with(
+            effects,
+            TargetType::Unit,
+            TargetTeam::Enemy,
+            scale::u(600.0),
+        )]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        // Each nested chain starts fresh, so it may step back; the spacing makes every
+        // nearest choice unambiguous.
+        let start = enemy_at(&mut app, 300.0);
+        let first = enemy_at(&mut app, 500.0);
+        let second = enemy_at(&mut app, 650.0);
+        let third = enemy_at(&mut app, 900.0);
+        request_item(&mut app, caster, 0, CastTarget::Unit(start));
+        for _ in 0..6 {
+            step(&mut app);
+        }
+
+        assert_eq!(health(&app, second), 990.0, "depth 2 still resolves");
+        assert_eq!(health(&app, start), 1000.0, "on_a has no damage row");
+        assert_eq!(health(&app, first), 1000.0);
+        // The chain gate under on_b sits at the depth cap, so on_c never fires.
+        assert_eq!(health(&app, third), 1000.0);
+    }
+
+    #[test]
+    fn chain_entry_emits_no_gameplay_messages() {
+        let mut app = test_app();
+        let effects: &'static [AbilityEffectEntry] = Box::leak(
+            vec![chain_entry(
+                AbilityTrigger::OnUse,
+                EffectTarget::CastTarget,
+                2,
+                0.5,
+                "on_chain_hit",
+            )]
+            .into_boxed_slice(),
+        );
+        let _defs = install_test_item_definitions([item_with(
+            effects,
+            TargetType::Unit,
+            TargetTeam::Enemy,
+            scale::u(600.0),
+        )]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let (start, _, _) = chain_line(&mut app);
+        request_item(&mut app, caster, 0, CastTarget::Unit(start));
+        let mut triggers = 0;
+        for _ in 0..6 {
+            step(&mut app);
+            let world = app.world();
+            assert_eq!(
+                world
+                    .resource::<Messages<DamageEvent>>()
+                    .iter_current_update_messages()
+                    .count(),
+                0
+            );
+            assert_eq!(
+                world
+                    .resource::<Messages<HealEvent>>()
+                    .iter_current_update_messages()
+                    .count(),
+                0
+            );
+            assert_eq!(
+                world
+                    .resource::<Messages<StatusEffectEvent>>()
+                    .iter_current_update_messages()
+                    .count(),
+                0
+            );
+            assert_eq!(
+                world
+                    .resource::<Messages<DisplacementEvent>>()
+                    .iter_current_update_messages()
+                    .count(),
+                0
+            );
+            assert_eq!(
+                world
+                    .resource::<Messages<TeleportEvent>>()
+                    .iter_current_update_messages()
+                    .count(),
+                0
+            );
+            triggers += world
+                .resource::<Messages<AbilityTriggerEvent>>()
+                .iter_current_update_messages()
+                .count();
+        }
+        assert!(triggers >= 1, "the item did fire");
+        assert_eq!(health(&app, start), 1000.0);
+    }
+
+    #[test]
+    fn chain_hop_damage_is_spell_damage_not_attack_bonus() {
+        let mut app = test_app();
+        let entries = vec![
+            chain_entry(
+                AbilityTrigger::OnAttackHit,
+                EffectTarget::TriggerUnit,
+                1,
+                1.0,
+                "on_chain_hit",
+            ),
+            damage_entry(AbilityTrigger::OnAttackHit, EffectTarget::TriggerUnit, 10.0),
+            damage_entry(
+                AbilityTrigger::Custom("on_chain_hit"),
+                EffectTarget::TriggerUnit,
+                20.0,
+            ),
+        ];
+        let _defs = install_test_item_definitions([item_with_effects(entries)]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let target = enemy_at(&mut app, 80.0);
+        let other = enemy_at(&mut app, 300.0);
+        write_attack_hit(&mut app, caster, target);
+        step(&mut app);
+
+        let kinds: Vec<_> = app
+            .world()
+            .resource::<Messages<DamageEvent>>()
+            .iter_current_update_messages()
+            .map(|d| (d.target, d.kind, d.is_spell))
+            .collect();
+        assert!(kinds.contains(&(target, crate::combat::DamageKind::AttackBonus, false)));
+        let hop = kinds.iter().find(|k| k.0 == other).expect("chained damage");
+        assert_ne!(hop.1, crate::combat::DamageKind::AttackBonus);
+        assert!(hop.2, "spell damage");
+    }
+
+    #[test]
+    fn ally_chain_skips_enemies_and_scales_heal_by_falloff() {
+        let mut app = test_app();
+        let entries = vec![
+            AbilityEffectEntry {
+                trigger: AbilityTrigger::OnUse,
+                target: EffectTarget::CastTarget,
+                effect: AbilityEffect::Chain {
+                    jumps: 2,
+                    radius: RankValue::fixed(scale::u(450.0)),
+                    falloff: 0.5,
+                    team: TargetTeam::Ally,
+                    then: AbilityTrigger::Custom("on_chain_hit"),
+                },
+            },
+            AbilityEffectEntry {
+                trigger: AbilityTrigger::Custom("on_chain_hit"),
+                target: EffectTarget::TriggerUnit,
+                effect: AbilityEffect::Heal {
+                    amount: RankValue::fixed(100.0),
+                    scaling: EffectScaling::None,
+                },
+            },
+        ];
+        let effects: &'static [AbilityEffectEntry] = Box::leak(entries.into_boxed_slice());
+        let _defs = install_test_item_definitions([item_with(
+            effects,
+            TargetType::Unit,
+            TargetTeam::Ally,
+            scale::u(5000.0),
+        )]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let ally_at = |app: &mut App, x: f32| {
+            let unit = spawn_unit(app, Team::Radiant, Vec3::new(scale::u(x), 0.0, 0.0));
+            app.world_mut().get_mut::<Health>(unit).unwrap().current = 500.0;
+            unit
+        };
+        let start = ally_at(&mut app, 2000.0);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(scale::u(2100.0), 0.0, 0.0));
+        let first = ally_at(&mut app, 2200.0);
+        let second = ally_at(&mut app, 2500.0);
+
+        request_item(&mut app, caster, 0, CastTarget::Unit(start));
+        for _ in 0..6 {
+            step(&mut app);
+        }
+
+        assert_eq!(health(&app, start), 500.0, "the start unit is not re-fired");
+        assert_eq!(health(&app, enemy), 1000.0, "enemies are never healed");
+        assert!(
+            (health(&app, first) - 550.0).abs() < 1e-3,
+            "first hop heals 50%"
+        );
+        assert!(
+            (health(&app, second) - 525.0).abs() < 1e-3,
+            "second hop heals 25%"
+        );
+    }
+
+    #[test]
+    fn magnitude_defaults_to_one_for_non_chain_triggers() {
+        let ctx = TriggerContext::new(
+            AbilityTrigger::OnCast,
+            EffectSource::Ability(AbilityId::Bolt),
+            Entity::PLACEHOLDER,
+            Team::Radiant,
+            1,
+            Vec3::ZERO,
+            Vec3::ZERO,
+        );
+        assert_eq!(ctx.magnitude, 1.0);
+
+        let mut app = test_app();
+        let entries = vec![damage_entry(
+            AbilityTrigger::OnUse,
+            EffectTarget::CastTarget,
+            100.0,
+        )];
+        let effects: &'static [AbilityEffectEntry] = Box::leak(entries.into_boxed_slice());
+        let _defs = install_test_item_definitions([item_with(
+            effects,
+            TargetType::Unit,
+            TargetTeam::Enemy,
+            scale::u(600.0),
+        )]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let target = enemy_at(&mut app, 300.0);
+        request_item(&mut app, caster, 0, CastTarget::Unit(target));
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        assert!((health(&app, target) - 900.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn while_toggled_and_on_cast_build_the_same_status() {
+        use super::definition::StatusSpec;
+        use crate::status::{DispelType, StatusEffect};
+        let spec = StatusSpec::Burn {
+            dps: RankValue::fixed(12.0),
+            damage_type: DamageType::Magical,
+        };
+        let healing = StatusSpec::Modifier {
+            id: "twin_bonus",
+            kind: crate::status::StatusKind::Buff,
+            armor: RankValue::fixed(3.0),
+            magic_resist: RankValue::ZERO,
+            move_speed: RankValue::fixed(15.0),
+            attack_damage: RankValue::ZERO,
+            attack_speed_flat: RankValue::ZERO,
+            attack_speed_mult: RankValue::fixed(0.1),
+            attack_range: RankValue::ZERO,
+        };
+        let mut app = test_app();
+        let toggle = AbilityDefinition::new(AbilityId::Overcharge)
+            .behavior(super::definition::AbilityBehavior::Toggle)
+            .toggle_upkeep(RankValue::fixed(1.0))
+            .on(
+                AbilityTrigger::WhileToggled,
+                EffectTarget::Caster,
+                AbilityEffect::ApplyStatus {
+                    status: spec,
+                    duration: RankValue::ZERO,
+                },
+            )
+            .on(
+                AbilityTrigger::WhileToggled,
+                EffectTarget::Caster,
+                AbilityEffect::ApplyStatus {
+                    status: healing,
+                    duration: RankValue::ZERO,
+                },
+            );
+        let cast = AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::NoTarget, RankValue::ZERO, RankValue::ZERO)
+            .costs(RankValue::fixed(1.0), RankValue::fixed(1.0))
+            .on(
+                AbilityTrigger::OnCast,
+                EffectTarget::Caster,
+                AbilityEffect::ApplyStatus {
+                    status: spec,
+                    duration: RankValue::fixed(f32::INFINITY),
+                },
+            )
+            .on(
+                AbilityTrigger::OnCast,
+                EffectTarget::Caster,
+                AbilityEffect::ApplyStatus {
+                    status: healing,
+                    duration: RankValue::fixed(f32::INFINITY),
+                },
+            );
+        {
+            let mut defs = app.world_mut().resource_mut::<AbilityDefinitions>();
+            defs.insert(toggle);
+            defs.insert(cast);
+        }
+        let toggler = spawn_caster(
+            &mut app,
+            [
+                AbilityId::Overcharge,
+                AbilityId::Shockwave,
+                AbilityId::Execute,
+                AbilityId::Dash,
+            ],
+        );
+        let caster = spawn_caster(
+            &mut app,
+            [
+                AbilityId::Bulwark,
+                AbilityId::Shockwave,
+                AbilityId::Execute,
+                AbilityId::Dash,
+            ],
+        );
+        for unit in [toggler, caster] {
+            app.world_mut()
+                .entity_mut(unit)
+                .insert(crate::components::HeroAttributes::starter());
+        }
+        app.world_mut()
+            .get_mut::<AbilityLoadout>(toggler)
+            .unwrap()
+            .slots[0]
+            .toggled = true;
+        request(&mut app, caster, 0, CastTarget::None);
+        for _ in 0..12 {
+            bevy::ecs::system::RunSystemOnce::run_system_once(
+                app.world_mut(),
+                passive::tick_toggle_upkeep,
+            )
+            .unwrap();
+            step(&mut app);
+        }
+
+        let status_of = |app: &App, unit: Entity| -> Vec<StatusEffect> {
+            let mut effects = app
+                .world()
+                .get::<StatusEffects>(unit)
+                .unwrap()
+                .effects
+                .clone();
+            effects.sort_by_key(|e| e.id);
+            effects
+        };
+        let (toggled, cast) = (status_of(&app, toggler), status_of(&app, caster));
+        assert_eq!(toggled.len(), 2);
+        assert_eq!(cast.len(), 2);
+        for (mut a, mut b) in toggled.into_iter().zip(cast) {
+            // The toggle keeps its bonus through dispels; nothing else differs.
+            assert!(a.undispellable && a.dispel_type == DispelType::None);
+            // Held statuses are reactive (silent); a cast's status is not.
+            assert!(a.reactive && !b.reactive);
+            a.undispellable = b.undispellable;
+            a.dispel_type = b.dispel_type;
+            a.reactive = b.reactive;
+            a.dot_source = a.dot_source.map(|_| Entity::PLACEHOLDER);
+            b.dot_source = b.dot_source.map(|_| Entity::PLACEHOLDER);
+            assert_eq!(format!("{a:?}"), format!("{b:?}"));
+        }
+    }
+
+    #[test]
+    fn projectile_hit_trigger_carries_the_payload_source() {
+        let mut app = test_app();
+        let caster = spawn_caster(&mut app, KIT);
+        let victim = enemy_at(&mut app, 300.0);
+        for (source, trigger) in [
+            (
+                EffectSource::Ability(AbilityId::Bolt),
+                AbilityTrigger::OnProjectileHit,
+            ),
+            (
+                EffectSource::Item(ItemId::StormRod),
+                AbilityTrigger::OnProjectileHit,
+            ),
+            (
+                EffectSource::Item(ItemId::StormRod),
+                AbilityTrigger::OnImpact,
+            ),
+        ] {
+            let payload = ProjectilePayload {
+                caster,
+                source,
+                rank: 1,
+                cast_target: None,
+                aim: Vec3::X,
+            };
+            let primary = (trigger == AbilityTrigger::OnProjectileHit).then_some(victim);
+            app.world_mut()
+                .write_message(hit(payload, Vec3::X, primary, Vec::new()));
+            // Run only the emitter, so no effect resolves.
+            bevy::ecs::system::RunSystemOnce::run_system_once(
+                app.world_mut(),
+                projectile_hit_triggers,
+            )
+            .unwrap();
+            let triggers: Vec<_> = app
+                .world()
+                .resource::<Messages<AbilityTriggerEvent>>()
+                .iter_current_update_messages()
+                .map(|e| (e.0.source, e.0.trigger))
+                .collect();
+            assert_eq!(triggers.last(), Some(&(source, trigger)));
+            step(&mut app);
+        }
+    }
+
+    fn projectile_item(entries: Vec<AbilityEffectEntry>) -> ItemDefinition {
+        static MECHANICS: [AbilityMechanic; 1] = [AbilityMechanic::Projectile {
+            splash_radius: AreaRadius::Ability,
+            speed: None,
+            skillshot: false,
+            first_hit: false,
+        }];
+        let effects: &'static [AbilityEffectEntry] = Box::leak(entries.into_boxed_slice());
+        ItemDefinition {
+            mechanics: &MECHANICS,
+            ..item_with(
+                effects,
+                TargetType::Unit,
+                TargetTeam::Enemy,
+                scale::u(600.0),
+            )
+        }
+    }
+
+    fn use_projectile_item(
+        app: &mut App,
+        caster: Entity,
+        target: Entity,
+    ) -> Vec<SpawnProjectileEvent> {
+        give_item(app, caster, ItemId::HeartwoodBand);
+        request_item(app, caster, 0, CastTarget::Unit(target));
+        let mut spawned = Vec::new();
+        for _ in 0..6 {
+            step(app);
+            spawned.extend(
+                app.world()
+                    .resource::<Messages<SpawnProjectileEvent>>()
+                    .iter_current_update_messages()
+                    .copied(),
+            );
+        }
+        spawned
+    }
+
+    #[test]
+    fn item_projectile_fires_on_projectile_hit_for_the_item() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([projectile_item(vec![damage_entry(
+            AbilityTrigger::OnProjectileHit,
+            EffectTarget::TriggerUnit,
+            75.0,
+        )])]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        let target = enemy_at(&mut app, 300.0);
+        let spawned = use_projectile_item(&mut app, caster, target);
+
+        assert_eq!(spawned.len(), 1, "the item launched its projectile");
+        assert_eq!(
+            spawned[0].payload.source,
+            EffectSource::Item(ItemId::HeartwoodBand)
+        );
+        assert_eq!(spawned[0].target, Some(target));
+        assert_eq!(health(&app, target), 1000.0, "nothing lands before the hit");
+
+        app.world_mut().write_message(hit(
+            spawned[0].payload,
+            Vec3::X * 300.0,
+            Some(target),
+            Vec::new(),
+        ));
+        step(&mut app);
+        assert!((health(&app, target) - 925.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn item_projectile_splash_uses_the_item_radius() {
+        let mut app = test_app();
+        let entries = vec![AbilityEffectEntry {
+            trigger: AbilityTrigger::OnImpact,
+            target: EffectTarget::UnitsInRadius {
+                center: super::definition::AreaCenter::TriggerPoint,
+                radius: AreaRadius::Fixed(RankValue::fixed(143.0)),
+                team: TargetTeam::Enemy,
+            },
+            effect: fixed_magical_damage(10.0),
+        }];
+        let _defs = install_test_item_definitions([projectile_item(entries)]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        let target = enemy_at(&mut app, 300.0);
+        let spawned = use_projectile_item(&mut app, caster, target);
+
+        assert_eq!(spawned.len(), 1);
+        assert_eq!(spawned[0].splash_radius, 143.0);
     }
 
     #[test]
@@ -2657,6 +3439,7 @@ mod tests {
             color: [1.0, 1.0, 1.0],
             description: "test",
             effects: item_effects,
+            mechanics: &[],
         };
 
         let mut ability_app = test_app();
@@ -2724,6 +3507,7 @@ mod tests {
                 affected_units: Vec::new(),
                 attack: None,
                 depth: 0,
+                magnitude: 1.0,
                 amount: 1.0,
                 reaction: false,
                 status: None,
@@ -2808,7 +3592,7 @@ mod tests {
         }
         let payload = ProjectilePayload {
             caster,
-            ability: AbilityId::Bulwark,
+            source: EffectSource::Ability(AbilityId::Bulwark),
             rank: 1,
             cast_target: None,
             aim: Vec3::new(900.0, 0.0, 0.0),
@@ -3295,6 +4079,7 @@ mod tests {
             color: [1.0, 1.0, 1.0],
             description: "test",
             effects,
+            mechanics: &[],
         }
     }
 
@@ -5278,24 +6063,36 @@ mod tests {
         assert!(!has_status(&app, unit, "fortify"), "a corpse holds nothing");
     }
 
-    /// Built-in custom effects that deal damage must pass `ctx.reaction` on.
+    /// A chain started by a reaction: every hop inherits the reaction, so hop damage is
+    /// reactive and fires no damage triggers (replaces the old `bolt_chain` custom test).
     #[test]
-    fn custom_chain_damage_under_a_reaction_is_reactive() {
+    fn chain_under_a_reaction_emits_reactive_hop_damage() {
         let mut app = test_app();
-        custom::register(&mut app);
-        with_definitions(
-            &mut app,
-            [AbilityDefinition::new(AbilityId::Bolt).on(
-                AbilityTrigger::OnDamageTaken,
-                EffectTarget::TriggerUnit,
-                AbilityEffect::Custom {
-                    id: "bolt_chain",
-                    value: RankValue::fixed(2.0),
-                    amount: RankValue::fixed(50.0),
-                    duration: RankValue::ZERO,
-                },
-            )],
-        );
+        let mut rows = vec![AbilityEffectEntry {
+            trigger: AbilityTrigger::OnDamageTaken,
+            target: EffectTarget::TriggerUnit,
+            effect: AbilityEffect::Chain {
+                jumps: 2,
+                radius: RankValue::fixed(450.0),
+                falloff: 0.75,
+                team: TargetTeam::Enemy,
+                then: AbilityTrigger::Custom("on_chain_hit"),
+            },
+        }];
+        rows.push(AbilityEffectEntry {
+            trigger: AbilityTrigger::Custom("on_chain_hit"),
+            target: EffectTarget::TriggerUnit,
+            effect: AbilityEffect::Damage {
+                amount: RankValue::fixed(50.0),
+                damage_type: DamageType::Magical,
+                scaling: EffectScaling::None,
+            },
+        });
+        let mut def = AbilityDefinition::new(AbilityId::Bolt);
+        for row in rows {
+            def = def.on(row.trigger, row.target, row.effect);
+        }
+        with_definitions(&mut app, [def]);
         let caster = spawn_caster(&mut app, KIT);
         let primary = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
         let _second = spawn_unit(&mut app, Team::Dire, Vec3::new(120.0, 0.0, 0.0));
@@ -5461,5 +6258,479 @@ mod tests {
             .collect();
         assert_eq!(cyclone.len(), 1);
         assert!(!cyclone[0].reactive);
+    }
+
+    // --- Chain under the reaction rule, and Storm Mail parity ---
+
+    /// `OnDamageTaken` -> chain from the attacker -> custom damage: the hop rows of a thorns
+    /// style reaction.
+    fn reaction_chain_rows(hop_damage: f32) -> Vec<AbilityEffectEntry> {
+        vec![
+            chain_entry(
+                AbilityTrigger::OnDamageTaken,
+                EffectTarget::TriggerUnit,
+                2,
+                0.75,
+                "on_chain_hit",
+            ),
+            damage_entry(
+                AbilityTrigger::Custom("on_chain_hit"),
+                EffectTarget::TriggerUnit,
+                hop_damage,
+            ),
+        ]
+    }
+
+    #[test]
+    fn reactive_chain_between_holders_does_not_ping_pong() {
+        // a and c (Radiant) and b (Dire) all wear the item. a strikes b; b reacts by chaining
+        // from a to c. c is a holder too, but reactive hop damage fires no damage-taken
+        // trigger, so nothing answers and the exchange ends.
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(reaction_chain_rows(50.0))]);
+        let a = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+        let b = spawn_item_holder(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        let c = spawn_item_holder(&mut app, Team::Radiant, Vec3::new(160.0, 0.0, 0.0));
+
+        strike(&mut app, Some(a), b, 100.0);
+        let mut applied = Vec::new();
+        let mut taken = 0;
+        for _ in 0..10 {
+            step(&mut app);
+            applied.extend(current_messages::<crate::combat::DamageAppliedEvent>(&app));
+            taken += current_messages::<AbilityTriggerEvent>(&app)
+                .iter()
+                .filter(|e| e.0.trigger == AbilityTrigger::OnDamageTaken)
+                .count();
+        }
+        assert_eq!(taken, 1, "only the original strike is a damage-taken event");
+        let ordinary: Vec<_> = applied.iter().filter(|d| !d.reactive).collect();
+        let reactive: Vec<_> = applied.iter().filter(|d| d.reactive).collect();
+        assert_eq!(ordinary.len(), 1, "{applied:?}");
+        assert_eq!(ordinary[0].target, b);
+        assert_eq!(reactive.len(), 1, "one hop, then silence: {applied:?}");
+        assert_eq!(reactive[0].target, c);
+        assert!(reactive[0].is_spell);
+        assert!(
+            (health(&app, c) - (1000.0 - 50.0 * 0.75)).abs() < 1e-3,
+            "hop 1 keeps 75%"
+        );
+        assert_eq!(health(&app, a), 1000.0, "the start unit is not re-fired");
+    }
+
+    #[test]
+    fn chain_hop_damage_fires_damage_dealt_next_frame() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            chain_entry(
+                AbilityTrigger::OnAttackHit,
+                EffectTarget::TriggerUnit,
+                1,
+                1.0,
+                "on_chain_hit",
+            ),
+            damage_entry(
+                AbilityTrigger::Custom("on_chain_hit"),
+                EffectTarget::TriggerUnit,
+                20.0,
+            ),
+            marker_effect(AbilityTrigger::OnDamageDealt),
+        ])]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let target = enemy_at(&mut app, 80.0);
+        let other = enemy_at(&mut app, 300.0);
+        write_attack_hit(&mut app, caster, target);
+
+        let mut hop_applied = None;
+        let mut dealt_for_hop = None;
+        for frame in 0..6 {
+            step(&mut app);
+            if app
+                .world()
+                .resource::<Messages<crate::combat::DamageAppliedEvent>>()
+                .iter_current_update_messages()
+                .any(|d| d.target == other)
+            {
+                hop_applied.get_or_insert(frame);
+            }
+            for e in current_messages::<AbilityTriggerEvent>(&app) {
+                if e.0.trigger == AbilityTrigger::OnDamageDealt && e.0.trigger_unit == Some(other) {
+                    assert!((e.0.amount - 20.0).abs() < 1e-3, "post-mitigation amount");
+                    dealt_for_hop.get_or_insert(frame);
+                }
+            }
+        }
+        let (applied, dealt) = (
+            hop_applied.expect("hop landed"),
+            dealt_for_hop.expect("fired"),
+        );
+        assert_eq!(dealt, applied + 1, "damage dealt fires the frame after");
+    }
+
+    #[test]
+    fn chain_hops_are_not_spell_hits() {
+        let mut app = test_app();
+        let mut def = AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(
+                TargetType::Unit,
+                RankValue::fixed(scale::u(600.0)),
+                RankValue::ZERO,
+            )
+            .costs(RankValue::fixed(8.0), RankValue::fixed(1.0))
+            .on(
+                AbilityTrigger::OnCast,
+                EffectTarget::CastTarget,
+                fixed_magical_damage(10.0),
+            );
+        for row in chain_rows(AbilityTrigger::OnCast) {
+            def = def.on(row.trigger, row.target, row.effect);
+        }
+        with_definitions(&mut app, [def]);
+        let caster = spawn_caster(&mut app, KIT);
+        let (primary, n1, n2) = chain_line(&mut app);
+        request(&mut app, caster, 3, CastTarget::Unit(primary));
+        let mut hits = Vec::new();
+        for _ in 0..8 {
+            step(&mut app);
+            hits.extend(current_messages::<effects::SpellHitEvent>(&app));
+        }
+        assert!(
+            health(&app, n1) < 1000.0 && health(&app, n2) < 1000.0,
+            "hopped"
+        );
+        assert_eq!(
+            hits.iter().map(|h| h.target).collect::<Vec<_>>(),
+            vec![primary],
+            "only the depth-0 target is a spell hit"
+        );
+    }
+
+    #[test]
+    fn chain_hops_inherit_amount_reaction_and_status() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(reaction_chain_rows(1.0))]);
+        let holder = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+        let attacker = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        let _other = spawn_unit(&mut app, Team::Dire, Vec3::new(200.0, 0.0, 0.0));
+        let mut ctx = item_ctx(&app, holder, AbilityTrigger::OnDamageTaken, attacker);
+        ctx.amount = 321.0;
+        let meta = effects::StatusMeta {
+            id: "stun",
+            kind: crate::status::StatusKind::Debuff,
+        };
+        ctx.status = Some(meta);
+        let derived = ctx.derived(AbilityTrigger::Custom("on_chain_hit"));
+        assert_eq!(derived.amount, 321.0);
+        assert!(derived.reaction);
+        assert_eq!(derived.status, Some(meta));
+        assert_eq!(derived.depth, ctx.depth + 1);
+    }
+
+    #[test]
+    fn accumulate_then_chain_under_damage_taken_resolves_within_depth_cap() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(storm_mail_rows())]);
+        let holder = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+        let attacker = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        let near = spawn_unit(&mut app, Team::Dire, Vec3::new(200.0, 0.0, 0.0));
+        let far = spawn_unit(&mut app, Team::Dire, Vec3::new(100_000.0, 0.0, 0.0));
+
+        strike(&mut app, Some(attacker), holder, 299.0);
+        run_collecting(&mut app, 4);
+        assert_eq!(
+            health(&app, near),
+            1000.0,
+            "below the threshold nothing arcs"
+        );
+        strike(&mut app, Some(attacker), holder, 1.0);
+        // Derived contexts never leave the resolver, so the damage is what is observable.
+        run_collecting(&mut app, 6);
+        assert!(
+            (health(&app, attacker) - 920.0).abs() < 1e-3,
+            "80 to the attacker"
+        );
+        assert!((health(&app, near) - 940.0).abs() < 1e-3, "60 on the hop");
+        assert_eq!(health(&app, far), 1000.0, "out of range");
+    }
+
+    /// Storm Mail's rows: every 300 damage taken overloads, striking the attacker and arcing
+    /// to nearby enemies. Used as an item and as a passive ability.
+    fn storm_mail_rows() -> Vec<AbilityEffectEntry> {
+        vec![
+            entry(
+                AbilityTrigger::OnDamageTaken,
+                EffectTarget::Caster,
+                AbilityEffect::Accumulate {
+                    threshold: RankValue::fixed(300.0),
+                    then: AbilityTrigger::Custom("on_overload"),
+                },
+            ),
+            chain_entry(
+                AbilityTrigger::Custom("on_overload"),
+                EffectTarget::TriggerUnit,
+                2,
+                0.75,
+                "on_storm_arc",
+            ),
+            damage_entry(
+                AbilityTrigger::Custom("on_overload"),
+                EffectTarget::TriggerUnit,
+                80.0,
+            ),
+            damage_entry(
+                AbilityTrigger::Custom("on_storm_arc"),
+                EffectTarget::TriggerUnit,
+                80.0,
+            ),
+        ]
+    }
+
+    #[test]
+    fn storm_mail_item_and_passive_ability_emit_identical_damage() {
+        let run = |as_item: bool| {
+            let mut app = test_app();
+            let _defs = as_item
+                .then(|| install_test_item_definitions([item_with_effects(storm_mail_rows())]));
+            let holder = if as_item {
+                spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO)
+            } else {
+                let mut def = AbilityDefinition::new(AbilityId::Bolt);
+                for row in storm_mail_rows() {
+                    def = def.on(row.trigger, row.target, row.effect);
+                }
+                with_definitions(&mut app, [def]);
+                spawn_caster(&mut app, KIT)
+            };
+            let attacker = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+            let near = spawn_unit(&mut app, Team::Dire, Vec3::new(200.0, 0.0, 0.0));
+            let order = [holder, attacker, near];
+            strike(&mut app, Some(attacker), holder, 300.0);
+            let mut damage = Vec::new();
+            for _ in 0..8 {
+                step(&mut app);
+                damage.extend(current_messages::<DamageEvent>(&app).into_iter().map(|d| {
+                    (
+                        order.iter().position(|e| *e == d.target),
+                        d.amount,
+                        d.damage_type,
+                        d.is_spell,
+                        d.reactive,
+                    )
+                }));
+            }
+            damage
+        };
+        let item = run(true);
+        let ability = run(false);
+        assert_eq!(item, ability);
+        assert_eq!(
+            item.iter().filter(|d| d.4).count(),
+            2,
+            "attacker and one hop, both reactive: {item:?}"
+        );
+    }
+
+    #[test]
+    fn item_projectile_use_is_neither_spell_cast_nor_spell_hit() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([projectile_item(vec![damage_entry(
+            AbilityTrigger::OnProjectileHit,
+            EffectTarget::TriggerUnit,
+            75.0,
+        )])]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        let target = enemy_at(&mut app, 300.0);
+        let spawned = use_projectile_item(&mut app, caster, target);
+        assert_eq!(spawned.len(), 1);
+        app.world_mut().write_message(hit(
+            spawned[0].payload,
+            Vec3::X * 300.0,
+            Some(target),
+            Vec::new(),
+        ));
+        let mut casts = 0;
+        let mut spell_hits = 0;
+        let mut spell_triggers = 0;
+        for _ in 0..4 {
+            step(&mut app);
+            casts += current_messages::<AbilityCastEvent>(&app).len();
+            spell_hits += current_messages::<effects::SpellHitEvent>(&app).len();
+            spell_triggers += current_messages::<AbilityTriggerEvent>(&app)
+                .iter()
+                .filter(|e| {
+                    matches!(
+                        e.0.trigger,
+                        AbilityTrigger::OnSpellCast | AbilityTrigger::OnSpellHit
+                    )
+                })
+                .count();
+        }
+        assert!(
+            (health(&app, target) - 925.0).abs() < 1e-3,
+            "the hit landed"
+        );
+        assert_eq!((casts, spell_hits, spell_triggers), (0, 0, 0));
+    }
+
+    #[test]
+    fn while_status_is_built_like_a_toggle_status() {
+        use crate::status::StatusChange;
+        use definition::Condition;
+        // A held burn and a toggled burn must agree on source, kind and tick damage.
+        let mut app = test_app();
+        let held = AbilityEffectEntry {
+            trigger: AbilityTrigger::While(Condition::Stationary),
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::ApplyStatus {
+                status: StatusSpec::Burn {
+                    dps: RankValue::fixed(12.0),
+                    damage_type: DamageType::Magical,
+                },
+                duration: RankValue::ZERO,
+            },
+        };
+        let _defs = install_test_item_definitions([item_with_effects(vec![held])]);
+        let unit = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            step(&mut app);
+            seen.extend(current_messages::<StatusEffectEvent>(&app));
+        }
+        let applied: Vec<_> = seen
+            .iter()
+            .filter_map(|e| match &e.change {
+                StatusChange::Apply(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(applied.len(), 1, "{seen:?}");
+        let status = &applied[0];
+        // Same builder: a held burn is attributed to its owner (like a toggle's), and reactive.
+        assert_eq!(status.dot_source, Some(unit));
+        assert!(status.reactive);
+        assert_eq!(status.kind, crate::status::StatusKind::Debuff);
+    }
+
+    #[test]
+    fn acts_on_targets_excludes_every_gate() {
+        let then = AbilityTrigger::Custom("on_x");
+        let gates = [
+            AbilityEffect::Proc {
+                chance: RankValue::fixed(0.5),
+                then,
+                pseudo: false,
+            },
+            AbilityEffect::Proc {
+                chance: RankValue::fixed(0.5),
+                then,
+                pseudo: true,
+            },
+            AbilityEffect::Counter { every: 3, then },
+            AbilityEffect::Accumulate {
+                threshold: RankValue::fixed(10.0),
+                then,
+            },
+            AbilityEffect::Chain {
+                jumps: 1,
+                radius: RankValue::fixed(100.0),
+                falloff: 1.0,
+                team: TargetTeam::Enemy,
+                then,
+            },
+        ];
+        for gate in gates {
+            assert!(!gate.acts_on_targets(), "{gate:?}");
+        }
+        assert!(fixed_magical_damage(1.0).acts_on_targets());
+    }
+
+    fn travel_item(with_teleport: bool) -> ItemDefinition {
+        let mut rows = vec![
+            far_gate(10.0),
+            marker_effect(AbilityTrigger::Custom("on_far")),
+        ];
+        if with_teleport {
+            rows.push(entry(
+                AbilityTrigger::OnUse,
+                EffectTarget::Caster,
+                AbilityEffect::Teleport,
+            ));
+        }
+        let effects: &'static [AbilityEffectEntry] = Box::leak(rows.into_boxed_slice());
+        ItemDefinition {
+            effects,
+            ..teleport_item()
+        }
+    }
+
+    #[test]
+    fn rejected_hostile_teleport_does_not_count_as_travel() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([travel_item(false)]);
+        let victim = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, victim, ItemId::WardstoneCloak);
+        app.world_mut().entity_mut(victim).insert(Team::Dire);
+        let enemy = spawn_unit(&mut app, Team::Radiant, Vec3::new(500.0, 0.0, 0.0));
+        app.world_mut()
+            .get_mut::<StatusEffects>(victim)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::debuff_immunity(10.0));
+        run_collecting(&mut app, 1);
+
+        app.world_mut().write_message(TeleportEvent {
+            target: victim,
+            caster: enemy,
+            destination: Vec3::new(3000.0, 0.0, 0.0),
+        });
+        let mut rejected = Vec::new();
+        let mut fired = Vec::new();
+        for _ in 0..4 {
+            step(&mut app);
+            rejected.extend(
+                current_messages::<TeleportRejectedEvent>(&app)
+                    .into_iter()
+                    .map(|e| e.reason),
+            );
+            fired.extend(
+                current_messages::<AbilityTriggerEvent>(&app)
+                    .into_iter()
+                    .map(|e| e.0),
+            );
+        }
+        assert_eq!(rejected, vec![crate::teleport::TeleportError::Immune]);
+        assert_eq!(
+            app.world().get::<Transform>(victim).unwrap().translation,
+            Vec3::ZERO,
+            "the unit never moved"
+        );
+        assert!(of_trigger(&fired, AbilityTrigger::OnMove).is_empty());
+    }
+
+    #[test]
+    fn blink_does_not_count_as_travel() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([travel_item(true)]);
+        let unit = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, unit, ItemId::WardstoneCloak);
+        app.world_mut()
+            .entity_mut(unit)
+            .insert(CollisionRadius(40.0));
+        run_collecting(&mut app, 1);
+
+        request_item(
+            &mut app,
+            unit,
+            0,
+            CastTarget::Point(Vec3::new(2000.0, 0.0, 0.0)),
+        );
+        let fired = run_collecting(&mut app, 8);
+        assert_eq!(
+            app.world().get::<Transform>(unit).unwrap().translation,
+            Vec3::new(2000.0, 0.0, 0.0),
+            "the blink happened"
+        );
+        assert!(of_trigger(&fired, AbilityTrigger::OnMove).is_empty());
     }
 }

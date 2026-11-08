@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -16,10 +17,13 @@ from generator_common import (  # noqa: E402
     Row,
     ABILITY_TRIGGERS,
     ITEM_TRIGGERS,
+    NOT_EMITTED_TRIGGERS,
     effect_to_rust,
     held_status_id,
+    chain_fed_triggers,
     reaction_triggers,
     warn_duplicate_held_statuses,
+    warn_unemitted_triggers,
     warn_unreachable_custom_triggers,
     parse_activation_spec,
     validate_activation,
@@ -757,6 +761,141 @@ class AttackModifierTests(unittest.TestCase):
         warn_unreachable_custom_triggers([make("on_attack_hit", "proc", "on_bash"), make("on_bash", "heal", "")], set(), report)
         self.assertFalse(report.warnings)
 
+    @staticmethod
+    def _trigger_row(owner_column: str, trigger: str) -> EffectRow:
+        cells = {owner_column: "t", "effect_index": "0", "trigger": trigger, "effect_target": "caster", "effect_type": "heal", "effect_id": ""}
+        return EffectRow(row(cells), "t", 0, trigger, "caster", "heal")
+
+    def test_unemitted_ability_trigger_warns(self) -> None:
+        for trigger in ("on_channel_tick", "on_expire"):
+            report = Report()
+            warn_unemitted_triggers([self._trigger_row("ability_id", trigger)], report)
+            self.assertEqual(len(report.warnings), 1, trigger)
+            self.assertIn("never fire", report.warnings[0].message)
+
+    def test_reactive_triggers_are_emitted_now(self) -> None:
+        for owner in ("ability_id", "item_id"):
+            for trigger in ("on_damage_taken", "on_kill", "on_death"):
+                report = Report()
+                warn_unemitted_triggers([self._trigger_row(owner, trigger)], report)
+                self.assertFalse(report.warnings, (owner, trigger))
+
+    def test_emitted_triggers_do_not_warn(self) -> None:
+        emitted = [t for t in {**ABILITY_TRIGGERS, **ITEM_TRIGGERS} if t not in NOT_EMITTED_TRIGGERS]
+        report = Report()
+        warn_unemitted_triggers([self._trigger_row("item_id", t) for t in emitted], report)
+        self.assertFalse(report.warnings)
+
+
+class ChainEffectTests(unittest.TestCase):
+    GOOD = {"value": "3", "radius": "450", "amount": "75"}
+
+    def test_chain_columns_become_the_gate(self) -> None:
+        for kind in ("ability", "item"):
+            report = Report()
+            effect, ctx = _effect("chain", "on_chain_hit", kind=kind, **self.GOOD)
+            result = effect_to_rust(effect, ctx, report)
+            self.assertFalse(report.errors, kind)
+            self.assertIn(
+                'AbilityEffect::Chain { jumps: 3, radius: RankValue::fixed(450.0), falloff: 0.75, '
+                'team: TargetTeam::Enemy, then: AbilityTrigger::Custom("on_chain_hit") }',
+                result[2],
+            )
+            self.assertIn("EffectTarget::CastTarget", result[1])
+
+    def test_chain_rejects_bad_columns(self) -> None:
+        bad = (
+            ({"value": "0"}, "jumps"),
+            ({"value": "1.5"}, "jumps"),
+            ({"value": ""}, "required"),
+            ({"radius": "0"}, "radius"),
+            ({"radius": ""}, "required"),
+            ({"amount": "0"}, "percent"),
+            ({"amount": "101"}, "percent"),
+            ({"amount": ""}, "required"),
+        )
+        for override, word in bad:
+            report = Report()
+            effect, ctx = _effect("chain", "on_chain_hit", **{**self.GOOD, **override})
+            self.assertIsNone(effect_to_rust(effect, ctx, report), override)
+            self.assertIn(word, report.errors[0].message, override)
+
+    def test_chain_needs_a_unit_start_target_and_a_custom_trigger(self) -> None:
+        for target in ("affected_units", "units_in_radius"):
+            report = Report()
+            effect, ctx = _effect("chain", "on_chain_hit", target=target, **self.GOOD)
+            self.assertIsNone(effect_to_rust(effect, ctx, report), target)
+            self.assertEqual(report.errors[0].field, "effect_target")
+        for trigger_id in ("on_use", "on_cast", "on_tester"):
+            report = Report()
+            effect, ctx = _effect("chain", trigger_id, trigger="on_tester", **self.GOOD)
+            self.assertIsNone(effect_to_rust(effect, ctx, report), trigger_id)
+
+    def test_chain_feeds_its_trigger(self) -> None:
+        def make(trigger: str, effect_type: str, effect_id: str) -> EffectRow:
+            cells = {"item_id": "t", "effect_index": "0", "trigger": trigger, "effect_target": "cast_target", "effect_type": effect_type, "effect_id": effect_id}
+            return EffectRow(row(cells), "t", 0, trigger, "cast_target", effect_type)
+
+        report = Report()
+        warn_unreachable_custom_triggers([make("on_use", "chain", "on_chain_hit"), make("on_chain_hit", "damage", "")], set(), report)
+        self.assertFalse(report.warnings)
+
+
+class ItemProjectileTests(unittest.TestCase):
+    ITEM_HEADER = "id,name,item_type,cost,sell_value,tier,rarity,stackable,max_stack,consumable,max_charges,description,cooldown,target_type,target_team,cast_range,projectile_type,projectile_speed\n"
+    EFFECT_HEADER = "item_id,effect_index,trigger,effect_target,effect_type,effect_id,value,damage_type,duration,radius,amount,scaling_type,scaling_value\n"
+
+    def load(self, item_row: str, effect_rows: str):
+        import tempfile
+
+        import ItemGenerator
+
+        with tempfile.TemporaryDirectory() as tmp:
+            items = Path(tmp) / "items.csv"
+            effects = Path(tmp) / "effects.csv"
+            items.write_text(self.ITEM_HEADER + item_row + "\n", encoding="utf-8")
+            effects.write_text(self.EFFECT_HEADER + effect_rows, encoding="utf-8")
+            loaded, report = ItemGenerator.load(items, effects, set())
+        return ItemGenerator, loaded, report
+
+    def test_projectile_type_emits_the_projectile_mechanic(self) -> None:
+        module, items, report = self.load(
+            "bolt_wand,Bolt Wand,weapon,100,50,1,common,false,,false,,wand,10,unit,enemy,800,targeted,1200",
+            "bolt_wand,0,on_projectile_hit,trigger_unit,damage,,50,magical,,,,,\n",
+        )
+        self.assertFalse(report.errors)
+        self.assertFalse([w for w in report.warnings if w.field == "projectile_type"])
+        rendered = module.item_static(items[0])
+        self.assertIn(
+            "mechanics: &[AbilityMechanic::Projectile { splash_radius: AreaRadius::Ability, speed: Some(1200.0), skillshot: false, first_hit: false }],",
+            rendered,
+        )
+        self.assertIn("AbilityTrigger::OnProjectileHit", rendered)
+
+    def test_items_without_a_projectile_emit_empty_mechanics(self) -> None:
+        module, items, report = self.load(
+            "plain_wand,Plain Wand,weapon,100,50,1,common,false,,false,,wand,10,unit,enemy,800,,",
+            "plain_wand,0,on_use,cast_target,damage,,50,magical,,,,,\n",
+        )
+        self.assertFalse(report.errors)
+        self.assertIn("mechanics: &[],", module.item_static(items[0]))
+
+    def test_projectile_triggers_need_a_projectile(self) -> None:
+        for trigger, target in (("on_projectile_hit", "trigger_unit"), ("on_impact", "affected_units")):
+            _, _, report = self.load(
+                "dull_wand,Dull Wand,weapon,100,50,1,common,false,,false,,wand,10,unit,enemy,800,,",
+                f"dull_wand,0,on_use,cast_target,damage,,50,magical,,,,,\ndull_wand,1,{trigger},{target},damage,,50,magical,,,,,\n",
+            )
+            self.assertTrue(any("no projectile" in e.message for e in report.errors), trigger)
+
+    def test_projectile_item_counts_as_active(self) -> None:
+        _, _, report = self.load(
+            "bolt_wand,Bolt Wand,weapon,100,50,1,common,false,,false,,wand,10,unit,enemy,800,targeted,",
+            "bolt_wand,0,on_projectile_hit,trigger_unit,damage,,50,magical,,,,,\n",
+        )
+        self.assertFalse(report.errors)
+        self.assertFalse([w for w in report.warnings if w.field == "cooldown"])
+
 
 def _gate_row(effect_type: str, effect_id: str, trigger: str, value: str, owner_triggers: set[str]):
     effect, ctx = _effect(effect_type, effect_id, target="owner", trigger=trigger, kind="item", value=value)
@@ -968,6 +1107,61 @@ class ReactiveTriggerTests(unittest.TestCase):
         ctx.reaction = reaction_triggers(rows)
         self.assertIsNone(effect_to_rust(effect, ctx, Report()))
 
+    def test_not_emitted_triggers_are_channel_tick_and_expire(self) -> None:
+        self.assertEqual(set(NOT_EMITTED_TRIGGERS), {"on_channel_tick", "on_expire"})
+
+    @staticmethod
+    def _item_row(trigger: str, effect_type: str, effect_id: str) -> EffectRow:
+        cells = {"item_id": "t", "effect_index": "0", "trigger": trigger, "effect_target": "owner", "effect_type": effect_type, "effect_id": effect_id}
+        return EffectRow(row(cells), "t", 0, trigger, "owner", effect_type)
+
+    def test_chain_fed_by_reaction_is_a_reaction(self) -> None:
+        rows = [self._item_row("on_damage_taken", "chain", "on_arc"), self._item_row("on_arc", "damage", "")]
+        self.assertIn("on_arc", reaction_triggers(rows))
+        self.assertIn("on_arc", chain_fed_triggers(rows))
+        # A chain fed by a non-reaction trigger is chain-fed but not a reaction.
+        rows = [self._item_row("on_attack_hit", "chain", "on_bounce")]
+        self.assertNotIn("on_bounce", reaction_triggers(rows))
+        self.assertIn("on_bounce", chain_fed_triggers(rows))
+
+    def test_perform_attack_rejected_under_chain_fed_trigger(self) -> None:
+        rows = [
+            self._item_row("on_attack_hit", "chain", "on_bounce"),
+            self._item_row("on_bounce", "proc", "on_lucky"),
+            self._item_row("on_lucky", "perform_attack", ""),
+        ]
+        fed = chain_fed_triggers(rows)
+        self.assertEqual(fed, {"on_bounce", "on_lucky"})
+        for trigger in ("on_bounce", "on_lucky"):
+            effect, ctx = _effect("perform_attack", "", target="owner", trigger=trigger, kind="item")
+            ctx.reaction = reaction_triggers(rows)
+            ctx.chain_fed = fed
+            report = Report()
+            self.assertIsNone(effect_to_rust(effect, ctx, report), trigger)
+            self.assertIn("fed by a chain", report.errors[0].message)
+        # Not fed by the chain: still fine.
+        effect, ctx = _effect("perform_attack", "", target="owner", trigger="on_attack_hit", kind="item")
+        ctx.chain_fed = fed
+        self.assertIsNotNone(effect_to_rust(effect, ctx, Report()))
+
+    def test_cooldown_ready_valid_for_projectile_items(self) -> None:
+        import tempfile
+
+        import ItemGenerator
+
+        item_header = "id,name,item_type,cost,sell_value,tier,rarity,stackable,max_stack,consumable,max_charges,description,cooldown,target_type,target_team,cast_range,projectile_type,projectile_speed\n"
+        effect_header = "item_id,effect_index,trigger,effect_target,effect_type,effect_id,value,damage_type,duration,radius,amount,scaling_type,scaling_value\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            (tmp / "i.csv").write_text(item_header + "tester,Tester,weapon,100,50,1,common,false,,false,,x,5,unit,enemy,600,targeted,900\n")
+            (tmp / "ie.csv").write_text(
+                effect_header
+                + "tester,0,on_cooldown_ready,owner,heal,,10,,,,,,\n"
+                + "tester,1,on_projectile_hit,trigger_unit,damage,,10,magical,,,,,\n"
+            )
+            _, report = ItemGenerator.load(tmp / "i.csv", tmp / "ie.csv", set())
+            self.assertEqual([e.message for e in report.errors], [])
+
     def test_pseudo_proc_and_accumulate_columns(self) -> None:
         effect, ctx = _gate_row("pseudo_proc", "on_bash", "on_attack_hit", "25", {"on_bash"})
         report = Report()
@@ -1044,6 +1238,36 @@ class ReactiveTriggerTests(unittest.TestCase):
         effect, ctx = _effect("stat_modifier", "strength", target="owner", trigger="while:moving", kind="item", value="5")
         report = Report()
         self.assertIsNone(effect_to_rust(effect, ctx, report))
+
+
+class ExampleCatalogTests(unittest.TestCase):
+    """The shipped example CSVs stay valid and the invalid ones stay rejected."""
+
+    ROOT = Path(__file__).resolve().parent.parent
+    CASES = (
+        ("AbilityGenerator.py", "abilities.csv", "ability_effects.csv"),
+        ("ItemGenerator.py", "items.csv", "item_effects.csv"),
+    )
+
+    def _check(self, script: str, directory: str, *files: str) -> "subprocess.CompletedProcess[str]":
+        base = self.ROOT / "data" / "examples" / directory
+        paths = [str(base / f) for f in files]
+        return subprocess.run(
+            [sys.executable, "-B", str(self.ROOT / "scripts" / script), "--check", *paths],
+            capture_output=True,
+            text=True,
+        )
+
+    def test_valid_examples_pass(self) -> None:
+        for script, *files in self.CASES:
+            result = self._check(script, "", *files)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_invalid_examples_are_rejected(self) -> None:
+        for script, *files in self.CASES:
+            result = self._check(script, "invalid", *files)
+            self.assertEqual(result.returncode, 1, script)
+            self.assertIn("validation error", result.stderr + result.stdout)
 
 
 if __name__ == "__main__":

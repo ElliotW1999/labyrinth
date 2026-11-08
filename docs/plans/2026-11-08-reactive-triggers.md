@@ -10,6 +10,7 @@
 - `2026-11-06-generator-shared-architecture.md`: the rule that warns on `NOT_EMITTED` triggers until the runtime emits them.
 
 **Status:** Approved by the coordinator with the defaults in §8.
+**Merged into the composition layers:** see `2026-11-08-merge-reactive-triggers-into-composition-layers.md`. Where the two disagree, the merge plan and `docs/architecture/composition.md` win: composition owns construction (`DamageEvent::from_effect`, `build_status_effect`, `status::wake_from_sleep`, `Chain`), this plan owns the reaction metadata. See deviation 15.
 
 ---
 
@@ -383,3 +384,4 @@ Small departures from the text above, with the reason:
 12. **The `on_cooldown_ready` item rule** counts `on_use`, `on_channel_end` and `on_channel_interrupted` rows as "has an active", matching how the generator already decides that an item is activatable.
 13. **Unrelated rustfmt drift** (import order in `abilities/custom.rs`, `ui.rs`, `units.rs`) was fixed in the step 1 commit so that `cargo fmt --check` passes on every commit.
 14. **Examples:** `thornskin` (a passive ability with `on_damage_taken` and a `while` row) was added next to the nine items listed in step 11, to show that reactive triggers are valid for learned passives. Its invalid counterpart is an `on_cooldown_ready` row on the existing invalid passive `aura`; the nine items share one invalid owner, `reactor`.
+15. **Merge with the composition layers** (see `2026-11-08-merge-reactive-triggers-into-composition-layers.md`). The composition branch's `Chain` gate replaced `bolt_chain` and `emit_chain_damage`; chain hops are derived contexts that inherit `reaction`, `amount` and `status`, so reactive chains stay finite. Held `While` statuses are built by `build_status_effect` (they now get `dot_source = owner` and heal amp), the sleep break is `status::wake_from_sleep` reporting through `report_removed`, and the debuff-immunity purge returns its removed list. `AbilityEffect::acts_on_targets` excludes `Chain` as well, and the generators feed custom triggers from `chain` rows (`CUSTOM_TRIGGER_FEEDERS`), reject `perform_attack` under chain-fed triggers, and count projectile items as having an active for `on_cooldown_ready`.

@@ -6,7 +6,7 @@
 use bevy::prelude::*;
 
 use crate::combat::DamageEvent;
-use crate::components::{CombatStats, DamageType, Health, HeroAttributes, ShieldPool};
+use crate::components::{CombatStats, DamageType, Health, HeroAttributes, ShieldPool, Team};
 
 pub struct StatusPlugin;
 
@@ -534,6 +534,11 @@ impl StatusEffects {
             .any(|e| e.debuff_immune && e.remaining > 0.0)
     }
 
+    /// Hostile displacement and teleports of this unit are refused (debuff immunity).
+    pub fn blocks_hostile_relocation(&self) -> bool {
+        self.has_debuff_immunity()
+    }
+
     pub fn has_damage_immunity(&self) -> bool {
         self.effects
             .iter()
@@ -835,14 +840,7 @@ pub fn apply_debuff_immunity(
     agility: f32,
 ) -> bool {
     // Purge existing debuffs when gaining immunity — strong dispel.
-    statuses.effects.retain_mut(|e| {
-        let purge = e.kind == StatusKind::Debuff
-            && status_dispel_matches(e, StatusKind::Debuff, DispelStrength::Strong);
-        if purge {
-            subtract_status_stat_delta(e, stats, agility);
-        }
-        !purge
-    });
+    purge_strong_dispellable_debuffs(statuses, stats, agility, None);
     apply_status(
         statuses,
         stats,
@@ -901,6 +899,45 @@ fn remove_statuses(
     removed
 }
 
+/// Gaining debuff immunity purges every debuff a strong dispel would remove.
+fn purge_strong_dispellable_debuffs(
+    statuses: &mut StatusEffects,
+    stats: &mut CombatStats,
+    agility: f32,
+    pool: Option<&mut ShieldPool>,
+) -> Vec<RemovedStatus> {
+    remove_statuses(statuses, stats, agility, pool, |e| {
+        e.kind == StatusKind::Debuff
+            && status_dispel_matches(e, StatusKind::Debuff, DispelStrength::Strong)
+    })
+}
+
+/// Damage breaks sleep: remove every active sleep status and revert its stat modifiers.
+pub fn wake_from_sleep(
+    statuses: &mut StatusEffects,
+    stats: &mut CombatStats,
+    agility: f32,
+    pool: Option<&mut ShieldPool>,
+) -> Vec<RemovedStatus> {
+    if !statuses.is_asleep() {
+        return Vec::new();
+    }
+    remove_statuses(statuses, stats, agility, pool, |e| {
+        e.asleep && e.remaining > 0.0
+    })
+}
+
+/// Whether an effect from `caster` is hostile to `target`: it is aimed at another unit that is
+/// not on the caster's team (units without a team are always fair game).
+pub fn hostile(
+    caster: Entity,
+    target: Entity,
+    caster_team: Option<Team>,
+    target_team: Option<Team>,
+) -> bool {
+    caster != target && (target_team != caster_team || target_team.is_none())
+}
+
 pub fn apply_status_effect_events(
     mut commands: Commands,
     mut events: MessageReader<StatusEffectEvent>,
@@ -922,19 +959,11 @@ pub fn apply_status_effect_events(
         match &event.change {
             StatusChange::Apply(effect) => {
                 if effect.debuff_immune {
-                    let purged = remove_statuses(
+                    let purged = purge_strong_dispellable_debuffs(
                         &mut statuses,
                         &mut stats,
                         agility,
                         shield.as_deref_mut(),
-                        |e| {
-                            e.kind == StatusKind::Debuff
-                                && status_dispel_matches(
-                                    e,
-                                    StatusKind::Debuff,
-                                    DispelStrength::Strong,
-                                )
-                        },
                     );
                     report_removed(
                         &mut lifecycle,
@@ -1046,6 +1075,61 @@ mod tests {
         let expired = statuses.effects.remove(0);
         stats.armor -= expired.armor;
         assert_eq!(stats.armor, 2.0);
+    }
+
+    #[test]
+    fn sleep_wake_releases_stat_deltas() {
+        let mut statuses = StatusEffects::default();
+        let mut stats = CombatStats::simple(10.0, 8.0, 1.0, 2.0, 1.0, 100.0);
+        let baseline = stats;
+        apply_status(
+            &mut statuses,
+            &mut stats,
+            StatusEffect {
+                move_speed: -40.0,
+                armor: -3.0,
+                ..StatusEffect::sleep(5.0)
+            },
+            0.0,
+        );
+        apply_status(
+            &mut statuses,
+            &mut stats,
+            StatusEffect {
+                armor: 4.0,
+                ..StatusEffect::buff("keep", 5.0)
+            },
+            0.0,
+        );
+        assert_eq!(stats.move_speed, 60.0);
+        assert!(statuses.is_asleep());
+
+        let woken = wake_from_sleep(&mut statuses, &mut stats, 0.0, None);
+        assert_eq!(
+            woken.iter().map(|r| r.id).collect::<Vec<_>>(),
+            ["sleep"],
+            "the removed ids are returned for reporting"
+        );
+        assert!(!woken[0].reactive);
+
+        assert!(!statuses.is_asleep());
+        assert_eq!(stats.move_speed, baseline.move_speed);
+        assert_eq!(stats.armor, baseline.armor + 4.0, "only sleep is released");
+        assert_eq!(statuses.effects.len(), 1);
+        // Waking a unit that is not asleep changes nothing and reports nothing.
+        assert!(wake_from_sleep(&mut statuses, &mut stats, 0.0, None).is_empty());
+        assert_eq!(statuses.effects.len(), 1);
+    }
+
+    #[test]
+    fn hostile_means_another_unit_not_on_the_casters_team() {
+        let mut world = World::new();
+        let (a, b) = (world.spawn_empty().id(), world.spawn_empty().id());
+        assert!(!hostile(a, a, Some(Team::Radiant), Some(Team::Radiant)));
+        assert!(!hostile(a, b, Some(Team::Radiant), Some(Team::Radiant)));
+        assert!(hostile(a, b, Some(Team::Radiant), Some(Team::Dire)));
+        assert!(hostile(a, b, Some(Team::Radiant), None));
+        assert!(hostile(a, b, None, None));
     }
 
     #[test]
@@ -1278,6 +1362,36 @@ mod tests {
         app.world_mut()
             .write_message(DamageEvent::new(sleeper, 10.0, DamageType::Physical));
         assert_eq!(lifecycle_frame(&mut app, 0.01), [("sleep", Removed)]);
+    }
+
+    /// Damage always breaks sleep, but a reactive hit wakes the unit silently.
+    #[test]
+    fn sleep_break_reports_removed_unless_reactive() {
+        for (reactive, expected) in [
+            (false, vec![("sleep", StatusLifecycle::Removed)]),
+            (true, vec![]),
+        ] {
+            let mut app = lifecycle_app();
+            let sleeper = lifecycle_unit(&mut app);
+            change(
+                &mut app,
+                sleeper,
+                StatusChange::Apply(StatusEffect::sleep(10.0)),
+                false,
+            );
+            lifecycle_frame(&mut app, 0.01);
+            app.world_mut().write_message(
+                DamageEvent::new(sleeper, 10.0, DamageType::Physical).reactive(reactive),
+            );
+            assert_eq!(lifecycle_frame(&mut app, 0.01), expected, "{reactive}");
+            assert!(
+                !app.world()
+                    .get::<StatusEffects>(sleeper)
+                    .unwrap()
+                    .is_asleep(),
+                "woken either way (reactive: {reactive})"
+            );
+        }
     }
 
     #[test]

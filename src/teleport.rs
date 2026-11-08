@@ -17,7 +17,7 @@
 
 use bevy::prelude::*;
 
-use crate::components::{AttackMoveOrder, CollisionRadius, CombatStats, Health, MoveTarget};
+use crate::components::{AttackMoveOrder, CollisionRadius, CombatStats, Health, MoveTarget, Team};
 use crate::dimensions::collision_of;
 use crate::displacement::{ForcedMovement, MotionPriority};
 use crate::navigation::attack_position::AttackPositionGoal;
@@ -67,6 +67,8 @@ pub enum TeleportError {
     Suspended,
     /// The destination lies outside a leash or tether on the target.
     Leashed,
+    /// A hostile teleport of a debuff-immune unit.
+    Immune,
 }
 
 /// Checks a collision circle of `radius` at `destination` against the map, static
@@ -103,6 +105,7 @@ type TeleportQuery<'w, 's> = Query<
         Option<&'static Health>,
         Has<CombatStats>,
         Option<&'static ForcedMovement>,
+        Option<&'static Team>,
     ),
     MobileFilter,
 >;
@@ -126,12 +129,24 @@ pub fn apply_teleport_events(
             });
         };
 
-        let Ok((_, _, radius, statuses, health, _, motion)) = units.get(event.target) else {
+        let Ok((_, _, radius, statuses, health, _, motion, target_team)) = units.get(event.target)
+        else {
             reject(&mut rejected, TeleportError::InvalidTarget);
             continue;
         };
         if health.is_some_and(|h| !h.is_alive()) {
             reject(&mut rejected, TeleportError::InvalidTarget);
+            continue;
+        }
+        let caster_team = units.get(event.caster).ok().and_then(|u| u.7);
+        let hostile = crate::status::hostile(
+            event.caster,
+            event.target,
+            caster_team.copied(),
+            target_team.copied(),
+        );
+        if hostile && statuses.is_some_and(|s| s.blocks_hostile_relocation()) {
+            reject(&mut rejected, TeleportError::Immune);
             continue;
         }
         if motion.is_some_and(|m| m.priority == MotionPriority::Suspend) {
@@ -161,7 +176,7 @@ pub fn apply_teleport_events(
         let blockers = units
             .iter()
             .filter(
-                |(entity, _, other_radius, other_statuses, _, combatant, forced)| {
+                |(entity, _, other_radius, other_statuses, _, combatant, forced, _)| {
                     !phased
                         && *entity != event.target
                         && *combatant
@@ -269,6 +284,65 @@ mod tests {
             .iter_current_update_messages()
             .map(|e| e.reason)
             .collect()
+    }
+
+    fn spawn_dire(app: &mut App, pos: Vec3) -> Entity {
+        let unit = spawn_unit(app, pos, 40.0);
+        app.world_mut().entity_mut(unit).insert(Team::Dire);
+        unit
+    }
+
+    fn make_immune(app: &mut App, unit: Entity) {
+        app.world_mut()
+            .get_mut::<StatusEffects>(unit)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::debuff_immunity(10.0));
+    }
+
+    fn teleport_by(app: &mut App, caster: Entity, target: Entity, destination: Vec3) {
+        app.world_mut().write_message(TeleportEvent {
+            target,
+            caster,
+            destination,
+        });
+        step(app);
+    }
+
+    #[test]
+    fn hostile_teleport_of_debuff_immune_unit_is_rejected() {
+        let mut app = sim_app();
+        let caster = spawn_unit(&mut app, Vec3::ZERO, 40.0);
+        let enemy = spawn_dire(&mut app, Vec3::new(500.0, 0.0, 0.0));
+        make_immune(&mut app, enemy);
+        let start = pos(&app, enemy);
+        teleport_by(&mut app, caster, enemy, Vec3::new(2000.0, 0.0, 2000.0));
+
+        assert_eq!(pos(&app, enemy), start, "left untouched");
+        assert_eq!(rejections(&app), vec![TeleportError::Immune]);
+        assert!(completed(&app).is_empty());
+
+        // Without immunity the same hostile teleport goes through.
+        let other = spawn_dire(&mut app, Vec3::new(-500.0, 0.0, 0.0));
+        teleport_by(&mut app, caster, other, Vec3::new(2000.0, 0.0, 2000.0));
+        assert_eq!(pos(&app, other).x, 2000.0);
+    }
+
+    #[test]
+    fn self_and_ally_teleport_ignore_debuff_immunity() {
+        let mut app = sim_app();
+        let caster = spawn_unit(&mut app, Vec3::ZERO, 40.0);
+        let ally = spawn_unit(&mut app, Vec3::new(500.0, 0.0, 0.0), 40.0);
+        make_immune(&mut app, caster);
+        make_immune(&mut app, ally);
+
+        teleport_by(&mut app, caster, caster, Vec3::new(2000.0, 0.0, 2000.0));
+        assert_eq!(pos(&app, caster).x, 2000.0);
+        assert!(rejections(&app).is_empty());
+
+        teleport_by(&mut app, caster, ally, Vec3::new(-2000.0, 0.0, 2000.0));
+        assert_eq!(pos(&app, ally).x, -2000.0);
+        assert!(rejections(&app).is_empty());
     }
 
     #[test]

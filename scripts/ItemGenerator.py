@@ -21,8 +21,9 @@ use, as before): `charge_restore_time`, `target_type`, `target_team`, `cast_rang
 `cast_time`, `channel_time`, `mana_cost`, `projectile_type`, `projectile_speed`
 (`cooldown` stays on the item row). Active items run through the same activation
 pipeline as abilities (targeting, range, cast point, channel, costs). Item
-`projectile_*` columns are validated but not emitted yet — runtime projectiles are
-ability-scoped today.
+`projectile_type` / `projectile_speed` give the item the same projectile mechanic
+abilities use (`ItemDefinition::mechanics`); the consequences hang on `on_projectile_hit` /
+`on_impact` rows, which are only valid for items with a projectile.
 
 Usage:
   python3 scripts/ItemGenerator.py                     # data/items.csv + data/item_effects.csv
@@ -46,8 +47,10 @@ from generator_common import (  # noqa: E402
     ACTION_TEAMS,
     EFFECT_COLUMNS,
     ITEM_ACTIVATION_OPTIONAL,
+    PROJECTILE_TYPES,
     REACTIVE_NO_TRIGGER_UNIT,
     REACTIVE_TRIGGER_NAMES,
+    SKILLSHOT_TYPES,
     TARGET_TYPES,
     EffectContext,
     EffectRow,
@@ -58,8 +61,10 @@ from generator_common import (  # noqa: E402
     f32,
     find_emitted_custom_triggers,
     find_registered_custom_effects,
+    chain_fed_triggers,
     reaction_triggers,
     warn_duplicate_held_statuses,
+    warn_unemitted_triggers,
     warn_unreachable_custom_triggers,
     parse_bool,
     parse_activation_spec,
@@ -147,9 +152,9 @@ GENERATED_HEADER = """\
 
 #[allow(unused_imports)]
 use crate::abilities::definition::{
-    AbilityEffect, AbilityEffectEntry, AbilityTrigger, AreaCenter, AreaRadius, Attribute,
-    Condition, DisplacementKind, EffectScaling, EffectTarget, LeashAnchorKind, PassiveStat,
-    RankValue, StatusFilter, StatusSpec, TargetTeam, TargetType,
+    AbilityEffect, AbilityEffectEntry, AbilityMechanic, AbilityTrigger, AreaCenter, AreaRadius,
+    Attribute, Condition, DisplacementKind, EffectScaling, EffectTarget, LeashAnchorKind,
+    PassiveStat, RankValue, StatusFilter, StatusSpec, TargetTeam, TargetType,
 };
 #[allow(unused_imports)]
 use crate::components::DamageType;
@@ -199,6 +204,8 @@ class Item:
     components: list[str]
     color: tuple[float, float, float]
     description: str
+    projectile: str = "none"
+    projectile_speed: float | None = None
     effects: list[tuple[str, str, str]] = field(default_factory=list)
 
 
@@ -249,7 +256,8 @@ def parse_item(row: Row, effects: list[EffectRow], report: Report) -> Item | Non
     def err(fld: str, message: str) -> None:
         report.error(row.file, row.line, fld, row.get(fld), message)
 
-    has_use = any(e.trigger in ("on_use", "on_channel_end", "on_channel_interrupted") for e in effects)
+    projectile = row.get("projectile_type").lower() or "none"
+    has_use = projectile != "none" or any(e.trigger in ("on_use", "on_channel_end", "on_channel_interrupted") for e in effects)
     if stackable and max_stack is None:
         err("max_stack", "required for stackable items")
     if stackable and max_stack is not None and max_stack < 2:
@@ -298,6 +306,8 @@ def parse_item(row: Row, effects: list[EffectRow], report: Report) -> Item | Non
         components=components,
         color=tuple(color) if all(c is not None for c in color) else color_from_name(name),  # type: ignore[arg-type]
         description=row.get("description") or describe(effects),
+        projectile=projectile if projectile in PROJECTILE_TYPES else "none",
+        projectile_speed=parse_scalar(row, "projectile_speed", Report(), minimum=1),
     )
 
 
@@ -330,6 +340,15 @@ def effect_context(item: Item) -> EffectContext:
     if not item.activation.channel_time:
         for trigger in ("on_channel_end", "on_channel_interrupted"):
             ctx.invalid_trigger[trigger] = "the item is not channelled (channel_time blank)"
+    if item.projectile == "none":
+        for trigger in ("on_projectile_hit", "on_impact"):
+            ctx.invalid_trigger[trigger] = "the item has no projectile (projectile_type none)"
+    if target_type != "unit":
+        for trigger in ("on_projectile_hit", "on_impact"):
+            ctx.invalid_combo[(trigger, "cast_target")] = f"cast_target requires target_type unit (got {target_type})"
+    ctx.invalid_combo[("on_impact", "trigger_unit")] = "on_impact fires when the projectile hit no unit; use affected_units or units_in_radius"
+    if item.projectile in SKILLSHOT_TYPES:
+        ctx.invalid_combo[("on_projectile_hit", "affected_units")] = "skillshots report each unit they pass as trigger_unit (no splash)"
     for trigger in ("passive", "on_use", "on_unit_contact", "on_movement_end", "on_attack", "on_attack_hit", "on_channel_end", "on_channel_interrupted", *REACTIVE_TRIGGER_NAMES):
         if trigger in ("on_use", "on_unit_contact", "on_movement_end") and target_type in ("unit", "self"):
             continue
@@ -378,7 +397,19 @@ def item_static(item: Item) -> str:
     ]
     for trigger, target, effect in item.effects:
         lines.append(f"        AbilityEffectEntry {{ trigger: {trigger}, target: {target}, effect: {effect} }},")
-    lines += ["    ],", "};", f"// </item:{item.id}>"]
+    lines.append("    ],")
+    if item.projectile != "none":
+        speed = f"Some({f32(item.projectile_speed)})" if item.projectile_speed else "None"
+        skillshot = "true" if item.projectile in SKILLSHOT_TYPES else "false"
+        first_hit = "true" if item.projectile == "skillshot_single" else "false"
+        lines.append(
+            "    mechanics: &[AbilityMechanic::Projectile { "
+            f"splash_radius: AreaRadius::Ability, speed: {speed}, skillshot: {skillshot}, "
+            f"first_hit: {first_hit} }}],"
+        )
+    else:
+        lines.append("    mechanics: &[],")
+    lines += ["};", f"// </item:{item.id}>"]
     return "\n".join(lines) + "\n"
 
 
@@ -461,9 +492,11 @@ def load(items_csv: Path, effects_csv: Path, existing_ids: set[str], *, repo_roo
         ctx.registered_custom = registered_custom
         ctx.owner_triggers = {e.trigger for e in effects}
         ctx.reaction = reaction_triggers(effects)
-        if not any(e.trigger in ("on_use", "on_channel_end", "on_channel_interrupted") for e in effects):
+        ctx.chain_fed = chain_fed_triggers(effects)
+        if item.projectile == "none" and not any(e.trigger in ("on_use", "on_channel_end", "on_channel_interrupted") for e in effects):
             ctx.invalid_trigger["on_cooldown_ready"] = "the item has no active (no on_use effect), so it has no cooldown to finish"
         warn_unreachable_custom_triggers(effects, emitted_triggers, report)
+        warn_unemitted_triggers(effects, report)
         warn_duplicate_held_statuses(effects, report)
         for effect in effects:
             if effect.trigger == "passive" and effect.effect_type != "stat_modifier":

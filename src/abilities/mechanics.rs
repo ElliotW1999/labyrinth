@@ -20,18 +20,66 @@ use super::definition::{
     AbilityMechanic, AbilityTrigger, AreaCenter, AreaRadius, DisplacementKind, RingStyle,
 };
 use super::effects::{AbilityTriggerEvent, EffectSource, TriggerContext};
-use crate::combat::{ProjectileHitEvent, ProjectilePayload, SpawnProjectileEvent};
+use crate::actions::{ActionFiredEvent, ActionId};
+use crate::combat::{ProjectileHitEvent, ProjectilePayload, SpawnProjectileEvent, flat_distance};
 use crate::components::{AbilityId, AttackTarget, Health, Team};
+use crate::dimensions::area_contains;
 use crate::displacement::DisplacementEvent;
 use crate::resources::SharedAssets;
 use crate::scale::DASH_SPEED;
+
+/// A unit a chain may jump to: already filtered for team, life and targetability.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ChainCandidate {
+    pub entity: Entity,
+    pub position: Vec3,
+    /// Bounds radius added to the jump radius when testing reach.
+    pub bounds: f32,
+}
+
+/// The units a chain visits after `start`, in order. Each jump goes to the nearest candidate
+/// within `radius` of the previous unit that was not hit yet (ties are broken by `Entity`),
+/// and stops early when none is in reach. `start` itself is never returned.
+pub fn chain_hops(
+    start: Entity,
+    start_position: Vec3,
+    candidates: &[ChainCandidate],
+    jumps: u32,
+    radius: f32,
+) -> Vec<ChainCandidate> {
+    let mut hit = vec![start];
+    let mut origin = start_position;
+    let mut hops = Vec::new();
+    for _ in 0..jumps {
+        let next = candidates
+            .iter()
+            .filter(|c| {
+                !hit.contains(&c.entity) && area_contains(origin, radius, c.position, c.bounds)
+            })
+            .min_by(|a, b| {
+                flat_distance(origin, a.position)
+                    .total_cmp(&flat_distance(origin, b.position))
+                    .then(a.entity.cmp(&b.entity))
+            })
+            .copied();
+        let Some(next) = next else {
+            break;
+        };
+        hit.push(next.entity);
+        origin = next.position;
+        hops.push(next);
+    }
+    hops
+}
 
 /// Everything a mechanic or custom behavior needs to know about one cast.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CastContext {
     pub caster: Entity,
     pub team: Team,
-    pub ability: AbilityId,
+    /// What owns the effect entries this cast resolves against: the casting ability today, an
+    /// item once items run mechanics (see [`Self::ability`]).
+    pub source: EffectSource,
     pub rank: u32,
     pub origin: Vec3,
     pub aim: Vec3,
@@ -42,11 +90,20 @@ pub struct CastContext {
 }
 
 impl CastContext {
+    /// The casting ability, or `None` when an item is the source.
+    #[allow(dead_code)]
+    pub fn ability(&self) -> Option<AbilityId> {
+        match self.source {
+            EffectSource::Ability(id) => Some(id),
+            EffectSource::Item(_) => None,
+        }
+    }
+
     /// A trigger fired by this cast; mechanics fill in who was involved.
     pub fn trigger(&self, trigger: AbilityTrigger, point: Vec3) -> TriggerContext {
         TriggerContext::new(
             trigger,
-            EffectSource::Ability(self.ability),
+            self.source,
             self.caster,
             self.team,
             self.rank,
@@ -161,7 +218,7 @@ impl MechanicRunner<'_, '_> {
                     },
                     payload: ProjectilePayload {
                         caster: ctx.caster,
-                        ability: ctx.ability,
+                        source: ctx.source,
                         rank: ctx.rank,
                         cast_target: ctx.unit_target,
                         aim: ctx.aim,
@@ -216,6 +273,42 @@ impl MechanicRunner<'_, '_> {
     }
 }
 
+/// Items run the same mechanics as abilities: when an item activation fires, its
+/// `ItemDefinition::mechanics` start (a projectile, …) with the item as the effect source.
+/// The `OnUse` trigger itself comes from `items::resolve_item_uses`.
+pub fn execute_item_mechanics(
+    mut fired: MessageReader<ActionFiredEvent>,
+    casters: Query<(&Transform, &Team)>,
+    mut runner: MechanicRunner,
+) {
+    for event in fired.read() {
+        let ActionId::Item { item, .. } = event.action else {
+            continue;
+        };
+        let def = item.definition();
+        if def.mechanics.is_empty() {
+            continue;
+        }
+        let Ok((transform, team)) = casters.get(event.caster) else {
+            continue;
+        };
+        let ctx = CastContext {
+            caster: event.caster,
+            team: *team,
+            source: EffectSource::Item(item),
+            rank: 1,
+            origin: transform.translation,
+            aim: event.aim,
+            unit_target: event.target.unit().and_then(|e| runner.living_unit(e)),
+            aoe_radius: def.aoe_radius(),
+            cast_range: def.activation.cast_range,
+        };
+        for mechanic in def.mechanics {
+            runner.run(&ctx, mechanic);
+        }
+    }
+}
+
 pub fn execute_ability_casts(
     mut casts: MessageReader<AbilityCastEvent>,
     defs: Res<AbilityDefinitions>,
@@ -234,7 +327,7 @@ pub fn execute_ability_casts(
         let ctx = CastContext {
             caster: cast.caster,
             team: *team,
-            ability: cast.ability,
+            source: EffectSource::Ability(cast.ability),
             rank: cast.rank,
             origin: transform.translation,
             aim: cast.aim,
@@ -275,7 +368,7 @@ pub fn projectile_hit_triggers(
         triggers.write(AbilityTriggerEvent(
             TriggerContext::new(
                 trigger,
-                EffectSource::Ability(payload.ability),
+                payload.source,
                 payload.caster,
                 hit.team,
                 payload.rank,

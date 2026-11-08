@@ -3,8 +3,8 @@
 use bevy::prelude::*;
 
 use crate::abilities::definition::{
-    AbilityEffect, AbilityEffectEntry, AbilityTrigger, AreaRadius, Attribute, EffectTarget,
-    PassiveStat,
+    AbilityEffect, AbilityEffectEntry, AbilityMechanic, AbilityTrigger, AreaRadius, Attribute,
+    EffectTarget, PassiveStat,
 };
 use crate::abilities::effects::{AbilityTriggerEvent, EffectSource, TriggerContext};
 use crate::abilities::tooltip;
@@ -409,6 +409,9 @@ pub struct ItemDefinition {
     pub color: [f32; 3],
     pub description: &'static str,
     pub effects: &'static [AbilityEffectEntry],
+    /// How the active plays out in the world (a projectile, …): the same mechanics abilities
+    /// use, run when the item fires. Their triggers resolve against `effects`.
+    pub mechanics: &'static [AbilityMechanic],
 }
 
 /// How an active item is aimed and cast; the shared `actions` pipeline enforces it.
@@ -497,7 +500,8 @@ pub fn commit_item(inventory: &mut Inventory, slot: usize, spec: &ActionSpec) {
 
 impl ItemDefinition {
     /// Radius of the item's fixed-size areas: the largest `AreaRadius::Fixed` among its
-    /// `UnitsInRadius` entries that fire from the active (`OnUse` / `OnChannelEnd` / `OnChannelInterrupted`).
+    /// `UnitsInRadius` entries that fire from the active (`OnUse` / `OnChannelEnd` /
+    /// `OnChannelInterrupted`, and the projectile's `OnProjectileHit` / `OnImpact`).
     /// `0.0` when it has none. Used for the targeting indicator and as the
     /// `AreaRadius::Ability` fallback.
     pub fn aoe_radius(&self) -> f32 {
@@ -509,6 +513,8 @@ impl ItemDefinition {
                     AbilityTrigger::OnUse
                         | AbilityTrigger::OnChannelEnd
                         | AbilityTrigger::OnChannelInterrupted
+                        | AbilityTrigger::OnProjectileHit
+                        | AbilityTrigger::OnImpact
                 )
             })
             .filter_map(|entry| match entry.target {
@@ -706,6 +712,7 @@ impl ItemId {
     pub fn has_active(self) -> bool {
         let def = self.definition();
         def.effects_for(AbilityTrigger::OnUse).next().is_some()
+            || !def.mechanics.is_empty()
             || (def.activation.channel_time > 0.0
                 && (def
                     .effects_for(AbilityTrigger::OnChannelEnd)
@@ -1943,6 +1950,33 @@ mod tests {
     }
 
     #[test]
+    fn has_active_matches_use_effects_for_every_catalog_item() {
+        for &id in ItemId::all() {
+            let def = id.definition();
+            if !def.mechanics.is_empty() {
+                assert!(id.has_active(), "{id:?} has mechanics so it is an active");
+                continue;
+            }
+            let uses = def.effects_for(AbilityTrigger::OnUse).next().is_some();
+            let channel = def.activation.channel_time > 0.0
+                && (def
+                    .effects_for(AbilityTrigger::OnChannelEnd)
+                    .next()
+                    .is_some()
+                    || def
+                        .effects_for(AbilityTrigger::OnChannelInterrupted)
+                        .next()
+                        .is_some());
+            if !uses && !channel {
+                assert!(
+                    !id.has_active(),
+                    "passive-only {id:?} must not be an active"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn item_data_comes_from_definitions() {
         let bracer = ItemId::IronBracer.passives();
         assert_eq!(bracer.max_health, 100.0);
@@ -2915,6 +2949,7 @@ mod tests {
             .add_message::<crate::status::StatusLifecycleEvent>()
             .add_message::<DisplacementEvent>()
             .add_message::<TeleportEvent>()
+            .add_message::<crate::combat::SpawnProjectileEvent>()
             .add_systems(
                 Update,
                 (
@@ -2924,7 +2959,11 @@ mod tests {
                     validate_activation_requests,
                     refresh_activation_aims,
                     tick_activations,
-                    resolve_item_uses,
+                    (
+                        resolve_item_uses,
+                        crate::abilities::mechanics::execute_item_mechanics,
+                    )
+                        .chain(),
                     crate::abilities::casting::action_channel_end_triggers,
                     resolve_ability_triggers,
                     apply_heal_events,
@@ -3017,6 +3056,7 @@ mod tests {
             color: [1.0, 1.0, 1.0],
             description: "test",
             effects: channel_end_heal_effects(),
+            mechanics: &[],
         }
     }
 
@@ -3039,6 +3079,7 @@ mod tests {
             color: [1.0, 1.0, 1.0],
             description: "test",
             effects: heal_effect(),
+            mechanics: &[],
         }
     }
 

@@ -3,43 +3,14 @@
 //! `app.register_ability_behavior(id, system)`. They still go through the shared
 //! cast pipeline and report what happened as `AbilityTriggerEvent`s, such as
 //! `AbilityTrigger::Custom("on_my_event")` with the units involved as affected units.
-//! Consequences stay in the ability's effect entries.
+//! Consequences stay in the ability's effect entries. Custom *effects*
+//! (`app.register_custom_effect`) are the other escape hatch, for consequences the
+//! shared effects cannot express.
 //!
-//! Every built-in ability is currently expressed with the generic mechanics.
+//! Every built-in ability is currently expressed with the generic mechanics and effects;
+//! even Bolt's chain is the shared `AbilityEffect::Chain` gate plus an `on_chain_hit`
+//! damage row. Nothing is registered here.
 
 use bevy::prelude::*;
 
-use super::effects::{AbilityEffectAppExt, CustomEffectInput, EffectSource};
-use crate::combat::{DamageEvent, emit_chain_damage};
-use crate::components::{BoundRadius, Health, Team};
-use crate::scale;
-
-fn bolt_chain(
-    In(input): In<CustomEffectInput>,
-    units: Query<(Entity, &Transform, &Team, &Health, Option<&BoundRadius>)>,
-    mut damage: MessageWriter<DamageEvent>,
-) {
-    let Some(primary) = input.targets.first().copied() else {
-        return;
-    };
-    if !matches!(input.ctx.source, EffectSource::Ability(_)) {
-        return;
-    }
-    emit_chain_damage(
-        &mut damage,
-        primary,
-        input.ctx.caster,
-        input.amount,
-        crate::components::DamageType::Magical,
-        input.ctx.team,
-        input.value.round() as u32,
-        scale::u(450.0),
-        0.75,
-        input.ctx.reaction,
-        &units,
-    );
-}
-
-pub fn register(app: &mut App) {
-    app.register_custom_effect("bolt_chain", bolt_chain);
-}
+pub fn register(_app: &mut App) {}

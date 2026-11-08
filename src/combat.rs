@@ -3,6 +3,7 @@
 
 use bevy::prelude::*;
 
+use crate::abilities::effects::EffectSource;
 use crate::basic_attack::{
     BasicAttackEvent, BasicAttackImpactEvent, BasicAttackLandedEvent, BasicAttackReleaseEvent,
     ExtraAttackEvent, advance_attacks_in_flight, animate_melee_slashes, release_extra_attacks,
@@ -10,15 +11,15 @@ use crate::basic_attack::{
     start_basic_attack_windups, sync_attack_projectile_visuals, tick_attack_swings,
 };
 use crate::components::{
-    AbilityId, AttackCooldown, BoundRadius, CombatStats, DamageType, GoldBounty, Health,
-    HeroAttributes, HeroProgress, Lifetime, Mana, PlayerHero, PlayerWallet, Projectile,
-    ProjectileHome, ProjectileStyle, ShieldPool, Team, XpBounty,
+    AttackCooldown, BoundRadius, CombatStats, DamageType, GoldBounty, Health, HeroAttributes,
+    HeroProgress, Lifetime, Mana, PlayerHero, PlayerWallet, Projectile, ProjectileHome,
+    ProjectileStyle, ShieldPool, Team, XpBounty,
 };
 use crate::dimensions::{area_contains, bounds_of};
 use crate::progression::add_xp;
 use crate::resources::SharedAssets;
 use crate::scale;
-use crate::status::{StatusEffects, is_untargetable, subtract_status_stat_delta};
+use crate::status::{StatusEffects, is_untargetable};
 use crate::vitals::{
     HealKind, ManaShield, ResourceStat, apply_heal, heal_factor, outgoing_heal_amp, resource_stat,
 };
@@ -155,6 +156,22 @@ impl DamageEvent {
             reflects: true,
             drain_ratio: 0.0,
             reactive: false,
+        }
+    }
+
+    /// The damage an ability or item effect deals: attack bonus damage under a trigger caused
+    /// by a basic attack, spell damage otherwise. The one place that choice is made.
+    pub fn from_effect(
+        source: Entity,
+        target: Entity,
+        amount: f32,
+        damage_type: DamageType,
+        from_attack: bool,
+    ) -> Self {
+        if from_attack {
+            Self::attack_bonus(source, target, amount, damage_type)
+        } else {
+            Self::spell(source, target, amount, damage_type)
         }
     }
 
@@ -419,25 +436,20 @@ pub fn apply_damage_events(
 
         // Sleep breaks on any damage receipt (before applying this damage).
         if let (Some(st), Some(attrs)) = (statuses.as_deref_mut(), attrs) {
-            if st.is_asleep() {
-                let agi = attrs.agility;
-                while let Some(i) = st
-                    .effects
-                    .iter()
-                    .position(|e| e.asleep && e.remaining > 0.0)
-                {
-                    let ef = st.effects.remove(i);
-                    subtract_status_stat_delta(&ef, &mut target_stats, agi);
-                    crate::status::report_removed(
-                        &mut lifecycle,
-                        event.target,
-                        event.source,
-                        event.reactive,
-                        crate::status::StatusLifecycle::Removed,
-                        [crate::status::RemovedStatus::of(&ef)],
-                    );
-                }
-            }
+            let woken = crate::status::wake_from_sleep(
+                st,
+                &mut target_stats,
+                attrs.agility,
+                shield.as_deref_mut(),
+            );
+            crate::status::report_removed(
+                &mut lifecycle,
+                event.target,
+                event.source,
+                event.reactive,
+                crate::status::StatusLifecycle::Removed,
+                woken,
+            );
         }
 
         let damage_immune = statuses.as_ref().is_some_and(|s| s.has_damage_immunity());
@@ -534,53 +546,6 @@ pub fn apply_damage_events(
     }
 }
 
-/// Chain lightning: jump to nearby enemies with falloff per hop.
-pub fn emit_chain_damage(
-    damage: &mut MessageWriter<DamageEvent>,
-    primary: Entity,
-    source: Entity,
-    amount: f32,
-    damage_type: DamageType,
-    team: Team,
-    jumps: u32,
-    radius: f32,
-    falloff: f32,
-    reactive: bool,
-    units: &Query<(Entity, &Transform, &Team, &Health, Option<&BoundRadius>)>,
-) {
-    let mut hit = vec![primary];
-    let mut current = primary;
-    let mut current_amount = amount;
-    for _ in 0..jumps {
-        let Ok((_, current_tf, _, _, _)) = units.get(current) else {
-            break;
-        };
-        let origin = current_tf.translation;
-        let next = units
-            .iter()
-            .filter(|(entity, tf, unit_team, health, bound)| {
-                **unit_team == team.enemy()
-                    && health.is_alive()
-                    && !hit.contains(entity)
-                    && area_contains(origin, radius, tf.translation, bounds_of(*bound))
-            })
-            .min_by(|a, b| {
-                flat_distance(origin, a.1.translation)
-                    .total_cmp(&flat_distance(origin, b.1.translation))
-            })
-            .map(|(e, ..)| e);
-        let Some(next) = next else {
-            break;
-        };
-        current_amount *= falloff;
-        damage.write(
-            DamageEvent::spell(source, next, current_amount, damage_type).reactive(reactive),
-        );
-        hit.push(next);
-        current = next;
-    }
-}
-
 fn tick_attack_cooldowns(time: Res<Time>, mut query: Query<&mut AttackCooldown>) {
     let dt = time.delta_secs();
     for mut cd in &mut query {
@@ -658,7 +623,8 @@ pub struct ProjectileReachedTarget;
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub struct ProjectilePayload {
     pub caster: Entity,
-    pub ability: AbilityId,
+    /// The ability or item whose effect entries the impact resolves against.
+    pub source: EffectSource,
     pub rank: u32,
     pub cast_target: Option<Entity>,
     pub aim: Vec3,
@@ -1052,6 +1018,7 @@ pub struct GroundBoltAim {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::AbilityId;
     use bevy::ecs::system::RunSystemOnce;
 
     #[test]
@@ -1096,7 +1063,7 @@ mod tests {
         let caster = unit(&mut world, Team::Radiant, -500.0);
         let payload = ProjectilePayload {
             caster,
-            ability: AbilityId::Bolt,
+            source: EffectSource::Ability(AbilityId::Bolt),
             rank: 1,
             cast_target: Some(target),
             aim: Vec3::ZERO,
@@ -1304,7 +1271,7 @@ mod tests {
             .id();
         let payload = ProjectilePayload {
             caster,
-            ability: AbilityId::Bolt,
+            source: EffectSource::Ability(AbilityId::Bolt),
             rank: 1,
             cast_target: Some(target),
             aim: Vec3::ZERO,
@@ -1347,7 +1314,7 @@ mod tests {
     fn first_hit_skillshot_stops_on_first_enemy() {
         let payload = |caster| ProjectilePayload {
             caster,
-            ability: AbilityId::Bolt,
+            source: EffectSource::Ability(AbilityId::Bolt),
             rank: 1,
             cast_target: None,
             aim: Vec3::ZERO,

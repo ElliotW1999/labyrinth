@@ -3,11 +3,12 @@
 use bevy::prelude::*;
 
 use super::catalog::AbilityDefinitions;
-use super::definition::{AbilityBehavior, AbilityEffect, AbilityTrigger, StatusBuildContext};
+use super::definition::{AbilityBehavior, AbilityEffect, AbilityTrigger};
+use super::effects::build_status_effect;
 use crate::components::{AbilityId, AbilityLoadout, CombatStats, Health, HeroAttributes, Mana};
 use crate::items::{ItemPassives, apply_passives, remove_passives};
 use crate::status::{DispelType, StatusChange, StatusEffect, StatusEffectEvent, StatusEffects};
-use crate::vitals::effective_mana_cost;
+use crate::vitals::{effective_mana_cost, outgoing_heal_amp};
 
 /// Make a held status match `wanted`: apply it (permanent, undispellable) when wanted and
 /// absent, remove it when unwanted and present, otherwise do nothing. Held statuses are
@@ -135,18 +136,14 @@ pub fn tick_toggle_upkeep(
         &StatusEffects,
         &CombatStats,
         Option<&HeroAttributes>,
+        Option<&Transform>,
     )>,
     mut status_events: MessageWriter<StatusEffectEvent>,
 ) {
     let dt = time.delta_secs();
-    for (entity, mut loadout, mut mana, statuses, stats, attrs) in &mut heroes {
-        let ctx = StatusBuildContext {
-            move_speed: stats.move_speed,
-            agility: attrs.map_or(0.0, |a| a.agility),
-            fear_source: None,
-            source: Some(entity),
-            point: Vec3::ZERO,
-        };
+    for (entity, mut loadout, mut mana, statuses, stats, attrs, transform) in &mut heroes {
+        let point = transform.map_or(Vec3::ZERO, |tf| tf.translation);
+        let healer_amp = outgoing_heal_amp(Some(stats), Some(statuses));
         for slot in &mut loadout.slots {
             let Some(def) = defs.get(slot.id) else {
                 continue;
@@ -171,7 +168,16 @@ pub fn tick_toggle_upkeep(
                 let AbilityEffect::ApplyStatus { status, .. } = entry.effect else {
                     continue;
                 };
-                let built = status.build(rank, f32::INFINITY, ctx);
+                let built = build_status_effect(
+                    status,
+                    rank,
+                    f32::INFINITY,
+                    Some(entity),
+                    point,
+                    Some(stats),
+                    attrs,
+                    healer_amp,
+                );
                 reconcile_held_status(&mut status_events, entity, statuses, built, slot.toggled);
             }
         }
@@ -287,6 +293,44 @@ mod tests {
                 again.move_speed, after.move_speed,
                 "applied once, not stacked"
             );
+        }
+
+        #[test]
+        fn while_toggled_status_has_expected_fields() {
+            let mut app = app();
+            let hero = hero(&mut app, 100.0);
+            set_toggled(&mut app, hero, true);
+            step(&mut app, 0.1);
+            let statuses = app.world().get::<StatusEffects>(hero).unwrap();
+            let speed = statuses
+                .effects
+                .iter()
+                .find(|e| e.id == "overcharge_attack_speed_mult")
+                .expect("attack speed status");
+            assert_eq!(speed.kind, StatusKind::Buff);
+            assert!(speed.remaining.is_infinite());
+            assert!(speed.undispellable);
+            assert_eq!(speed.dispel_type, DispelType::None);
+            assert!((speed.attack_speed_mult - 0.2).abs() < 1e-6);
+            assert_eq!(
+                speed.dot_source,
+                Some(hero),
+                "toggle statuses are sourced like cast ones"
+            );
+            assert_eq!(speed.heal_per_sec, 0.0);
+            assert_eq!(statuses.effects.len(), 2);
+            let ids: Vec<_> = statuses.effects.iter().map(|e| e.id).collect();
+            assert!(
+                ids.iter().all(|id| id.starts_with("overcharge_")),
+                "{ids:?}"
+            );
+            let movement = statuses
+                .effects
+                .iter()
+                .find(|e| e.id != "overcharge_attack_speed_mult")
+                .unwrap();
+            assert!((movement.move_speed - 10.0).abs() < 1e-6);
+            assert!(movement.remaining.is_infinite() && movement.undispellable);
         }
 
         #[test]

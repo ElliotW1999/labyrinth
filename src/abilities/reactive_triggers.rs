@@ -9,7 +9,8 @@ use bevy::prelude::*;
 use super::casting::AbilityCastEvent;
 use super::catalog::AbilityDefinitions;
 use super::definition::AbilityTrigger;
-use super::definition::{AbilityEffect, Condition, StatusBuildContext};
+use super::definition::{AbilityEffect, Condition};
+use super::effects::build_status_effect;
 use super::effects::{
     AbilityTriggerEvent, EffectSource, SpellHitEvent, StatusMeta, TriggerContext,
 };
@@ -22,6 +23,7 @@ use crate::items::{Inventory, ItemId};
 use crate::status::{StatusChange, StatusEffectEvent, StatusEffects, is_untargetable};
 use crate::status::{StatusLifecycle, StatusLifecycleEvent};
 use crate::teleport::TeleportCompletedEvent;
+use crate::vitals::outgoing_heal_amp;
 
 /// Every effect source the owner holds: items in slot order (one per distinct [`ItemId`],
 /// however many copies are carried), then learned ability slots (rank > 0). Items use rank 1.
@@ -244,13 +246,7 @@ pub(crate) fn sync_conditional_statuses(
             statuses,
             moved: tracking.moved,
         };
-        let build_ctx = StatusBuildContext {
-            move_speed: stats.move_speed,
-            agility: attrs.map_or(0.0, |a| a.agility),
-            fear_source: None,
-            source: Some(owner),
-            point: owner_tf.translation,
-        };
+        let healer_amp = outgoing_heal_amp(Some(stats), Some(statuses));
         let mut still_held: Vec<(EffectSource, &'static str)> = Vec::new();
         for (source, rank) in owner_sources(inventory, loadout) {
             let conditions =
@@ -267,7 +263,16 @@ pub(crate) fn sync_conditional_statuses(
                     let AbilityEffect::ApplyStatus { status, .. } = entry.effect else {
                         continue;
                     };
-                    let built = status.build(rank, f32::INFINITY, build_ctx);
+                    let built = build_status_effect(
+                        status,
+                        rank,
+                        f32::INFINITY,
+                        Some(owner),
+                        owner_tf.translation,
+                        Some(stats),
+                        attrs,
+                        healer_amp,
+                    );
                     let id = built.id;
                     reconcile_held_status(&mut status_events, owner, statuses, built, wanted);
                     if wanted {
