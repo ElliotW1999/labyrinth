@@ -1617,6 +1617,196 @@ mod tests {
         assert!(!targets.contains(&primary) && !targets.contains(&caster));
     }
 
+    // --- End to end: the real attack pipeline feeding the ability layer ---
+
+    /// `test_app` plus the real basic-attack systems, running before the attack triggers.
+    fn attack_pipeline_app() -> App {
+        use crate::basic_attack::*;
+        let mut app = test_app();
+        app.add_message::<BasicAttackEvent>().add_systems(
+            Update,
+            (
+                request_basic_attacks,
+                start_basic_attack_windups,
+                tick_attack_swings,
+                release_extra_attacks,
+                resolve_attack_releases,
+                advance_attacks_in_flight,
+                resolve_basic_attack_impacts,
+            )
+                .chain()
+                .before(attack_triggers::attack_triggers),
+        );
+        app
+    }
+
+    fn with_world_transform(app: &mut App, entity: Entity) {
+        let tf = *app.world().get::<Transform>(entity).unwrap();
+        app.world_mut()
+            .entity_mut(entity)
+            .insert(GlobalTransform::from(tf));
+    }
+
+    /// A melee attacker (50 damage) ordered onto a Dire target 80 units away.
+    fn melee_attacker_and_target(app: &mut App, caster: Entity) -> Entity {
+        let target = spawn_unit(app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        with_world_transform(app, target);
+        app.world_mut().entity_mut(caster).insert((
+            CombatStats::simple(50.0, crate::scale::MELEE_ATTACK_RANGE, 1.0, 0.0, 0.0, 300.0),
+            Transform::default().looking_at(Vec3::new(80.0, 0.0, 0.0), Vec3::Y),
+            crate::components::AttackCooldown(0.0),
+            AttackTarget(target),
+        ));
+        with_world_transform(app, caster);
+        target
+    }
+
+    #[derive(Default)]
+    struct AttackLog {
+        releases: Vec<crate::basic_attack::BasicAttackReleaseEvent>,
+        landed: Vec<crate::basic_attack::BasicAttackLandedEvent>,
+    }
+
+    /// Let the first normal attack happen (then drop the order so no second one starts), and
+    /// keep running long enough for every consequence to play out.
+    fn run_one_normal_attack(app: &mut App, caster: Entity) -> AttackLog {
+        use crate::basic_attack::{BasicAttackLandedEvent, BasicAttackReleaseEvent};
+        let mut log = AttackLog::default();
+        let mut ordered = true;
+        for _ in 0..40 {
+            step(app);
+            let releases: Vec<_> = app
+                .world()
+                .resource::<Messages<BasicAttackReleaseEvent>>()
+                .iter_current_update_messages()
+                .copied()
+                .collect();
+            if ordered && releases.iter().any(|r| !r.extra) {
+                app.world_mut().entity_mut(caster).remove::<AttackTarget>();
+                ordered = false;
+            }
+            log.releases.extend(releases);
+            log.landed.extend(
+                app.world()
+                    .resource::<Messages<BasicAttackLandedEvent>>()
+                    .iter_current_update_messages()
+                    .copied(),
+            );
+        }
+        assert!(!ordered, "the normal attack was released");
+        log
+    }
+
+    fn proc_then_perform_attack(ratio: f32) -> Vec<AbilityEffectEntry> {
+        vec![
+            proc_entry(1.0, "on_double"),
+            AbilityEffectEntry {
+                trigger: AbilityTrigger::Custom("on_double"),
+                target: EffectTarget::TriggerUnit,
+                effect: AbilityEffect::PerformAttack {
+                    damage_ratio: RankValue::fixed(ratio),
+                    max_targets: 0,
+                    exclude_trigger_unit: false,
+                },
+            },
+        ]
+    }
+
+    fn assert_one_normal_and_one_extra(app: &App, log: &AttackLog, target: Entity, ratio: f32) {
+        let normal: Vec<_> = log.landed.iter().filter(|l| !l.extra).collect();
+        let extra: Vec<_> = log.landed.iter().filter(|l| l.extra).collect();
+        assert_eq!(
+            normal.len(),
+            1,
+            "one normal attack landed: {:?}",
+            log.landed
+        );
+        assert_eq!(
+            extra.len(),
+            1,
+            "exactly one extra attack, and it did not chain: {:?}",
+            log.landed
+        );
+        assert_eq!(log.releases.iter().filter(|r| r.extra).count(), 1);
+        assert_eq!(log.releases.iter().filter(|r| !r.extra).count(), 1);
+        assert_eq!(extra[0].target, target);
+        assert!((extra[0].damage - 50.0 * ratio).abs() < 1e-3);
+        let expected = 1000.0 - 50.0 - 50.0 * ratio;
+        assert!(
+            (health(app, target) - expected).abs() < 1e-3,
+            "two hits and no more, got {}",
+            health(app, target)
+        );
+    }
+
+    #[test]
+    fn item_proc_perform_attack_lands_one_extra_attack_through_the_real_pipeline() {
+        let mut app = attack_pipeline_app();
+        let _defs =
+            install_test_item_definitions([item_with_effects(proc_then_perform_attack(0.5))]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let target = melee_attacker_and_target(&mut app, caster);
+
+        let log = run_one_normal_attack(&mut app, caster);
+
+        assert_one_normal_and_one_extra(&app, &log, target, 0.5);
+    }
+
+    #[test]
+    fn ability_proc_perform_attack_lands_one_extra_attack_through_the_real_pipeline() {
+        let mut app = attack_pipeline_app();
+        let mut ability = AbilityDefinition::new(KIT[0]);
+        for entry in proc_then_perform_attack(1.0) {
+            ability = ability.on(entry.trigger, entry.target, entry.effect);
+        }
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(ability);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        let target = melee_attacker_and_target(&mut app, caster);
+
+        let log = run_one_normal_attack(&mut app, caster);
+
+        assert_one_normal_and_one_extra(&app, &log, target, 1.0);
+    }
+
+    #[test]
+    fn extra_attack_leaves_cooldown_swing_and_order_alone_and_does_not_chain_with_cleave() {
+        let mut app = attack_pipeline_app();
+        let _defs =
+            install_test_item_definitions([item_with_effects(proc_then_perform_attack(1.0))]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let target = melee_attacker_and_target(&mut app, caster);
+        // A bystander beside the target gets cleave damage, which must fire nothing.
+        let bystander = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 100.0));
+        with_world_transform(&mut app, bystander);
+        app.world_mut()
+            .get_mut::<CombatStats>(caster)
+            .unwrap()
+            .cleave_damage_ratio = 0.5;
+
+        let log = run_one_normal_attack(&mut app, caster);
+
+        assert_eq!(
+            log.landed.len(),
+            2,
+            "cleave is not an attack: only the normal and the extra attack land"
+        );
+        // Each of the two main hits cleaves 50% of 50.
+        assert!(
+            (health(&app, bystander) - (1000.0 - 2.0 * 25.0)).abs() < 1e-3,
+            "cleave from both hits, no other damage, got {}",
+            health(&app, bystander)
+        );
+        assert!((health(&app, target) - 900.0).abs() < 1e-3);
+        assert!(
+            app.world().get::<AttackTarget>(caster).is_none(),
+            "an extra attack never re-issues the attack order"
+        );
+    }
+
     #[test]
     fn two_copies_of_one_item_fire_one_attack_trigger() {
         let mut app = test_app();

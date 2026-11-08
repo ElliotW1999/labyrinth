@@ -1199,6 +1199,32 @@ mod tests {
     }
 
     #[test]
+    fn stat_true_strike_beats_partial_evasion_and_blind_end_to_end() {
+        fn landed_of_forty(accuracy: f32, blind: bool) -> usize {
+            let (mut world, mut schedule) = world_with_pipeline();
+            let (attacker, target) = melee_duel(&mut world);
+            world.get_mut::<CombatStats>(target).unwrap().evasion = 0.5;
+            world.get_mut::<CombatStats>(attacker).unwrap().accuracy = accuracy;
+            if blind {
+                world.entity_mut(attacker).insert(blind_status(0.5));
+            }
+            world.entity_mut(attacker).remove::<AttackTarget>();
+            for _ in 0..40 {
+                request_extra(&mut world, attacker, target, 0.01);
+            }
+            step(&mut world, &mut schedule);
+            landed_count(&world)
+        }
+        let dodged = landed_of_forty(0.0, false);
+        assert!(
+            (1..40).contains(&dodged),
+            "50% evasion misses some of 40 attacks, landed {dodged}"
+        );
+        assert_eq!(landed_of_forty(1.0, false), 40, "true strike never misses");
+        assert_eq!(landed_of_forty(1.0, true), 40, "and ignores blind too");
+    }
+
+    #[test]
     fn stat_accuracy_and_stacking_follow_the_formula() {
         assert!((stack_chances(0.5, [0.5].into_iter()) - 0.75).abs() < 1e-6);
         assert_eq!(stack_chances(0.0, std::iter::empty()), 0.0);
