@@ -1,6 +1,6 @@
 # Magnus hero: implementation spec
 
-Status: **draft. Every gap (G1 to G10) and every decision in §11 needs the user's confirmation.** Nothing in §9 is approved. The plan in §3 to §8 uses existing features only and can ship without any gap.
+Status: **approved by user 2026-11-08 (see §12).** §12 overrides the fallbacks in §3 to §8 wherever a gap was approved.
 
 Related plans: `docs/plans/2026-11-08-queen-of-pain-hero.md` (the model for this spec, and the source of `cast_range=global`, bounded teleport, the swing caps and the scratch-CSV HeroGenerator flow), `docs/architecture/composition.md`, `2026-11-08-attack-modifiers.md` (cleave), `2026-11-07-movement-mechanics.md` (dash, drag, pull, `pull_point`), `2026-11-06-status-effects-catalog.md`, `2026-11-06-activation-targeting-mechanics.md`.
 
@@ -280,3 +280,25 @@ python3 scripts/HeroGenerator.py data/heroes.example.csv --dry-run
 - **U7.** RP forward offset (needed only for G8).
 - **U8.** G4's definition of "base damage".
 - **U9.** Skewer stun ends with `remove_status` (strips other stuns) or simply over-stuns.
+
+## 12. User decisions (2026-11-08)
+
+Approved gaps: **G1, G2, G3, G4, G5, G6, G7, G8 (modified), G9 (modified), G10.**
+
+- **G1.** Build option b: `MELEE_CLASSIFICATION_MAX_RANGE`. Magnus' `attack_range` is **200** and he is melee (instant attack, cleave eligible).
+- **G2.** Add an optional `turn_rate` hero column. Magnus is 0.8.
+- **G3.** Raise `MAX_CAST_BACKSWING` to 1.5. The backswings 1.2, 1.07 and 1.3 apply unclamped.
+- **G4.** Timed `attack_damage_pct`, snapshot of the target's **base (hero-def) attack damage only**, excluding item bonuses (U8). Empower gives 16 to 64% (16|24|32|40|48|56|64), replacing the flat fallback.
+- **G5.** Add a timed `cleave` stat. Empower gives 0.16 to 0.64, effective only on melee targets.
+- **G6.** Cone (trapezoid) cleave: start 150, end 360, distance 650.
+- **G7.** Dash contact radius. Skewer uses 145.
+- **G8 (modified).** Pull, not teleport. Enemies in radius 430 are **pulled to a point 250 units in front of Magnus** (caster position + facing × 250, U7). This uses the proposed `pull_point` forward-offset design, not a teleport.
+- **G9 (modified).** The stun is applied on contact and removed when the dash ends. **Removing it must not remove any other stun debuff on the unit**, and applying it must not overwrite another source's stun. Implement this with the `bound_status` approach and a status id unique to this source (e.g. `skewer_stun`, which still counts as a stun). Do not use `remove_status,stun`, which strips every stun. Skewer row 3 of §6 is dropped.
+- **G10.** Optional skillshot origin offset. Shockwave starts 48 units in front of Magnus.
+- **U1.** Skewer slow lasts 3.25 s.
+- **U2.** Skewer damage lands at the destination (default).
+- **U5.** Q display name "Shockwave", id `magnus_shockwave`.
+- **U6.** Replace the old `shockwave` and `skewer` sample rows in `data/examples/` with Magnus' rows, and append `empower` and `reverse_polarity`.
+- **U9.** Superseded by the G9 decision.
+
+Constraint: build nothing beyond these approved items. If implementation shows that anything else is needed, stop and ask the user.
