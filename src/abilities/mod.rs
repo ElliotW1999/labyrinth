@@ -5278,12 +5278,8 @@ mod tests {
         assert!(!has_status(&app, unit, "fortify"), "a corpse holds nothing");
     }
 
-    /// DEFECT (guard bypass): a built-in custom effect that deals damage ignores
-    /// `ctx.reaction`, so `bolt_chain` under a damage-class trigger emits non-reactive
-    /// damage that can start damage triggers again. Remove the `ignore` once
-    /// `bolt_chain` / `emit_chain_damage` pass the reaction flag on.
+    /// Built-in custom effects that deal damage must pass `ctx.reaction` on.
     #[test]
-    #[ignore = "known defect: custom::bolt_chain drops ctx.reaction"]
     fn custom_chain_damage_under_a_reaction_is_reactive() {
         let mut app = test_app();
         custom::register(&mut app);
@@ -5343,12 +5339,9 @@ mod tests {
         });
     }
 
-    /// DEFECT (guard gap): a cyclone launched by a reaction applies its `cyclone` status with
-    /// `reactive: false` (`displacement.rs`, `apply_displacement_events`), because
-    /// `DisplacementEvent` carries no reaction flag. The status therefore fires
-    /// `OnStatusApplied` / `OnStatusRemoved` on the victim, which can start another reaction.
+    /// A cyclone launched by a reaction applies a reactive status, so it fires no status
+    /// triggers that could start another reaction.
     #[test]
-    #[ignore = "known defect: cyclone status from a reactive Displace is not reactive"]
     fn cyclone_launched_by_a_reaction_applies_a_reactive_status() {
         let mut app = test_app();
         let _defs = install_test_item_definitions([item_with_effects(vec![entry(

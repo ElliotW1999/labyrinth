@@ -1197,6 +1197,10 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
     row = e.row
     errors_before = len(report.errors)
 
+    if e.trigger_args and e.trigger not in ABILITY_TRIGGERS and e.trigger not in ITEM_TRIGGERS:
+        report.error(row.file, row.line, "trigger", row.get("trigger"), f"custom trigger {e.trigger} takes no argument (write just {e.trigger})")
+        return None
+
     # --- trigger (resolve per owner kind so shared names like `passive` work for both)
     if ctx.kind == "ability":
         if e.trigger in ABILITY_TRIGGERS:

@@ -1022,12 +1022,8 @@ class ReactiveTriggerTests(unittest.TestCase):
         warn_duplicate_held_statuses([make(0, "while:moving", "evasion"), make(1, "while:stationary", "accuracy")], report)
         self.assertFalse(report.warnings)
 
-    @unittest.expectedFailure
     def test_custom_trigger_with_arguments_is_rejected(self) -> None:
-        # KNOWN DEFECT: `parse_effect_rows` splits the trigger cell on ":" for every trigger,
-        # but only built-in triggers validate the arguments. A custom trigger such as
-        # `on_bash:5` is silently accepted and emitted as plain `on_bash`, dropping the
-        # argument. Remove `expectedFailure` once custom triggers reject arguments.
+        # A custom trigger such as `on_bash:5` must not silently lose its argument.
         result, report = self._render("on_bash:5")
         self.assertIsNone(result)
         self.assertEqual(report.errors[0].field, "trigger")

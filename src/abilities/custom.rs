@@ -35,6 +35,7 @@ fn bolt_chain(
         input.value.round() as u32,
         scale::u(450.0),
         0.75,
+        input.ctx.reaction,
         &units,
     );
 }

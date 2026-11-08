@@ -545,6 +545,7 @@ pub fn emit_chain_damage(
     jumps: u32,
     radius: f32,
     falloff: f32,
+    reactive: bool,
     units: &Query<(Entity, &Transform, &Team, &Health, Option<&BoundRadius>)>,
 ) {
     let mut hit = vec![primary];
@@ -572,12 +573,9 @@ pub fn emit_chain_damage(
             break;
         };
         current_amount *= falloff;
-        damage.write(DamageEvent::spell(
-            source,
-            next,
-            current_amount,
-            damage_type,
-        ));
+        damage.write(
+            DamageEvent::spell(source, next, current_amount, damage_type).reactive(reactive),
+        );
         hit.push(next);
         current = next;
     }

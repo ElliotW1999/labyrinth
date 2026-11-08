@@ -76,6 +76,7 @@ impl DisplacementEvent {
                 origin: ctx.origin,
                 aim: ctx.aim,
                 cast_target: ctx.cast_target,
+                reaction: ctx.reaction,
             }),
         }
     }
@@ -127,6 +128,8 @@ pub struct MotionSource {
     pub origin: Vec3,
     pub aim: Vec3,
     pub cast_target: Option<Entity>,
+    /// Launched under a reaction: contexts it reports inherit it, and so do its statuses.
+    pub reaction: bool,
 }
 
 impl MotionSource {
@@ -142,6 +145,7 @@ impl MotionSource {
         )
         .at(point)
         .cast_target(self.cast_target)
+        .reaction(self.reaction)
     }
 }
 
@@ -274,12 +278,17 @@ pub fn apply_displacement_events(
         motion.ignore_terrain = flying || cyclone;
         if cyclone {
             motion.bound_status = Some(CYCLONE_STATUS);
-            statuses.write(StatusEffectEvent {
-                reactive: false,
-                source: Some(event.caster),
-                target: event.target,
-                change: StatusChange::Apply(StatusEffect::cyclone(duration, hostile)),
-            });
+            let reaction = event.source.is_some_and(|s| s.reaction);
+            let mut status = StatusEffect::cyclone(duration, hostile);
+            status.reactive = reaction;
+            statuses.write(
+                StatusEffectEvent::new(
+                    Some(event.caster),
+                    event.target,
+                    StatusChange::Apply(status),
+                )
+                .reactive(reaction),
+            );
         }
         pending.insert(event.target, priority);
         commands.entity(event.target).insert(motion);
@@ -1062,6 +1071,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn reaction_launched_motion_reports_reactive_contexts() {
+        let caster = Entity::from_raw_u32(1).unwrap();
+        for reaction in [true, false] {
+            let source = MotionSource {
+                reaction,
+                ..own_source(caster)
+            };
+            for trigger in [AbilityTrigger::OnUnitContact, AbilityTrigger::OnMovementEnd] {
+                let ctx = source.context(trigger, Vec3::ZERO);
+                // Contact damage dealt under this context is stamped from `ctx.reaction`.
+                assert_eq!(ctx.reaction, reaction, "{trigger:?}");
+            }
+        }
+        let ctx = TriggerContext::new(
+            AbilityTrigger::OnDamageTaken,
+            EffectSource::Ability(AbilityId::Bulwark),
+            caster,
+            Team::Radiant,
+            1,
+            Vec3::ZERO,
+            Vec3::ZERO,
+        );
+        let event =
+            DisplacementEvent::from_ctx(&ctx, caster, DisplacementKind::Dash, None, 0.3, None);
+        assert!(
+            event.source.unwrap().reaction,
+            "from_ctx carries the reaction"
+        );
+    }
+
     fn collect(app: &App, into: &mut Vec<TriggerContext>) {
         let messages = app.world().resource::<Messages<AbilityTriggerEvent>>();
         into.extend(messages.iter_current_update_messages().map(|e| e.0.clone()));
@@ -1076,6 +1116,7 @@ mod tests {
             origin: Vec3::ZERO,
             aim: Vec3::new(600.0, 0.0, 0.0),
             cast_target: None,
+            reaction: false,
         }
     }
 
