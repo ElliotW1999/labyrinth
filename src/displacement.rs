@@ -236,8 +236,13 @@ pub fn apply_displacement_events(
         }
         let own = event.target == event.caster;
         let caster_team = units.get(event.caster).ok().and_then(|u| u.3);
-        let hostile = !own && (target_team != caster_team || target_team.is_none());
-        if hostile && target_statuses.is_some_and(|s| s.has_debuff_immunity()) {
+        let hostile = crate::status::hostile(
+            event.caster,
+            event.target,
+            caster_team.copied(),
+            target_team.copied(),
+        );
+        if hostile && target_statuses.is_some_and(|s| s.blocks_hostile_relocation()) {
             continue;
         }
         let cyclone = event.kind == DisplacementKind::Cyclone;

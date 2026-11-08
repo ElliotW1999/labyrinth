@@ -221,11 +221,13 @@ pub fn apply_resource_drain_events(
         if let (Some((ratio, damage_type)), Some(source)) = (event.burn, event.source) {
             if ratio > 0.0 {
                 let amount = removed * ratio;
-                damage.write(if event.from_attack {
-                    DamageEvent::attack_bonus(source, event.target, amount, damage_type)
-                } else {
-                    DamageEvent::spell(source, event.target, amount, damage_type)
-                });
+                damage.write(DamageEvent::from_effect(
+                    source,
+                    event.target,
+                    amount,
+                    damage_type,
+                    event.from_attack,
+                ));
             }
         }
         if let (Some(ratio), Some(source)) = (event.to_source, event.source) {

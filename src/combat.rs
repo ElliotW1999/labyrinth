@@ -18,7 +18,7 @@ use crate::dimensions::{area_contains, bounds_of};
 use crate::progression::add_xp;
 use crate::resources::SharedAssets;
 use crate::scale;
-use crate::status::{StatusEffects, is_untargetable, subtract_status_stat_delta};
+use crate::status::{StatusEffects, is_untargetable};
 use crate::vitals::{
     HealKind, ManaShield, ResourceStat, apply_heal, heal_factor, outgoing_heal_amp, resource_stat,
 };
@@ -148,6 +148,22 @@ impl DamageEvent {
             pierces_shields: false,
             reflects: true,
             drain_ratio: 0.0,
+        }
+    }
+
+    /// The damage an ability or item effect deals: attack bonus damage under a trigger caused
+    /// by a basic attack, spell damage otherwise. The one place that choice is made.
+    pub fn from_effect(
+        source: Entity,
+        target: Entity,
+        amount: f32,
+        damage_type: DamageType,
+        from_attack: bool,
+    ) -> Self {
+        if from_attack {
+            Self::attack_bonus(source, target, amount, damage_type)
+        } else {
+            Self::spell(source, target, amount, damage_type)
         }
     }
 
@@ -382,17 +398,12 @@ pub fn apply_damage_events(
 
         // Sleep breaks on any damage receipt (before applying this damage).
         if let (Some(st), Some(attrs)) = (statuses.as_deref_mut(), attrs) {
-            if st.is_asleep() {
-                let agi = attrs.agility;
-                while let Some(i) = st
-                    .effects
-                    .iter()
-                    .position(|e| e.asleep && e.remaining > 0.0)
-                {
-                    let ef = st.effects.remove(i);
-                    subtract_status_stat_delta(&ef, &mut target_stats, agi);
-                }
-            }
+            crate::status::wake_from_sleep(
+                st,
+                &mut target_stats,
+                attrs.agility,
+                shield.as_deref_mut(),
+            );
         }
 
         let damage_immune = statuses.as_ref().is_some_and(|s| s.has_damage_immunity());

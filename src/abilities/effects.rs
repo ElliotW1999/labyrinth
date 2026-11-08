@@ -427,11 +427,13 @@ impl EffectRunner<'_, '_> {
                         self.scaled_amount(ctx, amount.at(rank), scaling, target, cast_range)
                     {
                         let amount = amount * ctx.magnitude;
-                        self.damage.write(if ctx.attack.is_some() {
-                            DamageEvent::attack_bonus(ctx.caster, target, amount, damage_type)
-                        } else {
-                            DamageEvent::spell(ctx.caster, target, amount, damage_type)
-                        });
+                        self.damage.write(DamageEvent::from_effect(
+                            ctx.caster,
+                            target,
+                            amount,
+                            damage_type,
+                            ctx.attack.is_some(),
+                        ));
                     }
                 }
             }
