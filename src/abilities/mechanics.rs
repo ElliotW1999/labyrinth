@@ -130,6 +130,7 @@ impl MechanicRunner<'_, '_> {
                 splash_radius,
                 speed,
                 skillshot,
+                first_hit,
             } => {
                 let unit = ctx
                     .unit_target
@@ -152,6 +153,7 @@ impl MechanicRunner<'_, '_> {
                     target_pos,
                     speed: *speed,
                     skillshot_width: skillshot.then_some(ctx.aoe_radius),
+                    skillshot_max_hits: (*skillshot && *first_hit).then_some(1),
                     splash_radius: if *skillshot {
                         0.0
                     } else {

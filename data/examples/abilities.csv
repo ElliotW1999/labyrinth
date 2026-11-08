@@ -7,7 +7,7 @@ blink,Blink,Q,active,point,enemy,800,,0,,15,75,,,none,,Teleport to the target po
 mending_beam,Mending Beam,E,active,self,self,,,0.1,2,25,60,,,none,,Channel to heal; an interrupted channel heals less
 lunge,Lunge,W,active,point,enemy,600,,0.1,,10,50,,,none,,A quick dash toward the target point
 bull_rush,Bull Rush,R,active,unit,enemy,1200,,0.2,,50|45|40,100,,,none,,Charges the target and stuns it on arrival
-meat_hook,Meat Hook,Q,active,point,enemy,1100,,0.3,,14|13|12|11,100,,,skillshot,1200,Throws a hook that pulls the first enemy it hits to the caster
+meat_hook,Meat Hook,Q,active,point,enemy,1100,,0.3,,14|13|12|11,100,,,skillshot_single,1200,Throws a hook that pulls the first enemy it hits to the caster
 twister,Twister,E,active,unit,enemy,700,,0.2,,18,90,,,none,,Lifts an enemy unit into the air where nothing can touch it
 snare_field,Snare Field,W,active,point,enemy,800,300,0.3,,16,110,,,none,,Confines enemies in the area to a circle around the target point
 chain_link,Chain Link,E,active,unit,enemy,600,,0.2,,14,80,,,none,,Tethers an enemy to the caster

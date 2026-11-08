@@ -350,5 +350,21 @@ class MovementEffectTests(unittest.TestCase):
         self.assertIn("StatusSpec::TurnRateBonus", effect_to_rust(effect, ctx, report)[2])
 
 
+class ProjectileTypeTests(unittest.TestCase):
+    def test_skillshot_single_validates_like_a_skillshot(self) -> None:
+        for target_type, ok in (("point", True), ("direction", True), ("unit", False)):
+            report = Report()
+            cells = {
+                "target_type": target_type,
+                "target_team": "enemy",
+                "cast_range": "900",
+                "projectile_type": "skillshot_single",
+            }
+            spec = parse_activation_spec(row(cells), kind="ability", has_active_effects=True, report=report, levels=1)
+            validate_activation(row(cells), spec, kind="ability", ability_type="active", report=report)
+            self.assertEqual(not report.errors, ok, target_type)
+            self.assertEqual(spec.projectile_type, "skillshot_single")
+
+
 if __name__ == "__main__":
     unittest.main()

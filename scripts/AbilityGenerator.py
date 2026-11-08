@@ -37,6 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from generator_common import (  # noqa: E402
     ACTION_TEAMS,
     EFFECT_COLUMNS,
+    SKILLSHOT_TYPES,
     TARGET_TEAMS,
     EffectContext,
     EffectRow,
@@ -232,7 +233,7 @@ def effect_context(a: Ability) -> EffectContext:
         levels=a.max_rank,
         center_for={"on_cast": on_cast_center},
         team=TARGET_TEAMS[a.target_team],
-        has_aoe=bool(a.aoe_radius and any(a.aoe_radius)) or a.projectile == "skillshot",
+        has_aoe=bool(a.aoe_radius and any(a.aoe_radius)) or a.projectile in SKILLSHOT_TYPES,
         target_type=a.target_type,
     )
     if a.behavior != "Toggle":
@@ -258,7 +259,7 @@ def effect_context(a: Ability) -> EffectContext:
     for trigger in ("on_channel_tick", "on_channel_end", "on_channel_interrupted"):
         ctx.invalid_combo[(trigger, "trigger_unit")] = f"{trigger} has no trigger unit"
         ctx.invalid_combo[(trigger, "affected_units")] = f"{trigger} has no affected units"
-    if a.projectile == "skillshot":
+    if a.projectile in SKILLSHOT_TYPES:
         ctx.invalid_combo[("on_projectile_hit", "affected_units")] = "skillshots report each unit they pass as trigger_unit (no splash)"
     return ctx
 
@@ -274,7 +275,7 @@ def ability_fn(a: Ability) -> str:
     if a.behavior != "Active":
         lines.append(f"        .behavior(AbilityBehavior::{a.behavior})")
     aoe = rank_value(a.aoe_radius)
-    if a.projectile == "skillshot" and not (a.aoe_radius and any(a.aoe_radius)):
+    if a.projectile in SKILLSHOT_TYPES and not (a.aoe_radius and any(a.aoe_radius)):
         aoe = "RankValue::fixed(scale::ABILITY_PROJECTILE_WIDTH)"
     lines.append(f"        .targeting(TargetType::{a.rust_target_type}, {rank_value(a.cast_range)}, {aoe})")
     lines.append(f"        .team(TargetTeam::{ACTION_TEAMS[a.target_team]})")
@@ -288,10 +289,12 @@ def ability_fn(a: Ability) -> str:
         lines.append(f"        .charges({a.max_charges}, {f32(a.charge_restore_time or 0.0)})")
     if a.projectile != "none":
         speed = f"Some({f32(a.projectile_speed)})" if a.projectile_speed else "None"
-        skillshot = "true" if a.projectile == "skillshot" else "false"
+        skillshot = "true" if a.projectile in SKILLSHOT_TYPES else "false"
+        first_hit = "true" if a.projectile == "skillshot_single" else "false"
         lines.append(
             "        .mechanic(AbilityMechanic::Projectile { "
-            f"splash_radius: AreaRadius::Ability, speed: {speed}, skillshot: {skillshot} }})"
+            f"splash_radius: AreaRadius::Ability, speed: {speed}, skillshot: {skillshot}, "
+            f"first_hit: {first_hit} }})"
         )
     elif a.behavior == "Active" and a.aoe_radius and any(a.aoe_radius):
         if a.rust_target_type in ("NoTarget", "SelfTarget"):

@@ -130,7 +130,9 @@ STATUSES = {
 
 # Activation targeting shared by abilities and active items.
 TARGET_TYPES = ("unit", "point", "direction", "no_target", "self")
-PROJECTILE_TYPES = ("none", "targeted", "skillshot")
+PROJECTILE_TYPES = ("none", "targeted", "skillshot", "skillshot_single")
+# Skillshots fly the cast range; `skillshot_single` stops at the first enemy it strikes (a hook).
+SKILLSHOT_TYPES = ("skillshot", "skillshot_single")
 
 # Optional activation columns on items.csv (not part of ITEM_COLUMNS required tuple).
 ITEM_ACTIVATION_OPTIONAL = (
@@ -520,10 +522,10 @@ def validate_activation(
         err("max_charges", "charge-based abilities need a charge_restore_time")
 
     if spec.projectile_speed is not None and spec.projectile_type == "none":
-        err("projectile_speed", "projectile_speed requires projectile_type targeted or skillshot")
+        err("projectile_speed", "projectile_speed requires projectile_type targeted, skillshot, or skillshot_single")
     if spec.projectile_type == "targeted" and spec.target_type != "unit":
         err("projectile_type", f"targeted projectiles home in on a unit; target_type is {spec.target_type}")
-    if spec.projectile_type == "skillshot" and spec.target_type not in ("point", "direction"):
+    if spec.projectile_type in SKILLSHOT_TYPES and spec.target_type not in ("point", "direction"):
         err("projectile_type", f"skillshots fly toward a point or direction; target_type is {spec.target_type}")
 
     if spec.target_team == "self" and spec.target_type not in ("self", "no_target"):

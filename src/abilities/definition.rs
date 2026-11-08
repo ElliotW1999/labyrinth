@@ -540,11 +540,14 @@ pub enum AbilityMechanic {
     ///
     /// A `skillshot` instead flies the full cast range toward the aim, firing
     /// `OnProjectileHit` for every enemy it passes within `aoe_radius`, then `OnImpact`.
+    /// With `first_hit` it stops at the first enemy it strikes instead (a hook).
     Projectile {
         splash_radius: AreaRadius,
         /// World units per second; `None` uses the default spell projectile speed.
         speed: Option<f32>,
         skillshot: bool,
+        /// Skillshots only: end at the first enemy struck (no `OnImpact` after a hit).
+        first_hit: bool,
     },
     /// Caster follows up with auto-attacks on the unit target.
     AttackUnitTarget,

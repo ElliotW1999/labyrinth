@@ -902,6 +902,7 @@ mod tests {
                 splash_radius: AreaRadius::Fixed(RankValue::fixed(20.0)),
                 speed: None,
                 skillshot: false,
+                first_hit: false,
             })
     }
 
@@ -1421,6 +1422,7 @@ mod tests {
                 splash_radius: AreaRadius::Ability,
                 speed: None,
                 skillshot: false,
+                first_hit: false,
             })
             .on(
                 AbilityTrigger::OnProjectileHit,
