@@ -1,5 +1,7 @@
 # Shared effects pipeline — architecture audit & implementation spec
 
+> **Superseded in part** by `2026-11-08-mechanic-composition-layers.md` (and `docs/architecture/composition.md`): chain damage is now the `Chain` mechanic gate plus ordinary effect rows, the projectile mechanic is source-neutral (items carry mechanics), `build_status_effect` is the single status builder, and `EffectRunner::execute` also serves `WhileToggled`.
+
 **Date:** 2026-11-06  
 **Scope:** Audit only; no production code changes in this pass.  
 **Goal:** Confirm abilities and active items share effect definitions and execution, and specify minimal follow-up work.

@@ -1,5 +1,7 @@
 > **Superseded in part (2026-11-08):** crit is no longer rolled at damage application. It is rolled once per landed attack in `basic_attack::resolve_basic_attack_impacts`, and `DamageEvent::can_crit` was replaced by the informational `crit`. See `2026-11-08-attack-modifiers.md`.
 
+> **Superseded in part** by `2026-11-08-mechanic-composition-layers.md` (and `docs/architecture/composition.md`): `emit_chain_damage` / the `bolt_chain` custom effect no longer exist (Chain is a mechanic gate), the damage-kind choice lives in `DamageEvent::from_effect`, sleep waking is `status::wake_from_sleep`, and hostile teleports of debuff-immune units are rejected.
+
 # Damage mechanics — architecture audit & implementation plan
 
 **Date:** 2026-11-06  
