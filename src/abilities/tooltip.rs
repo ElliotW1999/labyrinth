@@ -368,9 +368,13 @@ fn effect_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
             }
             rows
         }
+        AbilityEffect::Teleport {
+            max_distance: Some(max),
+            ..
+        } => vec![row("Max distance", max)],
         AbilityEffect::Dispel { .. }
+        | AbilityEffect::Teleport { .. }
         | AbilityEffect::RemoveStatus { .. }
-        | AbilityEffect::Teleport
         | AbilityEffect::Proc { .. }
         | AbilityEffect::Counter { .. }
         | AbilityEffect::Chain { .. }
@@ -508,7 +512,13 @@ fn effect_text_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
             "Each time {} builds up",
             fmt_num(threshold.at(1))
         ))],
-        AbilityEffect::Teleport => vec![text_row("Teleports to the target point")],
+        AbilityEffect::Teleport { min_distance, .. } if min_distance != RankValue::ZERO => {
+            vec![text_row(format!(
+                "Teleports toward the target point, at least {} away",
+                fmt_num(min_distance.at(1))
+            ))]
+        }
+        AbilityEffect::Teleport { .. } => vec![text_row("Teleports to the target point")],
         AbilityEffect::Displace {
             distance: None,
             kind: DisplacementKind::Pull,

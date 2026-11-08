@@ -781,7 +781,14 @@ pub enum AbilityEffect {
     /// Instantly relocates each target to the trigger's aim point, validated against the
     /// map, static obstacles, and unit overlap (see `crate::teleport`). Rejected
     /// destinations leave the target untouched.
-    Teleport,
+    ///
+    /// With bounds, the distance from the caster to the aim point is clamped to
+    /// `min_distance..=max_distance` along the same line (an aim on the caster itself uses
+    /// the caster's facing). `ZERO` / `None` leave the destination exactly at the aim point.
+    Teleport {
+        min_distance: RankValue,
+        max_distance: Option<RankValue>,
+    },
     /// Permanent bonus while an item is owned; only meaningful under `AbilityTrigger::Passive`.
     PassiveStat {
         stat: PassiveStat,

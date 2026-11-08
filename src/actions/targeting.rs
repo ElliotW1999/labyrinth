@@ -293,6 +293,21 @@ mod tests {
     }
 
     #[test]
+    fn global_cast_range_is_in_range_anywhere_on_the_map() {
+        let c = caster();
+        let global = spec(
+            TargetType::Point,
+            TargetTeam::Enemy,
+            crate::scale::GLOBAL_CAST_RANGE,
+        );
+        let corner = Vec3::new(crate::scale::MAP_HALF, 0.0, crate::scale::MAP_HALF);
+        let resolved =
+            resolve_target(&global, &c, CastTarget::Point(-corner), unit(Team::Dire)).unwrap();
+        assert!(in_range(&global, c.position, c.bounds, &resolved));
+        assert!(crate::scale::GLOBAL_CAST_RANGE > crate::scale::MAP_SIZE * 2.0_f32.sqrt());
+    }
+
+    #[test]
     fn team_rules_filter_unit_targets() {
         let c = caster();
         let other = CastTarget::Unit(Entity::from_raw_u32(9).unwrap());

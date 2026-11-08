@@ -225,6 +225,10 @@ RESOURCE_SPENT = {
 RESOURCE_CONVERTED_TO = {"health_to_mana": "Mana", "mana_to_health": "Health"}
 
 # Activation targeting shared by abilities and active items.
+# `cast_range=global` stands for the whole map; mirrors scale::GLOBAL_CAST_RANGE.
+GLOBAL_RANGE_KEYWORD = "global"
+GLOBAL_CAST_RANGE = 25_000.0
+
 TARGET_TYPES = ("unit", "point", "direction", "no_target", "self")
 PROJECTILE_TYPES = ("none", "targeted", "skillshot", "skillshot_single")
 # Skillshots fly the cast range; `skillshot_single` stops at the first enemy it strikes (a hook).
@@ -599,8 +603,16 @@ def parse_activation_spec(
     if kind == "item" and target_team is None:
         target_team = default_team
 
-    cast_range = parse_number(row, "cast_range", report, levels=levels, minimum=0)
-    cast_range_scalar = parse_scalar(row, "cast_range", report, minimum=0) if kind == "item" else None
+    raw_range = (row.get("cast_range") or "").strip()
+    if raw_range.lower() == GLOBAL_RANGE_KEYWORD:
+        # `global`: the whole map. A single keyword; it cannot be mixed into a level list.
+        cast_range = [GLOBAL_CAST_RANGE]
+        cast_range_scalar = GLOBAL_CAST_RANGE if kind == "item" else None
+    else:
+        if GLOBAL_RANGE_KEYWORD in raw_range.lower():
+            report.error(row.file, row.line, "cast_range", raw_range, f"{GLOBAL_RANGE_KEYWORD} is a keyword for the whole cast_range cell; it cannot be part of a level list")
+        cast_range = parse_number(row, "cast_range", report, levels=levels, minimum=0)
+        cast_range_scalar = parse_scalar(row, "cast_range", report, minimum=0) if kind == "item" else None
     aoe_radius = parse_number(row, "aoe_radius", report, levels=levels, minimum=0) if kind == "ability" else None
     cast_time = parse_scalar(row, "cast_time", report, minimum=0) or 0.0
     channel_time = parse_scalar(row, "channel_time", report, minimum=0)
@@ -1615,8 +1627,32 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             if e.target not in TELEPORT_TARGETS:
                 report.error(row.file, row.line, "effect_target", e.target, f"teleport sends its target to the cast's aim point; use one of: {', '.join(TELEPORT_TARGETS)}")
                 return None
-            _unused(e, report, "damage_type", "amount", "value", "duration", "radius")
-            effect = "AbilityEffect::Teleport"
+            _unused(e, report, "damage_type", "duration", "radius")
+            min_distance, max_distance = "RankValue::ZERO", "None"
+            if value or amount:
+                # Optional bounds on the blink distance: value = maximum, amount = minimum.
+                if e.target not in SELF_MOVEMENT_TARGETS:
+                    report.error(row.file, row.line, "value" if value else "amount", row.get("value") or row.get("amount"), "teleport distance bounds are measured from the caster; use effect_target caster or owner")
+                    return None
+                if value and any(v <= 0 for v in value):
+                    report.error(row.file, row.line, "value", row.get("value"), "teleport max distance must be above 0")
+                    return None
+                if amount and any(a < 0 for a in amount):
+                    report.error(row.file, row.line, "amount", row.get("amount"), "teleport min distance cannot be negative")
+                    return None
+                if value and amount:
+                    longest = max(len(value), len(amount))
+                    for rank in range(longest):
+                        high = value[min(rank, len(value) - 1)]
+                        low = amount[min(rank, len(amount) - 1)]
+                        if low > high:
+                            report.error(row.file, row.line, "amount", row.get("amount"), f"teleport min distance {low:g} exceeds the max distance {high:g}")
+                            return None
+                if amount:
+                    min_distance = rank_value(amount)
+                if value:
+                    max_distance = f"Some({rank_value(value)})"
+            effect = f"AbilityEffect::Teleport {{ min_distance: {min_distance}, max_distance: {max_distance} }}"
         else:
             effect = _displacement_effect(e, effect_id, ctx, value, duration, amount, report)
             if effect is None:

@@ -257,7 +257,10 @@ fn blink() -> AbilityDefinition {
         .on(
             AbilityTrigger::OnCast,
             EffectTarget::Caster,
-            AbilityEffect::Teleport,
+            AbilityEffect::Teleport {
+                min_distance: RankValue::ZERO,
+                max_distance: None,
+            },
         )
 }
 // </ability:blink>

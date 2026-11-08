@@ -16,6 +16,7 @@ from generator_common import (  # noqa: E402
     Report,
     Row,
     ABILITY_TRIGGERS,
+    GLOBAL_CAST_RANGE,
     ITEM_TRIGGERS,
     NOT_EMITTED_TRIGGERS,
     effect_to_rust,
@@ -33,6 +34,92 @@ from generator_common import (  # noqa: E402
 
 def row(cells: dict[str, str], line: int = 2) -> Row:
     return Row("test.csv", line, cells)
+
+
+class GlobalCastRangeTests(unittest.TestCase):
+    def _spec(self, kind: str, cast_range: str, target_type: str = "point"):
+        report = Report()
+        spec = parse_activation_spec(
+            row({"target_type": target_type, "target_team": "enemy", "cast_range": cast_range}),
+            kind=kind,
+            has_active_effects=True,
+            report=report,
+            levels=kind == "ability",
+        )
+        return spec, report
+
+    def test_global_is_case_insensitive_for_abilities_and_items(self) -> None:
+        for text in ("global", "GLOBAL", " Global "):
+            spec, report = self._spec("ability", text)
+            self.assertFalse(report.errors, text)
+            self.assertEqual(spec.cast_range, [GLOBAL_CAST_RANGE])
+        spec, report = self._spec("item", "global")
+        self.assertFalse(report.errors)
+        self.assertEqual(spec.cast_range_scalar, GLOBAL_CAST_RANGE)
+
+    def test_global_cannot_join_a_level_list(self) -> None:
+        spec, report = self._spec("ability", "800|global")
+        self.assertTrue(report.errors)
+        self.assertEqual(report.errors[0].field, "cast_range")
+        self.assertIn("level list", report.errors[0].message)
+
+    def test_global_satisfies_the_cast_range_requirement(self) -> None:
+        for target_type in ("point", "unit", "direction"):
+            spec, report = self._spec("ability", "global", target_type)
+            validate_activation(
+                row({"target_type": target_type, "target_team": "enemy", "cast_range": "global"}),
+                spec,
+                kind="ability",
+                ability_type="active",
+                report=report,
+            )
+            self.assertFalse(report.errors, target_type)
+
+
+class BoundedTeleportTests(unittest.TestCase):
+    @staticmethod
+    def _teleport(target: str = "caster", **cells: str):
+        base = {
+            "ability_id": "mover",
+            "effect_index": "0",
+            "trigger": "on_cast",
+            "effect_target": target,
+            "effect_type": "movement",
+            "effect_id": "teleport",
+        }
+        base.update(cells)
+        effect = EffectRow(row(base), "mover", 0, "on_cast", target, "movement")
+        ctx = EffectContext(kind="ability", owner_id="mover", levels=1, center_for={}, target_type="point")
+        report = Report()
+        return effect_to_rust(effect, ctx, report), report
+
+    def test_blank_bounds_keep_the_plain_teleport(self) -> None:
+        result, report = self._teleport()
+        self.assertFalse(report.errors)
+        self.assertIn("Teleport { min_distance: RankValue::ZERO, max_distance: None }", result[2])
+
+    def test_value_is_the_maximum_and_amount_the_minimum(self) -> None:
+        result, report = self._teleport(value="1075", amount="200")
+        self.assertFalse(report.errors)
+        self.assertIn("min_distance: RankValue::fixed(200.0)", result[2])
+        self.assertIn("max_distance: Some(RankValue::fixed(1075.0))", result[2])
+
+    def test_minimum_above_maximum_is_rejected(self) -> None:
+        result, report = self._teleport(value="200", amount="500")
+        self.assertIsNone(result)
+        self.assertEqual(report.errors[0].field, "amount")
+        self.assertIn("exceeds", report.errors[0].message)
+
+    def test_bounds_need_the_caster_as_target(self) -> None:
+        result, report = self._teleport(target="cast_target", value="800")
+        self.assertIsNone(result)
+        self.assertIn("caster", report.errors[0].message)
+
+    def test_max_must_be_positive_and_min_not_negative(self) -> None:
+        result, report = self._teleport(value="0")
+        self.assertIsNone(result)
+        result, report = self._teleport(amount="-1")
+        self.assertIsNone(result)
 
 
 class ValidateActivationTests(unittest.TestCase):

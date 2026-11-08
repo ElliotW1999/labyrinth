@@ -372,6 +372,36 @@ type UnitQuery<'w, 's> = Query<
     ),
 >;
 
+/// Where a bounded teleport lands: `aim`, with its flat distance from `origin` clamped to
+/// `min..=max` along the same line. An aim on top of `origin` (when a minimum applies) uses
+/// `facing`. With no bounds the destination is exactly `aim`.
+pub(crate) fn teleport_destination(
+    origin: Vec3,
+    aim: Vec3,
+    facing: Vec3,
+    min: f32,
+    max: Option<f32>,
+) -> Vec3 {
+    let min = min.max(0.0);
+    if min == 0.0 && max.is_none() {
+        return aim;
+    }
+    let offset = Vec3::new(aim.x - origin.x, 0.0, aim.z - origin.z);
+    let length = offset.length();
+    let direction = if length > 1e-3 {
+        offset / length
+    } else {
+        Vec3::new(facing.x, 0.0, facing.z).normalize_or(Vec3::NEG_Z)
+    };
+    let mut distance = if length > 1e-3 { length } else { 0.0 }.max(min);
+    if let Some(max) = max {
+        distance = distance.min(max.max(0.0));
+    }
+    let mut destination = origin + direction * distance;
+    destination.y = aim.y;
+    destination
+}
+
 /// Resolves effect targets and executes [`AbilityEffect`]s as gameplay events.
 #[derive(SystemParam)]
 pub struct EffectRunner<'w, 's> {
@@ -714,12 +744,26 @@ impl EffectRunner<'_, '_> {
                     ));
                 }
             }
-            AbilityEffect::Teleport => {
+            AbilityEffect::Teleport {
+                min_distance,
+                max_distance,
+            } => {
+                let facing = self
+                    .units
+                    .get(ctx.caster)
+                    .map_or(Vec3::NEG_Z, |(_, tf, ..)| tf.forward().as_vec3());
+                let destination = teleport_destination(
+                    ctx.origin,
+                    ctx.aim,
+                    facing,
+                    min_distance.at(rank),
+                    max_distance.map(|d| d.at(rank)),
+                );
                 for target in targets {
                     self.teleports.write(TeleportEvent {
                         target,
                         caster: ctx.caster,
-                        destination: ctx.aim,
+                        destination,
                     });
                 }
             }

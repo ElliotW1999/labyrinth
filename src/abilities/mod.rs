@@ -479,6 +479,11 @@ fn update_targeting_indicators(
     }
 }
 
+/// Whether a cast range is `cast_range=global` (the whole map).
+fn is_global_range(cast_range: f32) -> bool {
+    cast_range >= scale::GLOBAL_CAST_RANGE
+}
+
 fn spawn_indicators(
     commands: &mut Commands,
     assets: &SharedAssets,
@@ -487,14 +492,17 @@ fn spawn_indicators(
     radius_or_width: f32,
     point_target: bool,
 ) {
-    commands.spawn((
-        Name::new("Range Indicator"),
-        RangeIndicator,
-        Mesh3d(assets.indicator_ring_mesh.clone()),
-        MeshMaterial3d(assets.indicator_range_mat.clone()),
-        Transform::from_translation(Vec3::new(hero_pos.x, scale::u(0.08), hero_pos.z))
-            .with_scale(Vec3::new(cast_range, 1.0, cast_range)),
-    ));
+    // A global range covers the map: a ring that big is just noise, so it is not drawn.
+    if !is_global_range(cast_range) {
+        commands.spawn((
+            Name::new("Range Indicator"),
+            RangeIndicator,
+            Mesh3d(assets.indicator_ring_mesh.clone()),
+            MeshMaterial3d(assets.indicator_range_mat.clone()),
+            Transform::from_translation(Vec3::new(hero_pos.x, scale::u(0.08), hero_pos.z))
+                .with_scale(Vec3::new(cast_range, 1.0, cast_range)),
+        ));
+    }
     if point_target {
         commands.spawn((
             Name::new("Trajectory Indicator"),
@@ -3967,7 +3975,10 @@ mod tests {
             .on(
                 AbilityTrigger::OnCast,
                 EffectTarget::Caster,
-                AbilityEffect::Teleport,
+                AbilityEffect::Teleport {
+                    min_distance: RankValue::ZERO,
+                    max_distance: None,
+                },
             )
     }
 
@@ -4007,6 +4018,92 @@ mod tests {
                 .remaining
                 > 0.0
         );
+    }
+
+    fn bounded_blink_ability() -> AbilityDefinition {
+        AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(
+                TargetType::Point,
+                RankValue::fixed(scale::GLOBAL_CAST_RANGE),
+                RankValue::ZERO,
+            )
+            .costs(RankValue::fixed(8.0), RankValue::fixed(100.0))
+            .on(
+                AbilityTrigger::OnCast,
+                EffectTarget::Caster,
+                AbilityEffect::Teleport {
+                    min_distance: RankValue::fixed(200.0),
+                    max_distance: Some(RankValue::fixed(1075.0)),
+                },
+            )
+    }
+
+    /// Casts the bounded blink at `click` from the origin, facing +X, and returns where the
+    /// caster ends up (plus whether it was ever ordered to walk).
+    fn bounded_blink_to(click: Vec3) -> (Vec3, f32) {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(bounded_blink_ability());
+        let caster = spawn_caster(&mut app, KIT);
+        app.world_mut().entity_mut(caster).insert((
+            CollisionRadius(40.0),
+            Transform::from_translation(Vec3::ZERO).looking_to(Vec3::X, Vec3::Y),
+        ));
+        request(&mut app, caster, 3, CastTarget::Point(click));
+        let mut walked = false;
+        for _ in 0..12 {
+            step(&mut app);
+            walked |= app.world().get::<MoveTarget>(caster).is_some();
+        }
+        let world = app.world();
+        let mana = world.get::<Mana>(caster).unwrap().current;
+        assert!(
+            !walked,
+            "a global cast range never walks the caster into range"
+        );
+        (world.get::<Transform>(caster).unwrap().translation, mana)
+    }
+
+    #[test]
+    fn bounded_teleport_clamps_a_far_click_to_the_maximum_distance() {
+        let (at, mana) = bounded_blink_to(Vec3::new(3000.0, 0.0, 0.0));
+        assert!(at.distance(Vec3::new(1075.0, 0.0, 0.0)) < 1e-2, "{at}");
+        assert_eq!(mana, 900.0, "the cast was paid for");
+    }
+
+    #[test]
+    fn bounded_teleport_pushes_a_near_click_out_to_the_minimum_distance() {
+        let (at, _) = bounded_blink_to(Vec3::new(50.0, 0.0, 0.0));
+        assert!(at.distance(Vec3::new(200.0, 0.0, 0.0)) < 1e-2, "{at}");
+        let (at, _) = bounded_blink_to(Vec3::new(0.0, 0.0, 500.0));
+        assert!(
+            at.distance(Vec3::new(0.0, 0.0, 500.0)) < 1e-2,
+            "an in-bounds click is exact: {at}"
+        );
+    }
+
+    #[test]
+    fn bounded_teleport_clicked_on_the_caster_moves_along_her_facing() {
+        let (at, _) = bounded_blink_to(Vec3::ZERO);
+        assert!(at.distance(Vec3::new(200.0, 0.0, 0.0)) < 1e-2, "{at}");
+    }
+
+    #[test]
+    fn teleport_destination_applies_bounds_and_leaves_unbounded_aims_alone() {
+        use super::effects::teleport_destination;
+        let origin = Vec3::new(10.0, 0.0, 10.0);
+        let aim = Vec3::new(3010.0, 5.0, 10.0);
+        assert_eq!(teleport_destination(origin, aim, Vec3::X, 0.0, None), aim);
+        let far = teleport_destination(origin, aim, Vec3::X, 200.0, Some(1075.0));
+        assert!(far.distance(Vec3::new(1085.0, 5.0, 10.0)) < 1e-3, "{far}");
+        let on_self = teleport_destination(origin, origin, Vec3::Z, 200.0, Some(1075.0));
+        assert!(
+            on_self.distance(Vec3::new(10.0, 0.0, 210.0)) < 1e-3,
+            "{on_self}"
+        );
+        let no_min = teleport_destination(origin, origin, Vec3::Z, 0.0, Some(1075.0));
+        assert!(no_min.distance(origin) < 1e-3, "no minimum: stays put");
     }
 
     #[test]
@@ -4053,7 +4150,10 @@ mod tests {
             Box::leak(Box::new([AbilityEffectEntry {
                 trigger: AbilityTrigger::OnUse,
                 target: EffectTarget::Caster,
-                effect: AbilityEffect::Teleport,
+                effect: AbilityEffect::Teleport {
+                    min_distance: RankValue::ZERO,
+                    max_distance: None,
+                },
             }]))
         });
         ItemDefinition {
@@ -6658,7 +6758,10 @@ mod tests {
             rows.push(entry(
                 AbilityTrigger::OnUse,
                 EffectTarget::Caster,
-                AbilityEffect::Teleport,
+                AbilityEffect::Teleport {
+                    min_distance: RankValue::ZERO,
+                    max_distance: None,
+                },
             ));
         }
         let effects: &'static [AbilityEffectEntry] = Box::leak(rows.into_boxed_slice());
