@@ -15,3 +15,6 @@ fireball,9,on_cast,caster,movement,drag,,,,,,,
 fireball,10,on_cast,units_in_radius,apply_status,leash,,,4,300,,,
 fireball,11,on_cast,units_in_radius,movement,cyclone,,,,300,,,
 aura,0,on_movement_end,caster,heal,,10,,,,,,
+leech,0,on_cast,cast_target,resource,mana_burn,100,,,,,,
+leech,1,on_cast,cast_target,resource,mana_drain,100,,,,0.5,intelligence,1
+leech,2,on_cast,caster,resource,mana_drain,100,,,,0.5,,

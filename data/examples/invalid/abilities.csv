@@ -4,3 +4,4 @@ fireball,Fireball Again,W,active,point,enemy,800,,0.2,,10,100,,,none,,Duplicate 
 lance,Lance,W,active,point,enemy,700,,0.2,,abc,100|110|,,5,targeted,,Bad numbers and targeting
 nova,Nova,X,channelled,area,foes,,300,0.2,,10,100,,,none,,Unknown enums
 aura,Aura,innate,passive,no_target,self,,,,,,,,,none,,Passive ability with an active-only trigger
+leech,Leech,Q,active,unit,enemy,600,,0.2,,10,50,,,none,,Resource effect errors

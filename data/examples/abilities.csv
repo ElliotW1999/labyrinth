@@ -1,4 +1,4 @@
-id,name,slot,ability_type,target_type,target_team,cast_range,aoe_radius,cast_time,channel_time,cooldown,mana_cost,max_charges,charge_restore_time,projectile_type,projectile_speed,description
+id,name,slot,ability_type,target_type,target_team,cast_range,aoe_radius,cast_time,channel_time,cooldown,mana_cost,max_charges,charge_restore_time,projectile_type,projectile_speed,description,cast_backswing,max_rank,toggle_mana_per_sec
 shockwave,Shockwave,Q,active,point,enemy,1200,,0.3,,13|12|11|10,85|90|95|100,,,skillshot,900,Launches a wave that damages pulls and slows enemies
 skewer,Skewer,E,active,point,enemy,900,,0.25,,20|18|16|14,80,,,none,,Dashes forward dragging enemies along and slowing them at the end
 frost_lance,Frost Lance,W,active,unit,enemy,600,150,0.2,,6,70|80|90|100,2,12,targeted,1100,Homing lance; splashes and chills enemies near the target
@@ -12,3 +12,9 @@ twister,Twister,E,active,unit,enemy,700,,0.2,,18,90,,,none,,Lifts an enemy unit 
 snare_field,Snare Field,W,active,point,enemy,800,300,0.3,,16,110,,,none,,Confines enemies in the area to a circle around the target point
 chain_link,Chain Link,E,active,unit,enemy,600,,0.2,,14,80,,,none,,Tethers an enemy to the caster
 wings,Wings,R,active,self,self,,,0.1,,40,100,,,none,,Grants flight and quicker turning
+soul_siphon,Soul Siphon,Q,active,unit,enemy,600,,0.2,,12,80,,,none,,Damages an enemy and heals the caster for half of the health taken
+mana_scorch,Mana Scorch,W,active,unit,enemy,600,,0.2,,14,60,,,none,,Burns mana from an enemy and deals damage equal to the mana burned
+mana_leech,Mana Leech,E,active,unit,enemy,600,,0.2,,16,40,,,none,,Drains mana from an enemy and gives half of it to the caster
+arcane_ward,Arcane Ward,E,toggle,no_target,self,,,0,,1,15,,,none,,"While on, half of the damage taken is paid with mana",0,,6
+cursed_touch,Cursed Touch,W,active,unit,enemy,500,,0.2,,18,70,,,none,,Halves healing received by an enemy and prevents it for a short time
+vitality_surge,Vitality Surge,R,active,self,self,,,0.1,,45,90,,,none,,Grants maximum health and regenerates health over time

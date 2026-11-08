@@ -5,3 +5,7 @@ healing_salve,Healing Salve,consumable,100,50,1,common,true,5,true,,Restores hea
 battle_horn,Battle Horn,accessory,1500,750,2,uncommon,false,,true,3,Three rallying blasts,20,,,,,,
 channel_charm,Channel Charm,utility,1000,500,1,common,false,,false,,Channel to heal; an interrupted channel heals less,30,,no_target,self,,0.1,2,
 lunge_blade,Lunge Blade,weapon,1800,900,2,rare,false,,false,,Dash forward and cut the first enemy touched,20,,point,,600,,,
+vampiric_blade,Vampiric Blade,weapon,1700,850,2,rare,false,,false,,Heals the wielder for a share of basic attack damage,,,,,,,
+siphon_staff,Siphon Staff,accessory,1500,750,2,rare,false,,false,,Heals the wielder for a share of spell damage dealt,,,,,,,
+soul_ring,Soul Ring,accessory,800,400,1,uncommon,false,,false,,Spend health to gain mana,25,,no_target,self,,,,
+arcane_sigil,Arcane Sigil,accessory,1100,550,2,uncommon,false,,false,,Spells cost less mana,,,,,,,

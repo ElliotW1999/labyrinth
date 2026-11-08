@@ -96,6 +96,7 @@ EFFECT_TYPES = {
     "dispel",
     "movement",
     "stat_modifier",
+    "resource",
     "custom",
 }
 
@@ -126,7 +127,33 @@ STATUSES = {
     "spell_immunity": ("StatusSpec::DebuffImmunity", "spell_immunity", True),
     "shield": (None, "shield", True),
     "burn": (None, "burn", False),
+    "heal_over_time": (None, "heal_over_time", True),
+    "heal_reduction": (None, "heal_reduction", False),
+    "heal_block": ("StatusSpec::HealBlock", "heal_block", False),
+    "mana_shield": (None, "mana_shield", True),
 }
+
+# `effect_type=resource` ids → (kind, spent resource). Hostile kinds act on other units;
+# the spend kinds act on the unit that uses them (caster/owner only).
+RESOURCE_EFFECTS = {
+    "health_drain": "drain_health",
+    "mana_burn": "drain_mana",
+    "mana_drain": "drain_mana",
+    "spend_health": "spend",
+    "spend_mana": "spend",
+    "health_to_mana": "spend",
+    "mana_to_health": "spend",
+}
+# Targets that resolve to the unit using the effect (see the `attacker` mapping below).
+SELF_RESOURCE_TARGETS = ("caster", "owner")
+# Mana-flow effects take their resource amount from `value`, ratios from `amount`.
+RESOURCE_SPENT = {
+    "spend_health": "Health",
+    "health_to_mana": "Health",
+    "spend_mana": "Mana",
+    "mana_to_health": "Mana",
+}
+RESOURCE_CONVERTED_TO = {"health_to_mana": "Mana", "mana_to_health": "Health"}
 
 # Activation targeting shared by abilities and active items.
 TARGET_TYPES = ("unit", "point", "direction", "no_target", "self")
@@ -178,6 +205,23 @@ TIMED_STATS = {
     "attack_speed_mult": "attack_speed_mult",
 }
 
+# Timed resource modifiers map onto `StatusSpec::ResourceModifier` (summed when read).
+RESOURCE_STATS = {
+    "lifesteal": "ResourceStat::Lifesteal",
+    "spell_lifesteal": "ResourceStat::SpellLifesteal",
+    "heal_amp": "ResourceStat::HealAmp",
+    "heal_received_amp": "ResourceStat::HealReceivedAmp",
+    "mana_cost_amp": "ResourceStat::ManaCostAmp",
+    "health_regen": "ResourceStat::HealthRegen",
+    "mana_regen": "ResourceStat::ManaRegen",
+    "max_health": "ResourceStat::MaxHealth",
+    "max_mana": "ResourceStat::MaxMana",
+}
+# Fractions (0.25 = 25%) share one range check; mana_cost_amp only has a floor (-1 = free).
+FRACTION_STATS = ("lifesteal", "spell_lifesteal", "heal_amp", "heal_received_amp")
+# A negative cost amp is the beneficial direction.
+NEGATIVE_IS_BENEFICIAL = ("mana_cost_amp",)
+
 # Permanent (item passive) stats map onto `PassiveStat`.
 PASSIVE_STATS = {
     "max_health": "PassiveStat::MaxHealth",
@@ -199,6 +243,11 @@ PASSIVE_STATS = {
     "incoming_damage_amp": "PassiveStat::IncomingDamageAmp",
     "damage_block": "PassiveStat::DamageBlock",
     "damage_reflect": "PassiveStat::DamageReflect",
+    "lifesteal": "PassiveStat::Lifesteal",
+    "spell_lifesteal": "PassiveStat::SpellLifesteal",
+    "heal_amp": "PassiveStat::HealAmp",
+    "heal_received_amp": "PassiveStat::HealReceivedAmp",
+    "mana_cost_amp": "PassiveStat::ManaCostAmp",
 }
 
 SCALING_TYPES = {
@@ -681,6 +730,115 @@ def _require(e: EffectRow, name: str, report: Report, why: str) -> bool:
     return False
 
 
+def _fraction_stat_ok(e: EffectRow, effect_id: str, value: list[float], report: Report) -> bool:
+    """Range rules for the fraction-valued resource stats (amps, lifesteal, cost)."""
+    row = e.row
+    if effect_id in FRACTION_STATS and any(not -1 <= v <= 1 for v in value):
+        report.error(row.file, row.line, "value", row.get("value"), f"{effect_id} is a fraction (0.25 = 25%) and must be within -1..1")
+        return False
+    if effect_id == "mana_cost_amp" and any(v < -1 for v in value):
+        report.error(row.file, row.line, "value", row.get("value"), "mana_cost_amp cannot go below -1 (a cost cannot be negative)")
+        return False
+    return True
+
+
+def _scalar_ratio(e: EffectRow, name: str, values: list[float] | None, default: float, report: Report) -> float | None:
+    """A ratio column that the runtime stores as a single f32 (no per-level values)."""
+    row = e.row
+    if not values:
+        return default
+    if any(v != values[0] for v in values):
+        report.error(row.file, row.line, name, row.get(name), "this ratio cannot vary by level")
+        return None
+    if values[0] <= 0:
+        report.error(row.file, row.line, name, row.get(name), "ratio must be above 0")
+        return None
+    return values[0]
+
+
+def _resource_effect(
+    e: EffectRow,
+    effect_id: str,
+    scaling: str,
+    scaling_type: str | None,
+    value: list[float] | None,
+    amount: list[float] | None,
+    report: Report,
+) -> str | None:
+    """`AbilityEffect::{DrainHealth, DrainMana, SpendResource}`.
+
+    Columns: `value` = amount, `amount` = ratio (see the table in the plan / README).
+    """
+    row = e.row
+    if effect_id not in RESOURCE_EFFECTS:
+        report.error(row.file, row.line, "effect_id", row.get("effect_id"), f"unknown resource effect; expected one of: {', '.join(RESOURCE_EFFECTS)}")
+        return None
+    kind = RESOURCE_EFFECTS[effect_id]
+    if not _require(e, "value", report, "resource amount"):
+        return None
+    if any(v <= 0 for v in value):
+        report.error(row.file, row.line, "value", row.get("value"), "resource amount must be above 0")
+        return None
+    if scaling_type and kind != "drain_health":
+        report.error(row.file, row.line, "scaling_type", scaling_type, "scaling is only supported by damage, heal, and health_drain effects")
+        return None
+    # `attacker` resolves to the unit using the effect for on_attack / on_attack_hit.
+    is_self = e.target in SELF_RESOURCE_TARGETS or (e.target == "attacker" and e.trigger in ("on_attack", "on_attack_hit"))
+    if kind == "spend":
+        if e.target not in SELF_RESOURCE_TARGETS:
+            report.error(row.file, row.line, "effect_target", e.target, f"{effect_id} spends the user's own resource; use one of: {', '.join(SELF_RESOURCE_TARGETS)}")
+            return None
+    elif is_self:
+        report.error(row.file, row.line, "effect_target", e.target, f"{effect_id} acts on other units; use cast_target, trigger_unit, affected_units, units_in_radius, or attacker (on_damage_taken)")
+        return None
+    if kind == "drain_health":
+        if not _require(e, "damage_type", report, "physical, magical, or pure"):
+            return None
+        damage_type = parse_enum(row, "damage_type", list(DAMAGE_TYPES), report, required=False)
+        ratio = _scalar_ratio(e, "amount", amount, 1.0, report)
+        if damage_type is None or ratio is None:
+            return None
+        return (
+            f"AbilityEffect::DrainHealth {{ amount: {rank_value(value)}, "
+            f"damage_type: DamageType::{DAMAGE_TYPES[damage_type]}, scaling: {scaling}, transfer_ratio: {f32(ratio)} }}"
+        )
+    if kind == "drain_mana":
+        ratio = _scalar_ratio(e, "amount", amount, 1.0, report)
+        if ratio is None:
+            return None
+        if effect_id == "mana_burn":
+            if not _require(e, "damage_type", report, "physical, magical, or pure"):
+                return None
+            damage_type = parse_enum(row, "damage_type", list(DAMAGE_TYPES), report, required=False)
+            if damage_type is None:
+                return None
+            return (
+                f"AbilityEffect::DrainMana {{ amount: {rank_value(value)}, burn_ratio: {f32(ratio)}, "
+                f"damage_type: DamageType::{DAMAGE_TYPES[damage_type]}, transfer_ratio: 0.0 }}"
+            )
+        _unused(e, report, "damage_type")
+        return (
+            f"AbilityEffect::DrainMana {{ amount: {rank_value(value)}, burn_ratio: 0.0, "
+            f"damage_type: DamageType::Pure, transfer_ratio: {f32(ratio)} }}"
+        )
+    # spend / conversion
+    _unused(e, report, "damage_type")
+    convert = "None"
+    if effect_id in RESOURCE_CONVERTED_TO:
+        if not _require(e, "amount", report, "resource gained per point spent"):
+            return None
+        ratio = _scalar_ratio(e, "amount", amount, 1.0, report)
+        if ratio is None:
+            return None
+        convert = f"Some((ResourceKind::{RESOURCE_CONVERTED_TO[effect_id]}, {f32(ratio)}))"
+    else:
+        _unused(e, report, "amount")
+    return (
+        f"AbilityEffect::SpendResource {{ resource: ResourceKind::{RESOURCE_SPENT[effect_id]}, "
+        f"amount: {rank_value(value)}, convert_to: {convert} }}"
+    )
+
+
 def _displacement_effect(
     e: EffectRow,
     effect_id: str,
@@ -794,8 +952,15 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
         report.error(row.file, row.line, "trigger", e.trigger, ctx.invalid_trigger[e.trigger])
         return None
     if e.trigger == "while_toggled":
-        if e.effect_type != "stat_modifier":
-            report.error(row.file, row.line, "effect_type", e.effect_type, "while_toggled only supports stat_modifier effects")
+        mana_shield = e.effect_type == "apply_status" and row.get("effect_id").lower() == "mana_shield"
+        if e.effect_type != "stat_modifier" and not mana_shield:
+            report.error(
+                row.file,
+                row.line,
+                "effect_type",
+                e.effect_type,
+                "while_toggled only supports stat_modifier effects and the mana_shield status",
+            )
             return None
         if e.target != "caster":
             report.error(row.file, row.line, "effect_target", e.target, "while_toggled bonuses apply to the caster")
@@ -873,7 +1038,14 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
         if effect_id not in STATUSES:
             report.error(row.file, row.line, "effect_id", row.get("effect_id"), f"unknown status; expected one of: {', '.join(STATUSES)}")
             return None
-        if not _require(e, "duration", report, "status duration in seconds") or not no_scaling():
+        if e.trigger == "while_toggled":
+            if duration:
+                report.error(row.file, row.line, "duration", row.get("duration"), "while_toggled statuses last while toggled; leave blank")
+                return None
+            duration = [0.0]
+        elif not _require(e, "duration", report, "status duration in seconds"):
+            return None
+        if not no_scaling():
             return None
         spec, _, beneficial = STATUSES[effect_id]
         if effect_id == "slow":
@@ -951,6 +1123,40 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             anchor = "TriggerPoint" if effect_id == "leash" else "Caster"
             spec = f"StatusSpec::Leash {{ radius: {rank_value(value)}, anchor: LeashAnchorKind::{anchor} }}"
             _unused(e, report, "amount")
+        elif effect_id == "heal_over_time":
+            if not _require(e, "value", report, "health restored per second"):
+                return None
+            if any(v <= 0 for v in value):
+                report.error(row.file, row.line, "value", row.get("value"), "heal_over_time per-second amount must be above 0")
+                return None
+            spec = f"StatusSpec::HealOverTime {{ hps: {rank_value(value)} }}"
+            _unused(e, report, "amount")
+        elif effect_id == "heal_reduction":
+            percent = amount or value
+            if not percent:
+                report.error(row.file, row.line, "amount", "", "required: heal_reduction percentage (e.g. 40)")
+                return None
+            if any(not 0 <= p <= 100 for p in percent):
+                report.error(row.file, row.line, "amount" if amount else "value", row.get("amount") or row.get("value"), "heal_reduction percentage must be within 0..100")
+                return None
+            spec = f"StatusSpec::HealReduction {{ percent: {rank_value(percent)} }}"
+            if amount:
+                _unused(e, report, "value")
+        elif effect_id == "mana_shield":
+            if not _require(e, "value", report, "percent of damage absorbed by mana (0..100)"):
+                return None
+            if not _require(e, "amount", report, "damage absorbed per point of mana"):
+                return None
+            if any(not 0 < p <= 100 for p in value):
+                report.error(row.file, row.line, "value", row.get("value"), "mana_shield absorb percent must be above 0 and at most 100")
+                return None
+            if any(p <= 0 for p in amount):
+                report.error(row.file, row.line, "amount", row.get("amount"), "mana_shield damage per mana must be above 0")
+                return None
+            spec = (
+                f"StatusSpec::ManaShield {{ absorb_percent: {rank_value(value)}, "
+                f"damage_per_mana: {rank_value(amount)} }}"
+            )
         elif effect_id == "blind":
             miss = amount or value
             if not miss:
@@ -1012,11 +1218,13 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             if duration:
                 report.error(row.file, row.line, "duration", row.get("duration"), "passive stat bonuses last while the item is owned; leave blank")
                 return None
+            if not _fraction_stat_ok(e, effect_id, value, report):
+                return None
             beneficial = True
             effect = f"AbilityEffect::PassiveStat {{ stat: {PASSIVE_STATS[effect_id]}, amount: {rank_value(value)} }}"
         else:
-            if effect_id not in TIMED_STATS:
-                report.error(row.file, row.line, "effect_id", row.get("effect_id"), f"timed stat modifiers support: {', '.join(TIMED_STATS)}")
+            if effect_id not in TIMED_STATS and effect_id not in RESOURCE_STATS:
+                report.error(row.file, row.line, "effect_id", row.get("effect_id"), f"timed stat modifiers support: {', '.join([*TIMED_STATS, *RESOURCE_STATS])}")
                 return None
             toggled = e.trigger == "while_toggled"
             if toggled:
@@ -1026,15 +1234,34 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
                 duration = [0.0]
             elif not _require(e, "duration", report, "timed stat modifiers need a duration (only item passives are permanent)"):
                 return None
-            beneficial = all(v >= 0 for v in value)
-            kind = "Buff" if beneficial else "Debuff"
-            fields = {name: "RankValue::ZERO" for name in TIMED_STATS.values()}
-            fields[TIMED_STATS[effect_id]] = rank_value(value)
-            body = ", ".join(f"{k}: {v}" for k, v in fields.items())
-            effect = (
-                f'AbilityEffect::ApplyStatus {{ status: StatusSpec::Modifier {{ id: "{ctx.owner_id}_{effect_id}", '
-                f"kind: StatusKind::{kind}, {body} }}, duration: {rank_value(duration)} }}"
-            )
+            if effect_id in RESOURCE_STATS:
+                if not _fraction_stat_ok(e, effect_id, value, report):
+                    return None
+                if effect_id in NEGATIVE_IS_BENEFICIAL:
+                    beneficial = all(v <= 0 for v in value)
+                else:
+                    beneficial = all(v >= 0 for v in value)
+                kind = "Buff" if beneficial else "Debuff"
+                effect = (
+                    f'AbilityEffect::ApplyStatus {{ status: StatusSpec::ResourceModifier {{ id: "{ctx.owner_id}_{effect_id}", '
+                    f"kind: StatusKind::{kind}, stat: {RESOURCE_STATS[effect_id]}, amount: {rank_value(value)} }}, "
+                    f"duration: {rank_value(duration)} }}"
+                )
+            else:
+                beneficial = all(v >= 0 for v in value)
+                kind = "Buff" if beneficial else "Debuff"
+                fields = {name: "RankValue::ZERO" for name in TIMED_STATS.values()}
+                fields[TIMED_STATS[effect_id]] = rank_value(value)
+                body = ", ".join(f"{k}: {v}" for k, v in fields.items())
+                effect = (
+                    f'AbilityEffect::ApplyStatus {{ status: StatusSpec::Modifier {{ id: "{ctx.owner_id}_{effect_id}", '
+                    f"kind: StatusKind::{kind}, {body} }}, duration: {rank_value(duration)} }}"
+                )
+    elif t == "resource":
+        _unused(e, report, "duration")
+        effect = _resource_effect(e, effect_id, scaling, scaling_type, value, amount, report)
+        if effect is None:
+            return None
     elif t == "custom":
         if not _require(e, "effect_id", report, "registered custom effect id"):
             return None

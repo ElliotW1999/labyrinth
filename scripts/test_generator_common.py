@@ -366,5 +366,273 @@ class ProjectileTypeTests(unittest.TestCase):
             self.assertEqual(spec.projectile_type, "skillshot_single")
 
 
+def _effect(
+    effect_type: str,
+    effect_id: str,
+    *,
+    target: str = "cast_target",
+    trigger: str = "on_cast",
+    kind: str = "ability",
+    **cells: str,
+) -> tuple[EffectRow, EffectContext]:
+    base = {
+        "ability_id": "tester",
+        "effect_index": "0",
+        "trigger": trigger,
+        "effect_target": target,
+        "effect_type": effect_type,
+        "effect_id": effect_id,
+    }
+    base.update(cells)
+    effect = EffectRow(row(base), "tester", 0, trigger, target, effect_type)
+    ctx = EffectContext(
+        kind=kind,
+        owner_id="tester",
+        levels=None if kind == "item" else 1,
+        center_for={},
+        target_type="unit",
+    )
+    return effect, ctx
+
+
+class ResourceEffectTests(unittest.TestCase):
+    def test_resource_effects_health_drain(self) -> None:
+        report = Report()
+        effect, ctx = _effect("resource", "health_drain", value="80", damage_type="magical", amount="0.5")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors)
+        self.assertIn("AbilityEffect::DrainHealth", result[2])
+        self.assertIn("transfer_ratio: 0.5", result[2])
+        self.assertIn("DamageType::Magical", result[2])
+
+        report = Report()
+        effect, ctx = _effect("resource", "health_drain", value="80", damage_type="magical")
+        self.assertIn("transfer_ratio: 1.0", effect_to_rust(effect, ctx, report)[2])
+
+        report = Report()
+        effect, ctx = _effect("resource", "health_drain", value="80", damage_type="magical", scaling_type="intelligence", scaling_value="1")
+        self.assertIn("EffectScaling::CasterAttribute", effect_to_rust(effect, ctx, report)[2])
+
+        report = Report()
+        effect, ctx = _effect("resource", "health_drain", value="80")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertEqual(report.errors[0].field, "damage_type")
+
+    def test_resource_effects_mana_burn_and_drain(self) -> None:
+        report = Report()
+        effect, ctx = _effect("resource", "mana_burn", value="100", damage_type="pure", amount="0.8")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors)
+        self.assertIn("burn_ratio: 0.8", result[2])
+        self.assertIn("transfer_ratio: 0.0", result[2])
+
+        report = Report()
+        effect, ctx = _effect("resource", "mana_burn", value="100")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertEqual(report.errors[0].field, "damage_type")
+
+        report = Report()
+        effect, ctx = _effect("resource", "mana_drain", value="60", amount="0.5")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors)
+        self.assertIn("burn_ratio: 0.0", result[2])
+        self.assertIn("transfer_ratio: 0.5", result[2])
+
+    def test_resource_effects_reject_scaling_on_mana_drain(self) -> None:
+        report = Report()
+        effect, ctx = _effect("resource", "mana_drain", value="60", scaling_type="intelligence", scaling_value="1")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertEqual(report.errors[0].field, "scaling_type")
+
+    def test_resource_effects_hostile_kinds_reject_self_targets(self) -> None:
+        for effect_id, extra in (("mana_drain", {}), ("mana_burn", {"damage_type": "pure"}), ("health_drain", {"damage_type": "pure"})):
+            report = Report()
+            effect, ctx = _effect("resource", effect_id, target="caster", value="10", **extra)
+            self.assertIsNone(effect_to_rust(effect, ctx, report), effect_id)
+            self.assertEqual(report.errors[0].field, "effect_target")
+
+    def test_spend_requires_self_target(self) -> None:
+        for effect_id in ("spend_health", "spend_mana"):
+            report = Report()
+            effect, ctx = _effect("resource", effect_id, target="cast_target", value="50")
+            self.assertIsNone(effect_to_rust(effect, ctx, report))
+            self.assertEqual(report.errors[0].field, "effect_target")
+            self.assertIn("own resource", report.errors[0].message)
+
+            report = Report()
+            effect, ctx = _effect("resource", effect_id, target="owner", value="50")
+            result = effect_to_rust(effect, ctx, report)
+            self.assertFalse(report.errors)
+            self.assertIn("AbilityEffect::SpendResource", result[2])
+            self.assertIn("convert_to: None", result[2])
+
+    def test_resource_effects_conversion_needs_a_ratio(self) -> None:
+        report = Report()
+        effect, ctx = _effect("resource", "health_to_mana", target="owner", value="100")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertEqual(report.errors[0].field, "amount")
+
+        report = Report()
+        effect, ctx = _effect("resource", "health_to_mana", target="owner", value="100", amount="0.5")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors)
+        self.assertIn("resource: ResourceKind::Health", result[2])
+        self.assertIn("convert_to: Some((ResourceKind::Mana, 0.5))", result[2])
+
+        report = Report()
+        effect, ctx = _effect("resource", "mana_to_health", target="owner", value="100", amount="2")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertIn("resource: ResourceKind::Mana", result[2])
+        self.assertIn("convert_to: Some((ResourceKind::Health, 2.0))", result[2])
+
+    def test_resource_effects_unknown_id_and_nonpositive_amount(self) -> None:
+        report = Report()
+        effect, ctx = _effect("resource", "mana_everything", value="10")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertEqual(report.errors[0].field, "effect_id")
+
+        report = Report()
+        effect, ctx = _effect("resource", "mana_drain", value="0")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertEqual(report.errors[0].field, "value")
+
+
+class HealStatusTests(unittest.TestCase):
+    def test_heal_statuses_heal_over_time(self) -> None:
+        report = Report()
+        effect, ctx = _effect("apply_status", "heal_over_time", target="caster", value="25", duration="6")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors)
+        self.assertIn("StatusSpec::HealOverTime { hps: RankValue::fixed(25.0) }", result[2])
+
+        report = Report()
+        effect, ctx = _effect("apply_status", "heal_over_time", target="caster", duration="6")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertEqual(report.errors[0].field, "value")
+
+    def test_heal_statuses_heal_reduction_percent_range(self) -> None:
+        report = Report()
+        effect, ctx = _effect("apply_status", "heal_reduction", amount="40", duration="5")
+        self.assertIn("StatusSpec::HealReduction { percent: RankValue::fixed(40.0) }", effect_to_rust(effect, ctx, report)[2])
+        self.assertFalse(report.errors)
+
+        report = Report()
+        effect, ctx = _effect("apply_status", "heal_reduction", amount="140", duration="5")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertIn("0..100", report.errors[0].message)
+
+        report = Report()
+        effect, ctx = _effect("apply_status", "heal_reduction", duration="5")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertEqual(report.errors[0].field, "amount")
+
+    def test_heal_statuses_heal_block(self) -> None:
+        report = Report()
+        effect, ctx = _effect("apply_status", "heal_block", duration="3")
+        self.assertIn("StatusSpec::HealBlock", effect_to_rust(effect, ctx, report)[2])
+        self.assertFalse(report.errors)
+
+    def test_heal_statuses_mana_shield(self) -> None:
+        report = Report()
+        effect, ctx = _effect("apply_status", "mana_shield", target="caster", value="50", amount="2", duration="8")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors)
+        self.assertIn("StatusSpec::ManaShield { absorb_percent: RankValue::fixed(50.0), damage_per_mana: RankValue::fixed(2.0) }", result[2])
+
+        report = Report()
+        effect, ctx = _effect("apply_status", "mana_shield", target="caster", value="50", duration="8")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertEqual(report.errors[0].field, "amount")
+
+        report = Report()
+        effect, ctx = _effect("apply_status", "mana_shield", target="caster", value="150", amount="2", duration="8")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertEqual(report.errors[0].field, "value")
+
+    def test_heal_statuses_mana_shield_works_while_toggled(self) -> None:
+        report = Report()
+        effect, ctx = _effect("apply_status", "mana_shield", target="caster", trigger="while_toggled", value="50", amount="2")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors)
+        self.assertIn("AbilityTrigger::WhileToggled", result[0])
+        self.assertIn("duration: RankValue::fixed(0.0)", result[2])
+
+        report = Report()
+        effect, ctx = _effect("apply_status", "mana_shield", target="caster", trigger="while_toggled", value="50", amount="2", duration="5")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertEqual(report.errors[0].field, "duration")
+
+    def test_while_toggled_still_rejects_other_statuses(self) -> None:
+        report = Report()
+        effect, ctx = _effect("apply_status", "stun", target="caster", trigger="while_toggled", duration="2")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertEqual(report.errors[0].field, "effect_type")
+
+
+class ResourceStatModifierTests(unittest.TestCase):
+    def test_resource_stat_modifiers_passive_items(self) -> None:
+        for stat, variant in (
+            ("lifesteal", "Lifesteal"),
+            ("spell_lifesteal", "SpellLifesteal"),
+            ("heal_amp", "HealAmp"),
+            ("heal_received_amp", "HealReceivedAmp"),
+            ("mana_cost_amp", "ManaCostAmp"),
+        ):
+            report = Report()
+            effect, ctx = _effect("stat_modifier", stat, target="owner", trigger="passive", kind="item", value="0.2")
+            result = effect_to_rust(effect, ctx, report)
+            self.assertFalse(report.errors, stat)
+            self.assertIn(f"PassiveStat::{variant}", result[2])
+
+    def test_resource_stat_modifiers_ranges(self) -> None:
+        report = Report()
+        effect, ctx = _effect("stat_modifier", "lifesteal", target="owner", trigger="passive", kind="item", value="1.5")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertIn("-1..1", report.errors[0].message)
+
+        report = Report()
+        effect, ctx = _effect("stat_modifier", "mana_cost_amp", target="owner", trigger="passive", kind="item", value="-1.5")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+
+        report = Report()
+        effect, ctx = _effect("stat_modifier", "mana_cost_amp", target="owner", trigger="passive", kind="item", value="2")
+        self.assertIsNotNone(effect_to_rust(effect, ctx, report), "a cost increase above 100% is allowed")
+
+    def test_resource_stat_modifiers_timed(self) -> None:
+        report = Report()
+        effect, ctx = _effect("stat_modifier", "max_health", target="caster", value="300", duration="10")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors)
+        self.assertIn("StatusSpec::ResourceModifier", result[2])
+        self.assertIn('id: "tester_max_health"', result[2])
+        self.assertIn("stat: ResourceStat::MaxHealth", result[2])
+        self.assertIn("StatusKind::Buff", result[2])
+
+        report = Report()
+        effect, ctx = _effect("stat_modifier", "mana_cost_amp", target="caster", value="-0.3", duration="10")
+        self.assertIn("StatusKind::Buff", effect_to_rust(effect, ctx, report)[2], "cheaper costs are a buff")
+
+        report = Report()
+        effect, ctx = _effect("stat_modifier", "heal_received_amp", target="cast_target", value="-0.3", duration="10")
+        self.assertIn("StatusKind::Debuff", effect_to_rust(effect, ctx, report)[2])
+
+        report = Report()
+        effect, ctx = _effect("stat_modifier", "health_regen", target="caster", value="5")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertEqual(report.errors[0].field, "duration")
+
+    def test_resource_stat_modifiers_toggled_and_legacy_timed_stats_unchanged(self) -> None:
+        report = Report()
+        effect, ctx = _effect("stat_modifier", "mana_regen", target="caster", trigger="while_toggled", value="3")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors)
+        self.assertIn("stat: ResourceStat::ManaRegen", result[2])
+
+        report = Report()
+        effect, ctx = _effect("stat_modifier", "armor", target="caster", value="5", duration="4")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertIn("StatusSpec::Modifier", result[2])
+
+
 if __name__ == "__main__":
     unittest.main()
