@@ -1564,4 +1564,302 @@ mod tests {
             pos(&app, enemy)
         );
     }
+
+    fn ends(seen: &[TriggerContext]) -> Vec<&TriggerContext> {
+        seen.iter()
+            .filter(|c| c.trigger == AbilityTrigger::OnMovementEnd)
+            .collect()
+    }
+
+    fn start_chase(app: &mut App, unit: Entity, target: Entity) {
+        let mut chase = ForcedMovement::new(
+            MotionPath::Toward {
+                anchor: target,
+                speed: 900.0,
+                stop_distance: 60.0,
+                max_travel: f32::INFINITY,
+                travelled: 0.0,
+                last_anchor: pos(app, target),
+            },
+            3.0,
+        );
+        chase.priority = MotionPriority::Own;
+        chase.source = Some(own_source(unit));
+        app.world_mut().entity_mut(unit).insert(chase);
+    }
+
+    #[test]
+    fn charger_death_mid_charge_ends_silently() {
+        let mut app = sim_app();
+        let charger = spawn_unit(&mut app, Team::Radiant, Vec3::ZERO, 30.0);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(1500.0, 0.0, 0.0), 30.0);
+        step(&mut app);
+        start_chase(&mut app, charger, target);
+        run(&mut app, 4);
+        assert!(app.world().get::<ForcedMovement>(charger).is_some());
+        app.world_mut().get_mut::<Health>(charger).unwrap().current = 0.0;
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            step(&mut app);
+            collect(&app, &mut seen);
+        }
+        assert!(app.world().get::<ForcedMovement>(charger).is_none());
+        assert!(ends(&seen).is_empty(), "silent end: {seen:?}");
+        let stopped = pos(&app, charger);
+        run(&mut app, 5);
+        assert_eq!(pos(&app, charger), stopped, "a dead charger stays put");
+    }
+
+    #[test]
+    fn charge_target_dying_mid_charge_ends_at_its_last_position_without_a_reached_unit() {
+        let mut app = sim_app();
+        let charger = spawn_unit(&mut app, Team::Radiant, Vec3::ZERO, 30.0);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(1200.0, 0.0, 0.0), 30.0);
+        step(&mut app);
+        start_chase(&mut app, charger, target);
+        run(&mut app, 4);
+        app.world_mut().get_mut::<Health>(target).unwrap().current = 0.0;
+        let mut seen = Vec::new();
+        for _ in 0..60 {
+            step(&mut app);
+            collect(&app, &mut seen);
+        }
+        assert!(app.world().get::<ForcedMovement>(charger).is_none());
+        let ends = ends(&seen);
+        assert_eq!(ends.len(), 1, "one end trigger: {seen:?}");
+        assert_eq!(ends[0].trigger_unit, None, "nothing was reached");
+        let x = pos(&app, charger).x;
+        assert!((x - (1200.0 - 60.0)).abs() < 2.0, "ended at the spot: {x}");
+        assert!(
+            seen.iter()
+                .all(|c| c.trigger != AbilityTrigger::OnUnitContact),
+            "a dead unit is not contacted"
+        );
+    }
+
+    #[test]
+    fn dragged_units_are_released_when_the_dasher_dies_or_vanishes() {
+        for despawn in [false, true] {
+            let mut app = sim_app();
+            let anchor = spawn_unit(&mut app, Team::Radiant, Vec3::ZERO, 30.0);
+            let victim = spawn_unit(&mut app, Team::Dire, Vec3::new(50.0, 0.0, 0.0), 30.0);
+            step(&mut app);
+            start_own_motion(&mut app, anchor, Vec3::new(1500.0, 0.0, 0.0), 2.0);
+            push(
+                &mut app,
+                victim,
+                anchor,
+                DisplacementKind::Drag,
+                Vec3::ZERO,
+                None,
+                0.0,
+            );
+            run(&mut app, 4);
+            assert!(app.world().get::<ForcedMovement>(victim).is_some());
+            if despawn {
+                app.world_mut().despawn(anchor);
+            } else {
+                app.world_mut().get_mut::<Health>(anchor).unwrap().current = 0.0;
+            }
+            let mut seen = Vec::new();
+            for _ in 0..3 {
+                step(&mut app);
+                collect(&app, &mut seen);
+            }
+            assert!(
+                app.world().get::<ForcedMovement>(victim).is_none(),
+                "released (despawn: {despawn})"
+            );
+            assert!(ends(&seen).is_empty(), "silent end (despawn: {despawn})");
+            let stopped = pos(&app, victim);
+            run(&mut app, 5);
+            assert_eq!(pos(&app, victim), stopped);
+        }
+    }
+
+    #[test]
+    fn dragged_victim_dying_mid_drag_does_not_stop_the_dash() {
+        let mut app = sim_app();
+        let anchor = spawn_unit(&mut app, Team::Radiant, Vec3::ZERO, 30.0);
+        let victim = spawn_unit(&mut app, Team::Dire, Vec3::new(50.0, 0.0, 0.0), 30.0);
+        step(&mut app);
+        start_own_motion(&mut app, anchor, Vec3::new(900.0, 0.0, 0.0), 1.0);
+        push(
+            &mut app,
+            victim,
+            anchor,
+            DisplacementKind::Drag,
+            Vec3::ZERO,
+            None,
+            0.0,
+        );
+        run(&mut app, 4);
+        app.world_mut().get_mut::<Health>(victim).unwrap().current = 0.0;
+        run(&mut app, 2);
+        assert!(app.world().get::<ForcedMovement>(victim).is_none());
+        assert!(app.world().get::<ForcedMovement>(anchor).is_some());
+    }
+
+    #[test]
+    fn dash_into_a_tree_stops_at_it_and_reports_the_end_once() {
+        let mut app = sim_app();
+        app.world_mut()
+            .spawn((Transform::from_xyz(300.0, 0.0, 0.0), Obstacle::circle(50.0)));
+        let dasher = spawn_unit(&mut app, Team::Radiant, Vec3::ZERO, 30.0);
+        step(&mut app);
+        start_own_motion(&mut app, dasher, Vec3::new(600.0, 0.0, 0.0), 0.5);
+        let mut seen = Vec::new();
+        for _ in 0..30 {
+            step(&mut app);
+            collect(&app, &mut seen);
+        }
+        let x = pos(&app, dasher).x;
+        assert!(x > 150.0 && x <= 300.0 - 50.0 - 30.0 + 1.0, "stopped: {x}");
+        assert!(app.world().get::<ForcedMovement>(dasher).is_none());
+        let ends = ends(&seen);
+        assert_eq!(ends.len(), 1);
+        assert!(ends[0].point.distance(pos(&app, dasher)) < 1.0);
+    }
+
+    #[test]
+    fn rooted_or_stunned_charger_ends_the_charge_and_reports_it() {
+        for stun in [false, true] {
+            let mut app = sim_app();
+            let charger = spawn_unit(&mut app, Team::Radiant, Vec3::ZERO, 30.0);
+            let target = spawn_unit(&mut app, Team::Dire, Vec3::new(1500.0, 0.0, 0.0), 30.0);
+            step(&mut app);
+            start_chase(&mut app, charger, target);
+            run(&mut app, 3);
+            let effect = if stun {
+                crate::status::StatusEffect::stunned(3.0)
+            } else {
+                crate::status::StatusEffect::rooted(3.0)
+            };
+            app.world_mut()
+                .get_mut::<StatusEffects>(charger)
+                .unwrap()
+                .effects
+                .push(effect);
+            let mut seen = Vec::new();
+            for _ in 0..3 {
+                step(&mut app);
+                collect(&app, &mut seen);
+            }
+            assert!(app.world().get::<ForcedMovement>(charger).is_none());
+            let ends = ends(&seen);
+            assert_eq!(ends.len(), 1, "stun: {stun}");
+            assert_eq!(ends[0].trigger_unit, None);
+        }
+    }
+
+    #[test]
+    fn debuff_immunity_blocks_only_hostile_motion() {
+        let mut app = sim_app();
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(-300.0, 0.0, 0.0), 30.0);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(300.0, 0.0, 0.0), 30.0);
+        let immune = spawn_unit(&mut app, Team::Radiant, Vec3::ZERO, 30.0);
+        app.world_mut()
+            .get_mut::<StatusEffects>(immune)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::debuff_immunity(10.0));
+        step(&mut app);
+        // A hostile pull and cyclone are rejected.
+        push(
+            &mut app,
+            immune,
+            enemy,
+            DisplacementKind::Pull,
+            Vec3::ZERO,
+            None,
+            0.3,
+        );
+        cyclone(&mut app, immune, enemy, 2.0);
+        step(&mut app);
+        assert!(app.world().get::<ForcedMovement>(immune).is_none());
+        assert!(!statuses(&app, immune).is_untargetable());
+        // An ally's pull and cyclone go through.
+        push(
+            &mut app,
+            immune,
+            ally,
+            DisplacementKind::Pull,
+            Vec3::ZERO,
+            None,
+            0.3,
+        );
+        step(&mut app);
+        assert!(app.world().get::<ForcedMovement>(immune).is_some());
+        run(&mut app, 12);
+        cyclone(&mut app, immune, ally, 2.0);
+        step(&mut app);
+        step(&mut app);
+        assert!(statuses(&app, immune).is_untargetable(), "ally cyclone");
+    }
+
+    #[test]
+    fn cyclone_replaces_an_own_motion_silently_and_rejects_dashes_while_held() {
+        let mut app = sim_app();
+        let caster = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, -600.0), 30.0);
+        let dasher = spawn_unit(&mut app, Team::Radiant, Vec3::ZERO, 30.0);
+        step(&mut app);
+        start_own_motion(&mut app, dasher, Vec3::new(900.0, 0.0, 0.0), 1.0);
+        run(&mut app, 2);
+        cyclone(&mut app, dasher, caster, 1.0);
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            step(&mut app);
+            collect(&app, &mut seen);
+        }
+        let held = app.world().get::<ForcedMovement>(dasher).unwrap();
+        assert_eq!(held.priority, MotionPriority::Suspend);
+        assert!(ends(&seen).is_empty(), "silent replacement");
+        // Its own dash cannot start while held (it is stunned and Suspend outranks it).
+        let before = pos(&app, dasher);
+        app.world_mut().write_message(DisplacementEvent {
+            target: dasher,
+            kind: DisplacementKind::Dash,
+            caster: dasher,
+            origin: before,
+            point: before,
+            aim: before + Vec3::new(500.0, 0.0, 0.0),
+            cast_target: None,
+            distance: Some(500.0),
+            duration: 0.4,
+            speed: None,
+            source: Some(own_source(dasher)),
+        });
+        run(&mut app, 3);
+        assert_eq!(
+            app.world().get::<ForcedMovement>(dasher).unwrap().priority,
+            MotionPriority::Suspend
+        );
+        assert!((pos(&app, dasher).x - before.x).abs() < 1.0);
+    }
+
+    #[test]
+    fn hook_pull_ends_when_the_caster_dies_mid_pull() {
+        let mut app = sim_app();
+        let caster = spawn_unit(&mut app, Team::Radiant, Vec3::ZERO, 30.0);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(900.0, 0.0, 0.0), 30.0);
+        step(&mut app);
+        push(
+            &mut app,
+            enemy,
+            caster,
+            DisplacementKind::Pull,
+            Vec3::ZERO,
+            None,
+            0.6,
+        );
+        run(&mut app, 4);
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 0.0;
+        run(&mut app, 60);
+        assert!(app.world().get::<ForcedMovement>(enemy).is_none());
+        let x = pos(&app, enemy).x;
+        assert!(
+            x >= 60.0 - 1.0 && x < 900.0,
+            "pulled toward the last known spot, then released: {x}"
+        );
+    }
 }
