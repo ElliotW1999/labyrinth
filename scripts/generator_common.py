@@ -284,7 +284,15 @@ TIMED_STATS = {
     "attack_damage_pct": "attack_damage_pct",
     # Cleave ratio (0..1) added to the target's cleave; only melee attackers cleave.
     "cleave": "cleave",
+    # Cone cleave shape: starting half-width, half-width at the far end, and reach. A non-zero
+    # cleave_distance turns the circular cleave into a cone (basic_attack::secondary targets).
+    "cleave_radius": "cleave_radius",
+    "cleave_end_radius": "cleave_end_radius",
+    "cleave_distance": "cleave_distance",
 }
+
+# Timed stats that shape the cleave (world units, additive like every other stat).
+CLEAVE_SHAPE_STATS = ("cleave_radius", "cleave_end_radius", "cleave_distance")
 
 # Timed resource modifiers map onto `StatusSpec::ResourceModifier` (summed when read).
 RESOURCE_STATS = {
@@ -1744,6 +1752,9 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
                 return None
             if effect_id == "cleave" and any(not 0 <= v <= 1 for v in value):
                 report.error(row.file, row.line, "value", row.get("value"), "a timed cleave is a fraction of the attack damage (0.25 = 25%) and must be within 0..1")
+                return None
+            if effect_id in CLEAVE_SHAPE_STATS and any(v <= 0 for v in value):
+                report.error(row.file, row.line, "value", row.get("value"), f"{effect_id} is a distance in world units and must be above 0")
                 return None
             if effect_id == "attack_damage_pct" and any(not 0 <= v <= 1000 for v in value):
                 report.error(row.file, row.line, "value", row.get("value"), "attack_damage_pct is a percentage of the target's base attack damage and must be within 0..1000")

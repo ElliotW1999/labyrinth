@@ -408,6 +408,8 @@ fn hero_combat(
         damage_reflect: 0.0,
         cleave_radius: 0.0,
         cleave_damage_ratio: 0.0,
+        cleave_distance: 0.0,
+        cleave_end_radius: 0.0,
         evasion: 0.0,
         accuracy: 0.0,
         splash_radius: 0.0,

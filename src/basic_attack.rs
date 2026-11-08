@@ -608,14 +608,37 @@ pub fn resolve_basic_attack_impacts(
         if stats.is_melee() && stats.cleave_damage_ratio > 0.0 {
             let radius = effective_radius(stats.cleave_radius, scale::ATTACK_CLEAVE_RADIUS);
             let cleave_amount = amount * stats.cleave_damage_ratio;
-            for entity in secondary_attack_targets(
-                attacker_tf.translation,
-                radius,
-                impact.target,
-                impact.attacker_team,
-                &cleave_candidates,
-                &statuses_of,
-            ) {
+            let hits = if stats.cleave_distance > 0.0 {
+                // Cone: from the attacker towards the struck unit (or where it faces).
+                let aim = cleave_candidates
+                    .get(impact.target)
+                    .map(|(_, tf, ..)| tf.translation - attacker_tf.translation)
+                    .unwrap_or_else(|_| attacker_tf.forward().as_vec3());
+                let cone = CleaveCone {
+                    origin: attacker_tf.translation,
+                    direction: aim,
+                    start_radius: radius,
+                    end_radius: effective_radius(stats.cleave_end_radius, radius),
+                    distance: stats.cleave_distance,
+                };
+                cone_attack_targets(
+                    cone,
+                    impact.target,
+                    impact.attacker_team,
+                    &cleave_candidates,
+                    &statuses_of,
+                )
+            } else {
+                secondary_attack_targets(
+                    attacker_tf.translation,
+                    radius,
+                    impact.target,
+                    impact.attacker_team,
+                    &cleave_candidates,
+                    &statuses_of,
+                )
+            };
+            for entity in hits {
                 damage.write(DamageEvent::cleave(impact.attacker, entity, cleave_amount));
             }
         }
@@ -662,6 +685,62 @@ fn secondary_attack_targets(
                 && !is_untargetable(statuses_of, *entity)
                 && flat_distance(center, tf.translation) <= radius
                 && area_contains(center, radius, tf.translation, bounds_of(*bound))
+        })
+        .map(|(entity, ..)| entity)
+        .collect();
+    found.sort();
+    found
+}
+
+/// The cone of a cone cleave: a trapezoid from `origin` along `direction` (flat), `distance`
+/// long, whose half-width grows linearly from `start_radius` to `end_radius`.
+#[derive(Debug, Clone, Copy)]
+struct CleaveCone {
+    origin: Vec3,
+    direction: Vec3,
+    start_radius: f32,
+    end_radius: f32,
+    distance: f32,
+}
+
+impl CleaveCone {
+    /// Whether a unit with the given bound radius overlaps the cone: its centre projects onto
+    /// the axis within `0..=distance` and lies within the half-width there, each widened by
+    /// the unit's bound. A zero direction contains nothing.
+    fn contains(&self, point: Vec3, bound: f32) -> bool {
+        let axis = bevy::math::Vec2::new(self.direction.x, self.direction.z);
+        let Some(axis) = axis.try_normalize() else {
+            return false;
+        };
+        let rel = bevy::math::Vec2::new(point.x - self.origin.x, point.z - self.origin.z);
+        let along = rel.dot(axis);
+        let lateral = rel.perp_dot(axis).abs();
+        if along < -bound || along > self.distance + bound {
+            return false;
+        }
+        let t = (along / self.distance).clamp(0.0, 1.0);
+        let half_width = self.start_radius + (self.end_radius - self.start_radius) * t;
+        lateral <= half_width + bound
+    }
+}
+
+/// Living, targetable enemies of `team` inside the cone, excluding `primary`, sorted by
+/// [`Entity`] so message order is deterministic.
+fn cone_attack_targets(
+    cone: CleaveCone,
+    primary: Entity,
+    team: Team,
+    candidates: &Query<(Entity, &Transform, &Team, &Health, Option<&BoundRadius>)>,
+    statuses_of: &Query<&StatusEffects>,
+) -> Vec<Entity> {
+    let mut found: Vec<Entity> = candidates
+        .iter()
+        .filter(|(entity, tf, unit_team, hp, bound)| {
+            *entity != primary
+                && **unit_team == team.enemy()
+                && hp.is_alive()
+                && !is_untargetable(statuses_of, *entity)
+                && cone.contains(tf.translation, bounds_of(*bound))
         })
         .map(|(entity, ..)| entity)
         .collect();
@@ -1337,6 +1416,67 @@ mod tests {
         run_frames(&mut world, &mut schedule, 40);
         assert!(hp(&world, target) < 1000.0);
         assert_eq!(hp(&world, beside), 1000.0);
+    }
+
+    #[test]
+    fn cleave_cone_is_a_trapezoid_along_the_attack_direction() {
+        let cone = CleaveCone {
+            origin: Vec3::ZERO,
+            direction: Vec3::X * 100.0,
+            start_radius: 150.0,
+            end_radius: 360.0,
+            distance: 650.0,
+        };
+        // Along the axis, to the end of the reach.
+        assert!(cone.contains(Vec3::new(600.0, 0.0, 0.0), 0.0));
+        assert!(!cone.contains(Vec3::new(651.0, 0.0, 0.0), 0.0));
+        assert!(
+            cone.contains(Vec3::new(651.0, 0.0, 0.0), 5.0),
+            "bounds widen it"
+        );
+        // Behind the attacker is outside.
+        assert!(!cone.contains(Vec3::new(-50.0, 0.0, 0.0), 0.0));
+        // Half-width: 150 at the attacker, 360 at 650, 255 halfway.
+        assert!(cone.contains(Vec3::new(0.0, 0.0, 149.0), 0.0));
+        assert!(!cone.contains(Vec3::new(0.0, 0.0, 151.0), 0.0));
+        assert!(cone.contains(Vec3::new(325.0, 0.0, -254.0), 0.0));
+        assert!(!cone.contains(Vec3::new(325.0, 0.0, 256.0), 0.0));
+        assert!(cone.contains(Vec3::new(650.0, 0.0, 359.0), 0.0));
+        assert!(!cone.contains(Vec3::new(650.0, 0.0, 361.0), 0.0));
+        // No direction, no cone.
+        let flat = CleaveCone {
+            direction: Vec3::ZERO,
+            ..cone
+        };
+        assert!(!flat.contains(Vec3::new(100.0, 0.0, 0.0), 0.0));
+    }
+
+    #[test]
+    fn cone_cleave_hits_deep_ahead_but_not_beside_or_behind() {
+        let (mut world, mut schedule) = world_with_pipeline();
+        // The target stands 100 along +X; the cone is 150 wide at the attacker and 360 at 650.
+        let (attacker, target) = melee_duel(&mut world);
+        with_ratios(&mut world, attacker, 0.5, 0.0);
+        {
+            let mut stats = world.get_mut::<CombatStats>(attacker).unwrap();
+            stats.cleave_radius = 150.0;
+            stats.cleave_end_radius = 360.0;
+            stats.cleave_distance = 650.0;
+        }
+        // Past the default 300 circle, but inside the cone.
+        let deep = bystander(&mut world, Vec3::new(600.0, 0.0, 200.0));
+        // Inside the old circle, but behind the attacker.
+        let behind = bystander(&mut world, Vec3::new(-100.0, 0.0, 0.0));
+        // Beside the attacker, wider than the starting half-width.
+        let beside = bystander(&mut world, Vec3::new(10.0, 0.0, 250.0));
+        // Beyond the reach.
+        let beyond = bystander(&mut world, Vec3::new(800.0, 0.0, 0.0));
+        run_frames(&mut world, &mut schedule, 12);
+        assert!(hp(&world, target) < 1000.0);
+        assert!((hp(&world, deep) - secondary_hit()).abs() < 1e-3);
+        assert_eq!(hp(&world, behind), 1000.0);
+        assert_eq!(hp(&world, beside), 1000.0);
+        assert_eq!(hp(&world, beyond), 1000.0);
     }
 
     #[test]

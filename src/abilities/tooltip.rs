@@ -459,6 +459,9 @@ fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
             attack_range,
             attack_damage_pct,
             cleave,
+            cleave_radius,
+            cleave_end_radius,
+            cleave_distance,
             ..
         } => {
             let mut rows = Vec::new();
@@ -479,6 +482,15 @@ fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
             }
             if cleave != RankValue::ZERO {
                 rows.push(row("Cleave", cleave));
+            }
+            if cleave_radius != RankValue::ZERO {
+                rows.push(row("Cleave start radius", cleave_radius));
+            }
+            if cleave_end_radius != RankValue::ZERO {
+                rows.push(row("Cleave end radius", cleave_end_radius));
+            }
+            if cleave_distance != RankValue::ZERO {
+                rows.push(row("Cleave distance", cleave_distance));
             }
             if attack_range != RankValue::ZERO {
                 rows.push(row("Attack range", attack_range));

@@ -152,6 +152,12 @@ pub struct CombatStats {
     /// Enemies within this radius take cleave_damage_ratio × attack damage.
     pub cleave_radius: f32,
     pub cleave_damage_ratio: f32,
+    /// Cone cleave: reach (along attacker to target) of the cone. Zero keeps the circular
+    /// cleave of `cleave_radius`. Otherwise `cleave_radius` is the cone's half-width at the
+    /// attacker and `cleave_end_radius` its half-width at `cleave_distance`.
+    pub cleave_distance: f32,
+    /// Cone cleave: half-width at `cleave_distance`; zero keeps the starting half-width.
+    pub cleave_end_radius: f32,
     /// Chance (0..=1) that a basic attack against this unit misses. Stacks with statuses.
     pub evasion: f32,
     /// Chance (0..=1) that an attack which would miss lands anyway. 1.0 is true strike.
@@ -218,6 +224,8 @@ impl CombatStats {
             damage_reflect: 0.0,
             cleave_radius: 0.0,
             cleave_damage_ratio: 0.0,
+            cleave_distance: 0.0,
+            cleave_end_radius: 0.0,
             evasion: 0.0,
             accuracy: 0.0,
             splash_radius: 0.0,

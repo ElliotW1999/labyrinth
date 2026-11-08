@@ -1572,6 +1572,16 @@ class TimedStatModifierTests(unittest.TestCase):
                 any("must be within 0..1" in e.message for e in report.errors), bad
             )
 
+    def test_cleave_shape_stats_are_positive_distances(self) -> None:
+        for stat, value in (("cleave_radius", "150"), ("cleave_end_radius", "360"), ("cleave_distance", "650")):
+            abilities, report = self._stat(stat, value)
+            self.assertEqual(report.errors, [], stat)
+            self.assertIn(f"{stat}: RankValue::fixed({value}.0)", str(abilities[0].effects))
+            self.assertIn(f'id: "tester_{stat}"', str(abilities[0].effects))
+            for bad in ("0", "-5"):
+                _, report = self._stat(stat, bad)
+                self.assertTrue(any("must be above 0" in e.message for e in report.errors), (stat, bad))
+
 
 class HeroGeneratorTests(unittest.TestCase):
     HEADER = (

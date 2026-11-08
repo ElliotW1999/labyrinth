@@ -106,6 +106,12 @@ pub struct StatusEffect {
     pub attack_range: f32,
     /// Added to `CombatStats::cleave_damage_ratio` while active (melee attackers only cleave).
     pub cleave: f32,
+    /// Added to `CombatStats::cleave_radius` (the cleave's starting half-width) while active.
+    pub cleave_radius: f32,
+    /// Added to `CombatStats::cleave_end_radius` while active.
+    pub cleave_end_radius: f32,
+    /// Added to `CombatStats::cleave_distance` while active (non-zero makes the cleave a cone).
+    pub cleave_distance: f32,
     pub heal_per_sec: f32,
     /// Timed resource modifier, summed when read (see [`crate::vitals::resource_stat`]).
     pub resource: Option<(crate::vitals::ResourceStat, f32)>,
@@ -173,6 +179,9 @@ impl StatusEffect {
             accuracy: 0.0,
             attack_range: 0.0,
             cleave: 0.0,
+            cleave_radius: 0.0,
+            cleave_end_radius: 0.0,
+            cleave_distance: 0.0,
             heal_per_sec: 0.0,
             resource: None,
             heal_reduction: 0.0,
@@ -860,6 +869,9 @@ pub(crate) fn subtract_status_stat_delta(
     stats.attack_range -= effect.attack_range;
     stats.attack_range_bonus -= effect.attack_range;
     stats.cleave_damage_ratio -= effect.cleave;
+    stats.cleave_radius -= effect.cleave_radius;
+    stats.cleave_end_radius -= effect.cleave_end_radius;
+    stats.cleave_distance -= effect.cleave_distance;
     stats.recompute_attack_speed(agility);
 }
 
@@ -873,6 +885,9 @@ pub(crate) fn add_status_stat_delta(effect: &StatusEffect, stats: &mut CombatSta
     stats.attack_range += effect.attack_range;
     stats.attack_range_bonus += effect.attack_range;
     stats.cleave_damage_ratio += effect.cleave;
+    stats.cleave_radius += effect.cleave_radius;
+    stats.cleave_end_radius += effect.cleave_end_radius;
+    stats.cleave_distance += effect.cleave_distance;
     stats.recompute_attack_speed(agility);
 }
 
@@ -1256,22 +1271,45 @@ mod tests {
             &mut stats,
             StatusEffect {
                 cleave: 0.4,
+                cleave_radius: 150.0,
+                cleave_end_radius: 360.0,
+                cleave_distance: 650.0,
                 ..StatusEffect::buff("empower_cleave", 1.0)
             },
             0.0,
         );
         assert!((stats.cleave_damage_ratio - 0.5).abs() < 1e-6);
+        assert_eq!(
+            (
+                stats.cleave_radius,
+                stats.cleave_end_radius,
+                stats.cleave_distance
+            ),
+            (150.0, 360.0, 650.0)
+        );
         // Refreshing replaces the old delta instead of stacking it.
         apply_status(
             &mut statuses,
             &mut stats,
             StatusEffect {
                 cleave: 0.4,
+                cleave_radius: 150.0,
+                cleave_end_radius: 360.0,
+                cleave_distance: 650.0,
                 ..StatusEffect::buff("empower_cleave", 1.0)
             },
             0.0,
         );
         assert!((stats.cleave_damage_ratio - 0.5).abs() < 1e-6);
+        assert_eq!(
+            (
+                stats.cleave_radius,
+                stats.cleave_end_radius,
+                stats.cleave_distance
+            ),
+            (150.0, 360.0, 650.0),
+            "a refresh replaces the old delta"
+        );
         let unit = world.spawn((statuses, stats, Health::new(100.0))).id();
         world
             .resource_mut::<Time>()
@@ -1279,6 +1317,14 @@ mod tests {
         world.run_system_once(tick_status_effects).unwrap();
         let stats = world.get::<CombatStats>(unit).unwrap();
         assert!((stats.cleave_damage_ratio - 0.1).abs() < 1e-6);
+        assert_eq!(
+            (
+                stats.cleave_radius,
+                stats.cleave_end_radius,
+                stats.cleave_distance
+            ),
+            (0.0, 0.0, 0.0)
+        );
     }
 
     #[test]

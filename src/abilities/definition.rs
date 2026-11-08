@@ -461,6 +461,12 @@ pub enum StatusSpec {
         /// Cleave ratio (0..=1) added to `CombatStats::cleave_damage_ratio`; only melee
         /// attackers cleave.
         cleave: RankValue,
+        /// Added to `CombatStats::cleave_radius`: the cleave's starting half-width.
+        cleave_radius: RankValue,
+        /// Added to `CombatStats::cleave_end_radius`: half-width at `cleave_distance`.
+        cleave_end_radius: RankValue,
+        /// Added to `CombatStats::cleave_distance`: a non-zero value makes the cleave a cone.
+        cleave_distance: RankValue,
     },
 }
 
@@ -503,6 +509,9 @@ impl StatusSpec {
             attack_range: RankValue::ZERO,
             attack_damage_pct: RankValue::ZERO,
             cleave: RankValue::ZERO,
+            cleave_radius: RankValue::ZERO,
+            cleave_end_radius: RankValue::ZERO,
+            cleave_distance: RankValue::ZERO,
         }
     }
 
@@ -635,6 +644,9 @@ impl StatusSpec {
                 attack_range,
                 attack_damage_pct,
                 cleave,
+                cleave_radius,
+                cleave_end_radius,
+                cleave_distance,
             } => {
                 let base = match kind {
                     StatusKind::Buff => StatusEffect::buff(id, duration),
@@ -650,6 +662,9 @@ impl StatusSpec {
                     attack_speed_mult: attack_speed_mult.at(rank),
                     attack_range: attack_range.at(rank),
                     cleave: cleave.at(rank),
+                    cleave_radius: cleave_radius.at(rank),
+                    cleave_end_radius: cleave_end_radius.at(rank),
+                    cleave_distance: cleave_distance.at(rank),
                     ..base
                 }
             }
