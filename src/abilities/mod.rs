@@ -1370,6 +1370,7 @@ mod tests {
             effect: AbilityEffect::Proc {
                 chance: RankValue::fixed(chance),
                 then: AbilityTrigger::Custom(then),
+                pseudo: false,
             },
         }
     }
@@ -1496,6 +1497,7 @@ mod tests {
             effect: AbilityEffect::Proc {
                 chance: RankValue::fixed(1.0),
                 then: AbilityTrigger::Custom(name),
+                pseudo: false,
             },
         };
         let _defs = install_test_item_definitions([item_with_effects(vec![
@@ -4021,5 +4023,112 @@ mod tests {
         let fired = run_collecting(&mut app, 3);
         assert!(health(&app, unit) <= 0.0);
         assert!(of_trigger(&fired, below(50)).is_empty());
+    }
+
+    // --- Gates: pseudo-random procs and accumulators ---
+
+    fn accumulate_entry(threshold: f32, then: &'static str) -> AbilityEffectEntry {
+        entry(
+            AbilityTrigger::OnAttackHit,
+            EffectTarget::Caster,
+            AbilityEffect::Accumulate {
+                threshold: RankValue::fixed(threshold),
+                then: AbilityTrigger::Custom(then),
+            },
+        )
+    }
+
+    #[test]
+    fn accumulate_on_count_trigger_equals_counter() {
+        // OnAttack carries the default amount of 1 per occurrence, so accumulating to 3 is
+        // "every third attack".
+        let heals = |gate: AbilityEffect| {
+            let mut app = test_app();
+            let _defs = install_test_item_definitions([item_with_effects(vec![
+                entry(AbilityTrigger::OnAttack, EffectTarget::Caster, gate),
+                heal_entry(AbilityTrigger::Custom("on_third"), 50.0),
+            ])]);
+            let (caster, target) = attack_duel(&mut app);
+            let mut totals = Vec::new();
+            for _ in 0..7 {
+                write_attack_release(&mut app, caster, target);
+                step(&mut app);
+                totals.push(health(&app, caster));
+            }
+            totals
+        };
+        let third = AbilityTrigger::Custom("on_third");
+        let accumulated = heals(AbilityEffect::Accumulate {
+            threshold: RankValue::fixed(3.0),
+            then: third,
+        });
+        assert_eq!(
+            accumulated,
+            heals(AbilityEffect::Counter {
+                every: 3,
+                then: third
+            })
+        );
+        assert_eq!(accumulated[2] - accumulated[1], 50.0, "fires on the third");
+    }
+
+    #[test]
+    fn accumulate_sums_attack_damage() {
+        // write_attack_hit lands 10 damage: a threshold of 25 fires on the third hit.
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            accumulate_entry(25.0, "on_full"),
+            heal_entry(AbilityTrigger::Custom("on_full"), 50.0),
+        ])]);
+        let (caster, target) = attack_duel(&mut app);
+        land_hits(&mut app, caster, target, 2);
+        assert_eq!(health(&app, caster), 100.0);
+        land_hits(&mut app, caster, target, 1);
+        assert_eq!(health(&app, caster), 150.0);
+    }
+
+    #[test]
+    fn gates_respect_max_depth() {
+        // Every gate kind re-fires its own custom trigger. Depth 1 and 2 run their entries;
+        // the gate at depth 2 stops the chain, whichever kind it is.
+        let kinds: [(&str, AbilityEffect); 3] = [
+            (
+                "pseudo",
+                AbilityEffect::Proc {
+                    chance: RankValue::fixed(1.0),
+                    then: AbilityTrigger::Custom("on_loop"),
+                    pseudo: true,
+                },
+            ),
+            (
+                "accumulate",
+                AbilityEffect::Accumulate {
+                    threshold: RankValue::fixed(1.0),
+                    then: AbilityTrigger::Custom("on_loop"),
+                },
+            ),
+            (
+                "counter",
+                AbilityEffect::Counter {
+                    every: 1,
+                    then: AbilityTrigger::Custom("on_loop"),
+                },
+            ),
+        ];
+        for (name, gate) in kinds {
+            let mut app = test_app();
+            let _defs = install_test_item_definitions([item_with_effects(vec![
+                entry(AbilityTrigger::OnAttackHit, EffectTarget::Caster, gate),
+                entry(
+                    AbilityTrigger::Custom("on_loop"),
+                    EffectTarget::Caster,
+                    gate,
+                ),
+                heal_entry(AbilityTrigger::Custom("on_loop"), 10.0),
+            ])]);
+            let (caster, target) = attack_duel(&mut app);
+            land_hits(&mut app, caster, target, 1);
+            assert_eq!(health(&app, caster), 100.0 + 2.0 * 10.0, "{name}");
+        }
     }
 }

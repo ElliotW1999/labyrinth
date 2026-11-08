@@ -667,9 +667,14 @@ pub enum AbilityEffect {
     /// Gate: with probability `chance` (0..=1, one [`CombatRng`](crate::combat::CombatRng)
     /// draw per execution) re-fires this trigger's context under the custom trigger `then`.
     /// Entries tagged `then` hold the consequences, so one roll covers all of them.
+    ///
+    /// With `pseudo` the chance is pseudo-random (PRD): each failure raises the next roll
+    /// and a success resets it, so the long-run rate is still `chance` but streaks are
+    /// short. The failure count lives in `TriggerCounters`, per (owner, source, `then`).
     Proc {
         chance: RankValue,
         then: AbilityTrigger,
+        pseudo: bool,
     },
     /// Gate: every `every`th execution (counted per source and `then`) re-fires this
     /// trigger's context under the trigger `then`.
@@ -677,12 +682,20 @@ pub enum AbilityEffect {
         every: u32,
         then: AbilityTrigger,
     },
+    /// Gate: sums `TriggerContext::amount` over executions (damage taken, distance walked, or
+    /// 1 per occurrence) and, whenever the sum reaches `threshold`, re-fires this trigger's
+    /// context under `then` once and keeps the remainder. The sum is counted per source and
+    /// `then`.
+    Accumulate {
+        threshold: RankValue,
+        then: AbilityTrigger,
+    },
     /// Each resolved enemy gets an extra basic attack dealing `damage_ratio` (1.0 = 100%) of
     /// the caster's attack damage, ignoring cooldown, swing and range (instant attack, double
     /// attack, multi-target attack). The caster itself is never a target, nor the trigger unit
     /// when `exclude_trigger_unit` is set; at most `max_targets` are attacked, nearest first
     /// (0 = all). Does nothing under a trigger caused by an extra attack, so extra attacks
-    /// never chain.
+    /// never chain, nor under a reaction (damage- or status-class trigger).
     PerformAttack {
         damage_ratio: RankValue,
         max_targets: u32,

@@ -36,25 +36,39 @@ pub enum EffectSource {
     Item(ItemId),
 }
 
-/// Derived triggers (`Proc` / `Counter`) may chain at most this deep; the gates beyond it do
+/// Derived triggers (`Proc` / `Counter` / `Accumulate`) may chain at most this deep; the gates beyond it do
 /// nothing. A trigger straight from a mechanic has depth 0.
 pub const MAX_TRIGGER_DEPTH: u8 = 2;
 
-/// How many times each `Counter` gate has run, per (source, `then` trigger).
+/// One gate's state is kept per (source, `then` trigger).
+type GateKey = (EffectSource, AbilityTrigger);
+
+/// Per-unit state of the stateful gates, keyed by (source, `then` trigger).
 #[derive(Component, Debug, Clone, Default, PartialEq)]
-pub struct TriggerCounters(pub Vec<((EffectSource, AbilityTrigger), u32)>);
+pub struct TriggerCounters {
+    /// How many times each `Counter` gate has run.
+    pub counts: Vec<(GateKey, u32)>,
+    /// Failures in a row of each pseudo-random `Proc` gate.
+    pub prd: Vec<(GateKey, u32)>,
+    /// Running sum of each `Accumulate` gate.
+    pub sums: Vec<(GateKey, f32)>,
+}
+
+fn entry_of<T: Default>(list: &mut Vec<(GateKey, T)>, key: GateKey) -> &mut T {
+    let index = match list.iter().position(|(k, _)| *k == key) {
+        Some(index) => index,
+        None => {
+            list.push((key, T::default()));
+            list.len() - 1
+        }
+    };
+    &mut list[index].1
+}
 
 impl TriggerCounters {
     /// Count one execution; true (and the count restarts) on every `every`th.
-    fn bump(&mut self, key: (EffectSource, AbilityTrigger), every: u32) -> bool {
-        let index = match self.0.iter().position(|(k, _)| *k == key) {
-            Some(index) => index,
-            None => {
-                self.0.push((key, 0));
-                self.0.len() - 1
-            }
-        };
-        let count = &mut self.0[index].1;
+    fn bump(&mut self, key: GateKey, every: u32) -> bool {
+        let count = entry_of(&mut self.counts, key);
         *count += 1;
         if *count >= every.max(1) {
             *count = 0;
@@ -63,6 +77,68 @@ impl TriggerCounters {
             false
         }
     }
+
+    /// One pseudo-random roll with nominal rate `chance`: the effective chance grows with
+    /// every failure in a row and the streak resets on success.
+    fn roll_pseudo(&mut self, key: GateKey, chance: f32, rng: &mut CombatRng) -> bool {
+        let failures = entry_of(&mut self.prd, key);
+        let effective = (prd_constant(chance) * (*failures as f32 + 1.0)).min(1.0);
+        let success = rng.roll(effective);
+        *failures = if success {
+            0
+        } else {
+            failures.saturating_add(1)
+        };
+        success
+    }
+
+    /// Add `amount` (negatives count as zero); true when the sum reached `threshold`, which
+    /// is then reduced by it (the remainder carries over).
+    fn accumulate(&mut self, key: GateKey, amount: f32, threshold: f32) -> bool {
+        if threshold <= 0.0 {
+            return false;
+        }
+        let sum = entry_of(&mut self.sums, key);
+        *sum += amount.max(0.0);
+        if *sum >= threshold {
+            *sum %= threshold;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// The per-roll step `C` of a pseudo-random distribution with long-run rate `p`: the chance
+/// on the `n`th roll since the last success is `min(1, C * n)`. Solved by bisection on the
+/// expected number of rolls per success, `sum over n of prod over k < n of (1 - C k)`.
+pub fn prd_constant(p: f32) -> f32 {
+    let p = f64::from(p);
+    if p <= 0.0 {
+        return 0.0;
+    }
+    if p >= 1.0 {
+        return 1.0;
+    }
+    let rate = |c: f64| {
+        let (mut expected, mut survive, mut n) = (0.0, 1.0, 1.0);
+        while survive > 0.0 {
+            expected += survive;
+            survive *= 1.0 - (c * n).min(1.0);
+            n += 1.0;
+        }
+        1.0 / expected
+    };
+    let (mut lo, mut hi) = (0.0, 1.0);
+    for _ in 0..60 {
+        let mid = (lo + hi) / 2.0;
+        if rate(mid) < p {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    ((lo + hi) / 2.0) as f32
 }
 
 /// What an attack-derived trigger knows about the attack that caused it.
@@ -661,8 +737,26 @@ impl EffectRunner<'_, '_> {
                     });
                 }
             }
-            AbilityEffect::Proc { chance, then } => {
-                if self.gate_open(ctx) && self.rng.roll(chance.at(rank)) {
+            AbilityEffect::Proc {
+                chance,
+                then,
+                pseudo,
+            } => {
+                if !self.gate_open(ctx) {
+                    return;
+                }
+                let chance = chance.at(rank);
+                let fired = if pseudo {
+                    let key = (ctx.source, then);
+                    match self.counters.get_mut(ctx.caster) {
+                        Ok(mut counters) => counters.roll_pseudo(key, chance, &mut self.rng),
+                        // No state to keep, so nothing to bias: a plain roll.
+                        Err(_) => self.rng.roll(chance),
+                    }
+                } else {
+                    self.rng.roll(chance)
+                };
+                if fired {
                     self.derived.push(ctx.derived(then));
                 }
             }
@@ -675,6 +769,18 @@ impl EffectRunner<'_, '_> {
                     .counters
                     .get_mut(ctx.caster)
                     .is_ok_and(|mut counters| counters.bump(key, every));
+                if fired {
+                    self.derived.push(ctx.derived(then));
+                }
+            }
+            AbilityEffect::Accumulate { threshold, then } => {
+                if !self.gate_open(ctx) {
+                    return;
+                }
+                let key = (ctx.source, then);
+                let fired = self.counters.get_mut(ctx.caster).is_ok_and(|mut counters| {
+                    counters.accumulate(key, ctx.amount, threshold.at(rank))
+                });
                 if fired {
                     self.derived.push(ctx.derived(then));
                 }
@@ -806,6 +912,86 @@ pub fn apply_mana_restore_events(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn key(name: &'static str) -> GateKey {
+        (
+            EffectSource::Item(ItemId::HeartwoodBand),
+            AbilityTrigger::Custom(name),
+        )
+    }
+
+    #[test]
+    fn prd_constant_matches_known_values() {
+        assert!((prd_constant(0.25) - 0.0847).abs() < 1e-3);
+        assert!((prd_constant(0.5) - 0.3021).abs() < 1e-3);
+        assert!((prd_constant(0.1) - 0.01475).abs() < 1e-3);
+        assert_eq!(prd_constant(0.0), 0.0);
+        assert_eq!(prd_constant(1.0), 1.0);
+    }
+
+    #[test]
+    fn prd_long_run_rate_matches_nominal() {
+        let mut rng = CombatRng::default();
+        rng.seed(0x5EED);
+        let mut counters = TriggerCounters::default();
+        let rolls = 20_000;
+        let procs = (0..rolls)
+            .filter(|_| counters.roll_pseudo(key("on_bash"), 0.25, &mut rng))
+            .count();
+        let rate = procs as f32 / rolls as f32;
+        assert!((rate - 0.25).abs() < 0.01, "long-run rate was {rate}");
+    }
+
+    #[test]
+    fn prd_failures_reset_on_success_and_are_per_source() {
+        let mut rng = CombatRng::default();
+        rng.seed(7);
+        let mut counters = TriggerCounters::default();
+        let failures = |counters: &TriggerCounters, k| {
+            counters
+                .prd
+                .iter()
+                .find(|(key, _)| *key == k)
+                .map_or(0, |(_, n)| *n)
+        };
+        let mut streak = 0;
+        let mut saw_success = false;
+        for _ in 0..200 {
+            let success = counters.roll_pseudo(key("on_a"), 0.25, &mut rng);
+            streak = if success { 0 } else { streak + 1 };
+            assert_eq!(failures(&counters, key("on_a")), streak);
+            saw_success |= success;
+        }
+        assert!(
+            saw_success,
+            "a 25% pseudo-random proc succeeds within 200 rolls"
+        );
+        assert_eq!(
+            failures(&counters, key("on_b")),
+            0,
+            "other gates keep their own streak"
+        );
+        // A guaranteed proc never builds a streak.
+        assert!(counters.roll_pseudo(key("on_b"), 1.0, &mut rng));
+        assert_eq!(failures(&counters, key("on_b")), 0);
+    }
+
+    #[test]
+    fn accumulate_fires_at_threshold_and_keeps_remainder() {
+        let mut counters = TriggerCounters::default();
+        let mut push = |amount| counters.accumulate(key("on_full"), amount, 100.0);
+        assert!(!push(60.0));
+        assert!(push(60.0), "120 reaches 100");
+        assert!(!push(70.0), "20 carried over + 70 = 90");
+        assert!(!push(-500.0), "negative amounts count as zero");
+        assert!(push(10.0), "exactly 100 again");
+        assert!(!push(0.0));
+        let mut zero = TriggerCounters::default();
+        assert!(
+            !zero.accumulate(key("on_never"), 5.0, 0.0),
+            "no threshold, no fire"
+        );
+    }
 
     #[test]
     fn derived_context_inherits_reaction() {

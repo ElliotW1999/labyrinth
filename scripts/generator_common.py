@@ -1359,7 +1359,7 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
                 report.error(row.file, row.line, "value", row.get("value"), "proc chance percent must be above 0 and at most 100")
                 return None
             chance = rank_value([p / 100 for p in value])
-            effect = f"AbilityEffect::Proc {{ chance: {chance}, then: AbilityTrigger::Custom(\"{effect_id}\") }}"
+            effect = f"AbilityEffect::Proc {{ chance: {chance}, then: AbilityTrigger::Custom(\"{effect_id}\"), pseudo: false }}"
         else:
             if not _require(e, "value", report, "attacks between firings (integer, at least 2)"):
                 return None
