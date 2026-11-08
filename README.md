@@ -92,7 +92,7 @@ python3 scripts/HeroGenerator.py data/heroes.example.csv
 python3 scripts/HeroGenerator.py data/heroes.example.csv --dry-run
 ```
 
-Required columns: `Hero_name`, `is_melee`, `Ability_Q/W/E/R_Name`, `base_STR/AGI/INT`, `STR/AGI/INT_per_level`. Optional: `primary`, `blurb`, `base_health`, `base_mana`, `attack_damage`, `attack_range`, `move_speed`, `armor`, `magic_resist`, and other combat fields (see `scripts/HeroGenerator.py`). Rows whose `Hero_name` already exists are skipped.
+Required columns: `Hero_name`, `is_melee`, `Ability_Q/W/E/R_Name`, `base_STR/AGI/INT`, `STR/AGI/INT_per_level`. Optional: `primary`, `blurb`, `base_health`, `base_health_regen`, `base_mana`, `base_mana_regen`, `attack_damage`, `attack_range`, `base_attack_time`, `attack_point`, `attack_backswing` (both 0 to 1.0 s), `move_speed`, `armor`, `magic_resist`, and `attack_projectile_speed` (ranged heroes only, above 0: the absolute speed of the basic-attack projectile, e.g. 1500; blank derives it from the attack range; ignored with a warning on melee heroes). Blank cells use the generator defaults (see `scripts/HeroGenerator.py`). Rows whose `Hero_name` already exists are skipped.
 
 ### World units
 

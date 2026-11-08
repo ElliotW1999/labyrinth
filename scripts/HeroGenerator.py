@@ -8,6 +8,12 @@ Reads rows describing hero kits and patches marked regions in:
 
 Ability implementations are left as Instant no-op stubs (castable, no effect).
 
+Optional hero columns: base_health, base_health_regen, base_mana, base_mana_regen,
+attack_damage, attack_range, base_attack_time, attack_point, attack_backswing (0..1.0),
+armor, magic_resist, move_speed and attack_projectile_speed (ranged heroes only, > 0: the
+absolute projectile speed of the hero's basic attack; blank keeps the speed derived from
+the attack range). Blank cells take the defaults.
+
 Usage:
   python3 scripts/HeroGenerator.py data/heroes.csv
   python3 scripts/HeroGenerator.py data/heroes.csv --dry-run
@@ -80,6 +86,8 @@ class HeroRow:
     armor: float
     magic_resist: float
     move_speed: float
+    # Ranged heroes only: absolute attack projectile speed (None = derived from attack range).
+    attack_projectile_speed: float | None = None
 
 
 def to_pascal_case(name: str) -> str:
@@ -119,6 +127,22 @@ def parse_swing(row: dict[str, str], key: str, default: float, line: int) -> flo
     value = parse_float(row, key, default)
     if not 0.0 <= value <= MAX_ATTACK_SWING:
         raise SystemExit(f"Row {line}: {key} must be within 0..{MAX_ATTACK_SWING}, got {value}")
+    return value
+
+
+def parse_projectile_speed(row: dict[str, str], is_melee: bool, line: int) -> float | None:
+    """Optional `attack_projectile_speed` (> 0). Melee heroes fire no projectile: warn and ignore."""
+    if not (row.get("attack_projectile_speed") or "").strip():
+        return None
+    value = parse_float(row, "attack_projectile_speed")
+    if value <= 0:
+        raise SystemExit(f"Row {line}: attack_projectile_speed must be above 0, got {value}")
+    if is_melee:
+        print(
+            f"warning: row {line}: attack_projectile_speed ignored for melee hero",
+            file=sys.stderr,
+        )
+        return None
     return value
 
 
@@ -239,6 +263,7 @@ def load_csv(path: Path) -> list[HeroRow]:
                         row, "magic_resist", 0.7 if primary != "INT" else 1.2
                     ),
                     move_speed=parse_float(row, "move_speed", 300.0),
+                    attack_projectile_speed=parse_projectile_speed(row, is_melee, i),
                 )
             )
         return rows
@@ -303,6 +328,10 @@ def f32(value: float) -> str:
     return text
 
 
+def rust_option_f32(value: float | None) -> str:
+    return "None" if value is None else f"Some({f32(value)})"
+
+
 def hero_def_arm(hero: HeroRow) -> str:
     return f"""            HeroId::{hero.rust_id} => HeroDef {{
                 id: self,
@@ -328,6 +357,7 @@ def hero_def_arm(hero: HeroRow) -> str:
                     {f32(hero.armor)},
                     {f32(hero.magic_resist)},
                     {f32(hero.move_speed)},
+                    {rust_option_f32(hero.attack_projectile_speed)},
                 ),
                 abilities: [
                     AbilityId::{hero.ability_q_id},

@@ -154,6 +154,7 @@ impl HeroId {
                     2.0,
                     0.7,
                     scale::HERO_MOVE_SPEED,
+                    None,
                 ),
                 abilities: [
                     AbilityId::Dash,
@@ -187,6 +188,7 @@ impl HeroId {
                     1.2,
                     0.6,
                     scale::HERO_MOVE_SPEED_FAST,
+                    None,
                 ),
                 abilities: [
                     AbilityId::Blink,
@@ -220,6 +222,7 @@ impl HeroId {
                     0.8,
                     1.2,
                     scale::HERO_MOVE_SPEED_SLOW,
+                    None,
                 ),
                 abilities: [
                     AbilityId::ArcMissile,
@@ -254,6 +257,7 @@ impl HeroId {
                     2.0,
                     0.7,
                     scale::HERO_MOVE_SPEED,
+                    None,
                 ),
                 abilities: [
                     AbilityId::Bulwark,
@@ -287,6 +291,7 @@ impl HeroId {
                     0.8,
                     1.2,
                     scale::HERO_MOVE_SPEED,
+                    None,
                 ),
                 abilities: [
                     AbilityId::HexBolt,
@@ -321,6 +326,12 @@ pub struct HeroDef {
     pub dimensions: UnitDimensions,
 }
 
+/// Builds a hero's base [`CombatStats`].
+///
+/// `attack_projectile_speed` is the hero's absolute ranged-attack projectile speed. Heroes carry
+/// it as a base offset in `attack_projectile_speed_bonus` (relative to
+/// `basic_attack::projectile_speed_for(attack_range)`), so items stack on top of it. `None`
+/// keeps the range-derived default.
 fn hero_combat(
     attack_damage: f32,
     attack_range: f32,
@@ -331,6 +342,7 @@ fn hero_combat(
     armor: f32,
     magic_resist: f32,
     move_speed: f32,
+    attack_projectile_speed: Option<f32>,
 ) -> CombatStats {
     CombatStats {
         attack_damage,
@@ -360,7 +372,9 @@ fn hero_combat(
         splash_radius: 0.0,
         splash_damage_ratio: 0.0,
         attack_range_bonus: 0.0,
-        attack_projectile_speed_bonus: 0.0,
+        attack_projectile_speed_bonus: attack_projectile_speed.map_or(0.0, |speed| {
+            speed - crate::basic_attack::projectile_speed_for(attack_range)
+        }),
         lifesteal: 0.0,
         spell_lifesteal: 0.0,
         heal_amp: 0.0,
@@ -672,11 +686,33 @@ mod tests {
 
     #[test]
     fn hero_combat_keeps_attack_point_above_half_a_second() {
-        let c = hero_combat(50.0, 550.0, 1.5, 0.56, 0.41, 0.6, 0.0, 0.0, 290.0);
+        let c = hero_combat(50.0, 550.0, 1.5, 0.56, 0.41, 0.6, 0.0, 0.0, 290.0, None);
         assert_eq!(c.attack_point, 0.56);
         assert_eq!(c.attack_backswing, 0.41);
-        let c = hero_combat(50.0, 550.0, 1.5, 5.0, 5.0, 0.6, 0.0, 0.0, 290.0);
+        let c = hero_combat(50.0, 550.0, 1.5, 5.0, 5.0, 0.6, 0.0, 0.0, 290.0, None);
         assert_eq!(c.attack_point, MAX_ATTACK_SWING);
         assert_eq!(c.attack_backswing, MAX_ATTACK_SWING);
+    }
+
+    #[test]
+    fn hero_combat_attack_projectile_speed_override() {
+        let c = hero_combat(
+            50.0,
+            550.0,
+            1.5,
+            0.3,
+            0.3,
+            0.6,
+            0.0,
+            0.0,
+            290.0,
+            Some(1500.0),
+        );
+        let speed = (crate::basic_attack::projectile_speed_for(c.base_attack_range())
+            + c.attack_projectile_speed_bonus)
+            .max(1.0);
+        assert!((speed - 1500.0).abs() < 1e-3, "speed {speed}");
+        let c = hero_combat(50.0, 550.0, 1.5, 0.3, 0.3, 0.6, 0.0, 0.0, 290.0, None);
+        assert_eq!(c.attack_projectile_speed_bonus, 0.0);
     }
 }
