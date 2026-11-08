@@ -1,5 +1,6 @@
-Hero_name,is_melee,Ability_Q_Name,Ability_W_Name,Ability_E_Name,Ability_R_Name,base_STR,base_AGI,base_INT,STR_per_level,AGI_per_level,INT_per_level,primary,blurb,base_health,base_mana,attack_damage,attack_range,move_speed,armor,magic_resist
+Hero_name,is_melee,Ability_Q_Name,Ability_W_Name,Ability_E_Name,Ability_R_Name,base_STR,base_AGI,base_INT,STR_per_level,AGI_per_level,INT_per_level,primary,blurb,base_health,base_mana,attack_damage,attack_range,move_speed,armor,magic_resist,base_health_regen,base_mana_regen,base_attack_time,attack_point,attack_backswing,attack_projectile_speed
 Vanguard,TRUE,Dash,Shockwave,Bolt,Nova,22,16,14,2.6,1.7,1.6,STR,Should be skipped — already exists,,,,,,,
 Warden,TRUE,Bulwark,ShieldBash,Taunt,Aegis,24,14,12,3,1.4,1.2,STR,Str tank — stub kit,,,,,,,
 Hexer,FALSE,HexBolt,Curse,Ward,Ritual,13,15,25,1.5,1.6,3.1,INT,Int support — stub kit,,,,,,,
 Magnus,TRUE,Shockwave,Empower,Skewer,Reverse Polarity,25,9,19,3.1,2,1.6,STR,,626,315,60,200,305,3.33,27
+Queen of Pain,FALSE,Shadow Strike,Queen of Pain Blink,Scream of Pain,Sonic Wave,20,20,25,2.4,2.5,3.4,INT,"Int assassin — Shadow Strike, QoP Blink, Scream of Pain, Sonic Wave",200,75,54,550,290,-2.8,3.321839,-0.15,0,1.5,0.56,0.41,1500

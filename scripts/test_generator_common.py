@@ -16,22 +16,112 @@ from generator_common import (  # noqa: E402
     Report,
     Row,
     ABILITY_TRIGGERS,
+    GLOBAL_CAST_RANGE,
     ITEM_TRIGGERS,
     NOT_EMITTED_TRIGGERS,
     effect_to_rust,
     held_status_id,
+    runtime_status_id,
     chain_fed_triggers,
     reaction_triggers,
     warn_duplicate_held_statuses,
     warn_unemitted_triggers,
     warn_unreachable_custom_triggers,
     parse_activation_spec,
+    projectile_each_mechanic_rust,
+    projectile_mechanic_rust,
     validate_activation,
 )
 
 
 def row(cells: dict[str, str], line: int = 2) -> Row:
     return Row("test.csv", line, cells)
+
+
+class GlobalCastRangeTests(unittest.TestCase):
+    def _spec(self, kind: str, cast_range: str, target_type: str = "point"):
+        report = Report()
+        spec = parse_activation_spec(
+            row({"target_type": target_type, "target_team": "enemy", "cast_range": cast_range}),
+            kind=kind,
+            has_active_effects=True,
+            report=report,
+            levels=kind == "ability",
+        )
+        return spec, report
+
+    def test_global_is_case_insensitive_for_abilities_and_items(self) -> None:
+        for text in ("global", "GLOBAL", " Global "):
+            spec, report = self._spec("ability", text)
+            self.assertFalse(report.errors, text)
+            self.assertEqual(spec.cast_range, [GLOBAL_CAST_RANGE])
+        spec, report = self._spec("item", "global")
+        self.assertFalse(report.errors)
+        self.assertEqual(spec.cast_range_scalar, GLOBAL_CAST_RANGE)
+
+    def test_global_cannot_join_a_level_list(self) -> None:
+        spec, report = self._spec("ability", "800|global")
+        self.assertTrue(report.errors)
+        self.assertEqual(report.errors[0].field, "cast_range")
+        self.assertIn("level list", report.errors[0].message)
+
+    def test_global_satisfies_the_cast_range_requirement(self) -> None:
+        for target_type in ("point", "unit", "direction"):
+            spec, report = self._spec("ability", "global", target_type)
+            validate_activation(
+                row({"target_type": target_type, "target_team": "enemy", "cast_range": "global"}),
+                spec,
+                kind="ability",
+                ability_type="active",
+                report=report,
+            )
+            self.assertFalse(report.errors, target_type)
+
+
+class BoundedTeleportTests(unittest.TestCase):
+    @staticmethod
+    def _teleport(target: str = "caster", **cells: str):
+        base = {
+            "ability_id": "mover",
+            "effect_index": "0",
+            "trigger": "on_cast",
+            "effect_target": target,
+            "effect_type": "movement",
+            "effect_id": "teleport",
+        }
+        base.update(cells)
+        effect = EffectRow(row(base), "mover", 0, "on_cast", target, "movement")
+        ctx = EffectContext(kind="ability", owner_id="mover", levels=1, center_for={}, target_type="point")
+        report = Report()
+        return effect_to_rust(effect, ctx, report), report
+
+    def test_blank_bounds_keep_the_plain_teleport(self) -> None:
+        result, report = self._teleport()
+        self.assertFalse(report.errors)
+        self.assertIn("Teleport { min_distance: RankValue::ZERO, max_distance: None }", result[2])
+
+    def test_value_is_the_maximum_and_amount_the_minimum(self) -> None:
+        result, report = self._teleport(value="1075", amount="200")
+        self.assertFalse(report.errors)
+        self.assertIn("min_distance: RankValue::fixed(200.0)", result[2])
+        self.assertIn("max_distance: Some(RankValue::fixed(1075.0))", result[2])
+
+    def test_minimum_above_maximum_is_rejected(self) -> None:
+        result, report = self._teleport(value="200", amount="500")
+        self.assertIsNone(result)
+        self.assertEqual(report.errors[0].field, "amount")
+        self.assertIn("exceeds", report.errors[0].message)
+
+    def test_bounds_need_the_caster_as_target(self) -> None:
+        result, report = self._teleport(target="cast_target", value="800")
+        self.assertIsNone(result)
+        self.assertIn("caster", report.errors[0].message)
+
+    def test_max_must_be_positive_and_min_not_negative(self) -> None:
+        result, report = self._teleport(value="0")
+        self.assertIsNone(result)
+        result, report = self._teleport(amount="-1")
+        self.assertIsNone(result)
 
 
 class ValidateActivationTests(unittest.TestCase):
@@ -373,6 +463,83 @@ class ProjectileTypeTests(unittest.TestCase):
             self.assertEqual(not report.errors, ok, target_type)
             self.assertEqual(spec.projectile_type, "skillshot_single")
 
+    def _end_radius(self, kind: str = "ability", **overrides: str):
+        cells = {
+            "target_type": "point",
+            "target_team": "enemy",
+            "cast_range": "900",
+            "aoe_radius": "100",
+            "projectile_type": "skillshot",
+            "projectile_end_radius": "450",
+        }
+        cells.update(overrides)
+        report = Report()
+        spec = parse_activation_spec(row(cells), kind=kind, has_active_effects=True, report=report, levels=kind == "ability")
+        validate_activation(row(cells), spec, kind=kind, ability_type="active", report=report)
+        return spec, report
+
+    def test_end_radius_emits_into_the_projectile_mechanic(self) -> None:
+        spec, report = self._end_radius()
+        self.assertFalse(report.errors)
+        rust = projectile_mechanic_rust(spec.projectile_type, 642.857, spec.projectile_end_radius)
+        self.assertIn("end_radius: Some(RankValue::fixed(450.0))", rust)
+        self.assertIn("end_radius: None", projectile_mechanic_rust("skillshot", None))
+
+    def test_end_radius_is_rejected_on_non_skillshots_and_without_aoe_radius(self) -> None:
+        for overrides in (
+            {"target_type": "unit", "projectile_type": "targeted"},
+            {"projectile_type": "none"},
+            {"aoe_radius": ""},
+            {"projectile_end_radius": "0"},
+        ):
+            _, report = self._end_radius(**overrides)
+            self.assertTrue(report.errors, overrides)
+            self.assertEqual(report.errors[0].field, "projectile_end_radius", overrides)
+
+    def test_items_reject_end_radius_until_they_have_an_aoe_radius(self) -> None:
+        _, report = self._end_radius(kind="item", aoe_radius="")
+        self.assertIn("items have no aoe_radius", report.errors[0].message)
+
+    def _each(self, kind: str = "ability", **overrides: str):
+        cells = {
+            "target_type": "no_target",
+            "target_team": "enemy",
+            "aoe_radius": "600",
+            "projectile_type": "targeted_each",
+            "projectile_speed": "900",
+        }
+        if kind == "item":
+            del cells["aoe_radius"]
+        cells.update(overrides)
+        report = Report()
+        spec = parse_activation_spec(row(cells), kind=kind, has_active_effects=True, report=report, levels=kind == "ability")
+        validate_activation(row(cells), spec, kind=kind, ability_type="active", report=report)
+        return spec, report
+
+    def test_targeted_each_accepts_no_target_and_point_abilities(self) -> None:
+        for target_type, center in (("no_target", "Caster"), ("point", "Aim")):
+            spec, report = self._each(target_type=target_type, cast_range="900")
+            self.assertFalse(report.errors, target_type)
+            rust = projectile_each_mechanic_rust(target_type, "enemy", spec.projectile_speed)
+            self.assertIn(f"center: AreaCenter::{center}", rust)
+            self.assertIn("team: TargetTeam::Enemy", rust)
+            self.assertIn("speed: Some(900.0)", rust)
+
+    def test_targeted_each_needs_aoe_radius_and_a_valid_target_type(self) -> None:
+        _, report = self._each(aoe_radius="")
+        self.assertEqual(report.errors[0].field, "aoe_radius")
+        _, report = self._each(aoe_radius="0")
+        self.assertEqual(report.errors[0].field, "aoe_radius")
+        _, report = self._each(target_type="unit", cast_range="600")
+        self.assertEqual(report.errors[0].field, "projectile_type")
+        _, report = self._each(target_team="self")
+        self.assertTrue(report.errors)
+
+    def test_items_reject_targeted_each(self) -> None:
+        _, report = self._each(kind="item", target_type="no_target", target_team="enemy")
+        self.assertEqual(report.errors[0].field, "projectile_type")
+        self.assertIn("items do not have yet", report.errors[0].message)
+
 
 def _effect(
     effect_type: str,
@@ -576,6 +743,47 @@ class HealStatusTests(unittest.TestCase):
         effect, ctx = _effect("apply_status", "stun", target="caster", trigger="while_toggled", duration="2")
         self.assertIsNone(effect_to_rust(effect, ctx, report))
         self.assertEqual(report.errors[0].field, "effect_type")
+
+
+class BurnStatusTests(unittest.TestCase):
+    def _burn(self, **cells: str):
+        base = {"damage_type": "magical", "duration": "16"}
+        base.update(cells)
+        report = Report()
+        effect, ctx = _effect("apply_status", "burn", **base)
+        return effect_to_rust(effect, ctx, report), report
+
+    def test_continuous_burn_keeps_a_zero_interval_and_per_owner_id(self) -> None:
+        result, report = self._burn(value="12")
+        self.assertFalse(report.errors)
+        self.assertIn('id: "tester_burn"', result[2])
+        self.assertIn("tick_interval: RankValue::ZERO", result[2])
+
+    def test_ticking_burn_emits_the_interval(self) -> None:
+        result, report = self._burn(value="20", amount="3")
+        self.assertFalse(report.errors)
+        self.assertIn("amount: RankValue::fixed(20.0)", result[2])
+        self.assertIn("tick_interval: RankValue::fixed(3.0)", result[2])
+
+    def test_burn_requires_value_and_no_longer_falls_back_to_amount(self) -> None:
+        result, report = self._burn(amount="3")
+        self.assertIsNone(result)
+        self.assertEqual(report.errors[0].field, "value")
+
+    def test_burn_interval_must_be_above_zero(self) -> None:
+        result, report = self._burn(value="20", amount="0")
+        self.assertIsNone(result)
+        self.assertEqual(report.errors[0].field, "amount")
+        self.assertIn("above 0", report.errors[0].message)
+
+    def test_burn_interval_cannot_exceed_the_duration(self) -> None:
+        result, report = self._burn(value="20", amount="17")
+        self.assertIsNone(result)
+        self.assertIn("exceeds", report.errors[0].message)
+
+    def test_owner_burn_ids_are_valid_trigger_arguments(self) -> None:
+        self.assertEqual(runtime_status_id("shadow_strike_burn"), "shadow_strike_burn")
+        self.assertEqual(runtime_status_id("burn"), "burn")
 
 
 class ResourceStatModifierTests(unittest.TestCase):
@@ -867,7 +1075,7 @@ class ItemProjectileTests(unittest.TestCase):
         self.assertFalse([w for w in report.warnings if w.field == "projectile_type"])
         rendered = module.item_static(items[0])
         self.assertIn(
-            "mechanics: &[AbilityMechanic::Projectile { splash_radius: AreaRadius::Ability, speed: Some(1200.0), skillshot: false, first_hit: false }],",
+            "mechanics: &[AbilityMechanic::Projectile { splash_radius: AreaRadius::Ability, speed: Some(1200.0), skillshot: false, first_hit: false, end_radius: None }],",
             rendered,
         )
         self.assertIn("AbilityTrigger::OnProjectileHit", rendered)

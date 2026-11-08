@@ -225,8 +225,14 @@ RESOURCE_SPENT = {
 RESOURCE_CONVERTED_TO = {"health_to_mana": "Mana", "mana_to_health": "Health"}
 
 # Activation targeting shared by abilities and active items.
+# `cast_range=global` stands for the whole map; mirrors scale::GLOBAL_CAST_RANGE.
+GLOBAL_RANGE_KEYWORD = "global"
+GLOBAL_CAST_RANGE = 25_000.0
+
 TARGET_TYPES = ("unit", "point", "direction", "no_target", "self")
-PROJECTILE_TYPES = ("none", "targeted", "skillshot", "skillshot_single")
+# `targeted_each` sends one homing projectile at every unit of target_team inside aoe_radius
+# (abilities only: no_target around the caster, or point around the aim).
+PROJECTILE_TYPES = ("none", "targeted", "targeted_each", "skillshot", "skillshot_single")
 # Skillshots fly the cast range; `skillshot_single` stops at the first enemy it strikes (a hook).
 SKILLSHOT_TYPES = ("skillshot", "skillshot_single")
 
@@ -241,6 +247,7 @@ ITEM_ACTIVATION_OPTIONAL = (
     "mana_cost",
     "projectile_type",
     "projectile_speed",
+    "projectile_end_radius",
 )
 # Effect-polarity teams (`units_in_radius` defaults); "self" areas still mean allies.
 TARGET_TEAMS = {"enemy": "Enemy", "ally": "Ally", "both": "Any", "self": "Ally"}
@@ -563,6 +570,8 @@ class ActivationSpec:
     charge_restore_time: float | None = None
     projectile_type: str = "none"
     projectile_speed: float | None = None
+    # Skillshots only: the width (per rank) the wave widens to by the end of its flight.
+    projectile_end_radius: list[float] | None = None
 
     def has_cast_range(self, kind: str) -> bool:
         if kind == "ability":
@@ -599,8 +608,16 @@ def parse_activation_spec(
     if kind == "item" and target_team is None:
         target_team = default_team
 
-    cast_range = parse_number(row, "cast_range", report, levels=levels, minimum=0)
-    cast_range_scalar = parse_scalar(row, "cast_range", report, minimum=0) if kind == "item" else None
+    raw_range = (row.get("cast_range") or "").strip()
+    if raw_range.lower() == GLOBAL_RANGE_KEYWORD:
+        # `global`: the whole map. A single keyword; it cannot be mixed into a level list.
+        cast_range = [GLOBAL_CAST_RANGE]
+        cast_range_scalar = GLOBAL_CAST_RANGE if kind == "item" else None
+    else:
+        if GLOBAL_RANGE_KEYWORD in raw_range.lower():
+            report.error(row.file, row.line, "cast_range", raw_range, f"{GLOBAL_RANGE_KEYWORD} is a keyword for the whole cast_range cell; it cannot be part of a level list")
+        cast_range = parse_number(row, "cast_range", report, levels=levels, minimum=0)
+        cast_range_scalar = parse_scalar(row, "cast_range", report, minimum=0) if kind == "item" else None
     aoe_radius = parse_number(row, "aoe_radius", report, levels=levels, minimum=0) if kind == "ability" else None
     cast_time = parse_scalar(row, "cast_time", report, minimum=0) or 0.0
     channel_time = parse_scalar(row, "channel_time", report, minimum=0)
@@ -608,6 +625,7 @@ def parse_activation_spec(
     restore = parse_scalar(row, "charge_restore_time", report, minimum=0)
     projectile = parse_enum(row, "projectile_type", PROJECTILE_TYPES, report, required=False) or "none"
     speed = parse_scalar(row, "projectile_speed", report, minimum=1)
+    end_radius = parse_number(row, "projectile_end_radius", report, levels=levels, minimum=0)
 
     if kind == "ability" and None in (target_type, target_team):
         return None
@@ -629,6 +647,7 @@ def parse_activation_spec(
         charge_restore_time=restore,
         projectile_type=projectile,
         projectile_speed=speed,
+        projectile_end_radius=end_radius,
     )
 
 
@@ -656,8 +675,28 @@ def validate_activation(
         err("projectile_speed", "projectile_speed requires projectile_type targeted, skillshot, or skillshot_single")
     if spec.projectile_type == "targeted" and spec.target_type != "unit":
         err("projectile_type", f"targeted projectiles home in on a unit; target_type is {spec.target_type}")
+    if spec.projectile_type == "targeted_each":
+        if kind == "item":
+            err("projectile_type", "targeted_each needs an aoe_radius, which items do not have yet; use targeted")
+        else:
+            if spec.target_type not in ("no_target", "point"):
+                err("projectile_type", f"targeted_each is centred on the caster (no_target) or the aim (point); target_type is {spec.target_type}")
+            if not (spec.aoe_radius and all(r > 0 for r in spec.aoe_radius)):
+                err("aoe_radius", "targeted_each needs a non-zero aoe_radius at every rank (the area the projectiles are sent into)")
+            if spec.target_team == "self":
+                err("target_team", "targeted_each sends projectiles at other units; use enemy, ally or both")
     if spec.projectile_type in SKILLSHOT_TYPES and spec.target_type not in ("point", "direction"):
         err("projectile_type", f"skillshots fly toward a point or direction; target_type is {spec.target_type}")
+
+    if spec.projectile_end_radius:
+        if spec.projectile_type not in SKILLSHOT_TYPES:
+            err("projectile_end_radius", f"only skillshots widen; projectile_type is {spec.projectile_type}")
+        elif any(v <= 0 for v in spec.projectile_end_radius):
+            err("projectile_end_radius", "projectile_end_radius must be above 0")
+        elif kind == "item":
+            err("projectile_end_radius", "items have no aoe_radius to widen from; leave projectile_end_radius blank")
+        elif not (spec.aoe_radius and any(spec.aoe_radius)):
+            err("projectile_end_radius", "requires aoe_radius (the starting width)")
 
     if spec.target_team == "self" and spec.target_type not in ("self", "no_target"):
         err("target_team", f"target_team self requires target_type self or no_target (got {spec.target_type})")
@@ -682,6 +721,33 @@ def validate_activation(
                 report.warn(row.file, row.line, fld, row.get(fld), "ignored: passive abilities are never cast")
     if kind == "ability" and ability_type == "toggle" and spec.target_type not in ("no_target", "self"):
         err("target_type", "toggle abilities use no_target or self")
+
+
+def projectile_mechanic_rust(
+    projectile_type: str,
+    projectile_speed: float | None,
+    end_radius: list[float] | None = None,
+) -> str:
+    """`AbilityMechanic::Projectile { ... }` for a non-"none" projectile_type (abilities and items)."""
+    speed = f"Some({f32(projectile_speed)})" if projectile_speed else "None"
+    skillshot = "true" if projectile_type in SKILLSHOT_TYPES else "false"
+    first_hit = "true" if projectile_type == "skillshot_single" else "false"
+    end = f"Some({rank_value(end_radius)})" if end_radius else "None"
+    return (
+        "AbilityMechanic::Projectile { "
+        f"splash_radius: AreaRadius::Ability, speed: {speed}, skillshot: {skillshot}, "
+        f"first_hit: {first_hit}, end_radius: {end} }}"
+    )
+
+
+def projectile_each_mechanic_rust(target_type: str, target_team: str, projectile_speed: float | None) -> str:
+    """`AbilityMechanic::ProjectileToEach { ... }` for projectile_type targeted_each."""
+    center = "Caster" if target_type == "no_target" else "Aim"
+    speed = f"Some({f32(projectile_speed)})" if projectile_speed else "None"
+    return (
+        f"AbilityMechanic::ProjectileToEach {{ center: AreaCenter::{center}, "
+        f"team: TargetTeam::{ACTION_TEAMS[target_team]}, speed: {speed} }}"
+    )
 
 
 def ability_rust_target_type(target_type: str, projectile: str, aoe_radius: list[float] | None) -> str:
@@ -1049,16 +1115,30 @@ def _number(text: str) -> float | None:
         return None
 
 
+def _tick_interval_ok(interval: list[float], duration: list[float], row, report: Report) -> bool:
+    """A burn's tick interval (`amount`) must be above 0 and at most the duration at every rank."""
+    ok = True
+    for rank, seconds in enumerate(interval):
+        lasts = duration[min(rank, len(duration) - 1)] if duration else 0.0
+        if seconds <= 0:
+            report.error(row.file, row.line, "amount", row.get("amount"), "burn tick interval (seconds) must be above 0; leave blank for damage per second")
+            ok = False
+        elif seconds > lasts:
+            report.error(row.file, row.line, "amount", row.get("amount"), f"burn tick interval {seconds:g}s exceeds the {lasts:g}s duration")
+            ok = False
+    return ok
+
+
 def runtime_status_id(text: str) -> str | None:
     """Runtime id for a status named in a trigger argument, or None when it is unknown.
 
     Accepts CSV status ids (`stun`), runtime ids (`spell_immunity`) and the per-owner ids that
-    timed `stat_modifier` rows create (`<owner>_<stat>`)."""
+    timed `stat_modifier` rows create (`<owner>_<stat>`) and the ones burns create (`<owner>_burn`)."""
     if text in STATUSES:
         return STATUSES[text][1]
     if text in {runtime for _, runtime, _ in STATUSES.values()}:
         return text
-    for stat in (*TIMED_STATS, *RESOURCE_STATS):
+    for stat in (*TIMED_STATS, *RESOURCE_STATS, "burn"):
         suffix = "_" + stat
         if text.endswith(suffix) and ID_PATTERN.match(text[: -len(suffix)]):
             return text
@@ -1166,6 +1246,8 @@ def trigger_to_rust(e: EffectRow, variant: str, report: Report) -> str | None:
 def held_status_id(e: EffectRow) -> str | None:
     """Runtime id of the status a `while` row holds, or None when it cannot be told."""
     effect_id = e.row.get("effect_id").lower()
+    if e.effect_type == "apply_status" and effect_id == "burn":
+        return f"{e.owner}_burn"
     if e.effect_type == "apply_status" and effect_id in STATUSES:
         return STATUSES[effect_id][1]
     if e.effect_type == "stat_modifier" and effect_id:
@@ -1450,20 +1532,23 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             spec = f"StatusSpec::Shield {{ amount: {rank_value(pool)} }}"
             _unused(e, report, "value")
         elif effect_id == "burn":
-            dps = value or amount
-            if not dps:
-                report.error(row.file, row.line, "value", "", "required: burn damage per second")
+            if not value:
+                report.error(row.file, row.line, "value", "", "required: burn damage (per second, or per tick when amount sets a tick interval)")
                 return None
             if not _require(e, "damage_type", report, "physical, magical, or pure"):
                 return None
             damage_type = parse_enum(row, "damage_type", list(DAMAGE_TYPES), report, required=False)
             if damage_type is None:
                 return None
+            tick_interval = "RankValue::ZERO"
+            if amount:
+                if not _tick_interval_ok(amount, duration, row, report):
+                    return None
+                tick_interval = rank_value(amount)
             spec = (
-                f"StatusSpec::Burn {{ dps: {rank_value(dps)}, "
-                f"damage_type: DamageType::{DAMAGE_TYPES[damage_type]} }}"
+                f'StatusSpec::Burn {{ id: "{ctx.owner_id}_burn", amount: {rank_value(value)}, '
+                f"damage_type: DamageType::{DAMAGE_TYPES[damage_type]}, tick_interval: {tick_interval} }}"
             )
-            _unused(e, report, "amount")
         elif effect_id == "attack_speed_slow":
             percent = amount or value
             if not percent:
@@ -1596,8 +1681,32 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             if e.target not in TELEPORT_TARGETS:
                 report.error(row.file, row.line, "effect_target", e.target, f"teleport sends its target to the cast's aim point; use one of: {', '.join(TELEPORT_TARGETS)}")
                 return None
-            _unused(e, report, "damage_type", "amount", "value", "duration", "radius")
-            effect = "AbilityEffect::Teleport"
+            _unused(e, report, "damage_type", "duration", "radius")
+            min_distance, max_distance = "RankValue::ZERO", "None"
+            if value or amount:
+                # Optional bounds on the blink distance: value = maximum, amount = minimum.
+                if e.target not in SELF_MOVEMENT_TARGETS:
+                    report.error(row.file, row.line, "value" if value else "amount", row.get("value") or row.get("amount"), "teleport distance bounds are measured from the caster; use effect_target caster or owner")
+                    return None
+                if value and any(v <= 0 for v in value):
+                    report.error(row.file, row.line, "value", row.get("value"), "teleport max distance must be above 0")
+                    return None
+                if amount and any(a < 0 for a in amount):
+                    report.error(row.file, row.line, "amount", row.get("amount"), "teleport min distance cannot be negative")
+                    return None
+                if value and amount:
+                    longest = max(len(value), len(amount))
+                    for rank in range(longest):
+                        high = value[min(rank, len(value) - 1)]
+                        low = amount[min(rank, len(amount) - 1)]
+                        if low > high:
+                            report.error(row.file, row.line, "amount", row.get("amount"), f"teleport min distance {low:g} exceeds the max distance {high:g}")
+                            return None
+                if amount:
+                    min_distance = rank_value(amount)
+                if value:
+                    max_distance = f"Some({rank_value(value)})"
+            effect = f"AbilityEffect::Teleport {{ min_distance: {min_distance}, max_distance: {max_distance} }}"
         else:
             effect = _displacement_effect(e, effect_id, ctx, value, duration, amount, report)
             if effect is None:

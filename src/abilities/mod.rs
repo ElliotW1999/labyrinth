@@ -479,6 +479,11 @@ fn update_targeting_indicators(
     }
 }
 
+/// Whether a cast range is `cast_range=global` (the whole map).
+fn is_global_range(cast_range: f32) -> bool {
+    cast_range >= scale::GLOBAL_CAST_RANGE
+}
+
 fn spawn_indicators(
     commands: &mut Commands,
     assets: &SharedAssets,
@@ -487,14 +492,17 @@ fn spawn_indicators(
     radius_or_width: f32,
     point_target: bool,
 ) {
-    commands.spawn((
-        Name::new("Range Indicator"),
-        RangeIndicator,
-        Mesh3d(assets.indicator_ring_mesh.clone()),
-        MeshMaterial3d(assets.indicator_range_mat.clone()),
-        Transform::from_translation(Vec3::new(hero_pos.x, scale::u(0.08), hero_pos.z))
-            .with_scale(Vec3::new(cast_range, 1.0, cast_range)),
-    ));
+    // A global range covers the map: a ring that big is just noise, so it is not drawn.
+    if !is_global_range(cast_range) {
+        commands.spawn((
+            Name::new("Range Indicator"),
+            RangeIndicator,
+            Mesh3d(assets.indicator_ring_mesh.clone()),
+            MeshMaterial3d(assets.indicator_range_mat.clone()),
+            Transform::from_translation(Vec3::new(hero_pos.x, scale::u(0.08), hero_pos.z))
+                .with_scale(Vec3::new(cast_range, 1.0, cast_range)),
+        ));
+    }
     if point_target {
         commands.spawn((
             Name::new("Trajectory Indicator"),
@@ -998,6 +1006,7 @@ mod tests {
                 speed: None,
                 skillshot: false,
                 first_hit: false,
+                end_radius: None,
             })
     }
 
@@ -2144,6 +2153,221 @@ mod tests {
         spawned
     }
 
+    fn scream_ability() -> AbilityDefinition {
+        AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(
+                TargetType::NoTarget,
+                RankValue::ZERO,
+                RankValue::fixed(600.0),
+            )
+            .team(TargetTeam::Enemy)
+            .costs(RankValue::fixed(8.0), RankValue::fixed(100.0))
+            .mechanic(AbilityMechanic::ProjectileToEach {
+                center: super::definition::AreaCenter::Caster,
+                team: TargetTeam::Enemy,
+                speed: Some(900.0),
+            })
+            .on(
+                AbilityTrigger::OnProjectileHit,
+                EffectTarget::TriggerUnit,
+                fixed_magical_damage(100.0),
+            )
+    }
+
+    /// Casts the scream from the origin; returns the projectiles spawned.
+    fn cast_scream(app: &mut App, caster: Entity) -> Vec<SpawnProjectileEvent> {
+        request(app, caster, 3, CastTarget::None);
+        let mut spawned = Vec::new();
+        for _ in 0..12 {
+            step(app);
+            let messages = app.world().resource::<Messages<SpawnProjectileEvent>>();
+            spawned.extend(messages.iter_current_update_messages().copied());
+        }
+        spawned
+    }
+
+    #[test]
+    fn projectile_to_each_sends_one_homing_projectile_per_valid_unit() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(scream_ability());
+        let caster = spawn_caster(&mut app, KIT);
+        let inside: Vec<_> = [100.0, 200.0, 300.0]
+            .into_iter()
+            .map(|x| spawn_unit(&mut app, Team::Dire, Vec3::new(x, 0.0, 0.0)))
+            .collect();
+        let _outside = spawn_unit(&mut app, Team::Dire, Vec3::new(900.0, 0.0, 0.0));
+        let _ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(150.0, 0.0, 0.0));
+        let cycloned = spawn_unit(&mut app, Team::Dire, Vec3::new(250.0, 0.0, 0.0));
+        app.world_mut()
+            .entity_mut(cycloned)
+            .insert(crate::status::StatusEffects {
+                effects: vec![crate::status::StatusEffect::buff("cyclone", 5.0)],
+            });
+
+        let spawned = cast_scream(&mut app, caster);
+        let mut targets: Vec<_> = spawned.iter().filter_map(|p| p.target).collect();
+        targets.sort();
+        let mut expected = inside.clone();
+        expected.sort();
+        assert_eq!(
+            targets, expected,
+            "3 inside; outside, ally, cycloned and caster skipped"
+        );
+        for projectile in &spawned {
+            assert_eq!(projectile.splash_radius, 0.0);
+            assert_eq!(projectile.speed, Some(900.0));
+            assert_eq!(projectile.skillshot_width, None);
+            assert_eq!(projectile.payload.caster, caster);
+            assert_eq!(
+                projectile.payload.source,
+                EffectSource::Ability(AbilityId::Bulwark)
+            );
+            assert_eq!(projectile.payload.cast_target, projectile.target);
+        }
+    }
+
+    #[test]
+    fn projectile_to_each_hits_fire_on_projectile_hit_once_per_unit() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(scream_ability());
+        let caster = spawn_caster(&mut app, KIT);
+        let inside: Vec<_> = [100.0, 200.0, 300.0]
+            .into_iter()
+            .map(|x| spawn_unit(&mut app, Team::Dire, Vec3::new(x, 0.0, 0.0)))
+            .collect();
+        let spawned = cast_scream(&mut app, caster);
+        assert_eq!(spawned.len(), 3);
+        for projectile in &spawned {
+            let unit = projectile.target.unwrap();
+            app.world_mut().write_message(hit(
+                projectile.payload,
+                Vec3::X * 100.0,
+                Some(unit),
+                Vec::new(),
+            ));
+        }
+        step(&mut app);
+        for unit in inside {
+            assert_eq!(health(&app, unit), 900.0, "each unit is hit exactly once");
+        }
+    }
+
+    const QOP: [AbilityId; 4] = [
+        AbilityId::ShadowStrike,
+        AbilityId::QueenOfPainBlink,
+        AbilityId::ScreamOfPain,
+        AbilityId::SonicWave,
+    ];
+
+    /// The ability test app plus the status ticker (ticking burns are written there).
+    fn qop_app() -> App {
+        let mut app = test_app();
+        app.add_systems(
+            Update,
+            crate::status::tick_status_effects.before(reactive_triggers::status_triggers),
+        );
+        app
+    }
+
+    /// Casts `slot` and returns the projectiles it spawned plus every damage event it
+    /// produced while the cast played out.
+    fn cast_for_projectiles(
+        app: &mut App,
+        caster: Entity,
+        slot: usize,
+        target: CastTarget,
+    ) -> Vec<SpawnProjectileEvent> {
+        request(app, caster, slot, target);
+        let mut spawned = Vec::new();
+        for _ in 0..16 {
+            step(app);
+            let messages = app.world().resource::<Messages<SpawnProjectileEvent>>();
+            spawned.extend(messages.iter_current_update_messages().copied());
+        }
+        spawned
+    }
+
+    #[test]
+    fn sonic_wave_deals_fourteen_instances_and_one_knockback() {
+        use crate::combat::DamageKind;
+        let mut app = qop_app();
+        let caster = spawn_caster(&mut app, QOP);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(400.0, 0.0, 0.0));
+        let spawned = cast_for_projectiles(&mut app, caster, 3, CastTarget::Point(Vec3::X * 800.0));
+        assert_eq!(spawned.len(), 1);
+        let wave = spawned[0];
+        assert_eq!(wave.skillshot_width, Some(100.0));
+        assert_eq!(wave.skillshot_end_width, Some(450.0));
+        assert!(
+            (wave.speed.unwrap() - 900.0 / 1.4).abs() < 0.01,
+            "900 units in 1.4s"
+        );
+
+        app.world_mut()
+            .write_message(hit(wave.payload, Vec3::X * 400.0, Some(enemy), Vec::new()));
+        let mut dots = Vec::new();
+        let mut knockbacks = 0;
+        for _ in 0..40 {
+            step(&mut app);
+            dots.extend(
+                current_messages::<DamageEvent>(&app)
+                    .into_iter()
+                    .filter(|d| d.kind == DamageKind::Dot),
+            );
+            knockbacks += current_messages::<DisplacementEvent>(&app)
+                .iter()
+                .filter(|d| d.kind == DisplacementKind::Knockback)
+                .count();
+        }
+        assert_eq!(dots.len(), 14, "14 instances over 1.4s");
+        assert!(
+            dots.iter()
+                .all(|d| d.amount == 23.0 && d.damage_type == DamageType::Pure)
+        );
+        assert_eq!(knockbacks, 1, "one knockback");
+        assert!((health(&app, enemy) - (1000.0 - 14.0 * 23.0)).abs() < 1e-2);
+    }
+
+    #[test]
+    fn shadow_strike_and_sonic_wave_dots_coexist() {
+        let mut app = qop_app();
+        let caster = spawn_caster(&mut app, QOP);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(300.0, 0.0, 0.0));
+        let dagger = cast_for_projectiles(&mut app, caster, 0, CastTarget::Unit(enemy));
+        let wave = cast_for_projectiles(&mut app, caster, 3, CastTarget::Point(Vec3::X * 800.0));
+        assert_eq!((dagger.len(), wave.len()), (1, 1));
+        let landed_at = Vec3::X * 300.0;
+        app.world_mut()
+            .write_message(hit(dagger[0].payload, landed_at, Some(enemy), Vec::new()));
+        app.world_mut()
+            .write_message(hit(wave[0].payload, landed_at, Some(enemy), Vec::new()));
+        step(&mut app);
+        let ids: Vec<_> = app
+            .world()
+            .get::<StatusEffects>(enemy)
+            .unwrap()
+            .effects
+            .iter()
+            .map(|e| e.id)
+            .collect();
+        assert!(ids.contains(&"shadow_strike_burn"), "{ids:?}");
+        assert!(ids.contains(&"sonic_wave_burn"), "{ids:?}");
+        assert!(ids.contains(&"slow"), "{ids:?}");
+        // Run past both durations (16s): 50 hit + 5 x 20 + 14 x 23.
+        for _ in 0..340 {
+            step(&mut app);
+        }
+        assert!(
+            (health(&app, enemy) - (1000.0 - 50.0 - 100.0 - 322.0)).abs() < 1e-2,
+            "{}",
+            health(&app, enemy)
+        );
+    }
+
     #[test]
     fn execute_bonus_comes_from_effect_data() {
         let mut app = test_app();
@@ -2719,8 +2943,10 @@ mod tests {
         use super::definition::StatusSpec;
         use crate::status::{DispelType, StatusEffect};
         let spec = StatusSpec::Burn {
-            dps: RankValue::fixed(12.0),
+            id: "burn",
+            amount: RankValue::fixed(12.0),
             damage_type: DamageType::Magical,
+            tick_interval: RankValue::ZERO,
         };
         let healing = StatusSpec::Modifier {
             id: "twin_bonus",
@@ -2894,6 +3120,7 @@ mod tests {
             speed: None,
             skillshot: false,
             first_hit: false,
+            end_radius: None,
         }];
         let effects: &'static [AbilityEffectEntry] = Box::leak(entries.into_boxed_slice());
         ItemDefinition {
@@ -2989,6 +3216,7 @@ mod tests {
                 speed: None,
                 skillshot: false,
                 first_hit: false,
+                end_radius: None,
             })
             .on(
                 AbilityTrigger::OnProjectileHit,
@@ -3965,7 +4193,10 @@ mod tests {
             .on(
                 AbilityTrigger::OnCast,
                 EffectTarget::Caster,
-                AbilityEffect::Teleport,
+                AbilityEffect::Teleport {
+                    min_distance: RankValue::ZERO,
+                    max_distance: None,
+                },
             )
     }
 
@@ -4005,6 +4236,92 @@ mod tests {
                 .remaining
                 > 0.0
         );
+    }
+
+    fn bounded_blink_ability() -> AbilityDefinition {
+        AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(
+                TargetType::Point,
+                RankValue::fixed(scale::GLOBAL_CAST_RANGE),
+                RankValue::ZERO,
+            )
+            .costs(RankValue::fixed(8.0), RankValue::fixed(100.0))
+            .on(
+                AbilityTrigger::OnCast,
+                EffectTarget::Caster,
+                AbilityEffect::Teleport {
+                    min_distance: RankValue::fixed(200.0),
+                    max_distance: Some(RankValue::fixed(1075.0)),
+                },
+            )
+    }
+
+    /// Casts the bounded blink at `click` from the origin, facing +X, and returns where the
+    /// caster ends up (plus whether it was ever ordered to walk).
+    fn bounded_blink_to(click: Vec3) -> (Vec3, f32) {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(bounded_blink_ability());
+        let caster = spawn_caster(&mut app, KIT);
+        app.world_mut().entity_mut(caster).insert((
+            CollisionRadius(40.0),
+            Transform::from_translation(Vec3::ZERO).looking_to(Vec3::X, Vec3::Y),
+        ));
+        request(&mut app, caster, 3, CastTarget::Point(click));
+        let mut walked = false;
+        for _ in 0..12 {
+            step(&mut app);
+            walked |= app.world().get::<MoveTarget>(caster).is_some();
+        }
+        let world = app.world();
+        let mana = world.get::<Mana>(caster).unwrap().current;
+        assert!(
+            !walked,
+            "a global cast range never walks the caster into range"
+        );
+        (world.get::<Transform>(caster).unwrap().translation, mana)
+    }
+
+    #[test]
+    fn bounded_teleport_clamps_a_far_click_to_the_maximum_distance() {
+        let (at, mana) = bounded_blink_to(Vec3::new(3000.0, 0.0, 0.0));
+        assert!(at.distance(Vec3::new(1075.0, 0.0, 0.0)) < 1e-2, "{at}");
+        assert_eq!(mana, 900.0, "the cast was paid for");
+    }
+
+    #[test]
+    fn bounded_teleport_pushes_a_near_click_out_to_the_minimum_distance() {
+        let (at, _) = bounded_blink_to(Vec3::new(50.0, 0.0, 0.0));
+        assert!(at.distance(Vec3::new(200.0, 0.0, 0.0)) < 1e-2, "{at}");
+        let (at, _) = bounded_blink_to(Vec3::new(0.0, 0.0, 500.0));
+        assert!(
+            at.distance(Vec3::new(0.0, 0.0, 500.0)) < 1e-2,
+            "an in-bounds click is exact: {at}"
+        );
+    }
+
+    #[test]
+    fn bounded_teleport_clicked_on_the_caster_moves_along_her_facing() {
+        let (at, _) = bounded_blink_to(Vec3::ZERO);
+        assert!(at.distance(Vec3::new(200.0, 0.0, 0.0)) < 1e-2, "{at}");
+    }
+
+    #[test]
+    fn teleport_destination_applies_bounds_and_leaves_unbounded_aims_alone() {
+        use super::effects::teleport_destination;
+        let origin = Vec3::new(10.0, 0.0, 10.0);
+        let aim = Vec3::new(3010.0, 5.0, 10.0);
+        assert_eq!(teleport_destination(origin, aim, Vec3::X, 0.0, None), aim);
+        let far = teleport_destination(origin, aim, Vec3::X, 200.0, Some(1075.0));
+        assert!(far.distance(Vec3::new(1085.0, 5.0, 10.0)) < 1e-3, "{far}");
+        let on_self = teleport_destination(origin, origin, Vec3::Z, 200.0, Some(1075.0));
+        assert!(
+            on_self.distance(Vec3::new(10.0, 0.0, 210.0)) < 1e-3,
+            "{on_self}"
+        );
+        let no_min = teleport_destination(origin, origin, Vec3::Z, 0.0, Some(1075.0));
+        assert!(no_min.distance(origin) < 1e-3, "no minimum: stays put");
     }
 
     #[test]
@@ -4051,7 +4368,10 @@ mod tests {
             Box::leak(Box::new([AbilityEffectEntry {
                 trigger: AbilityTrigger::OnUse,
                 target: EffectTarget::Caster,
-                effect: AbilityEffect::Teleport,
+                effect: AbilityEffect::Teleport {
+                    min_distance: RankValue::ZERO,
+                    max_distance: None,
+                },
             }]))
         });
         ItemDefinition {
@@ -6584,8 +6904,10 @@ mod tests {
             target: EffectTarget::Caster,
             effect: AbilityEffect::ApplyStatus {
                 status: StatusSpec::Burn {
-                    dps: RankValue::fixed(12.0),
+                    id: "burn",
+                    amount: RankValue::fixed(12.0),
                     damage_type: DamageType::Magical,
+                    tick_interval: RankValue::ZERO,
                 },
                 duration: RankValue::ZERO,
             },
@@ -6654,7 +6976,10 @@ mod tests {
             rows.push(entry(
                 AbilityTrigger::OnUse,
                 EffectTarget::Caster,
-                AbilityEffect::Teleport,
+                AbilityEffect::Teleport {
+                    min_distance: RankValue::ZERO,
+                    max_distance: None,
+                },
             ));
         }
         let effects: &'static [AbilityEffectEntry] = Box::leak(rows.into_boxed_slice());

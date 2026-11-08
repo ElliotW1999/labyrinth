@@ -19,14 +19,15 @@ use super::catalog::AbilityDefinitions;
 use super::definition::{
     AbilityMechanic, AbilityTrigger, AreaCenter, AreaRadius, DisplacementKind, RingStyle,
 };
-use super::effects::{AbilityTriggerEvent, EffectSource, TriggerContext};
+use super::effects::{AbilityTriggerEvent, EffectSource, TriggerContext, unit_in_area};
 use crate::actions::{ActionFiredEvent, ActionId};
 use crate::combat::{ProjectileHitEvent, ProjectilePayload, SpawnProjectileEvent, flat_distance};
-use crate::components::{AbilityId, AttackTarget, Health, Team};
+use crate::components::{AbilityId, AttackTarget, BoundRadius, Health, Team};
 use crate::dimensions::area_contains;
 use crate::displacement::DisplacementEvent;
 use crate::resources::SharedAssets;
 use crate::scale::DASH_SPEED;
+use crate::status::{StatusEffects, is_untargetable};
 
 /// A unit a chain may jump to: already filtered for team, life and targetability.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -153,6 +154,18 @@ pub struct MechanicRunner<'w, 's> {
     pub commands: Commands<'w, 's>,
     assets: Res<'w, SharedAssets>,
     units: Query<'w, 's, (&'static Transform, &'static Health)>,
+    area_units: Query<
+        'w,
+        's,
+        (
+            Entity,
+            &'static Transform,
+            &'static Team,
+            &'static Health,
+            Option<&'static BoundRadius>,
+        ),
+    >,
+    statuses_of: Query<'w, 's, &'static StatusEffects>,
     displacements: MessageWriter<'w, DisplacementEvent>,
     projectiles: MessageWriter<'w, SpawnProjectileEvent>,
 }
@@ -188,6 +201,7 @@ impl MechanicRunner<'_, '_> {
                 speed,
                 skillshot,
                 first_hit,
+                end_radius,
             } => {
                 let unit = ctx
                     .unit_target
@@ -210,6 +224,9 @@ impl MechanicRunner<'_, '_> {
                     target_pos,
                     speed: *speed,
                     skillshot_width: skillshot.then_some(ctx.aoe_radius),
+                    skillshot_end_width: end_radius
+                        .filter(|_| *skillshot)
+                        .map(|width| width.at(ctx.rank)),
                     skillshot_max_hits: (*skillshot && *first_hit).then_some(1),
                     splash_radius: if *skillshot {
                         0.0
@@ -225,6 +242,11 @@ impl MechanicRunner<'_, '_> {
                     },
                 });
             }
+            AbilityMechanic::ProjectileToEach {
+                center,
+                team,
+                speed,
+            } => self.projectile_to_each(ctx, *center, *team, *speed),
             AbilityMechanic::AttackUnitTarget => {
                 if let Some(unit) = ctx.unit_target {
                     self.commands.entity(ctx.caster).insert(AttackTarget(unit));
@@ -249,6 +271,57 @@ impl MechanicRunner<'_, '_> {
                     *lifetime,
                 );
             }
+        }
+    }
+
+    /// One homing projectile at each valid unit inside the cast's area (never the caster).
+    fn projectile_to_each(
+        &mut self,
+        ctx: &CastContext,
+        center: AreaCenter,
+        team: crate::actions::TargetTeam,
+        speed: Option<f32>,
+    ) {
+        let center = Self::center(ctx, center);
+        let mut victims: Vec<(Entity, Vec3)> = self
+            .area_units
+            .iter()
+            .filter(|(entity, tf, unit_team, health, bound)| {
+                *entity != ctx.caster
+                    && unit_in_area(
+                        team,
+                        ctx.team,
+                        **unit_team,
+                        health,
+                        *bound,
+                        tf.translation,
+                        is_untargetable(&self.statuses_of, *entity),
+                        center,
+                        ctx.aoe_radius,
+                    )
+            })
+            .map(|(entity, tf, ..)| (entity, tf.translation))
+            .collect();
+        victims.sort_by_key(|(entity, _)| *entity);
+        for (unit, position) in victims {
+            self.projectiles.write(SpawnProjectileEvent {
+                team: ctx.team,
+                origin: ctx.origin,
+                target: Some(unit),
+                target_pos: position,
+                speed,
+                skillshot_width: None,
+                skillshot_end_width: None,
+                skillshot_max_hits: None,
+                splash_radius: 0.0,
+                payload: ProjectilePayload {
+                    caster: ctx.caster,
+                    source: ctx.source,
+                    rank: ctx.rank,
+                    cast_target: Some(unit),
+                    aim: ctx.aim,
+                },
+            });
         }
     }
 

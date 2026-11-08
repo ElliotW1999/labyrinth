@@ -2,6 +2,7 @@
 
 use bevy::prelude::*;
 
+use crate::basic_attack::MAX_ATTACK_SWING;
 use crate::components::{
     AbilityId, AbilityLoadout, CombatStats, Health, HeroAttributes, Mana, Team,
 };
@@ -47,6 +48,8 @@ pub enum HeroId {
     Warden,
     /// Generated hero — abilities are stubs until implemented.
     Hexer,
+    /// Generated hero — abilities are stubs until implemented.
+    QueenOfPain,
     // </hero_generator:hero_enum>
 }
 
@@ -59,6 +62,7 @@ impl HeroId {
             HeroId::Arcanist,
             HeroId::Warden,
             HeroId::Hexer,
+            HeroId::QueenOfPain,
             // </hero_generator:hero_all>
         ]
     }
@@ -96,6 +100,7 @@ impl HeroId {
 
             HeroId::Warden => "Warden",
             HeroId::Hexer => "Hexer",
+            HeroId::QueenOfPain => "Queen of Pain",
             // </hero_generator:hero_name>
         }
     }
@@ -109,7 +114,9 @@ impl HeroId {
 
             HeroId::Warden => "Str tank — stub kit",
             HeroId::Hexer => "Int support — stub kit",
-            // </hero_generator:hero_blurb>
+            HeroId::QueenOfPain => {
+                "Int assassin — Shadow Strike, QoP Blink, Scream of Pain, Sonic Wave"
+            } // </hero_generator:hero_blurb>
         }
     }
 
@@ -122,6 +129,7 @@ impl HeroId {
 
             HeroId::Warden => "STR",
             HeroId::Hexer => "INT",
+            HeroId::QueenOfPain => "INT",
             // </hero_generator:hero_primary>
         }
     }
@@ -153,6 +161,7 @@ impl HeroId {
                     2.0,
                     0.7,
                     scale::HERO_MOVE_SPEED,
+                    None,
                 ),
                 abilities: [
                     AbilityId::Dash,
@@ -186,6 +195,7 @@ impl HeroId {
                     1.2,
                     0.6,
                     scale::HERO_MOVE_SPEED_FAST,
+                    None,
                 ),
                 abilities: [
                     AbilityId::Blink,
@@ -219,6 +229,7 @@ impl HeroId {
                     0.8,
                     1.2,
                     scale::HERO_MOVE_SPEED_SLOW,
+                    None,
                 ),
                 abilities: [
                     AbilityId::ArcMissile,
@@ -253,6 +264,7 @@ impl HeroId {
                     2.0,
                     0.7,
                     scale::HERO_MOVE_SPEED,
+                    None,
                 ),
                 abilities: [
                     AbilityId::Bulwark,
@@ -286,12 +298,47 @@ impl HeroId {
                     0.8,
                     1.2,
                     scale::HERO_MOVE_SPEED,
+                    None,
                 ),
                 abilities: [
                     AbilityId::HexBolt,
                     AbilityId::Curse,
                     AbilityId::Ward,
                     AbilityId::Ritual,
+                ],
+                dimensions: UnitDimensions::HERO,
+            },
+            HeroId::QueenOfPain => HeroDef {
+                id: self,
+                attributes: HeroAttributes {
+                    strength: 20.0,
+                    agility: 20.0,
+                    intelligence: 25.0,
+                    str_per_level: 2.4,
+                    agi_per_level: 2.5,
+                    int_per_level: 3.4,
+                },
+                base_health: 200.0,
+                base_health_regen: -0.15,
+                base_mana: 75.0,
+                base_mana_regen: 0.0,
+                combat: hero_combat(
+                    54.0,
+                    550.0,
+                    1.5,
+                    0.56,
+                    0.41,
+                    crate::facing::HERO_TURN_RATE,
+                    -2.8,
+                    3.321839,
+                    290.0,
+                    Some(1500.0),
+                ),
+                abilities: [
+                    AbilityId::ShadowStrike,
+                    AbilityId::QueenOfPainBlink,
+                    AbilityId::ScreamOfPain,
+                    AbilityId::SonicWave,
                 ],
                 dimensions: UnitDimensions::HERO,
             },
@@ -320,6 +367,12 @@ pub struct HeroDef {
     pub dimensions: UnitDimensions,
 }
 
+/// Builds a hero's base [`CombatStats`].
+///
+/// `attack_projectile_speed` is the hero's absolute ranged-attack projectile speed. Heroes carry
+/// it as a base offset in `attack_projectile_speed_bonus` (relative to
+/// `basic_attack::projectile_speed_for(attack_range)`), so items stack on top of it. `None`
+/// keeps the range-derived default.
 fn hero_combat(
     attack_damage: f32,
     attack_range: f32,
@@ -330,6 +383,7 @@ fn hero_combat(
     armor: f32,
     magic_resist: f32,
     move_speed: f32,
+    attack_projectile_speed: Option<f32>,
 ) -> CombatStats {
     CombatStats {
         attack_damage,
@@ -339,8 +393,8 @@ fn hero_combat(
         attack_speed_mult: 0.0,
         base_attack_time,
         attack_speed: 0.0,
-        attack_point: attack_point.clamp(0.0, 0.5),
-        attack_backswing: attack_backswing.clamp(0.0, 0.5),
+        attack_point: attack_point.clamp(0.0, MAX_ATTACK_SWING),
+        attack_backswing: attack_backswing.clamp(0.0, MAX_ATTACK_SWING),
         turn_rate,
         armor,
         magic_resist,
@@ -359,7 +413,9 @@ fn hero_combat(
         splash_radius: 0.0,
         splash_damage_ratio: 0.0,
         attack_range_bonus: 0.0,
-        attack_projectile_speed_bonus: 0.0,
+        attack_projectile_speed_bonus: attack_projectile_speed.map_or(0.0, |speed| {
+            speed - crate::basic_attack::projectile_speed_for(attack_range)
+        }),
         lifesteal: 0.0,
         spell_lifesteal: 0.0,
         heal_amp: 0.0,
@@ -667,5 +723,89 @@ mod tests {
             assert_eq!(loadout.slots.len(), 4);
             assert_eq!(loadout.slots[3].id.is_ultimate(), true);
         }
+    }
+
+    #[test]
+    fn hero_combat_keeps_attack_point_above_half_a_second() {
+        let c = hero_combat(50.0, 550.0, 1.5, 0.56, 0.41, 0.6, 0.0, 0.0, 290.0, None);
+        assert_eq!(c.attack_point, 0.56);
+        assert_eq!(c.attack_backswing, 0.41);
+        let c = hero_combat(50.0, 550.0, 1.5, 5.0, 5.0, 0.6, 0.0, 0.0, 290.0, None);
+        assert_eq!(c.attack_point, MAX_ATTACK_SWING);
+        assert_eq!(c.attack_backswing, MAX_ATTACK_SWING);
+    }
+
+    #[test]
+    fn hero_combat_attack_projectile_speed_override() {
+        let c = hero_combat(
+            50.0,
+            550.0,
+            1.5,
+            0.3,
+            0.3,
+            0.6,
+            0.0,
+            0.0,
+            290.0,
+            Some(1500.0),
+        );
+        let speed = (crate::basic_attack::projectile_speed_for(c.base_attack_range())
+            + c.attack_projectile_speed_bonus)
+            .max(1.0);
+        assert!((speed - 1500.0).abs() < 1e-3, "speed {speed}");
+        let c = hero_combat(50.0, 550.0, 1.5, 0.3, 0.3, 0.6, 0.0, 0.0, 290.0, None);
+        assert_eq!(c.attack_projectile_speed_bonus, 0.0);
+    }
+
+    #[test]
+    fn queen_of_pain_matches_spec() {
+        use crate::combat::apply_damage;
+        use crate::components::DamageType;
+
+        assert_eq!(HeroId::from_cli("queen of pain"), Some(HeroId::QueenOfPain));
+        assert_eq!(HeroId::QueenOfPain.primary_label(), "INT");
+        let def = HeroId::QueenOfPain.def();
+        assert_eq!(
+            def.abilities,
+            [
+                AbilityId::ShadowStrike,
+                AbilityId::QueenOfPainBlink,
+                AbilityId::ScreamOfPain,
+                AbilityId::SonicWave,
+            ]
+        );
+
+        let (health, mana, stats, attrs) = def.vitals();
+        assert_eq!(health.max, 560.0);
+        assert!((health.regen_per_sec - 2.25).abs() < 1e-4);
+        assert!((mana.max - 375.0).abs() < 1e-3);
+        assert!((mana.regen_per_sec - 1.25).abs() < 1e-4);
+        assert!(stats.armor.abs() < 1e-4, "armor {}", stats.armor);
+        let taken = apply_damage(100.0, DamageType::Magical, &stats);
+        assert!(
+            (taken - 72.5).abs() < 0.01,
+            "27.5% magic resist: took {taken}"
+        );
+        assert_eq!(
+            (attrs.strength, attrs.agility, attrs.intelligence),
+            (20.0, 20.0, 25.0)
+        );
+
+        assert_eq!(stats.attack_range, 550.0);
+        assert_eq!(stats.base_attack_time, 1.5);
+        assert_eq!(stats.attack_point, 0.56);
+        assert_eq!(stats.attack_backswing, 0.41);
+        assert_eq!(stats.turn_rate, crate::facing::HERO_TURN_RATE);
+        assert_eq!(stats.turn_rate, 0.6);
+        assert_eq!(stats.move_speed, 290.0);
+        let projectile_speed = crate::basic_attack::projectile_speed_for(stats.base_attack_range())
+            + stats.attack_projectile_speed_bonus;
+        assert!((projectile_speed - 1500.0).abs() < 1e-3);
+        assert!(
+            (stats.attack_speed - 0.8).abs() < 1e-4,
+            "APS {}",
+            stats.attack_speed
+        );
+        assert!(!stats.is_melee());
     }
 }

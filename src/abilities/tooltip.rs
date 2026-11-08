@@ -49,6 +49,16 @@ pub fn ability_tooltip_bits(def: &AbilityDefinition, learned_rank: u32) -> Vec<T
         learned_rank,
     );
     push_value(&mut bits, "Radius", def.aoe_radius, max_rank, learned_rank);
+    for mechanic in &def.mechanics {
+        if let AbilityMechanic::Projectile {
+            skillshot: true,
+            end_radius: Some(end_radius),
+            ..
+        } = mechanic
+        {
+            push_value(&mut bits, "End radius", *end_radius, max_rank, learned_rank);
+        }
+    }
     push_value(&mut bits, "Cooldown", def.cooldown, max_rank, learned_rank);
     push_value(&mut bits, "Mana", def.mana_cost, max_rank, learned_rank);
     if def.cast_time > 0.0 {
@@ -113,6 +123,11 @@ fn kind_line(def: &AbilityDefinition) -> String {
                 skillshot: true, ..
             } => "Skillshot",
             AbilityMechanic::Projectile { .. } => "Projectile",
+            AbilityMechanic::ProjectileToEach { team, .. } => match team {
+                TargetTeam::Enemy => "Projectile at each enemy in radius",
+                TargetTeam::Ally | TargetTeam::SelfOnly => "Projectile at each ally in radius",
+                TargetTeam::Any => "Projectile at each unit in radius",
+            },
             AbilityMechanic::AttackUnitTarget => "Attack",
             AbilityMechanic::RingFx { .. } => continue,
         };
@@ -368,9 +383,13 @@ fn effect_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
             }
             rows
         }
+        AbilityEffect::Teleport {
+            max_distance: Some(max),
+            ..
+        } => vec![row("Max distance", max)],
         AbilityEffect::Dispel { .. }
+        | AbilityEffect::Teleport { .. }
         | AbilityEffect::RemoveStatus { .. }
-        | AbilityEffect::Teleport
         | AbilityEffect::Proc { .. }
         | AbilityEffect::Counter { .. }
         | AbilityEffect::Chain { .. }
@@ -386,6 +405,19 @@ fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
                 row("Slow %", percent),
                 seconds_row("Slow duration", duration),
             ]
+        }
+        StatusSpec::Burn {
+            amount,
+            tick_interval,
+            ..
+        } => {
+            let label = if tick_interval == RankValue::ZERO {
+                "Burn damage per second".to_string()
+            } else {
+                // Intervals are constant across ranks in practice; show rank 1's.
+                format!("Burn damage per {}s", tick_interval.at(1))
+            };
+            vec![row(label, amount), seconds_row("Burn duration", duration)]
         }
         StatusSpec::HealOverTime { hps } => vec![
             row("Heal per second", hps),
@@ -495,7 +527,13 @@ fn effect_text_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
             "Each time {} builds up",
             fmt_num(threshold.at(1))
         ))],
-        AbilityEffect::Teleport => vec![text_row("Teleports to the target point")],
+        AbilityEffect::Teleport { min_distance, .. } if min_distance != RankValue::ZERO => {
+            vec![text_row(format!(
+                "Teleports toward the target point, at least {} away",
+                fmt_num(min_distance.at(1))
+            ))]
+        }
+        AbilityEffect::Teleport { .. } => vec![text_row("Teleports to the target point")],
         AbilityEffect::Displace {
             distance: None,
             kind: DisplacementKind::Pull,

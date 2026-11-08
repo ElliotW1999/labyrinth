@@ -63,6 +63,11 @@ pub const CYCLONE_RISE_TIME: f32 = 0.25;
 pub const DASH_SPEED: f32 = 1200.0;
 
 // --- Ability geometry ---
+/// Cast range meaning "anywhere on the map" (`cast_range=global` in the CSVs). Larger than the
+/// map diagonal (~21,500), so a cast never needs the caster to walk into range; the cast
+/// indicator hides the range ring for it.
+pub const GLOBAL_CAST_RANGE: f32 = 25_000.0;
+
 pub const ABILITY_DASH_RANGE: f32 = 350.0;
 pub const ABILITY_UNIT_CAST_RANGE: f32 = 500.0;
 pub const ABILITY_GROUND_CAST_RANGE: f32 = 550.0;

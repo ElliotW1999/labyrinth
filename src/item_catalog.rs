@@ -2189,7 +2189,10 @@ static BLINK_DAGGER: ItemDefinition = ItemDefinition {
     effects: &[AbilityEffectEntry {
         trigger: AbilityTrigger::OnUse,
         target: EffectTarget::Caster,
-        effect: AbilityEffect::Teleport,
+        effect: AbilityEffect::Teleport {
+            min_distance: RankValue::ZERO,
+            max_distance: None,
+        },
     }],
     mechanics: &[],
 };

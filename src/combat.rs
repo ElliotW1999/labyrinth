@@ -654,6 +654,9 @@ pub struct SpawnProjectileEvent {
     pub speed: Option<f32>,
     /// Set for skillshots: hit every enemy within this distance of the path.
     pub skillshot_width: Option<f32>,
+    /// Skillshots only: the width the wave widens to by the end of its travel (`None` keeps
+    /// `skillshot_width` the whole way).
+    pub skillshot_end_width: Option<f32>,
     /// Skillshots only: the projectile ends once it has struck this many enemies.
     pub skillshot_max_hits: Option<u32>,
     pub splash_radius: f32,
@@ -665,10 +668,28 @@ pub const SPELL_PROJECTILE_SPEED: f32 = scale::u(34.0);
 /// Piercing projectile: reports each enemy it passes once.
 #[derive(Component, Debug, Clone, Default)]
 pub struct Skillshot {
+    /// Contact distance from the path at the start of the flight.
     pub width: f32,
+    /// Where the flight began (ground plane).
+    pub start: Vec3,
+    /// Length of the flight; the width reaches `end_width` once the projectile has covered it.
+    pub range: f32,
+    /// Contact distance at the end of the flight (equal to `width` for a constant skillshot).
+    pub end_width: f32,
     pub hit: Vec<Entity>,
     /// `Some(n)`: the projectile ends after striking `n` enemies (a hook uses 1).
     pub max_hits: Option<u32>,
+}
+
+impl Skillshot {
+    /// Contact distance at `position`: `width` growing linearly to `end_width` over `range`.
+    pub fn width_at(&self, position: Vec3) -> f32 {
+        if self.range <= 0.0 || self.end_width == self.width {
+            return self.width;
+        }
+        let travelled = flat_distance(self.start, position) / self.range;
+        self.width + (self.end_width - self.width) * travelled.clamp(0.0, 1.0)
+    }
 }
 
 pub fn skillshot_contacts(
@@ -686,6 +707,7 @@ pub fn skillshot_contacts(
 ) {
     for (proj_entity, proj_tf, projectile, payload, mut skillshot) in &mut projectiles {
         let impact = proj_tf.translation;
+        let width = skillshot.width_at(impact);
         let mut touched: Vec<(f32, Entity)> = units
             .iter()
             .filter(|(unit, unit_tf, team, health, bound)| {
@@ -693,12 +715,7 @@ pub fn skillshot_contacts(
                     && health.is_alive()
                     && !is_untargetable(&statuses_of, *unit)
                     && !skillshot.hit.contains(unit)
-                    && area_contains(
-                        impact,
-                        skillshot.width,
-                        unit_tf.translation,
-                        bounds_of(*bound),
-                    )
+                    && area_contains(impact, width, unit_tf.translation, bounds_of(*bound))
             })
             .map(|(unit, unit_tf, ..)| (flat_distance(impact, unit_tf.translation), unit))
             .collect();
@@ -958,6 +975,7 @@ fn spawn_spell_bolt(
         target_pos,
         speed,
         skillshot_width,
+        skillshot_end_width,
         skillshot_max_hits,
         splash_radius,
         payload,
@@ -1003,6 +1021,9 @@ fn spawn_spell_bolt(
         if let Some(width) = skillshot_width {
             entity.insert(Skillshot {
                 width,
+                start: origin,
+                range: flat_distance(origin, target_pos),
+                end_width: skillshot_end_width.unwrap_or(width),
                 hit: Vec::new(),
                 max_hits: skillshot_max_hits,
             });
@@ -1344,6 +1365,9 @@ mod tests {
                     payload(caster),
                     Skillshot {
                         width: 200.0,
+                        start: Vec3::ZERO,
+                        range: 0.0,
+                        end_width: 200.0,
                         hit: Vec::new(),
                         max_hits,
                     },
@@ -1366,6 +1390,111 @@ mod tests {
         assert_eq!(primaries, vec![near, far], "an ordinary skillshot pierces");
         assert!(!primaries.contains(&ally));
         assert!(alive);
+    }
+
+    #[test]
+    fn expanding_skillshot_widens_with_distance_travelled() {
+        let payload = |caster| ProjectilePayload {
+            caster,
+            source: EffectSource::Ability(AbilityId::Bolt),
+            rank: 1,
+            cast_target: None,
+            aim: Vec3::ZERO,
+        };
+        // A wave from the origin that widens from 100 to 450 over 900 units. An enemy 300
+        // to the side of the path is outside the starting width but inside the final one.
+        let strikes = |expanding: bool, wave_x: f32| {
+            let mut world = World::new();
+            world.init_resource::<Messages<ProjectileHitEvent>>();
+            let caster = world
+                .spawn((
+                    Transform::from_xyz(-500.0, 0.0, 0.0),
+                    Team::Radiant,
+                    Health::new(1.0),
+                ))
+                .id();
+            world.spawn((
+                Transform::from_xyz(wave_x, 0.0, 300.0),
+                Team::Dire,
+                Health::new(500.0),
+            ));
+            world.spawn((
+                Transform::from_xyz(wave_x, scale::body(1.0), 0.0),
+                Projectile {
+                    speed: 1.0,
+                    team: Team::Radiant,
+                    radius: scale::body(0.85),
+                    lifetime: 1.0,
+                    splash_radius: 0.0,
+                },
+                payload(caster),
+                Skillshot {
+                    width: 100.0,
+                    start: Vec3::ZERO,
+                    range: 900.0,
+                    end_width: if expanding { 450.0 } else { 100.0 },
+                    hit: Vec::new(),
+                    max_hits: None,
+                },
+            ));
+            world.run_system_once(skillshot_contacts).unwrap();
+            world
+                .resource::<Messages<ProjectileHitEvent>>()
+                .iter_current_update_messages()
+                .count()
+        };
+        assert_eq!(strikes(true, 50.0), 0, "near the start the wave is narrow");
+        assert_eq!(
+            strikes(true, 850.0),
+            1,
+            "near the end the wave reaches 300 to the side"
+        );
+        assert_eq!(
+            strikes(false, 850.0),
+            0,
+            "a constant-width skillshot never widens"
+        );
+        let wave = Skillshot {
+            width: 100.0,
+            start: Vec3::ZERO,
+            range: 900.0,
+            end_width: 450.0,
+            ..Default::default()
+        };
+        assert!((wave.width_at(Vec3::new(450.0, 0.0, 0.0)) - 275.0).abs() < 1e-3);
+        assert_eq!(
+            wave.width_at(Vec3::new(5000.0, 0.0, 0.0)),
+            450.0,
+            "clamped at the end"
+        );
+    }
+
+    #[test]
+    fn skillshot_width_edge_cases() {
+        let base = Skillshot {
+            width: 100.0,
+            start: Vec3::new(100.0, 0.0, 100.0),
+            range: 0.0,
+            end_width: 450.0,
+            ..Default::default()
+        };
+        // A zero-length flight never divides by zero; it keeps the starting width.
+        assert_eq!(base.width_at(Vec3::new(900.0, 0.0, 100.0)), 100.0);
+        let wave = Skillshot {
+            range: 800.0,
+            ..base
+        };
+        assert_eq!(wave.width_at(wave.start), 100.0, "starting width at launch");
+        // Behind the launch point is still distance 0..range, never narrower than the start.
+        assert!(wave.width_at(Vec3::new(-300.0, 0.0, 100.0)) >= 100.0);
+        // Height does not count towards distance travelled.
+        let level = wave.width_at(Vec3::new(500.0, 0.0, 100.0));
+        let raised = wave.width_at(Vec3::new(500.0, 400.0, 100.0));
+        assert!((level - raised).abs() < 1e-3);
+        assert!(
+            (level - (100.0 + 350.0 * 0.5)).abs() < 1e-3,
+            "halfway: {level}"
+        );
     }
 
     mod leech {

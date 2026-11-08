@@ -9,6 +9,9 @@ use crate::components::DamageType;
 use crate::status::{DispelType, Leash, LeashAnchor, StatusEffect, StatusKind};
 use crate::vitals::{ManaShield, ResourceKind, ResourceStat};
 
+/// Upper bound (seconds) for an ability's cancellable backswing. The cast point stays capped at 0.5.
+pub const MAX_CAST_BACKSWING: f32 = 1.0;
+
 /// A value that scales with ability level: `clamp(base + per_rank × rank, min, max)`,
 /// or an explicit per-level table (`75|150|225|300` in the generator CSVs).
 /// `rank` is clamped to at least 1 so unlearned abilities report their level-1 value;
@@ -367,10 +370,15 @@ pub enum StatusSpec {
     Shield {
         amount: RankValue,
     },
-    /// Periodic damage while active (`dps` at rank).
+    /// Periodic damage while active. `amount` is damage per second when `tick_interval` is 0
+    /// (continuous), otherwise damage per tick, one tick every `tick_interval` seconds. `id` is
+    /// the status id: hand-written burns use `"burn"`, generated ones `<owner>_burn` so
+    /// burns from different sources coexist.
     Burn {
-        dps: RankValue,
+        id: &'static str,
+        amount: RankValue,
         damage_type: DamageType,
+        tick_interval: RankValue,
     },
     /// Items only; abilities use silence.
     Mute,
@@ -514,8 +522,21 @@ impl StatusSpec {
             }
             StatusSpec::DebuffImmunity => StatusEffect::debuff_immunity(duration),
             StatusSpec::Shield { amount } => StatusEffect::shield(amount.at(rank), duration),
-            StatusSpec::Burn { dps, damage_type } => {
-                StatusEffect::burn(dps.at(rank), damage_type, duration)
+            StatusSpec::Burn {
+                id,
+                amount,
+                damage_type,
+                tick_interval,
+            } => {
+                let interval = tick_interval.at(rank);
+                if interval > 0.0 {
+                    StatusEffect::burn_ticking(id, amount.at(rank), interval, damage_type, duration)
+                } else {
+                    StatusEffect {
+                        id,
+                        ..StatusEffect::burn(amount.at(rank), damage_type, duration)
+                    }
+                }
             }
             StatusSpec::Mute => StatusEffect::mute(duration),
             StatusSpec::Sleep => StatusEffect::sleep(duration),
@@ -760,7 +781,14 @@ pub enum AbilityEffect {
     /// Instantly relocates each target to the trigger's aim point, validated against the
     /// map, static obstacles, and unit overlap (see `crate::teleport`). Rejected
     /// destinations leave the target untouched.
-    Teleport,
+    ///
+    /// With bounds, the distance from the caster to the aim point is clamped to
+    /// `min_distance..=max_distance` along the same line (an aim on the caster itself uses
+    /// the caster's facing). `ZERO` / `None` leave the destination exactly at the aim point.
+    Teleport {
+        min_distance: RankValue,
+        max_distance: Option<RankValue>,
+    },
     /// Permanent bonus while an item is owned; only meaningful under `AbilityTrigger::Passive`.
     PassiveStat {
         stat: PassiveStat,
@@ -871,6 +899,19 @@ pub enum AbilityMechanic {
         skillshot: bool,
         /// Skillshots only: end at the first enemy struck (no `OnImpact` after a hit).
         first_hit: bool,
+        /// Skillshots only: the width (like `aoe_radius`, per rank) the wave widens to by the
+        /// end of its flight. `None` keeps the width constant.
+        end_radius: Option<RankValue>,
+    },
+    /// One homing spell projectile per living, targetable unit of `team` inside the ability's
+    /// `aoe_radius` around `center` (the caster is never one). Each projectile carries the
+    /// cast's payload with that unit as its cast target, and its hit fires `OnProjectileHit`
+    /// with the struck unit as the trigger unit. No splash.
+    ProjectileToEach {
+        center: AreaCenter,
+        team: TargetTeam,
+        /// World units per second; `None` uses the default spell projectile speed.
+        speed: Option<f32>,
     },
     /// Caster follows up with auto-attacks on the unit target.
     AttackUnitTarget,
@@ -896,7 +937,7 @@ pub struct AbilityDefinition {
     pub aoe_radius: RankValue,
     /// Cast point: delay before the ability fires (0..=0.5).
     pub cast_time: f32,
-    /// Cancellable recovery after the ability fires (0..=0.5).
+    /// Cancellable recovery after the ability fires (0..=`MAX_CAST_BACKSWING`).
     pub backswing: f32,
     pub cooldown: RankValue,
     pub mana_cost: RankValue,
@@ -960,7 +1001,7 @@ impl AbilityDefinition {
 
     pub fn timing(mut self, cast_time: f32, backswing: f32) -> Self {
         self.cast_time = cast_time.clamp(0.0, 0.5);
-        self.backswing = backswing.clamp(0.0, 0.5);
+        self.backswing = backswing.clamp(0.0, MAX_CAST_BACKSWING);
         self
     }
 

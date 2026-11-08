@@ -114,6 +114,14 @@ pub struct StatusEffect {
     /// Diverts incoming damage to mana while active.
     pub mana_shield: Option<crate::vitals::ManaShield>,
     pub damage_per_sec: f32,
+    /// Ticking burn: seconds between ticks (`0` = no ticking; see [`StatusEffect::burn_ticking`]).
+    pub dot_interval: f32,
+    /// Ticking burn: damage dealt by each tick.
+    pub dot_per_tick: f32,
+    /// Ticking burn: time accumulated towards the next tick.
+    pub dot_timer: f32,
+    /// Ticking burn: ticks still owed. Written only by [`tick_status_effects`].
+    pub dot_ticks_left: u32,
     pub dot_damage_type: DamageType,
     pub dot_source: Option<Entity>,
     /// Added to [`ShieldPool`] on apply; removed on expire.
@@ -168,6 +176,10 @@ impl StatusEffect {
             heal_blocked: false,
             mana_shield: None,
             damage_per_sec: 0.0,
+            dot_interval: 0.0,
+            dot_per_tick: 0.0,
+            dot_timer: 0.0,
+            dot_ticks_left: 0,
             dot_damage_type: DamageType::Magical,
             dot_source: None,
             shield_amount: 0.0,
@@ -248,6 +260,32 @@ impl StatusEffect {
             damage_per_sec: dps,
             dot_damage_type: damage_type,
             ..Self::debuff("burn", duration)
+        }
+    }
+
+    /// A burn that deals `per_tick` every `interval` seconds, the first one `interval` after
+    /// application. `floor(duration / interval)` ticks are dealt in total, whatever the frame
+    /// rate: ticks still owed when the burn expires on its own are flushed (a dispel or a
+    /// refresh does not flush). The id is the caller's, so burns from different sources coexist.
+    pub fn burn_ticking(
+        id: &'static str,
+        per_tick: f32,
+        interval: f32,
+        damage_type: DamageType,
+        duration: f32,
+    ) -> Self {
+        let interval = interval.max(0.0);
+        let ticks = if interval > 0.0 {
+            (duration / interval + 1e-4).floor().max(0.0) as u32
+        } else {
+            0
+        };
+        Self {
+            dot_interval: interval,
+            dot_per_tick: per_tick,
+            dot_ticks_left: ticks,
+            dot_damage_type: damage_type,
+            ..Self::debuff(id, duration)
         }
     }
 
@@ -707,6 +745,9 @@ pub(crate) fn report_removed(
     }
 }
 
+/// Slack when comparing a ticking burn's accumulated time with its interval (float drift).
+const DOT_TICK_EPSILON: f32 = 1e-4;
+
 pub fn tick_status_effects(
     time: Res<Time>,
     mut damage: MessageWriter<DamageEvent>,
@@ -744,8 +785,32 @@ pub fn tick_status_effects(
                     effect.dot_damage_type,
                 ));
             }
+            if effect.dot_interval > 0.0 {
+                effect.dot_timer += dt;
+                while effect.dot_ticks_left > 0
+                    && effect.dot_timer + DOT_TICK_EPSILON >= effect.dot_interval
+                {
+                    effect.dot_timer -= effect.dot_interval;
+                    effect.dot_ticks_left -= 1;
+                    damage.write(DamageEvent::dot(
+                        effect.dot_source,
+                        entity,
+                        effect.dot_per_tick,
+                        effect.dot_damage_type,
+                    ));
+                }
+            }
             effect.remaining -= dt;
             if effect.remaining <= 0.0 {
+                // Natural expiry flushes owed ticks so the total is exact at any frame rate.
+                for _ in 0..std::mem::take(&mut effect.dot_ticks_left) {
+                    damage.write(DamageEvent::dot(
+                        effect.dot_source,
+                        entity,
+                        effect.dot_per_tick,
+                        effect.dot_damage_type,
+                    ));
+                }
                 let expired = statuses.effects.remove(i);
                 subtract_status_stat_delta(&expired, &mut stats, agi);
                 release_shield(&expired, shield.as_deref_mut());
@@ -2436,5 +2501,280 @@ mod tests {
         assert!(apply_debuff_immunity(&mut immune, &mut stats, 5.0, 0.0));
         assert!(!apply_status(&mut immune, &mut stats, leash, 0.0));
         assert_eq!(immune.leashes().count(), 0);
+    }
+
+    mod ticking_burn {
+        use super::*;
+        use crate::combat::DamageKind;
+        use std::time::Duration;
+
+        #[derive(Resource, Default)]
+        struct Dealt(Vec<DamageEvent>);
+
+        fn collect(mut reader: MessageReader<DamageEvent>, mut dealt: ResMut<Dealt>) {
+            dealt.0.extend(reader.read().cloned());
+        }
+
+        fn app() -> App {
+            let mut app = App::new();
+            app.init_resource::<Time>()
+                .init_resource::<Dealt>()
+                .add_message::<StatusEffectEvent>()
+                .add_message::<StatusLifecycleEvent>()
+                .add_message::<DamageEvent>()
+                .add_systems(
+                    Update,
+                    (apply_status_effect_events, tick_status_effects, collect).chain(),
+                );
+            app
+        }
+
+        fn victim(app: &mut App) -> Entity {
+            app.world_mut()
+                .spawn((
+                    StatusEffects::default(),
+                    CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 300.0),
+                    Health::new(1000.0),
+                ))
+                .id()
+        }
+
+        fn burn(
+            app: &mut App,
+            target: Entity,
+            id: &'static str,
+            per_tick: f32,
+            every: f32,
+            secs: f32,
+        ) {
+            let mut effect =
+                StatusEffect::burn_ticking(id, per_tick, every, DamageType::Magical, secs);
+            effect.dot_source = None;
+            app.world_mut().write_message(StatusEffectEvent::new(
+                None,
+                target,
+                StatusChange::Apply(effect),
+            ));
+        }
+
+        fn advance(app: &mut App, dt: f32) {
+            app.world_mut()
+                .resource_mut::<Time>()
+                .advance_by(Duration::from_secs_f32(dt));
+            app.update();
+        }
+
+        fn dealt(app: &App) -> Vec<DamageEvent> {
+            app.world().resource::<Dealt>().0.clone()
+        }
+
+        #[test]
+        fn sixteen_seconds_every_three_deals_exactly_five_ticks() {
+            let mut app = app();
+            let target = victim(&mut app);
+            burn(&mut app, target, "shadow_strike_burn", 20.0, 3.0, 16.0);
+            for _ in 0..340 {
+                advance(&mut app, 0.05);
+            }
+            let hits = dealt(&app);
+            assert_eq!(hits.len(), 5);
+            assert!(
+                hits.iter()
+                    .all(|h| h.amount == 20.0 && h.kind == DamageKind::Dot)
+            );
+            assert!(
+                app.world()
+                    .get::<StatusEffects>(target)
+                    .unwrap()
+                    .effects
+                    .is_empty(),
+                "the burn expired"
+            );
+        }
+
+        #[test]
+        fn first_tick_lands_one_interval_after_application() {
+            let mut app = app();
+            let target = victim(&mut app);
+            burn(&mut app, target, "shadow_strike_burn", 20.0, 3.0, 16.0);
+            for _ in 0..58 {
+                advance(&mut app, 0.05);
+            }
+            assert!(dealt(&app).is_empty(), "nothing before 3s");
+            for _ in 0..4 {
+                advance(&mut app, 0.05);
+            }
+            assert_eq!(dealt(&app).len(), 1);
+        }
+
+        #[test]
+        fn uneven_frames_still_deal_fourteen_ticks_in_one_point_four_seconds() {
+            let mut app = app();
+            let target = victim(&mut app);
+            burn(&mut app, target, "sonic_wave_burn", 23.0, 0.1, 1.4);
+            let steps = [0.013, 0.071, 0.2, 0.0333, 0.119, 0.0071];
+            for i in 0..400 {
+                advance(&mut app, steps[i % steps.len()]);
+                if app
+                    .world()
+                    .get::<StatusEffects>(target)
+                    .unwrap()
+                    .effects
+                    .is_empty()
+                {
+                    break;
+                }
+            }
+            let hits = dealt(&app);
+            assert_eq!(hits.len(), 14);
+            let total: f32 = hits.iter().map(|h| h.amount).sum();
+            assert!((total - 322.0).abs() < 1e-3);
+        }
+
+        #[test]
+        fn a_long_frame_flushes_every_owed_tick_on_expiry() {
+            let mut app = app();
+            let target = victim(&mut app);
+            burn(&mut app, target, "sonic_wave_burn", 23.0, 0.1, 1.4);
+            advance(&mut app, 0.016);
+            advance(&mut app, 5.0);
+            assert_eq!(dealt(&app).len(), 14);
+        }
+
+        #[test]
+        fn dispel_stops_the_ticks_without_flushing() {
+            let mut app = app();
+            let target = victim(&mut app);
+            burn(&mut app, target, "shadow_strike_burn", 20.0, 3.0, 16.0);
+            for _ in 0..70 {
+                advance(&mut app, 0.05);
+            }
+            assert_eq!(dealt(&app).len(), 1);
+            app.world_mut().write_message(StatusEffectEvent::new(
+                None,
+                target,
+                StatusChange::Dispel {
+                    kind: StatusKind::Debuff,
+                    strength: DispelStrength::Basic,
+                },
+            ));
+            for _ in 0..400 {
+                advance(&mut app, 0.05);
+            }
+            assert_eq!(dealt(&app).len(), 1, "no ticks after the dispel");
+        }
+
+        #[test]
+        fn burns_from_different_owners_coexist() {
+            let mut app = app();
+            let target = victim(&mut app);
+            burn(&mut app, target, "shadow_strike_burn", 20.0, 3.0, 16.0);
+            burn(&mut app, target, "sonic_wave_burn", 23.0, 0.1, 1.4);
+            advance(&mut app, 0.016);
+            let ids: Vec<_> = app
+                .world()
+                .get::<StatusEffects>(target)
+                .unwrap()
+                .effects
+                .iter()
+                .map(|e| e.id)
+                .collect();
+            assert_eq!(ids, vec!["shadow_strike_burn", "sonic_wave_burn"]);
+            advance(&mut app, 3.5);
+            let hits = dealt(&app);
+            assert_eq!(hits.iter().filter(|h| h.amount == 23.0).count(), 14);
+            assert_eq!(hits.iter().filter(|h| h.amount == 20.0).count(), 1);
+        }
+
+        #[test]
+        fn reapplying_a_ticking_burn_restarts_its_clock_and_tick_count() {
+            let mut app = app();
+            let target = victim(&mut app);
+            burn(&mut app, target, "shadow_strike_burn", 20.0, 3.0, 16.0);
+            // 7s in: ticks at 3s and 6s have landed.
+            for _ in 0..140 {
+                advance(&mut app, 0.05);
+            }
+            assert_eq!(dealt(&app).len(), 2);
+            // Refresh: the old burn (3 owed ticks) is replaced, not stacked or flushed.
+            burn(&mut app, target, "shadow_strike_burn", 30.0, 3.0, 16.0);
+            advance(&mut app, 0.016);
+            let burns = app
+                .world()
+                .get::<StatusEffects>(target)
+                .unwrap()
+                .effects
+                .iter()
+                .filter(|e| e.id == "shadow_strike_burn")
+                .count();
+            assert_eq!(burns, 1, "same id refreshes by replacing");
+            // 2.5s later (< one interval since the refresh) nothing new has landed.
+            for _ in 0..50 {
+                advance(&mut app, 0.05);
+            }
+            assert_eq!(dealt(&app).len(), 2, "the clock restarted at the refresh");
+            for _ in 0..400 {
+                advance(&mut app, 0.05);
+            }
+            let hits = dealt(&app);
+            assert_eq!(hits.len(), 2 + 5, "a full fresh set of five ticks");
+            assert!(hits[2..].iter().all(|h| h.amount == 30.0));
+        }
+
+        #[test]
+        fn tick_count_is_floor_of_duration_over_interval() {
+            let ticks = |every, secs| {
+                StatusEffect::burn_ticking("b", 1.0, every, DamageType::Magical, secs)
+                    .dot_ticks_left
+            };
+            assert_eq!(ticks(3.0, 16.0), 5);
+            assert_eq!(ticks(0.1, 1.4), 14);
+            assert_eq!(ticks(3.0, 2.9), 0, "shorter than one interval: no ticks");
+            assert_eq!(
+                ticks(0.0, 5.0),
+                0,
+                "no interval: the continuous form is used"
+            );
+        }
+
+        #[test]
+        fn ticks_are_attributed_to_the_burn_source() {
+            let mut app = app();
+            let target = victim(&mut app);
+            let source = app.world_mut().spawn_empty().id();
+            let mut effect =
+                StatusEffect::burn_ticking("sonic_wave_burn", 23.0, 0.1, DamageType::Pure, 1.4);
+            effect.dot_source = Some(source);
+            app.world_mut().write_message(StatusEffectEvent::new(
+                Some(source),
+                target,
+                StatusChange::Apply(effect),
+            ));
+            advance(&mut app, 0.016);
+            advance(&mut app, 2.0);
+            let hits = dealt(&app);
+            assert_eq!(hits.len(), 14);
+            assert!(hits.iter().all(|h| h.source == Some(source)
+                && h.target == target
+                && h.damage_type == DamageType::Pure));
+        }
+
+        #[test]
+        fn continuous_burn_is_unchanged() {
+            let mut app = app();
+            let target = victim(&mut app);
+            app.world_mut().write_message(StatusEffectEvent::new(
+                None,
+                target,
+                StatusChange::Apply(StatusEffect::burn(10.0, DamageType::Magical, 2.0)),
+            ));
+            for _ in 0..10 {
+                advance(&mut app, 0.1);
+            }
+            let hits = dealt(&app);
+            assert_eq!(hits.len(), 10, "one slice per frame");
+            let total: f32 = hits.iter().map(|h| h.amount).sum();
+            assert!((total - 10.0).abs() < 1e-3);
+        }
     }
 }

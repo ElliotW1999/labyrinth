@@ -126,9 +126,9 @@ pub struct CombatStats {
     pub base_attack_time: f32,
     /// Cached attacks-per-second after the IAS formula (used by combat/HUD).
     pub attack_speed: f32,
-    /// Foreswing before the projectile/hit fires (0..=0.5s).
+    /// Foreswing before the projectile/hit fires (0..=1.0s, `basic_attack::MAX_ATTACK_SWING`).
     pub attack_point: f32,
-    /// Backswing after the attack (0..=0.5s); cancelled by new player orders.
+    /// Backswing after the attack (0..=1.0s, `basic_attack::MAX_ATTACK_SWING`); cancelled by new player orders.
     pub attack_backswing: f32,
     /// Yaw turn rate in radians per 0.03 seconds.
     pub turn_rate: f32,
@@ -602,6 +602,11 @@ pub enum AbilityId {
     StoneSkin,
     // AbilityGenerator: Overcharge
     Overcharge,
+    // Queen of Pain (generated stubs)
+    ShadowStrike,
+    QueenOfPainBlink,
+    ScreamOfPain,
+    SonicWave,
     // </hero_generator:ability_enum>
 }
 
@@ -635,6 +640,10 @@ impl AbilityId {
             AbilityId::Cataclysm => "Cataclysm",
             AbilityId::StoneSkin => "Stone Skin",
             AbilityId::Overcharge => "Overcharge",
+            AbilityId::ShadowStrike => "Shadow Strike",
+            AbilityId::QueenOfPainBlink => "QoP Blink",
+            AbilityId::ScreamOfPain => "Scream of Pain",
+            AbilityId::SonicWave => "Sonic Wave",
             // </hero_generator:ability_display_name>
         }
     }
@@ -648,7 +657,8 @@ impl AbilityId {
                 | AbilityId::Meteor
                 | AbilityId::Aegis
                 | AbilityId::Ritual
-                | AbilityId::Cataclysm // </hero_generator:ability_ultimates>
+                | AbilityId::Cataclysm
+                | AbilityId::SonicWave // </hero_generator:ability_ultimates>
         )
     }
 
@@ -661,6 +671,10 @@ impl AbilityId {
             AbilityId::StoneSkin => 4,
             AbilityId::Overcharge => 7,
             AbilityId::Blink => 3,
+            AbilityId::ShadowStrike => 7,
+            AbilityId::QueenOfPainBlink => 7,
+            AbilityId::ScreamOfPain => 7,
+            AbilityId::SonicWave => 4,
             // </ability_generator:max_rank>
             _ if self.is_ultimate() => 4,
             _ => 7,
