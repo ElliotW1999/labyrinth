@@ -132,6 +132,10 @@ pub enum AbilityTrigger {
     /// upkeep system applies them as permanent statuses when the toggle turns on and
     /// removes them when it turns off.
     WhileToggled,
+    /// Held while the condition is true: only `ApplyStatus` entries are read. The statuses
+    /// are permanent, undispellable and reactive (they fire no status triggers) and are
+    /// removed exactly when the condition turns false, the source is lost or the owner dies.
+    While(Condition),
     /// Item stat bonuses held while the item is owned (applied on purchase, not resolved).
     Passive,
     /// An item was activated from the inventory.
@@ -190,6 +194,30 @@ pub enum AbilityTrigger {
     OnSpellHit,
     /// Emitted by a custom mechanic, e.g. `Custom("on_skewer_end")`.
     Custom(&'static str),
+}
+
+/// What a [`AbilityTrigger::While`] entry waits for. Evaluated once per frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Condition {
+    /// Health is strictly below `percent` of max.
+    HealthBelow {
+        percent: u8,
+    },
+    /// The owner moved last frame (walking, dashing or forced; not teleporting).
+    Moving,
+    Stationary,
+    /// At least `at_least` living, targetable enemies are within `radius`.
+    EnemiesNear {
+        radius: u32,
+        at_least: u8,
+    },
+    /// At least `at_least` other living, targetable allies are within `radius`.
+    AlliesNear {
+        radius: u32,
+        at_least: u8,
+    },
+    /// The owner has a status with this runtime id.
+    HasStatus(&'static str),
 }
 
 /// Which statuses an `OnStatusApplied` / `OnStatusRemoved` entry reacts to.

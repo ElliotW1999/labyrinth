@@ -9,15 +9,17 @@ use bevy::prelude::*;
 use super::casting::AbilityCastEvent;
 use super::catalog::AbilityDefinitions;
 use super::definition::AbilityTrigger;
+use super::definition::{AbilityEffect, Condition, StatusBuildContext};
 use super::effects::{
     AbilityTriggerEvent, EffectSource, SpellHitEvent, StatusMeta, TriggerContext,
 };
+use super::passive::reconcile_held_status;
 use crate::combat::flat_distance;
 use crate::combat::{DamageAppliedEvent, DamageKind};
-use crate::components::{AbilityLoadout, BoundRadius, Health, Team};
+use crate::components::{AbilityLoadout, BoundRadius, CombatStats, Health, HeroAttributes, Team};
 use crate::dimensions::{area_contains, bounds_of};
 use crate::items::{Inventory, ItemId};
-use crate::status::{StatusEffects, is_untargetable};
+use crate::status::{StatusChange, StatusEffectEvent, StatusEffects, is_untargetable};
 use crate::status::{StatusLifecycle, StatusLifecycleEvent};
 use crate::teleport::TeleportCompletedEvent;
 
@@ -100,6 +102,9 @@ pub struct TriggerTracking {
     /// Enemies within the radius of each `OnEnemyEnter` / `OnEnemyLeave` entry, sorted by
     /// `Entity`, per (source, trigger).
     pub proximity: Vec<((EffectSource, AbilityTrigger), Vec<Entity>)>,
+    /// Statuses `sync_conditional_statuses` applied for `While` entries, by source, so they
+    /// can be taken off exactly when the source is lost.
+    pub held: Vec<(EffectSource, &'static str)>,
 }
 
 /// Distances below this are not movement.
@@ -143,6 +148,149 @@ fn fan_out(
             );
             triggers.write(AbilityTriggerEvent(build(ctx)));
         }
+    }
+}
+
+/// What `eval_condition` needs to know about the owner and its surroundings.
+struct ConditionView<'a> {
+    owner: Entity,
+    pos: Vec3,
+    team: Team,
+    health: Option<&'a Health>,
+    statuses: &'a StatusEffects,
+    moved: f32,
+}
+
+fn count_near(
+    view: &ConditionView,
+    radius: u32,
+    wanted_team: Team,
+    units: &Query<(Entity, &Transform, &Team, &Health, Option<&BoundRadius>)>,
+    untargetable: &Query<&StatusEffects>,
+) -> usize {
+    units
+        .iter()
+        .filter(|(entity, tf, team, health, bound)| {
+            *entity != view.owner
+                && **team == wanted_team
+                && health.is_alive()
+                && !is_untargetable(untargetable, *entity)
+                && area_contains(view.pos, radius as f32, tf.translation, bounds_of(*bound))
+        })
+        .count()
+}
+
+fn eval_condition(
+    condition: Condition,
+    view: &ConditionView,
+    units: &Query<(Entity, &Transform, &Team, &Health, Option<&BoundRadius>)>,
+    untargetable: &Query<&StatusEffects>,
+) -> bool {
+    match condition {
+        Condition::HealthBelow { percent } => view
+            .health
+            .is_some_and(|h| h.current / h.max.max(1.0) * 100.0 < f32::from(percent)),
+        Condition::Moving => view.moved > MOVE_EPSILON,
+        Condition::Stationary => view.moved <= MOVE_EPSILON,
+        Condition::EnemiesNear { radius, at_least } => {
+            count_near(view, radius, view.team.enemy(), units, untargetable)
+                >= usize::from(at_least)
+        }
+        Condition::AlliesNear { radius, at_least } => {
+            count_near(view, radius, view.team, units, untargetable) >= usize::from(at_least)
+        }
+        Condition::HasStatus(id) => view
+            .statuses
+            .effects
+            .iter()
+            .any(|e| e.id == id && e.remaining > 0.0),
+    }
+}
+
+/// Reconcile `While(Condition)` entries: each held `ApplyStatus` is present exactly while
+/// its condition holds, the owner lives and the source is still held. Runs last among the
+/// dispatchers, after movement and proximity are fresh. The statuses are applied through
+/// `StatusEffectEvent` (reactive, so silent) like toggle statuses.
+pub(crate) fn sync_conditional_statuses(
+    defs: Res<AbilityDefinitions>,
+    mut owners: Query<(
+        Entity,
+        &Transform,
+        &Team,
+        Option<&Health>,
+        &StatusEffects,
+        &CombatStats,
+        Option<&HeroAttributes>,
+        Option<&Inventory>,
+        Option<&AbilityLoadout>,
+        &mut TriggerTracking,
+    )>,
+    units: Query<(Entity, &Transform, &Team, &Health, Option<&BoundRadius>)>,
+    untargetable: Query<&StatusEffects>,
+    mut status_events: MessageWriter<StatusEffectEvent>,
+) {
+    for (owner, owner_tf, team, health, statuses, stats, attrs, inventory, loadout, mut tracking) in
+        &mut owners
+    {
+        if inventory.is_none() && loadout.is_none() && tracking.held.is_empty() {
+            continue;
+        }
+        let alive = health.is_none_or(|h| h.is_alive());
+        let view = ConditionView {
+            owner,
+            pos: owner_tf.translation,
+            team: *team,
+            health,
+            statuses,
+            moved: tracking.moved,
+        };
+        let build_ctx = StatusBuildContext {
+            move_speed: stats.move_speed,
+            agility: attrs.map_or(0.0, |a| a.agility),
+            fear_source: None,
+            source: Some(owner),
+            point: owner_tf.translation,
+        };
+        let mut still_held: Vec<(EffectSource, &'static str)> = Vec::new();
+        for (source, rank) in owner_sources(inventory, loadout) {
+            let conditions =
+                source_triggers(source, &defs, |t| matches!(t, AbilityTrigger::While(_)));
+            for trigger in conditions {
+                let AbilityTrigger::While(condition) = trigger else {
+                    continue;
+                };
+                let wanted = alive && eval_condition(condition, &view, &units, &untargetable);
+                let Some(params) = super::effects::source_params(source, &defs, rank) else {
+                    continue;
+                };
+                for entry in params.entries.iter().filter(|e| e.trigger == trigger) {
+                    let AbilityEffect::ApplyStatus { status, .. } = entry.effect else {
+                        continue;
+                    };
+                    let built = status.build(rank, f32::INFINITY, build_ctx);
+                    let id = built.id;
+                    reconcile_held_status(&mut status_events, owner, statuses, built, wanted);
+                    if wanted {
+                        still_held.push((source, id));
+                    }
+                }
+            }
+        }
+        // Statuses of sources that are gone (sold, unlearned): take them back off. A source
+        // that is still held but whose condition is false was reconciled above.
+        for (source, id) in tracking.held.iter() {
+            let source_gone = !owner_sources(inventory, loadout).any(|(s, _)| s == *source);
+            if source_gone
+                && statuses.effects.iter().any(|e| e.id == *id)
+                && !still_held.iter().any(|(_, held_id)| held_id == id)
+            {
+                status_events.write(
+                    StatusEffectEvent::new(Some(owner), owner, StatusChange::Remove(id))
+                        .reactive(true),
+                );
+            }
+        }
+        tracking.held = still_held;
     }
 }
 

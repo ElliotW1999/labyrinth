@@ -118,6 +118,7 @@ impl Plugin for AbilitiesPlugin {
                         reactive_triggers::damage_triggers,
                         reactive_triggers::status_triggers
                             .after(crate::status::tick_status_effects),
+                        reactive_triggers::sync_conditional_statuses,
                     )
                         .chain(),
                     resolve_ability_triggers,
@@ -710,6 +711,7 @@ mod tests {
                         reactive_triggers::damage_triggers,
                         reactive_triggers::status_triggers
                             .after(crate::status::tick_status_effects),
+                        reactive_triggers::sync_conditional_statuses,
                     )
                         .chain(),
                     resolve_ability_triggers,
@@ -4865,5 +4867,187 @@ mod tests {
         assert!(run_collecting(&mut app, 2).is_empty());
         walk_to(&mut app, ally, 5000.0);
         assert!(run_collecting(&mut app, 2).is_empty());
+    }
+
+    // --- Conditional bonuses ---
+
+    fn while_entry(condition: definition::Condition, status: &'static str) -> AbilityEffectEntry {
+        entry(
+            AbilityTrigger::While(condition),
+            EffectTarget::Caster,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::armor_buff(status, RankValue::fixed(10.0)),
+                duration: RankValue::ZERO,
+            },
+        )
+    }
+
+    fn armor(app: &App, unit: Entity) -> f32 {
+        app.world().get::<CombatStats>(unit).unwrap().armor
+    }
+
+    fn has_status(app: &App, unit: Entity, id: &str) -> bool {
+        app.world()
+            .get::<StatusEffects>(unit)
+            .unwrap()
+            .effects
+            .iter()
+            .any(|e| e.id == id)
+    }
+
+    fn set_health(app: &mut App, unit: Entity, current: f32) {
+        app.world_mut().get_mut::<Health>(unit).unwrap().current = current;
+    }
+
+    #[test]
+    fn low_health_bonus_applies_below_and_reverts_above_exactly() {
+        use definition::Condition;
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![while_entry(
+            Condition::HealthBelow { percent: 50 },
+            "berserk",
+        )])]);
+        let unit = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+        step(&mut app);
+        let base = armor(&app, unit);
+
+        set_health(&mut app, unit, 500.0);
+        step(&mut app);
+        assert!(
+            !has_status(&app, unit, "berserk"),
+            "exactly 50% is not below 50%"
+        );
+
+        set_health(&mut app, unit, 499.0);
+        step(&mut app);
+        assert!(has_status(&app, unit, "berserk"));
+        assert_eq!(armor(&app, unit), base + 10.0);
+        for _ in 0..3 {
+            step(&mut app);
+        }
+        assert_eq!(
+            armor(&app, unit),
+            base + 10.0,
+            "applied once, never stacked"
+        );
+
+        set_health(&mut app, unit, 500.0);
+        step(&mut app);
+        assert!(!has_status(&app, unit, "berserk"));
+        assert_eq!(armor(&app, unit), base, "the stat reverts exactly");
+    }
+
+    #[test]
+    fn moving_and_stationary_conditions() {
+        use definition::Condition;
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            while_entry(Condition::Moving, "sprint"),
+            while_entry(Condition::Stationary, "fortify"),
+        ])]);
+        let unit = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+        step(&mut app);
+        step(&mut app);
+        assert!(has_status(&app, unit, "fortify") && !has_status(&app, unit, "sprint"));
+
+        walk_to(&mut app, unit, 20.0);
+        step(&mut app);
+        assert!(has_status(&app, unit, "sprint") && !has_status(&app, unit, "fortify"));
+
+        step(&mut app);
+        assert!(!has_status(&app, unit, "sprint") && has_status(&app, unit, "fortify"));
+    }
+
+    #[test]
+    fn enemies_near_counts_only_living_targetable_enemies() {
+        use definition::Condition;
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![while_entry(
+            Condition::EnemiesNear {
+                radius: 600,
+                at_least: 2,
+            },
+            "outnumbered",
+        )])]);
+        let unit = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+        let _alive = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        let dead = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, 100.0));
+        set_health(&mut app, dead, 0.0);
+        let lifted = spawn_unit(&mut app, Team::Dire, Vec3::new(-100.0, 0.0, 0.0));
+        app.world_mut()
+            .get_mut::<StatusEffects>(lifted)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::cyclone(100.0, true));
+        let _far = spawn_unit(&mut app, Team::Dire, Vec3::new(3000.0, 0.0, 0.0));
+        let _ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(0.0, 0.0, -100.0));
+        step(&mut app);
+        step(&mut app);
+        assert!(
+            !has_status(&app, unit, "outnumbered"),
+            "one living, targetable enemy in range"
+        );
+
+        let _second = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, -300.0));
+        step(&mut app);
+        assert!(has_status(&app, unit, "outnumbered"));
+    }
+
+    #[test]
+    fn held_status_removed_when_item_sold() {
+        use definition::Condition;
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![while_entry(
+            Condition::Stationary,
+            "fortify",
+        )])]);
+        let unit = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+        step(&mut app);
+        let with_bonus = armor(&app, unit);
+        step(&mut app);
+        assert!(has_status(&app, unit, "fortify"));
+
+        app.world_mut().get_mut::<Inventory>(unit).unwrap().slots = Default::default();
+        step(&mut app);
+        assert!(
+            !has_status(&app, unit, "fortify"),
+            "never outlives its source"
+        );
+        assert_eq!(armor(&app, unit), with_bonus - 10.0);
+    }
+
+    #[test]
+    fn held_status_is_undispellable_and_fires_no_status_triggers() {
+        use crate::status::{DispelStrength, StatusChange, StatusKind};
+        use definition::{Condition, StatusFilter};
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            while_entry(Condition::Stationary, "fortify"),
+            marker_effect(AbilityTrigger::OnStatusApplied(StatusFilter::Any)),
+            marker_effect(AbilityTrigger::OnStatusRemoved(StatusFilter::Any)),
+        ])]);
+        let unit = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+        let mut fired = run_collecting(&mut app, 3);
+        assert!(has_status(&app, unit, "fortify"));
+
+        send_status(
+            &mut app,
+            None,
+            unit,
+            StatusChange::Dispel {
+                kind: StatusKind::Buff,
+                strength: DispelStrength::Strong,
+            },
+        );
+        fired.extend(run_collecting(&mut app, 3));
+        assert!(has_status(&app, unit, "fortify"), "dispels cannot take it");
+
+        app.world_mut().get_mut::<Inventory>(unit).unwrap().slots = Default::default();
+        fired.extend(run_collecting(&mut app, 3));
+        assert!(!has_status(&app, unit, "fortify"));
+        assert!(
+            fired.is_empty(),
+            "applying and removing a held status is silent: {fired:?}"
+        );
     }
 }

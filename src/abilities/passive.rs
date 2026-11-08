@@ -6,8 +6,35 @@ use super::catalog::AbilityDefinitions;
 use super::definition::{AbilityBehavior, AbilityEffect, AbilityTrigger, StatusBuildContext};
 use crate::components::{AbilityId, AbilityLoadout, CombatStats, Health, HeroAttributes, Mana};
 use crate::items::{ItemPassives, apply_passives, remove_passives};
-use crate::status::{DispelType, StatusChange, StatusEffectEvent, StatusEffects};
+use crate::status::{DispelType, StatusChange, StatusEffect, StatusEffectEvent, StatusEffects};
 use crate::vitals::effective_mana_cost;
+
+/// Make a held status match `wanted`: apply it (permanent, undispellable) when wanted and
+/// absent, remove it when unwanted and present, otherwise do nothing. Held statuses are
+/// `reactive`, so neither the change nor the status ever fires status triggers. Shared by
+/// toggles and `While(Condition)` entries.
+pub(crate) fn reconcile_held_status(
+    events: &mut MessageWriter<StatusEffectEvent>,
+    owner: Entity,
+    statuses: &StatusEffects,
+    mut built: StatusEffect,
+    wanted: bool,
+) {
+    let present = statuses.effects.iter().any(|e| e.id == built.id);
+    if wanted && !present {
+        built.undispellable = true;
+        built.dispel_type = DispelType::None;
+        built.reactive = true;
+        events.write(
+            StatusEffectEvent::new(Some(owner), owner, StatusChange::Apply(built)).reactive(true),
+        );
+    } else if !wanted && present {
+        events.write(
+            StatusEffectEvent::new(Some(owner), owner, StatusChange::Remove(built.id))
+                .reactive(true),
+        );
+    }
+}
 
 /// Net passive stat bonuses currently applied from ranked passive abilities.
 #[derive(Component, Clone, Default, PartialEq)]
@@ -144,25 +171,8 @@ pub fn tick_toggle_upkeep(
                 let AbilityEffect::ApplyStatus { status, .. } = entry.effect else {
                     continue;
                 };
-                let mut built = status.build(rank, f32::INFINITY, ctx);
-                let present = statuses.effects.iter().any(|e| e.id == built.id);
-                if slot.toggled && !present {
-                    built.undispellable = true;
-                    built.dispel_type = DispelType::None;
-                    status_events.write(StatusEffectEvent {
-                        reactive: false,
-                        source: Some(entity),
-                        target: entity,
-                        change: StatusChange::Apply(built),
-                    });
-                } else if !slot.toggled && present {
-                    status_events.write(StatusEffectEvent {
-                        reactive: false,
-                        source: Some(entity),
-                        target: entity,
-                        change: StatusChange::Remove(built.id),
-                    });
-                }
+                let built = status.build(rank, f32::INFINITY, ctx);
+                reconcile_held_status(&mut status_events, entity, statuses, built, slot.toggled);
             }
         }
     }

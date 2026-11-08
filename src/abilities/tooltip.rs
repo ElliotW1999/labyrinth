@@ -206,6 +206,7 @@ pub(crate) fn trigger_tag(trigger: AbilityTrigger) -> &'static str {
         AbilityTrigger::OnHealthBelow { .. } => "at low health",
         AbilityTrigger::OnStatusApplied(_) => "when afflicted",
         AbilityTrigger::OnStatusRemoved(_) => "when a status ends",
+        AbilityTrigger::While(_) => "while active",
         AbilityTrigger::OnMove => "while moving",
         AbilityTrigger::OnEnemyEnter { .. } => "when an enemy approaches",
         AbilityTrigger::OnEnemyLeave { .. } => "when an enemy leaves",
