@@ -88,6 +88,21 @@ pub fn resource_stat(
     permanent + statuses.map(|s| s.resource_sum(stat)).unwrap_or(0.0)
 }
 
+/// Display name for tooltips.
+pub fn stat_label(stat: ResourceStat) -> &'static str {
+    match stat {
+        ResourceStat::Lifesteal => "Lifesteal",
+        ResourceStat::SpellLifesteal => "Spell lifesteal",
+        ResourceStat::HealAmp => "Heal amp",
+        ResourceStat::HealReceivedAmp => "Heal received amp",
+        ResourceStat::HealthRegen => "Health regen",
+        ResourceStat::ManaRegen => "Mana regen",
+        ResourceStat::MaxHealth => "Max health",
+        ResourceStat::MaxMana => "Max mana",
+        ResourceStat::ManaCostAmp => "Mana cost",
+    }
+}
+
 /// Healing the unit provides (additive bucket).
 pub fn outgoing_heal_amp(stats: Option<&CombatStats>, statuses: Option<&StatusEffects>) -> f32 {
     resource_stat(stats, statuses, ResourceStat::HealAmp)
@@ -176,6 +191,61 @@ mod tests {
         let mut h = hp(10.0, 100.0);
         apply_heal(&mut h, 50.0, 0.0);
         assert_eq!(h.current, 10.0);
+    }
+
+    fn with_status(effect: StatusEffect) -> StatusEffects {
+        let mut statuses = StatusEffects::default();
+        statuses.effects.push(effect);
+        statuses
+    }
+
+    #[test]
+    fn heal_amp_outgoing_and_incoming_add() {
+        let mut stats = CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 300.0);
+        stats.heal_received_amp = 0.25;
+        let factor = heal_factor(HealKind::Direct, 0.5, Some(&stats), None);
+        assert!(
+            (factor - 1.75).abs() < 1e-6,
+            "1 + 0.5 + 0.25, not 1.5 x 1.25"
+        );
+    }
+
+    #[test]
+    fn timed_heal_amp_is_summed_with_permanent() {
+        let mut stats = CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 300.0);
+        stats.heal_amp = 0.1;
+        let statuses = with_status(StatusEffect::resource_modifier(
+            "amp",
+            crate::status::StatusKind::Buff,
+            ResourceStat::HealAmp,
+            0.2,
+            5.0,
+        ));
+        let amp = outgoing_heal_amp(Some(&stats), Some(&statuses));
+        assert!((amp - 0.3).abs() < 1e-6);
+    }
+
+    #[test]
+    fn strongest_heal_reduction_wins_and_multiplies_after_amp() {
+        let mut statuses = with_status(StatusEffect::heal_reduction(0.25, 5.0));
+        statuses.effects.push(StatusEffect {
+            id: "other_reduction",
+            ..StatusEffect::heal_reduction(0.5, 5.0)
+        });
+        assert_eq!(statuses.heal_reduction(), 0.5, "they do not stack");
+        let factor = heal_factor(HealKind::Direct, 1.0, None, Some(&statuses));
+        assert!((factor - 1.0).abs() < 1e-6, "(1 + 1.0) x (1 - 0.5)");
+    }
+
+    #[test]
+    fn regen_ignores_amp_but_respects_reduction() {
+        let mut stats = CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 300.0);
+        stats.heal_received_amp = 1.0;
+        let statuses = with_status(StatusEffect::heal_reduction(0.5, 5.0));
+        let regen = heal_factor(HealKind::Regen, 1.0, Some(&stats), Some(&statuses));
+        let direct = heal_factor(HealKind::Direct, 0.0, Some(&stats), Some(&statuses));
+        assert!((regen - 0.5).abs() < 1e-6);
+        assert!((direct - 1.0).abs() < 1e-6, "(1 + 1.0) x 0.5");
     }
 
     #[test]

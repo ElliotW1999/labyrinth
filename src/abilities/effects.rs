@@ -390,6 +390,13 @@ impl EffectRunner<'_, '_> {
                         },
                     );
                     built.dot_source = source;
+                    if built.heal_per_sec > 0.0 {
+                        // The healer's amp is taken once, here; the tick applies none.
+                        let healer_stats = source.and_then(|s| self.stats.get(s).ok());
+                        let healer_statuses = source.and_then(|s| self.statuses_of.get(s).ok());
+                        let amp = vitals::outgoing_heal_amp(healer_stats, healer_statuses);
+                        built.heal_per_sec *= (1.0 + amp).max(0.0);
+                    }
                     self.statuses.write(StatusEffectEvent {
                         source,
                         target,

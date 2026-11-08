@@ -179,6 +179,46 @@ impl StatusEffect {
         }
     }
 
+    pub fn heal_over_time(hps: f32, duration: f32) -> Self {
+        Self {
+            heal_per_sec: hps,
+            ..Self::buff("heal_over_time", duration)
+        }
+    }
+
+    /// `fraction` (0..1) of healing received is negated.
+    pub fn heal_reduction(fraction: f32, duration: f32) -> Self {
+        Self {
+            heal_reduction: fraction,
+            ..Self::debuff("heal_reduction", duration)
+        }
+    }
+
+    pub fn heal_block(duration: f32) -> Self {
+        Self {
+            heal_blocked: true,
+            ..Self::debuff("heal_block", duration)
+        }
+    }
+
+    /// A timed resource modifier, summed when read (never stored into stats).
+    pub fn resource_modifier(
+        id: &'static str,
+        kind: StatusKind,
+        stat: crate::vitals::ResourceStat,
+        value: f32,
+        duration: f32,
+    ) -> Self {
+        let base = match kind {
+            StatusKind::Buff => Self::buff(id, duration),
+            StatusKind::Debuff => Self::debuff(id, duration),
+        };
+        Self {
+            resource: Some((stat, value)),
+            ..base
+        }
+    }
+
     pub fn burn(dps: f32, damage_type: DamageType, duration: f32) -> Self {
         Self {
             damage_per_sec: dps,
@@ -944,6 +984,177 @@ mod tests {
             .advance_by(Duration::from_secs(1));
         app.update();
         assert_eq!(app.world().get::<Health>(dead).unwrap().current, 0.0);
+    }
+
+    mod heal_statuses {
+        use super::*;
+        use crate::vitals::{HealKind, apply_heal, heal_factor};
+        use std::time::Duration;
+
+        fn app() -> App {
+            let mut app = App::new();
+            app.init_resource::<Time>()
+                .add_message::<StatusEffectEvent>()
+                .add_message::<DamageEvent>()
+                .add_systems(
+                    Update,
+                    (apply_status_effect_events, tick_status_effects).chain(),
+                );
+            app
+        }
+
+        fn wounded(app: &mut App) -> Entity {
+            app.world_mut()
+                .spawn((
+                    StatusEffects::default(),
+                    CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 300.0),
+                    Health {
+                        current: 100.0,
+                        max: 1000.0,
+                        regen_per_sec: 0.0,
+                    },
+                ))
+                .id()
+        }
+
+        fn send(app: &mut App, target: Entity, change: StatusChange) {
+            app.world_mut().write_message(StatusEffectEvent {
+                source: None,
+                target,
+                change,
+            });
+        }
+
+        fn step(app: &mut App, secs: f32) {
+            app.world_mut()
+                .resource_mut::<Time>()
+                .advance_by(Duration::from_secs_f32(secs));
+            app.update();
+        }
+
+        fn factor_of(app: &App, unit: Entity, kind: HealKind) -> f32 {
+            let w = app.world();
+            heal_factor(
+                kind,
+                0.5,
+                w.get::<CombatStats>(unit),
+                w.get::<StatusEffects>(unit),
+            )
+        }
+
+        #[test]
+        fn heal_block_zeroes_every_heal_kind_and_is_dispellable() {
+            let mut app = app();
+            let unit = wounded(&mut app);
+            send(
+                &mut app,
+                unit,
+                StatusChange::Apply(StatusEffect::heal_block(10.0)),
+            );
+            step(&mut app, 0.0);
+            for kind in [
+                HealKind::Direct,
+                HealKind::OverTime,
+                HealKind::Leech,
+                HealKind::Regen,
+                HealKind::Conversion,
+            ] {
+                assert_eq!(factor_of(&app, unit, kind), 0.0, "{kind:?}");
+            }
+            send(
+                &mut app,
+                unit,
+                StatusChange::Dispel {
+                    kind: StatusKind::Debuff,
+                    strength: DispelStrength::Basic,
+                },
+            );
+            step(&mut app, 0.0);
+            assert!(factor_of(&app, unit, HealKind::Direct) > 0.0);
+        }
+
+        #[test]
+        fn heal_reduction_blocked_by_debuff_immunity() {
+            let mut app = app();
+            let unit = wounded(&mut app);
+            send(
+                &mut app,
+                unit,
+                StatusChange::Apply(StatusEffect::debuff_immunity(10.0)),
+            );
+            send(
+                &mut app,
+                unit,
+                StatusChange::Apply(StatusEffect::heal_reduction(0.5, 10.0)),
+            );
+            send(
+                &mut app,
+                unit,
+                StatusChange::Apply(StatusEffect::heal_block(10.0)),
+            );
+            step(&mut app, 0.0);
+            let statuses = app.world().get::<StatusEffects>(unit).unwrap();
+            assert_eq!(statuses.heal_reduction(), 0.0);
+            assert!(!statuses.is_heal_blocked());
+        }
+
+        #[test]
+        fn heal_over_time_ticks_total_over_duration() {
+            let mut app = app();
+            let unit = wounded(&mut app);
+            send(
+                &mut app,
+                unit,
+                StatusChange::Apply(StatusEffect::heal_over_time(50.0, 4.0)),
+            );
+            step(&mut app, 0.0);
+            for _ in 0..8 {
+                step(&mut app, 0.5);
+            }
+            let health = app.world().get::<Health>(unit).unwrap().current;
+            assert!((health - 300.0).abs() < 1e-2, "100 + 50 x 4s, got {health}");
+            assert!(
+                app.world()
+                    .get::<StatusEffects>(unit)
+                    .unwrap()
+                    .effects
+                    .is_empty()
+            );
+        }
+
+        #[test]
+        fn heal_over_time_respects_reduction_and_target_amp_at_tick() {
+            let mut app = app();
+            let unit = wounded(&mut app);
+            app.world_mut()
+                .get_mut::<CombatStats>(unit)
+                .unwrap()
+                .heal_received_amp = 0.5;
+            send(
+                &mut app,
+                unit,
+                StatusChange::Apply(StatusEffect::heal_over_time(100.0, 4.0)),
+            );
+            send(
+                &mut app,
+                unit,
+                StatusChange::Apply(StatusEffect::heal_reduction(0.5, 10.0)),
+            );
+            step(&mut app, 0.0);
+            step(&mut app, 1.0);
+            let health = app.world().get::<Health>(unit).unwrap().current;
+            assert!((health - 175.0).abs() < 1e-2, "100 + 100 x 1.5 x 0.5");
+        }
+
+        #[test]
+        fn apply_heal_never_exceeds_max() {
+            let mut h = Health {
+                current: 999.0,
+                max: 1000.0,
+                regen_per_sec: 0.0,
+            };
+            assert_eq!(apply_heal(&mut h, 50.0, 1.0).applied, 1.0);
+        }
     }
 
     mod shields {

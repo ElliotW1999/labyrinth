@@ -7,6 +7,7 @@ use bevy::prelude::{Entity, Vec2, Vec3};
 use crate::components::AbilityId;
 use crate::components::DamageType;
 use crate::status::{DispelType, Leash, LeashAnchor, StatusEffect, StatusKind};
+use crate::vitals::ResourceStat;
 
 /// A value that scales with ability level: `clamp(base + per_rank × rank, min, max)`,
 /// or an explicit per-level table (`75|150|225|300` in the generator CSVs).
@@ -265,6 +266,23 @@ pub enum StatusSpec {
     TurnRateBonus {
         percent: RankValue,
     },
+    /// Heals `hps` health per second; the caster's heal amp is folded in on application.
+    HealOverTime {
+        hps: RankValue,
+    },
+    /// `percent` (0–100) of healing received is negated; the strongest reduction applies.
+    HealReduction {
+        percent: RankValue,
+    },
+    /// Prevents all healing.
+    HealBlock,
+    /// A timed resource modifier (regen, max, lifesteal, heal amp, cost) summed when read.
+    ResourceModifier {
+        id: &'static str,
+        kind: StatusKind,
+        stat: ResourceStat,
+        amount: RankValue,
+    },
     Modifier {
         id: &'static str,
         kind: StatusKind,
@@ -381,6 +399,19 @@ impl StatusSpec {
                 dispel_type: DispelType::Basic,
                 ..StatusEffect::buff("turn_rate_bonus", duration)
             },
+            StatusSpec::HealOverTime { hps } => {
+                StatusEffect::heal_over_time(hps.at(rank), duration)
+            }
+            StatusSpec::HealReduction { percent } => {
+                StatusEffect::heal_reduction((percent.at(rank) / 100.0).clamp(0.0, 1.0), duration)
+            }
+            StatusSpec::HealBlock => StatusEffect::heal_block(duration),
+            StatusSpec::ResourceModifier {
+                id,
+                kind,
+                stat,
+                amount,
+            } => StatusEffect::resource_modifier(id, kind, stat, amount.at(rank), duration),
             StatusSpec::Modifier {
                 id,
                 kind,
@@ -452,6 +483,10 @@ pub enum PassiveStat {
     IncomingDamageAmp,
     DamageBlock,
     DamageReflect,
+    /// Healing the holder provides (fraction).
+    HealAmp,
+    /// Healing the holder receives (fraction).
+    HealReceivedAmp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

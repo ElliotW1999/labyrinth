@@ -338,6 +338,18 @@ fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
                 seconds_row("Slow duration", duration),
             ]
         }
+        StatusSpec::HealOverTime { hps } => vec![
+            row("Heal per second", hps),
+            seconds_row("Heal duration", duration),
+        ],
+        StatusSpec::HealReduction { percent } => vec![
+            row("Heal reduction %", percent),
+            seconds_row("Heal reduction duration", duration),
+        ],
+        StatusSpec::ResourceModifier { stat, amount, .. } => vec![
+            row(crate::vitals::stat_label(stat), amount),
+            seconds_row("Duration", duration),
+        ],
         StatusSpec::Leash { radius, .. } => vec![
             row(format!("{} radius", status_name(status)), radius),
             seconds_row(format!("{} duration", status_name(status)), duration),
@@ -458,6 +470,10 @@ fn status_name(status: StatusSpec) -> &'static str {
         StatusSpec::AttackSpeedSlow { .. } => "Attack speed slow",
         StatusSpec::TurnRateSlow { .. } => "Turn rate slow",
         StatusSpec::TurnRateBonus { .. } => "Turn rate bonus",
+        StatusSpec::HealOverTime { .. } => "Heal over time",
+        StatusSpec::HealReduction { .. } => "Heal reduction",
+        StatusSpec::HealBlock => "Heal block",
+        StatusSpec::ResourceModifier { .. } => "Modifier",
         StatusSpec::Modifier { .. } => "Modifier",
     }
 }
@@ -480,6 +496,8 @@ pub(crate) fn passive_name(stat: super::definition::PassiveStat) -> &'static str
         PassiveStat::IncomingDamageAmp => "Incoming amp",
         PassiveStat::DamageBlock => "Damage block",
         PassiveStat::DamageReflect => "Damage reflect",
+        PassiveStat::HealAmp => "Heal amp",
+        PassiveStat::HealReceivedAmp => "Heal received amp",
     }
 }
 
