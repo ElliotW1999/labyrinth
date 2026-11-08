@@ -24,6 +24,7 @@ pub mod effects;
 pub mod generated;
 pub mod mechanics;
 pub mod passive;
+pub mod reactive_triggers;
 pub mod tooltip;
 
 use bevy::prelude::*;

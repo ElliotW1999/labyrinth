@@ -10,9 +10,9 @@
 use bevy::prelude::*;
 
 use super::effects::{AbilityEffectAppExt, CustomEffectInput, EffectSource};
-use crate::scale;
-use crate::combat::{emit_chain_damage, DamageEvent};
+use crate::combat::{DamageEvent, emit_chain_damage};
 use crate::components::{BoundRadius, Health, Team};
+use crate::scale;
 
 fn bolt_chain(
     In(input): In<CustomEffectInput>,
