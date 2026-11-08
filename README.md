@@ -217,7 +217,7 @@ Walking speed never drops below `scale::MIN_MOVE_SPEED` (100) however many slows
 | Cleave | Melee only: `cleave_damage_ratio` x the post-crit main hit to enemies around the attacker (`cleave_radius`, default `scale::ATTACK_CLEAVE_RADIUS` = 300); `DamageKind::Cleave` |
 | Splash (attack) | `splash_damage_ratio` x the post-crit main hit to enemies around the struck unit (`splash_radius`, default `scale::ATTACK_SPLASH_RADIUS` = 250); any attack; `DamageKind::Splash`. Secondary hits never crit, roll to hit, leech or fire triggers |
 | Attack bonus damage | `Damage` / mana-burn effects under `on_attack` / `on_attack_hit` become `DamageKind::AttackBonus`: no spell amp, no block, leeched like a basic attack, reflectable |
-| Chain | Bolt `bolt_chain` custom effect → `emit_chain_damage` |
+| Chain | `AbilityEffect::Chain` mechanic gate (`mechanics::chain_hops`) re-fires an `on_<name>` trigger per hop; ordinary damage rows tagged with it deal the (falloff-scaled) damage. Bolt and the `chain` CSV effect type use it |
 | DoT | Status `damage_per_sec` ticks in `tick_status_effects` |
 | Reflection | `damage_reflect` fraction of dealt damage returned to attacker |
 | Health scaling | `EffectScaling::{TargetMissingHealth, TargetMaxHealth, TargetCurrentHealth}` |

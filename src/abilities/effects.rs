@@ -18,6 +18,7 @@ use super::definition::{
     AbilityEffect, AbilityEffectEntry, AbilityTrigger, AreaCenter, AreaRadius, Attribute,
     EffectScaling, EffectTarget, StatusBuildContext,
 };
+use super::mechanics::{ChainCandidate, chain_hops};
 use crate::actions::{ActionId, team_allows};
 use crate::basic_attack::ExtraAttackEvent;
 use crate::combat::{CombatRng, DamageEvent};
@@ -100,8 +101,11 @@ pub struct TriggerContext {
     /// Set for triggers caused by a basic attack. Damage dealt under such a context is
     /// attack bonus damage rather than spell damage.
     pub attack: Option<AttackMeta>,
-    /// How many `Proc` / `Counter` hops produced this context (0 = straight from a mechanic).
+    /// How many `Proc` / `Counter` / `Chain` hops produced this context (0 = straight from a mechanic).
     pub depth: u8,
+    /// Multiplier on the Damage, DrainHealth and Heal amounts of entries run under this
+    /// context. 1.0 except for chain hops (falloff per jump); kept by derived contexts.
+    pub magnitude: f32,
 }
 
 impl TriggerContext {
@@ -130,10 +134,11 @@ impl TriggerContext {
             affected_units: Vec::new(),
             attack: None,
             depth: 0,
+            magnitude: 1.0,
         }
     }
 
-    /// The same context re-fired under `trigger` one hop deeper (by `Proc` / `Counter`).
+    /// The same context re-fired under `trigger` one hop deeper (by `Proc` / `Counter` / `Chain`).
     fn derived(&self, trigger: AbilityTrigger) -> Self {
         Self {
             trigger,
@@ -419,6 +424,7 @@ impl EffectRunner<'_, '_> {
                     if let Some(amount) =
                         self.scaled_amount(ctx, amount.at(rank), scaling, target, cast_range)
                     {
+                        let amount = amount * ctx.magnitude;
                         self.damage.write(if ctx.attack.is_some() {
                             DamageEvent::attack_bonus(ctx.caster, target, amount, damage_type)
                         } else {
@@ -437,6 +443,7 @@ impl EffectRunner<'_, '_> {
                     if let Some(amount) =
                         self.scaled_amount(ctx, amount.at(rank), scaling, target, cast_range)
                     {
+                        let amount = amount * ctx.magnitude;
                         self.damage.write(
                             DamageEvent::spell(ctx.caster, target, amount, damage_type)
                                 .drained(transfer_ratio),
@@ -452,7 +459,7 @@ impl EffectRunner<'_, '_> {
                         self.heals.write(HealEvent {
                             source,
                             target,
-                            amount,
+                            amount: amount * ctx.magnitude,
                         });
                     }
                 }
@@ -634,6 +641,49 @@ impl EffectRunner<'_, '_> {
                     .is_ok_and(|mut counters| counters.bump(key, every));
                 if fired {
                     self.derived.push(ctx.derived(then));
+                }
+            }
+            AbilityEffect::Chain {
+                jumps,
+                radius,
+                falloff,
+                team,
+                then,
+            } => {
+                if !self.gate_open(ctx) {
+                    return;
+                }
+                let radius = radius.at(rank);
+                let candidates: Vec<ChainCandidate> = self
+                    .units
+                    .iter()
+                    .filter(|(e, _, unit_team, health, _)| {
+                        health.is_alive()
+                            && (*e == ctx.caster || !is_untargetable(&self.statuses_of, *e))
+                            && team_allows(team, ctx.team, **unit_team)
+                    })
+                    .map(|(entity, tf, _, _, bound)| ChainCandidate {
+                        entity,
+                        position: tf.translation,
+                        bounds: bounds_of(bound),
+                    })
+                    .collect();
+                for start in targets {
+                    let Ok((_, start_tf, ..)) = self.units.get(start) else {
+                        continue;
+                    };
+                    let hops = chain_hops(start, start_tf.translation, &candidates, jumps, radius);
+                    for (index, hop) in hops.into_iter().enumerate() {
+                        let mut next = ctx
+                            .derived(then)
+                            .trigger_unit(Some(hop.entity))
+                            .at(hop.position)
+                            .affected(Vec::new());
+                        // Chained damage is spell damage, not attack bonus (D1).
+                        next.attack = None;
+                        next.magnitude = ctx.magnitude * falloff.powi(index as i32 + 1);
+                        self.derived.push(next);
+                    }
                 }
             }
             AbilityEffect::Custom {

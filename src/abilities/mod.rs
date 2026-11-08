@@ -2219,6 +2219,392 @@ mod tests {
         );
     }
 
+    fn chain_entry(
+        trigger: AbilityTrigger,
+        target: EffectTarget,
+        jumps: u32,
+        falloff: f32,
+        then: &'static str,
+    ) -> AbilityEffectEntry {
+        AbilityEffectEntry {
+            trigger,
+            target,
+            effect: AbilityEffect::Chain {
+                jumps,
+                radius: RankValue::fixed(scale::u(450.0)),
+                falloff,
+                team: TargetTeam::Enemy,
+                then: AbilityTrigger::Custom(then),
+            },
+        }
+    }
+
+    fn damage_entry(
+        trigger: AbilityTrigger,
+        target: EffectTarget,
+        amount: f32,
+    ) -> AbilityEffectEntry {
+        AbilityEffectEntry {
+            trigger,
+            target,
+            effect: fixed_magical_damage(amount),
+        }
+    }
+
+    /// The chain rows an ability (under `OnCast`) and an item (under `OnUse`) share.
+    fn chain_rows(start: AbilityTrigger) -> Vec<AbilityEffectEntry> {
+        vec![
+            chain_entry(start, EffectTarget::CastTarget, 2, 0.5, "on_chain_hit"),
+            damage_entry(
+                AbilityTrigger::Custom("on_chain_hit"),
+                EffectTarget::TriggerUnit,
+                100.0,
+            ),
+        ]
+    }
+
+    fn chain_line(app: &mut App) -> (Entity, Entity, Entity) {
+        (
+            enemy_at(app, 300.0),
+            enemy_at(app, 500.0),
+            enemy_at(app, 800.0),
+        )
+    }
+
+    #[test]
+    fn bolt_chain_skips_cycloned_units() {
+        let mut app = test_app();
+        let caster = spawn_caster(&mut app, KIT);
+        let primary = enemy_at(&mut app, 300.0);
+        let lifted = enemy_at(&mut app, 400.0);
+        let next = enemy_at(&mut app, 600.0);
+        app.world_mut()
+            .get_mut::<StatusEffects>(lifted)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::cyclone(10.0, true));
+
+        land_bolt(&mut app, caster, primary);
+
+        assert_eq!(
+            health(&app, lifted),
+            1000.0,
+            "untargetable units are skipped"
+        );
+        assert!((health(&app, next) - (1000.0 - 57.0 * 0.75)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn chain_hops_break_ties_by_entity() {
+        use super::mechanics::{ChainCandidate, chain_hops};
+        let mut world = World::new();
+        let (a, b, start) = (
+            world.spawn_empty().id(),
+            world.spawn_empty().id(),
+            world.spawn_empty().id(),
+        );
+        let at = |entity, x: f32, z: f32| ChainCandidate {
+            entity,
+            position: Vec3::new(x, 0.0, z),
+            bounds: 0.0,
+        };
+        // Equally near on opposite sides: the lower entity wins whatever the list order.
+        let first = chain_hops(
+            start,
+            Vec3::ZERO,
+            &[at(b, 10.0, 0.0), at(a, -10.0, 0.0)],
+            1,
+            50.0,
+        );
+        let second = chain_hops(
+            start,
+            Vec3::ZERO,
+            &[at(a, -10.0, 0.0), at(b, 10.0, 0.0)],
+            1,
+            50.0,
+        );
+        let lower = a.min(b);
+        assert_eq!(
+            first.iter().map(|c| c.entity).collect::<Vec<_>>(),
+            vec![lower]
+        );
+        assert_eq!(
+            second.iter().map(|c| c.entity).collect::<Vec<_>>(),
+            vec![lower]
+        );
+        // The start is never revisited and hops measure from the previous unit.
+        let line = chain_hops(
+            start,
+            Vec3::ZERO,
+            &[at(start, 0.0, 0.0), at(a, 40.0, 0.0), at(b, 80.0, 0.0)],
+            5,
+            50.0,
+        );
+        assert_eq!(
+            line.iter().map(|c| c.entity).collect::<Vec<_>>(),
+            vec![a, b]
+        );
+    }
+
+    #[test]
+    fn item_and_ability_chain_emit_identical_damage() {
+        // Ability: an OnCast chain from the cast target.
+        let mut ability_app = test_app();
+        let chain_ability = chain_rows(AbilityTrigger::OnCast).into_iter().fold(
+            AbilityDefinition::new(AbilityId::Bulwark)
+                .targeting(
+                    TargetType::Unit,
+                    RankValue::fixed(scale::u(600.0)),
+                    RankValue::ZERO,
+                )
+                .costs(RankValue::fixed(8.0), RankValue::fixed(1.0)),
+            |def, entry| def.on(entry.trigger, entry.target, entry.effect),
+        );
+        ability_app
+            .world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(chain_ability);
+        let caster = spawn_caster(&mut ability_app, KIT);
+        let (p, n1, n2) = chain_line(&mut ability_app);
+        request(&mut ability_app, caster, 3, CastTarget::Unit(p));
+        for _ in 0..6 {
+            step(&mut ability_app);
+        }
+        let ability_hp = [p, n1, n2].map(|e| health(&ability_app, e));
+
+        // Item: the same rows under OnUse.
+        let mut item_app = test_app();
+        let effects: &'static [AbilityEffectEntry] =
+            Box::leak(chain_rows(AbilityTrigger::OnUse).into_boxed_slice());
+        let _defs = install_test_item_definitions([item_with(
+            effects,
+            TargetType::Unit,
+            TargetTeam::Enemy,
+            scale::u(600.0),
+        )]);
+        let caster = spawn_caster_with_inventory(&mut item_app, KIT);
+        give_item(&mut item_app, caster, ItemId::HeartwoodBand);
+        let (p, n1, n2) = chain_line(&mut item_app);
+        request_item(&mut item_app, caster, 0, CastTarget::Unit(p));
+        for _ in 0..6 {
+            step(&mut item_app);
+        }
+        let item_hp = [p, n1, n2].map(|e| health(&item_app, e));
+
+        assert_eq!(ability_hp, item_hp);
+        assert_eq!(ability_hp[0], 1000.0, "the start unit is not re-fired");
+        assert!((ability_hp[1] - 950.0).abs() < 1e-3, "first hop at 50%");
+        assert!((ability_hp[2] - 975.0).abs() < 1e-3, "second hop at 25%");
+    }
+
+    #[test]
+    fn chain_respects_max_trigger_depth() {
+        let mut app = test_app();
+        let entries = vec![
+            chain_entry(
+                AbilityTrigger::OnUse,
+                EffectTarget::CastTarget,
+                1,
+                1.0,
+                "on_a",
+            ),
+            chain_entry(
+                AbilityTrigger::Custom("on_a"),
+                EffectTarget::TriggerUnit,
+                1,
+                1.0,
+                "on_b",
+            ),
+            damage_entry(
+                AbilityTrigger::Custom("on_b"),
+                EffectTarget::TriggerUnit,
+                10.0,
+            ),
+            chain_entry(
+                AbilityTrigger::Custom("on_b"),
+                EffectTarget::TriggerUnit,
+                1,
+                1.0,
+                "on_c",
+            ),
+            damage_entry(
+                AbilityTrigger::Custom("on_c"),
+                EffectTarget::TriggerUnit,
+                10.0,
+            ),
+        ];
+        let effects: &'static [AbilityEffectEntry] = Box::leak(entries.into_boxed_slice());
+        let _defs = install_test_item_definitions([item_with(
+            effects,
+            TargetType::Unit,
+            TargetTeam::Enemy,
+            scale::u(600.0),
+        )]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        // Each nested chain starts fresh, so it may step back; the spacing makes every
+        // nearest choice unambiguous.
+        let start = enemy_at(&mut app, 300.0);
+        let first = enemy_at(&mut app, 500.0);
+        let second = enemy_at(&mut app, 650.0);
+        let third = enemy_at(&mut app, 900.0);
+        request_item(&mut app, caster, 0, CastTarget::Unit(start));
+        for _ in 0..6 {
+            step(&mut app);
+        }
+
+        assert_eq!(health(&app, second), 990.0, "depth 2 still resolves");
+        assert_eq!(health(&app, start), 1000.0, "on_a has no damage row");
+        assert_eq!(health(&app, first), 1000.0);
+        // The chain gate under on_b sits at the depth cap, so on_c never fires.
+        assert_eq!(health(&app, third), 1000.0);
+    }
+
+    #[test]
+    fn chain_entry_emits_no_gameplay_messages() {
+        let mut app = test_app();
+        let effects: &'static [AbilityEffectEntry] = Box::leak(
+            vec![chain_entry(
+                AbilityTrigger::OnUse,
+                EffectTarget::CastTarget,
+                2,
+                0.5,
+                "on_chain_hit",
+            )]
+            .into_boxed_slice(),
+        );
+        let _defs = install_test_item_definitions([item_with(
+            effects,
+            TargetType::Unit,
+            TargetTeam::Enemy,
+            scale::u(600.0),
+        )]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let (start, _, _) = chain_line(&mut app);
+        request_item(&mut app, caster, 0, CastTarget::Unit(start));
+        let mut triggers = 0;
+        for _ in 0..6 {
+            step(&mut app);
+            let world = app.world();
+            assert_eq!(
+                world
+                    .resource::<Messages<DamageEvent>>()
+                    .iter_current_update_messages()
+                    .count(),
+                0
+            );
+            assert_eq!(
+                world
+                    .resource::<Messages<HealEvent>>()
+                    .iter_current_update_messages()
+                    .count(),
+                0
+            );
+            assert_eq!(
+                world
+                    .resource::<Messages<StatusEffectEvent>>()
+                    .iter_current_update_messages()
+                    .count(),
+                0
+            );
+            assert_eq!(
+                world
+                    .resource::<Messages<DisplacementEvent>>()
+                    .iter_current_update_messages()
+                    .count(),
+                0
+            );
+            assert_eq!(
+                world
+                    .resource::<Messages<TeleportEvent>>()
+                    .iter_current_update_messages()
+                    .count(),
+                0
+            );
+            triggers += world
+                .resource::<Messages<AbilityTriggerEvent>>()
+                .iter_current_update_messages()
+                .count();
+        }
+        assert!(triggers >= 1, "the item did fire");
+        assert_eq!(health(&app, start), 1000.0);
+    }
+
+    #[test]
+    fn chain_hop_damage_is_spell_damage_not_attack_bonus() {
+        let mut app = test_app();
+        let entries = vec![
+            chain_entry(
+                AbilityTrigger::OnAttackHit,
+                EffectTarget::TriggerUnit,
+                1,
+                1.0,
+                "on_chain_hit",
+            ),
+            damage_entry(AbilityTrigger::OnAttackHit, EffectTarget::TriggerUnit, 10.0),
+            damage_entry(
+                AbilityTrigger::Custom("on_chain_hit"),
+                EffectTarget::TriggerUnit,
+                20.0,
+            ),
+        ];
+        let _defs = install_test_item_definitions([item_with_effects(entries)]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let target = enemy_at(&mut app, 80.0);
+        let other = enemy_at(&mut app, 300.0);
+        write_attack_hit(&mut app, caster, target);
+        step(&mut app);
+
+        let kinds: Vec<_> = app
+            .world()
+            .resource::<Messages<DamageEvent>>()
+            .iter_current_update_messages()
+            .map(|d| (d.target, d.kind, d.is_spell))
+            .collect();
+        assert!(kinds.contains(&(target, crate::combat::DamageKind::AttackBonus, false)));
+        let hop = kinds.iter().find(|k| k.0 == other).expect("chained damage");
+        assert_ne!(hop.1, crate::combat::DamageKind::AttackBonus);
+        assert!(hop.2, "spell damage");
+    }
+
+    #[test]
+    fn magnitude_defaults_to_one_for_non_chain_triggers() {
+        let ctx = TriggerContext::new(
+            AbilityTrigger::OnCast,
+            EffectSource::Ability(AbilityId::Bolt),
+            Entity::PLACEHOLDER,
+            Team::Radiant,
+            1,
+            Vec3::ZERO,
+            Vec3::ZERO,
+        );
+        assert_eq!(ctx.magnitude, 1.0);
+
+        let mut app = test_app();
+        let entries = vec![damage_entry(
+            AbilityTrigger::OnUse,
+            EffectTarget::CastTarget,
+            100.0,
+        )];
+        let effects: &'static [AbilityEffectEntry] = Box::leak(entries.into_boxed_slice());
+        let _defs = install_test_item_definitions([item_with(
+            effects,
+            TargetType::Unit,
+            TargetTeam::Enemy,
+            scale::u(600.0),
+        )]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let target = enemy_at(&mut app, 300.0);
+        request_item(&mut app, caster, 0, CastTarget::Unit(target));
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        assert!((health(&app, target) - 900.0).abs() < 1e-3);
+    }
+
     #[test]
     fn data_only_ability_resolves_on_hit_effects() {
         let mut app = test_app();
@@ -2747,6 +3133,7 @@ mod tests {
                 affected_units: Vec::new(),
                 attack: None,
                 depth: 0,
+                magnitude: 1.0,
             }));
         step(&mut app);
         assert!((health(&app, near) - 910.0).abs() < 1e-3);

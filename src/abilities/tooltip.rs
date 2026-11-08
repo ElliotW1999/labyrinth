@@ -361,6 +361,7 @@ fn effect_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
         | AbilityEffect::Teleport
         | AbilityEffect::Proc { .. }
         | AbilityEffect::Counter { .. }
+        | AbilityEffect::Chain { .. }
         | AbilityEffect::PerformAttack { .. } => Vec::new(),
     }
 }
@@ -472,6 +473,10 @@ fn effect_text_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
         AbilityEffect::Counter { every, .. } => {
             vec![text_row(format!("Every {every} attacks"))]
         }
+        AbilityEffect::Chain { jumps, falloff, .. } => vec![text_row(format!(
+            "Chains up to {jumps} times, {}% per jump",
+            fmt_num(falloff * 100.0)
+        ))],
         AbilityEffect::Teleport => vec![text_row("Teleports to the target point")],
         AbilityEffect::Displace {
             distance: None,

@@ -780,5 +780,59 @@ class AttackModifierTests(unittest.TestCase):
         self.assertFalse(report.warnings)
 
 
+class ChainEffectTests(unittest.TestCase):
+    GOOD = {"value": "3", "radius": "450", "amount": "75"}
+
+    def test_chain_columns_become_the_gate(self) -> None:
+        for kind in ("ability", "item"):
+            report = Report()
+            effect, ctx = _effect("chain", "on_chain_hit", kind=kind, **self.GOOD)
+            result = effect_to_rust(effect, ctx, report)
+            self.assertFalse(report.errors, kind)
+            self.assertIn(
+                'AbilityEffect::Chain { jumps: 3, radius: RankValue::fixed(450.0), falloff: 0.75, '
+                'team: TargetTeam::Enemy, then: AbilityTrigger::Custom("on_chain_hit") }',
+                result[2],
+            )
+            self.assertIn("EffectTarget::CastTarget", result[1])
+
+    def test_chain_rejects_bad_columns(self) -> None:
+        bad = (
+            ({"value": "0"}, "jumps"),
+            ({"value": "1.5"}, "jumps"),
+            ({"value": ""}, "required"),
+            ({"radius": "0"}, "radius"),
+            ({"radius": ""}, "required"),
+            ({"amount": "0"}, "percent"),
+            ({"amount": "101"}, "percent"),
+            ({"amount": ""}, "required"),
+        )
+        for override, word in bad:
+            report = Report()
+            effect, ctx = _effect("chain", "on_chain_hit", **{**self.GOOD, **override})
+            self.assertIsNone(effect_to_rust(effect, ctx, report), override)
+            self.assertIn(word, report.errors[0].message, override)
+
+    def test_chain_needs_a_unit_start_target_and_a_custom_trigger(self) -> None:
+        for target in ("affected_units", "units_in_radius"):
+            report = Report()
+            effect, ctx = _effect("chain", "on_chain_hit", target=target, **self.GOOD)
+            self.assertIsNone(effect_to_rust(effect, ctx, report), target)
+            self.assertEqual(report.errors[0].field, "effect_target")
+        for trigger_id in ("on_use", "on_cast", "on_tester"):
+            report = Report()
+            effect, ctx = _effect("chain", trigger_id, trigger="on_tester", **self.GOOD)
+            self.assertIsNone(effect_to_rust(effect, ctx, report), trigger_id)
+
+    def test_chain_feeds_its_trigger(self) -> None:
+        def make(trigger: str, effect_type: str, effect_id: str) -> EffectRow:
+            cells = {"item_id": "t", "effect_index": "0", "trigger": trigger, "effect_target": "cast_target", "effect_type": effect_type, "effect_id": effect_id}
+            return EffectRow(row(cells), "t", 0, trigger, "cast_target", effect_type)
+
+        report = Report()
+        warn_unreachable_custom_triggers([make("on_use", "chain", "on_chain_hit"), make("on_chain_hit", "damage", "")], set(), report)
+        self.assertFalse(report.warnings)
+
+
 if __name__ == "__main__":
     unittest.main()

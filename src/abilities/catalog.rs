@@ -11,7 +11,7 @@ use bevy::prelude::*;
 
 use super::definition::{
     AbilityDefinition, AbilityEffect, AbilityMechanic, AbilityTrigger, AreaCenter, AreaRadius,
-    EffectScaling, EffectTarget, RankValue, RingStyle, StatusSpec, TargetType,
+    EffectScaling, EffectTarget, RankValue, RingStyle, StatusSpec, TargetTeam, TargetType,
 };
 use super::generated;
 use crate::components::{AbilityId, AbilityLoadout, DamageType};
@@ -238,12 +238,22 @@ fn handwritten(id: AbilityId) -> AbilityDefinition {
         .on(
             AbilityTrigger::OnProjectileHit,
             EffectTarget::TriggerUnit,
-            AbilityEffect::Custom {
-                id: "bolt_chain",
-                value: RankValue::fixed(2.0),
-                amount: RankValue::linear(45.0, 12.0),
-                duration: RankValue::ZERO,
+            AbilityEffect::Chain {
+                jumps: 2,
+                radius: RankValue::fixed(scale::u(450.0)),
+                falloff: 0.75,
+                team: TargetTeam::Enemy,
+                then: AbilityTrigger::Custom("on_chain_hit"),
             },
+        )
+        .on(
+            AbilityTrigger::Custom("on_chain_hit"),
+            EffectTarget::TriggerUnit,
+            damage(
+                RankValue::linear(45.0, 12.0),
+                DamageType::Magical,
+                EffectScaling::None,
+            ),
         ),
         AbilityId::ArcMissile => projectile_damage(
             def.targeting(

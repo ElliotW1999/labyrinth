@@ -20,11 +20,56 @@ use super::definition::{
     AbilityMechanic, AbilityTrigger, AreaCenter, AreaRadius, DisplacementKind, RingStyle,
 };
 use super::effects::{AbilityTriggerEvent, EffectSource, TriggerContext};
-use crate::combat::{ProjectileHitEvent, ProjectilePayload, SpawnProjectileEvent};
+use crate::combat::{ProjectileHitEvent, ProjectilePayload, SpawnProjectileEvent, flat_distance};
 use crate::components::{AbilityId, AttackTarget, Health, Team};
+use crate::dimensions::area_contains;
 use crate::displacement::DisplacementEvent;
 use crate::resources::SharedAssets;
 use crate::scale::DASH_SPEED;
+
+/// A unit a chain may jump to: already filtered for team, life and targetability.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ChainCandidate {
+    pub entity: Entity,
+    pub position: Vec3,
+    /// Bounds radius added to the jump radius when testing reach.
+    pub bounds: f32,
+}
+
+/// The units a chain visits after `start`, in order. Each jump goes to the nearest candidate
+/// within `radius` of the previous unit that was not hit yet (ties are broken by `Entity`),
+/// and stops early when none is in reach. `start` itself is never returned.
+pub fn chain_hops(
+    start: Entity,
+    start_position: Vec3,
+    candidates: &[ChainCandidate],
+    jumps: u32,
+    radius: f32,
+) -> Vec<ChainCandidate> {
+    let mut hit = vec![start];
+    let mut origin = start_position;
+    let mut hops = Vec::new();
+    for _ in 0..jumps {
+        let next = candidates
+            .iter()
+            .filter(|c| {
+                !hit.contains(&c.entity) && area_contains(origin, radius, c.position, c.bounds)
+            })
+            .min_by(|a, b| {
+                flat_distance(origin, a.position)
+                    .total_cmp(&flat_distance(origin, b.position))
+                    .then(a.entity.cmp(&b.entity))
+            })
+            .copied();
+        let Some(next) = next else {
+            break;
+        };
+        hit.push(next.entity);
+        origin = next.position;
+        hops.push(next);
+    }
+    hops
+}
 
 /// Everything a mechanic or custom behavior needs to know about one cast.
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -651,6 +651,18 @@ pub enum AbilityEffect {
         every: u32,
         then: AbilityTrigger,
     },
+    /// Mechanic gate: from each resolved start unit, jump up to `jumps` times to the nearest
+    /// valid unit (team-allowed, alive, targetable, not yet hit) within `radius` of the
+    /// previous unit, re-firing this context under `then` per hop
+    /// (trigger unit = hop, point = its position, magnitude *= falloff^hop).
+    /// The start unit is not re-fired. Emits no gameplay messages.
+    Chain {
+        jumps: u32,
+        radius: RankValue,
+        falloff: f32,
+        team: TargetTeam,
+        then: AbilityTrigger,
+    },
     /// Each resolved enemy gets an extra basic attack dealing `damage_ratio` (1.0 = 100%) of
     /// the caster's attack damage, ignoring cooldown, swing and range (instant attack, double
     /// attack, multi-target attack). The caster itself is never a target, nor the trigger unit

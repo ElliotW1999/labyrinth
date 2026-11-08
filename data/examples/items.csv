@@ -15,3 +15,4 @@ crit_blade,Crit Blade,weapon,2100,1050,2,rare,false,,false,,Attacks can critical
 split_bow,Split Bow,weapon,2400,1200,3,rare,false,,false,,Attacks also fire at nearby enemies,,,,,,,
 mana_breaker,Mana Breaker,weapon,1900,950,2,uncommon,false,,false,,Landed attacks burn mana for damage,,,,,,,
 thunder_axe,Thunder Axe,weapon,2600,1300,3,rare,false,,false,,Every fourth landed attack calls lightning,,,,,,,
+storm_charm,Storm Charm,utility,1200,600,2,uncommon,false,,false,,Strikes an enemy and arcs to the nearest enemies nearby,20,,unit,enemy,700,,,

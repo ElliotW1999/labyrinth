@@ -474,55 +474,6 @@ pub fn apply_damage_events(
     }
 }
 
-/// Chain lightning: jump to nearby enemies with falloff per hop.
-pub fn emit_chain_damage(
-    damage: &mut MessageWriter<DamageEvent>,
-    primary: Entity,
-    source: Entity,
-    amount: f32,
-    damage_type: DamageType,
-    team: Team,
-    jumps: u32,
-    radius: f32,
-    falloff: f32,
-    units: &Query<(Entity, &Transform, &Team, &Health, Option<&BoundRadius>)>,
-) {
-    let mut hit = vec![primary];
-    let mut current = primary;
-    let mut current_amount = amount;
-    for _ in 0..jumps {
-        let Ok((_, current_tf, _, _, _)) = units.get(current) else {
-            break;
-        };
-        let origin = current_tf.translation;
-        let next = units
-            .iter()
-            .filter(|(entity, tf, unit_team, health, bound)| {
-                **unit_team == team.enemy()
-                    && health.is_alive()
-                    && !hit.contains(entity)
-                    && area_contains(origin, radius, tf.translation, bounds_of(*bound))
-            })
-            .min_by(|a, b| {
-                flat_distance(origin, a.1.translation)
-                    .total_cmp(&flat_distance(origin, b.1.translation))
-            })
-            .map(|(e, ..)| e);
-        let Some(next) = next else {
-            break;
-        };
-        current_amount *= falloff;
-        damage.write(DamageEvent::spell(
-            source,
-            next,
-            current_amount,
-            damage_type,
-        ));
-        hit.push(next);
-        current = next;
-    }
-}
-
 fn tick_attack_cooldowns(time: Res<Time>, mut query: Query<&mut AttackCooldown>) {
     let dt = time.delta_secs();
     for mut cd in &mut query {

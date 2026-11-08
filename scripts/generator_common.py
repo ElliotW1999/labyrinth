@@ -112,6 +112,8 @@ EFFECT_TYPES = {
     # Gates: re-fire the row's context under a custom trigger (see AbilityEffect::Proc/Counter).
     "proc",
     "counter",
+    # Mechanic gate: jump from the start unit to nearby units, re-firing a custom trigger per hop.
+    "chain",
     # Extra basic attacks (instant / double / multi-target attack).
     "perform_attack",
 }
@@ -668,7 +670,7 @@ def find_emitted_custom_triggers(repo_root: Path) -> set[str]:
 
 def warn_unreachable_custom_triggers(effects: list["EffectRow"], emitted: set[str] | None, report: Report) -> None:
     """A custom trigger only fires when a proc / counter row names it or Rust emits it."""
-    fed = {e.row.get("effect_id").lower() for e in effects if e.effect_type in ("proc", "counter")}
+    fed = {e.row.get("effect_id").lower() for e in effects if e.effect_type in ("proc", "counter", "chain")}
     for e in effects:
         if e.trigger in ABILITY_TRIGGERS or e.trigger in ITEM_TRIGGERS:
             continue
@@ -1384,6 +1386,45 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
                 report.error(row.file, row.line, "value", row.get("value"), "counter needs a single integer of at least 2")
                 return None
             effect = f"AbilityEffect::Counter {{ every: {int(value[0])}, then: AbilityTrigger::Custom(\"{effect_id}\") }}"
+    elif t == "chain":
+        if not _require(e, "effect_id", report, "the custom trigger to fire per hop (on_<name>)"):
+            return None
+        if not CUSTOM_TRIGGER_PATTERN.match(effect_id) or effect_id in ABILITY_TRIGGERS or effect_id in ITEM_TRIGGERS:
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), "must be a custom on_<name> trigger, not a built-in trigger")
+            return None
+        if effect_id == e.trigger:
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), "a chain cannot fire its own trigger")
+            return None
+        if e.target in ("affected_units", "units_in_radius"):
+            report.error(row.file, row.line, "effect_target", e.target, "a chain starts from one unit; use cast_target, trigger_unit, attacker, owner, or caster")
+            return None
+        if ctx.owner_triggers is not None and effect_id not in ctx.owner_triggers:
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), f"no row of {e.owner!r} uses trigger {effect_id}, so this chain would do nothing")
+            return None
+        if not no_scaling():
+            return None
+        if not _require(e, "value", report, "number of jumps (integer, at least 1)"):
+            return None
+        if len(value) != 1 or not float(value[0]).is_integer() or value[0] < 1:
+            report.error(row.file, row.line, "value", row.get("value"), "chain needs a single integer number of jumps of at least 1")
+            return None
+        if not _require(e, "radius", report, "jump radius in world units"):
+            return None
+        if any(r <= 0 for r in radius):
+            report.error(row.file, row.line, "radius", row.get("radius"), "chain jump radius must be above 0")
+            return None
+        if not _require(e, "amount", report, "percent of the magnitude kept per jump (above 0, at most 100)"):
+            return None
+        if len(amount) != 1 or not 0 < amount[0] <= 100:
+            report.error(row.file, row.line, "amount", row.get("amount"), "chain needs a single percent above 0 and at most 100")
+            return None
+        _unused(e, report, "damage_type", "duration")
+        chain_team = ctx.team if ctx.team in ("Enemy", "Ally", "Any") else "Enemy"
+        effect = (
+            f"AbilityEffect::Chain {{ jumps: {int(value[0])}, radius: {rank_value(radius)}, "
+            f"falloff: {f32(amount[0] / 100)}, team: TargetTeam::{chain_team}, "
+            f'then: AbilityTrigger::Custom("{effect_id}") }}'
+        )
     elif t == "perform_attack":
         if effect_id not in ("", "exclude_trigger_unit"):
             report.error(row.file, row.line, "effect_id", row.get("effect_id"), "perform_attack effect_id must be blank or exclude_trigger_unit")
@@ -1429,7 +1470,7 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
     else:  # pragma: no cover - parse_enum already rejected it
         return None
 
-    if t not in ("movement",) and e.target != "units_in_radius" and row.get("radius"):
+    if t not in ("movement", "chain") and e.target != "units_in_radius" and row.get("radius"):
         report.warn(row.file, row.line, "radius", row.get("radius"), "only used by units_in_radius targets")
 
     # --- target
