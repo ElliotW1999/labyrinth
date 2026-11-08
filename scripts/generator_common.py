@@ -203,6 +203,7 @@ TIMED_STATS = {
     "attack_damage": "attack_damage",
     "attack_speed_flat": "attack_speed_flat",
     "attack_speed_mult": "attack_speed_mult",
+    "attack_range": "attack_range",
 }
 
 # Timed resource modifiers map onto `StatusSpec::ResourceModifier` (summed when read).

@@ -256,6 +256,16 @@ pub enum StatusSpec {
     Blind {
         miss_chance_percent: RankValue,
     },
+    /// `percent` (0-100) chance that attacks against the target miss (a buff).
+    Evasion {
+        percent: RankValue,
+    },
+    /// `percent` (0-100) chance that the target's attacks land despite blind or evasion.
+    Accuracy {
+        percent: RankValue,
+    },
+    /// The target's attacks never miss: ignores evasion and blind.
+    TrueStrike,
     /// Run away from `source` (typically the caster).
     Fear,
     /// Reduces the target's current move speed by `percent`.
@@ -306,6 +316,8 @@ pub enum StatusSpec {
         attack_damage: RankValue,
         attack_speed_flat: RankValue,
         attack_speed_mult: RankValue,
+        /// Flat attack range change (does not change melee / ranged classification).
+        attack_range: RankValue,
     },
 }
 
@@ -341,6 +353,7 @@ impl StatusSpec {
             attack_damage: RankValue::ZERO,
             attack_speed_flat: RankValue::ZERO,
             attack_speed_mult: RankValue::ZERO,
+            attack_range: RankValue::ZERO,
         }
     }
 
@@ -386,6 +399,18 @@ impl StatusSpec {
                 (miss_chance_percent.at(rank) / 100.0).clamp(0.0, 1.0),
                 duration,
             ),
+            StatusSpec::Evasion { percent } => StatusEffect {
+                evasion: (percent.at(rank) / 100.0).clamp(0.0, 1.0),
+                ..StatusEffect::buff("evasion", duration)
+            },
+            StatusSpec::Accuracy { percent } => StatusEffect {
+                accuracy: (percent.at(rank) / 100.0).clamp(0.0, 1.0),
+                ..StatusEffect::buff("accuracy", duration)
+            },
+            StatusSpec::TrueStrike => StatusEffect {
+                accuracy: 1.0,
+                ..StatusEffect::buff("true_strike", duration)
+            },
             StatusSpec::Fear => StatusEffect::fear(duration, ctx.fear_source),
             StatusSpec::Slow { percent } => {
                 let p = (percent.at(rank) / 100.0).clamp(0.0, 1.0);
@@ -445,6 +470,7 @@ impl StatusSpec {
                 attack_damage,
                 attack_speed_flat,
                 attack_speed_mult,
+                attack_range,
             } => {
                 let base = match kind {
                     StatusKind::Buff => StatusEffect::buff(id, duration),
@@ -457,6 +483,7 @@ impl StatusSpec {
                     attack_damage: attack_damage.at(rank),
                     attack_speed_flat: attack_speed_flat.at(rank),
                     attack_speed_mult: attack_speed_mult.at(rank),
+                    attack_range: attack_range.at(rank),
                     ..base
                 }
             }
@@ -517,6 +544,22 @@ pub enum PassiveStat {
     SpellLifesteal,
     /// Additive change to mana costs (-0.25 = 25% cheaper).
     ManaCostAmp,
+    /// Chance (fraction) that basic attacks crit.
+    CritChance,
+    /// Bonus on top of the 2.0 base crit multiplier (0.5 = 2.5x).
+    CritMultiplier,
+    /// Chance (fraction) that attacks against the holder miss.
+    Evasion,
+    /// Chance (fraction) that the holder's attacks land despite blind or evasion.
+    Accuracy,
+    /// Fraction of attack damage dealt to enemies around a melee attacker.
+    CleaveRatio,
+    /// Fraction of attack damage dealt to enemies around the struck unit.
+    SplashRatio,
+    /// Flat attack range (does not change melee / ranged classification).
+    AttackRange,
+    /// Flat attack projectile speed (units / second).
+    AttackProjectileSpeed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

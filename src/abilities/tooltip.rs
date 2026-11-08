@@ -374,6 +374,14 @@ fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
             row("Heal per second", hps),
             seconds_row("Heal duration", duration),
         ],
+        StatusSpec::Evasion { percent } => vec![
+            row("Evasion %", percent),
+            seconds_row("Evasion duration", duration),
+        ],
+        StatusSpec::Accuracy { percent } => vec![
+            row("Accuracy %", percent),
+            seconds_row("Accuracy duration", duration),
+        ],
         StatusSpec::HealReduction { percent } => vec![
             row("Heal reduction %", percent),
             seconds_row("Heal reduction duration", duration),
@@ -399,6 +407,7 @@ fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
             magic_resist,
             move_speed,
             attack_damage,
+            attack_range,
             ..
         } => {
             let mut rows = Vec::new();
@@ -413,6 +422,9 @@ fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
             }
             if attack_damage != RankValue::ZERO {
                 rows.push(row("Attack damage", attack_damage));
+            }
+            if attack_range != RankValue::ZERO {
+                rows.push(row("Attack range", attack_range));
             }
             rows.push(seconds_row("Duration", duration));
             rows
@@ -505,6 +517,9 @@ fn status_name(status: StatusSpec) -> &'static str {
         StatusSpec::Invulnerable => "Invulnerable",
         StatusSpec::Hex => "Hex",
         StatusSpec::Blind { .. } => "Blind",
+        StatusSpec::Evasion { .. } => "Evasion",
+        StatusSpec::Accuracy { .. } => "Accuracy",
+        StatusSpec::TrueStrike => "True strike",
         StatusSpec::Fear => "Fear",
         StatusSpec::Slow { .. } => "Slow",
         StatusSpec::AttackSpeedSlow { .. } => "Attack speed slow",
@@ -542,6 +557,14 @@ pub(crate) fn passive_name(stat: super::definition::PassiveStat) -> &'static str
         PassiveStat::Lifesteal => "Lifesteal",
         PassiveStat::SpellLifesteal => "Spell lifesteal",
         PassiveStat::ManaCostAmp => "Mana cost",
+        PassiveStat::CritChance => "Crit chance",
+        PassiveStat::CritMultiplier => "Crit multiplier",
+        PassiveStat::Evasion => "Evasion",
+        PassiveStat::Accuracy => "Accuracy",
+        PassiveStat::CleaveRatio => "Cleave",
+        PassiveStat::SplashRatio => "Splash",
+        PassiveStat::AttackRange => "Attack range",
+        PassiveStat::AttackProjectileSpeed => "Projectile speed",
     }
 }
 

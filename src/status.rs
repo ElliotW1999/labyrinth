@@ -95,6 +95,13 @@ pub struct StatusEffect {
     pub turn_rate_bonus_percent: f32,
     /// 0..1 miss chance on basic attack damage resolution (`0` = no blind).
     pub blind_miss_chance: f32,
+    /// 0..1 chance that attacks against the holder miss. Stacks with other statuses.
+    pub evasion: f32,
+    /// 0..1 chance that the holder's attacks hit despite a blind or evasion roll
+    /// (1.0 is true strike). Stacks with other statuses.
+    pub accuracy: f32,
+    /// Flat attack range change; also tracked in `CombatStats::attack_range_bonus`.
+    pub attack_range: f32,
     pub heal_per_sec: f32,
     /// Timed resource modifier, summed when read (see [`crate::vitals::resource_stat`]).
     pub resource: Option<(crate::vitals::ResourceStat, f32)>,
@@ -147,6 +154,9 @@ impl StatusEffect {
             turn_rate_slow_percent: 0.0,
             turn_rate_bonus_percent: 0.0,
             blind_miss_chance: 0.0,
+            evasion: 0.0,
+            accuracy: 0.0,
+            attack_range: 0.0,
             heal_per_sec: 0.0,
             resource: None,
             heal_reduction: 0.0,
@@ -496,6 +506,22 @@ impl StatusEffects {
             .clamp(0.0, 1.0)
     }
 
+    /// Evasion of every live status, one entry each (they stack multiplicatively).
+    pub fn evasions(&self) -> impl Iterator<Item = f32> + '_ {
+        self.effects
+            .iter()
+            .filter(|e| e.remaining > 0.0 && e.evasion > 0.0)
+            .map(|e| e.evasion)
+    }
+
+    /// Accuracy of every live status, one entry each (they stack multiplicatively).
+    pub fn accuracies(&self) -> impl Iterator<Item = f32> + '_ {
+        self.effects
+            .iter()
+            .filter(|e| e.remaining > 0.0 && e.accuracy > 0.0)
+            .map(|e| e.accuracy)
+    }
+
     pub fn has_debuff_immunity(&self) -> bool {
         self.effects
             .iter()
@@ -658,6 +684,8 @@ pub(crate) fn subtract_status_stat_delta(
     stats.move_speed -= effect.move_speed;
     stats.attack_speed_flat -= effect.attack_speed_flat;
     stats.attack_speed_mult -= effect.attack_speed_mult;
+    stats.attack_range -= effect.attack_range;
+    stats.attack_range_bonus -= effect.attack_range;
     stats.recompute_attack_speed(agility);
 }
 
@@ -668,6 +696,8 @@ pub(crate) fn add_status_stat_delta(effect: &StatusEffect, stats: &mut CombatSta
     stats.move_speed += effect.move_speed;
     stats.attack_speed_flat += effect.attack_speed_flat;
     stats.attack_speed_mult += effect.attack_speed_mult;
+    stats.attack_range += effect.attack_range;
+    stats.attack_range_bonus += effect.attack_range;
     stats.recompute_attack_speed(agility);
 }
 
@@ -856,6 +886,8 @@ pub fn apply_status_effect_events(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::abilities::definition::{RankValue, StatusBuildContext, StatusSpec};
+    use bevy::ecs::system::RunSystemOnce;
 
     #[test]
     fn status_buff_applies_and_expires_modifiers() {
@@ -877,6 +909,71 @@ mod tests {
         let expired = statuses.effects.remove(0);
         stats.armor -= expired.armor;
         assert_eq!(stats.armor, 2.0);
+    }
+
+    #[test]
+    fn attack_range_modifier_status_reverts_on_expire() {
+        use std::time::Duration;
+        let mut world = World::new();
+        world.init_resource::<Time>();
+        world.init_resource::<Messages<DamageEvent>>();
+        let mut statuses = StatusEffects::default();
+        let mut stats =
+            CombatStats::simple(10.0, crate::scale::MELEE_ATTACK_RANGE, 1.0, 0.0, 0.0, 10.0);
+        let base = stats.attack_range;
+        apply_status(
+            &mut statuses,
+            &mut stats,
+            StatusEffect {
+                attack_range: 120.0,
+                ..StatusEffect::buff("long_reach", 1.0)
+            },
+            0.0,
+        );
+        assert_eq!(stats.attack_range, base + 120.0);
+        assert!(
+            stats.is_melee(),
+            "the bonus does not change the classification"
+        );
+        let unit = world.spawn((statuses, stats, Health::new(100.0))).id();
+
+        world
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_secs_f32(2.0));
+        world.run_system_once(tick_status_effects).unwrap();
+
+        let stats = world.get::<CombatStats>(unit).unwrap();
+        assert_eq!(stats.attack_range, base);
+        assert_eq!(stats.attack_range_bonus, 0.0);
+        assert!(world.get::<StatusEffects>(unit).unwrap().effects.is_empty());
+    }
+
+    #[test]
+    fn evasion_status_is_basic_dispellable() {
+        let evasion = StatusSpec::Evasion {
+            percent: RankValue::fixed(40.0),
+        }
+        .build(
+            1,
+            5.0,
+            StatusBuildContext {
+                move_speed: 0.0,
+                agility: 0.0,
+                fear_source: None,
+                source: None,
+                point: Vec3::ZERO,
+            },
+        );
+        assert_eq!(evasion.kind, StatusKind::Buff);
+        assert!((evasion.evasion - 0.4).abs() < 1e-6);
+        assert!(status_dispel_matches(
+            &evasion,
+            StatusKind::Buff,
+            DispelStrength::Basic
+        ));
+        let mut statuses = StatusEffects::default();
+        statuses.effects.push(evasion);
+        assert_eq!(statuses.evasions().collect::<Vec<_>>(), vec![0.4]);
     }
 
     #[test]
