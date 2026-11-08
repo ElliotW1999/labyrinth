@@ -11,10 +11,13 @@ use crate::basic_attack::{
 };
 use crate::components::{
     AbilityId, AttackCooldown, BoundRadius, CombatStats, DamageType, GoldBounty, Health,
-    HeroAttributes, HeroProgress, Lifetime, PlayerHero, PlayerWallet, Projectile, ProjectileHome,
-    ProjectileStyle, ShieldPool, Team, XpBounty,
+    HeroAttributes, HeroProgress, Lifetime, Mana, PlayerHero, PlayerWallet, Projectile,
+    ProjectileHome, ProjectileStyle, ShieldPool, Team, XpBounty,
 };
 use crate::status::{StatusEffects, is_untargetable, subtract_status_stat_delta};
+use crate::vitals::{
+    HealKind, ManaShield, ResourceStat, apply_heal, heal_factor, outgoing_heal_amp, resource_stat,
+};
 use crate::dimensions::{area_contains, bounds_of};
 use crate::progression::add_xp;
 use crate::resources::SharedAssets;
@@ -68,6 +71,8 @@ pub enum DamageKind {
     BasicAttack,
     Ability,
     Dot,
+    /// Splash from a basic attack; never leeched from.
+    Cleave,
 }
 
 /// Raw (pre-mitigation) damage dealt to `target`; resolved in [`apply_damage_events`].
@@ -83,6 +88,8 @@ pub struct DamageEvent {
     pub applies_block: bool,
     pub pierces_shields: bool,
     pub reflects: bool,
+    /// Fraction of health actually removed that heals the source (health transfer).
+    pub drain_ratio: f32,
 }
 
 impl DamageEvent {
@@ -99,6 +106,7 @@ impl DamageEvent {
             applies_block: true,
             pierces_shields: false,
             reflects: true,
+            drain_ratio: 0.0,
         }
     }
 
@@ -114,6 +122,7 @@ impl DamageEvent {
             applies_block: true,
             pierces_shields: false,
             reflects: true,
+            drain_ratio: 0.0,
         }
     }
 
@@ -129,6 +138,7 @@ impl DamageEvent {
             applies_block: true,
             pierces_shields: false,
             reflects: true,
+            drain_ratio: 0.0,
         }
     }
 
@@ -144,7 +154,23 @@ impl DamageEvent {
             applies_block: true,
             pierces_shields: false,
             reflects: false,
+            drain_ratio: 0.0,
         }
+    }
+
+    /// Splash from a basic attack (cleave). Identical to a basic attack except that it
+    /// never leeches.
+    pub fn cleave(source: Entity, target: Entity, amount: f32) -> Self {
+        Self {
+            kind: DamageKind::Cleave,
+            ..Self::basic_attack(source, target, amount)
+        }
+    }
+
+    /// Marks the damage as a health transfer: the source heals `ratio` of the health removed.
+    pub fn drained(mut self, ratio: f32) -> Self {
+        self.drain_ratio = ratio;
+        self
     }
 }
 
@@ -248,6 +274,17 @@ pub fn resolve_incoming_damage(
     }
 }
 
+/// Divert damage to mana: `min(damage x absorb, mana x damage_per_mana)` is absorbed and
+/// mana is spent for it. Returns the damage absorbed.
+pub fn absorb_with_mana_shield(damage: f32, mana: &mut Mana, shield: ManaShield) -> f32 {
+    let per_mana = shield.damage_per_mana.max(f32::EPSILON);
+    let absorbed = (damage * shield.absorb)
+        .min(mana.current.max(0.0) * per_mana)
+        .max(0.0);
+    mana.current -= absorbed / per_mana;
+    absorbed
+}
+
 pub fn apply_damage_events(
     mut damage: ParamSet<(
         MessageReader<DamageEvent>,
@@ -256,13 +293,14 @@ pub fn apply_damage_events(
     mut rng: Option<ResMut<CombatRng>>,
     hooks: Option<Res<DamageTestHooks>>,
     mut unit_stats: ParamSet<(
-        Query<&CombatStats>,
+        Query<(&CombatStats, Option<&StatusEffects>)>,
         Query<(
             &mut Health,
             &mut CombatStats,
             Option<&mut ShieldPool>,
             Option<&mut StatusEffects>,
             Option<&HeroAttributes>,
+            Option<&mut Mana>,
         )>,
     )>,
 ) {
@@ -270,12 +308,21 @@ pub fn apply_damage_events(
     let mut fallback_rng = CombatRng::default();
     let rng = rng.as_deref_mut().unwrap_or(&mut fallback_rng);
     let mut reflected = Vec::new();
+    // (source, health to give back); applied after the whole batch, same frame.
+    let mut leeches: Vec<(Entity, f32)> = Vec::new();
     for event in damage.p0().read() {
-        let source_stats_snapshot = event
-            .source
-            .and_then(|e| unit_stats.p0().get(e).ok().copied());
+        let source_snapshot = event.source.and_then(|e| {
+            unit_stats.p0().get(e).ok().map(|(stats, statuses)| {
+                (
+                    *stats,
+                    resource_stat(Some(stats), statuses, ResourceStat::Lifesteal),
+                    resource_stat(Some(stats), statuses, ResourceStat::SpellLifesteal),
+                )
+            })
+        });
+        let source_stats_snapshot = source_snapshot.map(|(stats, _, _)| stats);
         let mut target_query = unit_stats.p1();
-        let Ok((mut health, mut target_stats, mut shield, mut statuses, attrs)) =
+        let Ok((mut health, mut target_stats, mut shield, mut statuses, attrs, mut mana)) =
             target_query.get_mut(event.target)
         else {
             continue;
@@ -316,7 +363,7 @@ pub fn apply_damage_events(
             rng,
             &hooks,
         );
-        let resolved = resolve_incoming_damage(
+        let mut resolved = resolve_incoming_damage(
             outgoing,
             event.damage_type,
             &target_stats,
@@ -330,7 +377,33 @@ pub fn apply_damage_events(
                 crate::status::consume_shields(st, resolved.shield_absorbed);
             }
         }
+        // Mana shield: pays for post-mitigation damage, after any ShieldPool.
+        if let (Some(shield), Some(mana)) = (
+            statuses.as_ref().and_then(|s| s.mana_shield()),
+            mana.as_deref_mut(),
+        ) {
+            resolved.health_delta -= absorb_with_mana_shield(resolved.health_delta, mana, shield);
+        }
+        let health_before = health.current;
         health.current -= resolved.health_delta;
+
+        // Leech: only health actually removed counts (no overkill, nothing a shield soaked).
+        // Dots, reflection and cleave carry neither a drain ratio nor a leech-eligible kind.
+        if let (Some(source), Some((_, lifesteal, spell_lifesteal))) =
+            (event.source, source_snapshot)
+        {
+            let mut ratio = event.drain_ratio;
+            if event.kind == DamageKind::BasicAttack {
+                ratio += lifesteal;
+            }
+            if event.is_spell {
+                ratio += spell_lifesteal;
+            }
+            let dealt = resolved.health_delta.min(health_before.max(0.0));
+            if source != event.target && ratio > 0.0 && dealt > 0.0 {
+                leeches.push((source, dealt * ratio));
+            }
+        }
 
         if event.reflects && resolved.health_delta > 0.0 && damage_reflect > 0.0 {
             if let Some(source) = event.source {
@@ -346,8 +419,16 @@ pub fn apply_damage_events(
                     applies_block: true,
                     pierces_shields: false,
                     reflects: false,
+                    drain_ratio: 0.0,
                 });
             }
+        }
+    }
+    for (source, amount) in leeches {
+        if let Ok((mut health, stats, _, statuses, _, _)) = unit_stats.p1().get_mut(source) {
+            let outgoing = outgoing_heal_amp(Some(&stats), statuses.as_deref());
+            let factor = heal_factor(HealKind::Leech, outgoing, Some(&stats), statuses.as_deref());
+            apply_heal(&mut health, amount, factor);
         }
     }
     for event in reflected {
@@ -1023,6 +1104,7 @@ mod tests {
             applies_block: true,
             pierces_shields: false,
             reflects: false,
+            drain_ratio: 0.0,
         });
         world.run_system_once(apply_damage_events).unwrap();
         let expected = 500.0 - apply_damage(100.0, DamageType::Physical, &defender);
@@ -1178,5 +1260,277 @@ mod tests {
         assert_eq!(primaries, vec![near, far], "an ordinary skillshot pierces");
         assert!(!primaries.contains(&ally));
         assert!(alive);
+    }
+
+    mod leech {
+        use super::*;
+        use crate::status::StatusEffect;
+
+        fn world() -> World {
+            let mut world = World::new();
+            world.init_resource::<Messages<DamageEvent>>();
+            world.init_resource::<CombatRng>();
+            world
+        }
+
+        fn plain() -> CombatStats {
+            CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 0.0)
+        }
+
+        /// A wounded attacker (500 / 1000) with the given lifesteal and spell lifesteal.
+        fn attacker(world: &mut World, lifesteal: f32, spell_lifesteal: f32) -> Entity {
+            let mut stats = plain();
+            stats.lifesteal = lifesteal;
+            stats.spell_lifesteal = spell_lifesteal;
+            let mut health = Health::new(1000.0);
+            health.current = 500.0;
+            world.spawn((health, stats)).id()
+        }
+
+        fn victim(world: &mut World, hp: f32) -> Entity {
+            world.spawn((Health::new(hp), plain())).id()
+        }
+
+        fn hp(world: &World, e: Entity) -> f32 {
+            world.get::<Health>(e).unwrap().current
+        }
+
+        fn run(world: &mut World) {
+            world.run_system_once(apply_damage_events).unwrap();
+        }
+
+        #[test]
+        fn lifesteal_heals_fraction_of_mitigated_damage() {
+            let mut world = world();
+            let a = attacker(&mut world, 0.25, 0.0);
+            let mut stats = plain();
+            stats.armor = 10.0;
+            let t = world.spawn((Health::new(1000.0), stats)).id();
+            world.write_message(DamageEvent::basic_attack(a, t, 100.0));
+            run(&mut world);
+            let dealt = 1000.0 - hp(&world, t);
+            assert!(dealt > 0.0 && dealt < 100.0, "armor mitigated the hit");
+            assert!((hp(&world, a) - (500.0 + dealt * 0.25)).abs() < 1e-3);
+        }
+
+        #[test]
+        fn lifesteal_capped_by_overkill_and_skips_shield_absorbed() {
+            let mut world = world();
+            let a = attacker(&mut world, 1.0, 0.0);
+            let weak = victim(&mut world, 30.0);
+            world.write_message(DamageEvent::basic_attack(a, weak, 500.0));
+            run(&mut world);
+            assert_eq!(hp(&world, a), 530.0, "only the 30 hp the target had");
+
+            let shielded = world
+                .spawn((Health::new(1000.0), plain(), ShieldPool { amount: 60.0 }))
+                .id();
+            world.write_message(DamageEvent::basic_attack(a, shielded, 100.0));
+            run(&mut world);
+            assert_eq!(hp(&world, shielded), 960.0);
+            assert_eq!(
+                hp(&world, a),
+                570.0,
+                "the 60 absorbed by the shield leeches nothing"
+            );
+        }
+
+        #[test]
+        fn cleave_reflect_and_dot_do_not_leech() {
+            let mut world = world();
+            let a = attacker(&mut world, 1.0, 1.0);
+            let t = victim(&mut world, 1000.0);
+            world.write_message(DamageEvent::cleave(a, t, 100.0));
+            world.write_message(DamageEvent::dot(Some(a), t, 100.0, DamageType::Physical));
+            world.write_message(DamageEvent {
+                kind: DamageKind::Generic,
+                ..DamageEvent::new(t, 100.0, DamageType::Physical)
+            });
+            let reflected = DamageEvent {
+                source: Some(a),
+                reflects: false,
+                ..DamageEvent::new(t, 100.0, DamageType::Physical)
+            };
+            world.write_message(reflected);
+            run(&mut world);
+            assert!(hp(&world, t) < 1000.0, "all of it landed");
+            assert_eq!(hp(&world, a), 500.0, "none of it leeched");
+        }
+
+        #[test]
+        fn spell_lifesteal_applies_to_ability_damage_only() {
+            let mut spell_world = world();
+            let a = attacker(&mut spell_world, 0.5, 0.2);
+            let t = victim(&mut spell_world, 1000.0);
+            spell_world.write_message(DamageEvent::spell(a, t, 100.0, DamageType::Pure));
+            run(&mut spell_world);
+            assert!(
+                (hp(&spell_world, a) - 520.0).abs() < 1e-3,
+                "spell lifesteal only, not the 50% attack lifesteal"
+            );
+
+            // A fresh world: each run of the system re-reads the unread messages.
+            let mut attack_world = world();
+            let a = attacker(&mut attack_world, 0.5, 0.2);
+            let t = victim(&mut attack_world, 1000.0);
+            attack_world.write_message(DamageEvent::basic_attack(a, t, 100.0));
+            run(&mut attack_world);
+            let dealt = 1000.0 - hp(&attack_world, t);
+            assert!(
+                (hp(&attack_world, a) - (500.0 + dealt * 0.5)).abs() < 1e-3,
+                "basic attacks use lifesteal only"
+            );
+        }
+
+        #[test]
+        fn source_killed_in_same_batch_gets_no_leech() {
+            let mut world = world();
+            let a = attacker(&mut world, 1.0, 0.0);
+            let t = victim(&mut world, 1000.0);
+            let killer = victim(&mut world, 1000.0);
+            world.write_message(DamageEvent::basic_attack(a, t, 100.0));
+            world.write_message(DamageEvent::spell(killer, a, 9999.0, DamageType::Pure));
+            run(&mut world);
+            assert!(!world.get::<Health>(a).unwrap().is_alive());
+        }
+
+        #[test]
+        fn leech_respects_heal_block_on_the_attacker() {
+            let mut world = world();
+            let a = attacker(&mut world, 1.0, 0.0);
+            let mut blocked = StatusEffects::default();
+            blocked.effects.push(StatusEffect::heal_block(5.0));
+            world.entity_mut(a).insert(blocked);
+            let t = victim(&mut world, 1000.0);
+            world.write_message(DamageEvent::basic_attack(a, t, 100.0));
+            run(&mut world);
+            assert_eq!(hp(&world, a), 500.0);
+        }
+
+        #[test]
+        fn timed_lifesteal_status_is_summed_with_permanent() {
+            let mut world = world();
+            let a = attacker(&mut world, 0.1, 0.0);
+            let mut statuses = StatusEffects::default();
+            statuses.effects.push(StatusEffect::resource_modifier(
+                "vamp",
+                crate::status::StatusKind::Buff,
+                ResourceStat::Lifesteal,
+                0.15,
+                5.0,
+            ));
+            world.entity_mut(a).insert(statuses);
+            let t = victim(&mut world, 1000.0);
+            world.write_message(DamageEvent::basic_attack(a, t, 100.0));
+            run(&mut world);
+            let dealt = 1000.0 - hp(&world, t);
+            assert!((hp(&world, a) - (500.0 + dealt * 0.25)).abs() < 1e-3);
+        }
+    }
+
+    mod mana_shield {
+        use super::*;
+        use crate::status::StatusEffect;
+
+        fn shielded(mana: f32, absorb: f32, per_mana: f32) -> (World, Entity) {
+            let mut world = World::new();
+            world.init_resource::<Messages<DamageEvent>>();
+            world.init_resource::<CombatRng>();
+            let mut statuses = StatusEffects::default();
+            statuses.effects.push(StatusEffect::mana_shield(
+                ManaShield {
+                    absorb,
+                    damage_per_mana: per_mana,
+                },
+                10.0,
+            ));
+            let mut stats = CombatStats::simple(0.0, 0.0, 1.0, 10.0, 0.0, 0.0);
+            stats.damage_block = 0.0;
+            let target = world
+                .spawn((Health::new(1000.0), stats, statuses, Mana::new(mana, 0.0)))
+                .id();
+            (world, target)
+        }
+
+        #[test]
+        fn mana_shield_absorbs_post_mitigation_and_spends_mana() {
+            let (mut world, t) = shielded(100.0, 0.5, 2.0);
+            world.write_message(DamageEvent::new(t, 100.0, DamageType::Physical));
+            world.run_system_once(apply_damage_events).unwrap();
+            let armor = CombatStats::simple(0.0, 0.0, 1.0, 10.0, 0.0, 0.0);
+            let mitigated = apply_damage(100.0, DamageType::Physical, &armor);
+            assert!(mitigated < 100.0);
+            let health = world.get::<Health>(t).unwrap().current;
+            assert!((health - (1000.0 - mitigated * 0.5)).abs() < 1e-3);
+            let mana = world.get::<Mana>(t).unwrap().current;
+            assert!(
+                (mana - (100.0 - mitigated * 0.5 / 2.0)).abs() < 1e-3,
+                "mana pays for the mitigated damage at 2 damage per mana"
+            );
+        }
+
+        #[test]
+        fn mana_shield_runs_out_and_overflow_hits_health() {
+            let (mut world, t) = shielded(10.0, 1.0, 2.0);
+            world.write_message(DamageEvent::new(t, 100.0, DamageType::Pure));
+            world.run_system_once(apply_damage_events).unwrap();
+            assert_eq!(world.get::<Mana>(t).unwrap().current, 0.0);
+            assert_eq!(
+                world.get::<Health>(t).unwrap().current,
+                1000.0 - (100.0 - 20.0),
+                "10 mana absorbs 20 damage, the rest lands"
+            );
+            // No mana left: nothing is absorbed and the status stays.
+            let mut again = World::new();
+            again.init_resource::<Messages<DamageEvent>>();
+            again.init_resource::<CombatRng>();
+            let mut statuses = StatusEffects::default();
+            statuses.effects.push(StatusEffect::mana_shield(
+                ManaShield {
+                    absorb: 1.0,
+                    damage_per_mana: 2.0,
+                },
+                10.0,
+            ));
+            let t = again
+                .spawn((
+                    Health::new(1000.0),
+                    CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
+                    statuses,
+                    Mana::new(0.0, 0.0),
+                ))
+                .id();
+            again.write_message(DamageEvent::new(t, 50.0, DamageType::Pure));
+            again.run_system_once(apply_damage_events).unwrap();
+            assert_eq!(again.get::<Health>(t).unwrap().current, 950.0);
+            assert_eq!(again.get::<StatusEffects>(t).unwrap().effects.len(), 1);
+        }
+
+        #[test]
+        fn pool_absorbs_first_then_mana_shield_takes_the_rest() {
+            let (mut world, t) = shielded(100.0, 1.0, 1.0);
+            world.entity_mut(t).insert(ShieldPool { amount: 30.0 });
+            world.get_mut::<CombatStats>(t).unwrap().armor = 0.0;
+            world.write_message(DamageEvent::new(t, 100.0, DamageType::Pure));
+            world.run_system_once(apply_damage_events).unwrap();
+            assert_eq!(world.get::<ShieldPool>(t).unwrap().amount, 0.0);
+            assert_eq!(world.get::<Mana>(t).unwrap().current, 30.0);
+            assert_eq!(world.get::<Health>(t).unwrap().current, 1000.0);
+        }
+
+        #[test]
+        fn absorbed_damage_does_not_leech_or_reflect() {
+            let (mut world, t) = shielded(1000.0, 1.0, 1.0);
+            let mut stats = CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 0.0);
+            stats.lifesteal = 1.0;
+            let mut hp = Health::new(1000.0);
+            hp.current = 500.0;
+            let attacker = world.spawn((hp, stats)).id();
+            world.get_mut::<CombatStats>(t).unwrap().damage_reflect = 0.5;
+            world.write_message(DamageEvent::basic_attack(attacker, t, 100.0));
+            world.run_system_once(apply_damage_events).unwrap();
+            assert_eq!(world.get::<Health>(attacker).unwrap().current, 500.0);
+            assert_eq!(world.get::<Health>(t).unwrap().current, 1000.0);
+        }
     }
 }

@@ -13,6 +13,8 @@ use crate::components::DamageType;
 use crate::items::{ItemActivation, ItemDefinition, ItemId, ItemRarity, ItemType};
 #[allow(unused_imports)]
 use crate::status::{DispelStrength, StatusKind};
+#[allow(unused_imports)]
+use crate::vitals::{ResourceKind, ResourceStat};
 
 pub fn definition(id: ItemId) -> &'static ItemDefinition {
     match id {

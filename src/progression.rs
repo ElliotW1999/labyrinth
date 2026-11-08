@@ -5,6 +5,8 @@ use bevy::prelude::*;
 use crate::components::{
     CombatStats, Health, HeroAttributes, HeroProgress, Mana, PlayerHero, xp_required_for_level,
 };
+use crate::status::StatusEffects;
+use crate::vitals::{self, HealKind, ResourceStat};
 
 pub struct ProgressionPlugin;
 
@@ -32,15 +34,24 @@ pub fn add_xp(progress: &mut HeroProgress, amount: u32) {
     }
 }
 
-fn regen_health(time: Res<Time>, mut query: Query<&mut Health>) {
+fn regen_health(
+    time: Res<Time>,
+    mut query: Query<(&mut Health, Option<&CombatStats>, Option<&StatusEffects>)>,
+) {
     let dt = time.delta_secs();
-    for mut health in &mut query {
-        if health.regen_per_sec <= 0.0 || !health.is_alive() {
+    for (mut health, stats, statuses) in &mut query {
+        if !health.is_alive() || health.current >= health.max {
             continue;
         }
-        if health.current < health.max {
-            health.current = (health.current + health.regen_per_sec * dt).min(health.max);
+        let regen = health.regen_per_sec
+            + statuses
+                .map(|s| s.resource_sum(ResourceStat::HealthRegen))
+                .unwrap_or(0.0);
+        if regen <= 0.0 {
+            continue;
         }
+        let factor = vitals::heal_factor(HealKind::Regen, 0.0, stats, statuses);
+        vitals::apply_heal(&mut health, regen * dt, factor);
     }
 }
 
@@ -75,6 +86,82 @@ fn apply_level_ups(
 mod tests {
     use super::*;
     use crate::components::{AbilityId, AbilityLoadout};
+    use bevy::ecs::system::RunSystemOnce;
+    use std::time::Duration;
+
+    fn regen_world(health: Health) -> (World, Entity) {
+        let mut world = World::new();
+        let mut time = Time::<()>::default();
+        time.advance_by(Duration::from_secs(1));
+        world.insert_resource(time);
+        let e = world.spawn(health).id();
+        (world, e)
+    }
+
+    #[test]
+    fn heal_does_not_revive_dead_units_via_regen() {
+        let (mut world, e) = regen_world(Health {
+            current: 0.0,
+            max: 100.0,
+            regen_per_sec: 10.0,
+        });
+        world.run_system_once(regen_health).unwrap();
+        assert_eq!(world.get::<Health>(e).unwrap().current, 0.0);
+    }
+
+    #[test]
+    fn timed_health_regen_modifier_adds_and_expires() {
+        use crate::status::{StatusEffect, StatusEffects, StatusKind};
+        let (mut world, e) = regen_world(Health {
+            current: 50.0,
+            max: 1000.0,
+            regen_per_sec: 2.0,
+        });
+        let mut statuses = StatusEffects::default();
+        statuses.effects.push(StatusEffect::resource_modifier(
+            "regen_buff",
+            StatusKind::Buff,
+            ResourceStat::HealthRegen,
+            8.0,
+            5.0,
+        ));
+        world.entity_mut(e).insert(statuses);
+        world.run_system_once(regen_health).unwrap();
+        assert_eq!(world.get::<Health>(e).unwrap().current, 60.0);
+        world.get_mut::<StatusEffects>(e).unwrap().effects.clear();
+        world.run_system_once(regen_health).unwrap();
+        assert_eq!(world.get::<Health>(e).unwrap().current, 62.0);
+    }
+
+    #[test]
+    fn regen_ignores_amp_but_respects_reduction_in_the_system() {
+        use crate::status::{StatusEffect, StatusEffects};
+        let (mut world, e) = regen_world(Health {
+            current: 50.0,
+            max: 1000.0,
+            regen_per_sec: 10.0,
+        });
+        let mut stats = CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 300.0);
+        stats.heal_received_amp = 1.0;
+        let mut statuses = StatusEffects::default();
+        statuses
+            .effects
+            .push(StatusEffect::heal_reduction(0.5, 5.0));
+        world.entity_mut(e).insert((stats, statuses));
+        world.run_system_once(regen_health).unwrap();
+        assert_eq!(world.get::<Health>(e).unwrap().current, 55.0);
+    }
+
+    #[test]
+    fn regen_heals_and_clamps_at_max() {
+        let (mut world, e) = regen_world(Health {
+            current: 95.0,
+            max: 100.0,
+            regen_per_sec: 10.0,
+        });
+        world.run_system_once(regen_health).unwrap();
+        assert_eq!(world.get::<Health>(e).unwrap().current, 100.0);
+    }
 
     #[test]
     fn leveling_grants_skill_points() {

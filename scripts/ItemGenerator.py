@@ -134,6 +134,11 @@ STAT_LABELS = {
     "strength": "Strength",
     "agility": "Agility",
     "intelligence": "Intelligence",
+    "lifesteal": "Lifesteal",
+    "spell_lifesteal": "Spell Lifesteal",
+    "heal_amp": "Heal Amp",
+    "heal_received_amp": "Heal Received Amp",
+    "mana_cost_amp": "Mana Cost",
 }
 
 GENERATED_HEADER = """\
@@ -152,6 +157,8 @@ use crate::components::DamageType;
 use crate::items::{ItemActivation, ItemDefinition, ItemId, ItemRarity, ItemType};
 #[allow(unused_imports)]
 use crate::status::{DispelStrength, StatusKind};
+#[allow(unused_imports)]
+use crate::vitals::{ResourceKind, ResourceStat};
 """
 
 

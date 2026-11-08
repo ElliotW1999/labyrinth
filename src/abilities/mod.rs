@@ -34,7 +34,7 @@ use crate::actions::{
 };
 use crate::combat::{flat_distance, spawn_requested_projectiles};
 use crate::components::{
-    AbilityLoadout, CastTarget, Ground, Lifetime, Mana, PlayerHero, SpellFx, Team,
+    AbilityLoadout, CastTarget, Ground, Health, Lifetime, Mana, PlayerHero, SpellFx, Team,
 };
 use crate::displacement::{
     DisplacementEvent, apply_displacement_events, settle_grounded_units, tick_forced_movement,
@@ -47,6 +47,7 @@ use crate::teleport::{
     TeleportCompletedEvent, TeleportEvent, TeleportRejectedEvent, apply_teleport_events,
 };
 use crate::unit_commands::{IssueCommand, UnitCommand};
+use crate::vitals;
 use casting::{AbilityCastEvent, action_channel_end_triggers, emit_ability_casts};
 use catalog::{AbilityDefinitions, register_loadout_definitions, restore_ability_charges};
 use definition::{TargetTeam, TargetType};
@@ -69,6 +70,7 @@ impl Plugin for AbilitiesPlugin {
             .add_message::<AbilityTriggerEvent>()
             .add_message::<HealEvent>()
             .add_message::<ManaRestoreEvent>()
+            .add_message::<vitals::ResourceDrainEvent>()
             .add_message::<StatusEffectEvent>()
             .add_message::<DisplacementEvent>()
             .add_message::<TeleportEvent>()
@@ -106,8 +108,10 @@ impl Plugin for AbilitiesPlugin {
                     (
                         apply_heal_events,
                         apply_mana_restore_events,
+                        vitals::apply_resource_drain_events,
                         apply_displacement_events,
                         apply_status_effect_events,
+                        crate::vitals::sync_status_resource_caps,
                         // Before the AI and navigation stages, so the orders it drops
                         // are gone before they are replanned or re-issued.
                         apply_teleport_events.before(crate::movement::SimSet::Ai),
@@ -166,10 +170,21 @@ fn tick_ability_cooldowns(time: Res<Time>, mut query: Query<&mut AbilityLoadout>
     }
 }
 
-fn regen_mana(time: Res<Time>, mut query: Query<&mut Mana>) {
+fn regen_mana(
+    time: Res<Time>,
+    mut query: Query<(&mut Mana, Option<&Health>, Option<&StatusEffects>)>,
+) {
     let dt = time.delta_secs();
-    for mut mana in &mut query {
-        mana.current = (mana.current + mana.regen_per_sec * dt).min(mana.max);
+    for (mut mana, health, statuses) in &mut query {
+        if health.is_some_and(|h| !h.is_alive()) {
+            continue;
+        }
+        let regen = (mana.regen_per_sec
+            + statuses
+                .map(|s| s.resource_sum(crate::vitals::ResourceStat::ManaRegen))
+                .unwrap_or(0.0))
+        .max(0.0);
+        mana.current = (mana.current + regen * dt).min(mana.max);
     }
 }
 
@@ -624,6 +639,7 @@ mod tests {
             .add_message::<AbilityTriggerEvent>()
             .add_message::<HealEvent>()
             .add_message::<ManaRestoreEvent>()
+            .add_message::<vitals::ResourceDrainEvent>()
             .add_message::<StatusEffectEvent>()
             .add_message::<DisplacementEvent>()
             .add_message::<TeleportEvent>()
@@ -653,9 +669,17 @@ mod tests {
                     (tick_forced_movement, settle_grounded_units).chain(),
                     resolve_ability_triggers,
                     apply_heal_events,
-                    apply_mana_restore_events,
+                    (
+                        apply_mana_restore_events,
+                        crate::vitals::apply_resource_drain_events,
+                    )
+                        .chain(),
                     apply_displacement_events,
-                    apply_status_effect_events,
+                    (
+                        apply_status_effect_events,
+                        crate::vitals::sync_status_resource_caps,
+                    )
+                        .chain(),
                     apply_teleport_events,
                     apply_damage_events,
                 )
@@ -1340,6 +1364,77 @@ mod tests {
         app.world().get::<Health>(entity).unwrap().current
     }
 
+    #[test]
+    fn heal_event_does_not_revive_dead_units() {
+        let mut app = test_app();
+        let dead = spawn_unit(&mut app, Team::Radiant, Vec3::ZERO);
+        let alive = spawn_unit(&mut app, Team::Radiant, Vec3::X);
+        app.world_mut().get_mut::<Health>(dead).unwrap().current = 0.0;
+        app.world_mut().get_mut::<Health>(alive).unwrap().current = 100.0;
+        for target in [dead, alive] {
+            app.world_mut().write_message(HealEvent {
+                source: None,
+                target,
+                amount: 250.0,
+            });
+        }
+        app.update();
+        assert_eq!(health(&app, dead), 0.0);
+        assert_eq!(health(&app, alive), 350.0);
+    }
+
+    #[test]
+    fn timed_mana_regen_modifier_adds_and_expires() {
+        use crate::vitals::ResourceStat;
+        let mut app = test_app();
+        let unit = spawn_unit(&mut app, Team::Radiant, Vec3::ZERO);
+        app.world_mut().entity_mut(unit).insert(Mana {
+            current: 0.0,
+            max: 1000.0,
+            regen_per_sec: 1.0,
+        });
+        app.world_mut()
+            .get_mut::<StatusEffects>(unit)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::resource_modifier(
+                "mana_buff",
+                crate::status::StatusKind::Buff,
+                ResourceStat::ManaRegen,
+                4.0,
+                5.0,
+            ));
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(std::time::Duration::from_secs(1));
+        bevy::ecs::system::RunSystemOnce::run_system_once(app.world_mut(), regen_mana).unwrap();
+        assert_eq!(app.world().get::<Mana>(unit).unwrap().current, 5.0);
+        app.world_mut()
+            .get_mut::<StatusEffects>(unit)
+            .unwrap()
+            .effects
+            .clear();
+        bevy::ecs::system::RunSystemOnce::run_system_once(app.world_mut(), regen_mana).unwrap();
+        assert_eq!(app.world().get::<Mana>(unit).unwrap().current, 6.0);
+    }
+
+    #[test]
+    fn dead_units_do_not_regenerate_mana() {
+        let mut app = test_app();
+        let unit = spawn_unit(&mut app, Team::Radiant, Vec3::ZERO);
+        app.world_mut().get_mut::<Health>(unit).unwrap().current = 0.0;
+        app.world_mut().entity_mut(unit).insert(Mana {
+            current: 0.0,
+            max: 100.0,
+            regen_per_sec: 10.0,
+        });
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(std::time::Duration::from_secs(1));
+        bevy::ecs::system::RunSystemOnce::run_system_once(app.world_mut(), regen_mana).unwrap();
+        assert_eq!(app.world().get::<Mana>(unit).unwrap().current, 0.0);
+    }
+
     fn cast_and_collect_projectiles(
         app: &mut App,
         caster: Entity,
@@ -1589,6 +1684,239 @@ mod tests {
             health(&ability_app, ability_target),
             health(&item_app, item_target)
         );
+    }
+
+    fn costed_self_cast(mana_cost: f32, cast_time: f32) -> AbilityDefinition {
+        AbilityDefinition::new(AbilityId::Bulwark)
+            .costs(RankValue::ZERO, RankValue::fixed(mana_cost))
+            .timing(cast_time, 0.0)
+    }
+
+    fn cost_buff(amount: f32) -> crate::status::StatusEffect {
+        crate::status::StatusEffect::resource_modifier(
+            "cost_buff",
+            crate::status::StatusKind::Buff,
+            crate::vitals::ResourceStat::ManaCostAmp,
+            amount,
+            60.0,
+        )
+    }
+
+    #[test]
+    fn mana_cost_amp_reduces_ability_costs() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(costed_self_cast(100.0, 0.0));
+        let caster = spawn_caster(&mut app, KIT);
+        app.world_mut()
+            .get_mut::<CombatStats>(caster)
+            .unwrap()
+            .mana_cost_amp = -0.25;
+        app.world_mut()
+            .get_mut::<StatusEffects>(caster)
+            .unwrap()
+            .effects
+            .push(cost_buff(-0.25));
+        request(&mut app, caster, 3, CastTarget::Point(Vec3::ZERO));
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        assert_eq!(
+            app.world().get::<Mana>(caster).unwrap().current,
+            1000.0 - 50.0,
+            "permanent and timed modifiers add: 100 x (1 - 0.5)"
+        );
+    }
+
+    #[test]
+    fn cost_is_reevaluated_when_the_cast_fires() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(costed_self_cast(100.0, 0.3));
+        let caster = spawn_caster(&mut app, KIT);
+        app.world_mut()
+            .get_mut::<StatusEffects>(caster)
+            .unwrap()
+            .effects
+            .push(cost_buff(-0.5));
+        request(&mut app, caster, 3, CastTarget::Point(Vec3::ZERO));
+        step(&mut app);
+        step(&mut app);
+        assert_eq!(
+            app.world().get::<Mana>(caster).unwrap().current,
+            1000.0,
+            "nothing is paid during the cast point"
+        );
+        // The buff ends before the cast point does.
+        app.world_mut()
+            .get_mut::<StatusEffects>(caster)
+            .unwrap()
+            .effects
+            .clear();
+        for _ in 0..10 {
+            step(&mut app);
+        }
+        assert_eq!(
+            app.world().get::<Mana>(caster).unwrap().current,
+            900.0,
+            "the full cost is paid at fire time"
+        );
+    }
+
+    #[test]
+    fn cost_buff_expiring_makes_an_unaffordable_cast_cancel_for_free() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(costed_self_cast(100.0, 0.3));
+        let caster = spawn_caster(&mut app, KIT);
+        app.world_mut().get_mut::<Mana>(caster).unwrap().current = 60.0;
+        app.world_mut()
+            .get_mut::<StatusEffects>(caster)
+            .unwrap()
+            .effects
+            .push(cost_buff(-0.5));
+        request(&mut app, caster, 3, CastTarget::Point(Vec3::ZERO));
+        step(&mut app);
+        app.world_mut()
+            .get_mut::<StatusEffects>(caster)
+            .unwrap()
+            .effects
+            .clear();
+        for _ in 0..10 {
+            step(&mut app);
+        }
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 60.0);
+        assert_eq!(
+            app.world().get::<AbilityLoadout>(caster).unwrap().slots[3]
+                .cooldown
+                .remaining,
+            0.0
+        );
+    }
+
+    #[test]
+    fn mana_burn_deals_damage_equal_to_removed_mana() {
+        let ability = AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::Unit, RankValue::fixed(500.0), RankValue::ZERO)
+            .costs(RankValue::ZERO, RankValue::ZERO)
+            .timing(0.0, 0.0)
+            .on(
+                AbilityTrigger::OnCast,
+                EffectTarget::CastTarget,
+                AbilityEffect::DrainMana {
+                    amount: RankValue::fixed(80.0),
+                    burn_ratio: 1.0,
+                    damage_type: DamageType::Pure,
+                    transfer_ratio: 0.0,
+                },
+            );
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(ability);
+        let caster = spawn_caster(&mut app, KIT);
+        let rich = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        let poor = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, 80.0));
+        for (unit, mana) in [(rich, 200.0), (poor, 30.0)] {
+            app.world_mut()
+                .entity_mut(unit)
+                .insert(Mana::new(mana, 0.0));
+        }
+        for target in [rich, poor] {
+            request(&mut app, caster, 3, CastTarget::Unit(target));
+            for _ in 0..6 {
+                step(&mut app);
+            }
+        }
+        assert_eq!(
+            health(&app, rich),
+            920.0,
+            "80 mana removed, 80 damage dealt"
+        );
+        assert_eq!(app.world().get::<Mana>(rich).unwrap().current, 120.0);
+        assert_eq!(health(&app, poor), 970.0, "capped by the 30 mana it had");
+        assert_eq!(app.world().get::<Mana>(poor).unwrap().current, 0.0);
+    }
+
+    #[test]
+    fn drain_health_ability_damages_and_heals_caster_same_frame() {
+        let ability = AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::Unit, RankValue::fixed(500.0), RankValue::ZERO)
+            .costs(RankValue::ZERO, RankValue::ZERO)
+            .timing(0.0, 0.0)
+            .on(
+                AbilityTrigger::OnCast,
+                EffectTarget::CastTarget,
+                AbilityEffect::DrainHealth {
+                    amount: RankValue::fixed(100.0),
+                    damage_type: DamageType::Pure,
+                    scaling: EffectScaling::None,
+                    transfer_ratio: 0.5,
+                },
+            );
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(ability);
+        let caster = spawn_caster(&mut app, KIT);
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 400.0;
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        request(&mut app, caster, 3, CastTarget::Unit(enemy));
+        for _ in 0..8 {
+            step(&mut app);
+            if health(&app, enemy) < 1000.0 {
+                break;
+            }
+        }
+        assert_eq!(health(&app, enemy), 900.0);
+        assert_eq!(
+            health(&app, caster),
+            450.0,
+            "the heal lands in the frame the damage does"
+        );
+    }
+
+    #[test]
+    fn heal_over_time_takes_the_casters_heal_amp_once_at_application() {
+        let ability = AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::Unit, RankValue::fixed(500.0), RankValue::ZERO)
+            .costs(RankValue::ZERO, RankValue::ZERO)
+            .timing(0.0, 0.0)
+            .team(definition::TargetTeam::Ally)
+            .on(
+                AbilityTrigger::OnCast,
+                EffectTarget::CastTarget,
+                AbilityEffect::ApplyStatus {
+                    status: StatusSpec::HealOverTime {
+                        hps: RankValue::fixed(40.0),
+                    },
+                    duration: RankValue::fixed(5.0),
+                },
+            );
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(ability);
+        let caster = spawn_caster(&mut app, KIT);
+        app.world_mut()
+            .get_mut::<CombatStats>(caster)
+            .unwrap()
+            .heal_amp = 0.5;
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(80.0, 0.0, 0.0));
+        request(&mut app, caster, 3, CastTarget::Unit(ally));
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        let statuses = app.world().get::<StatusEffects>(ally).unwrap();
+        let hot = statuses
+            .effects
+            .iter()
+            .find(|e| e.id == "heal_over_time")
+            .expect("heal over time applied");
+        assert!((hot.heal_per_sec - 60.0).abs() < 1e-3, "40 hps x 1.5");
     }
 
     #[test]

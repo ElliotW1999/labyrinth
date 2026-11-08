@@ -4,7 +4,7 @@
 //! AbilityTriggerEvent(TriggerContext)
 //!   → the source's (ability or item) entries whose trigger matches
 //!   → resolve EffectTarget against the context (caster, trigger unit, affected units, …)
-//!   → AbilityEffect → DamageEvent / HealEvent / ManaRestoreEvent / StatusEffectEvent /
+//!   → AbilityEffect → DamageEvent / HealEvent / ManaRestoreEvent / ResourceDrainEvent / StatusEffectEvent /
 //!                     DisplacementEvent / TeleportEvent (or a custom effect system)
 //! ```
 
@@ -26,6 +26,7 @@ use crate::displacement::DisplacementEvent;
 use crate::items::ItemId;
 use crate::status::{StatusChange, StatusEffectEvent, StatusEffects, is_untargetable};
 use crate::teleport::TeleportEvent;
+use crate::vitals::{self, HealKind, ResourceDrainEvent, ResourceKind};
 
 /// What owns the effect entries a trigger resolves against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,6 +190,7 @@ pub struct EffectRunner<'w, 's> {
     damage: MessageWriter<'w, DamageEvent>,
     heals: MessageWriter<'w, HealEvent>,
     mana: MessageWriter<'w, ManaRestoreEvent>,
+    drains: MessageWriter<'w, ResourceDrainEvent>,
     statuses: MessageWriter<'w, StatusEffectEvent>,
     displacements: MessageWriter<'w, DisplacementEvent>,
     teleports: MessageWriter<'w, TeleportEvent>,
@@ -344,6 +346,23 @@ impl EffectRunner<'_, '_> {
                     }
                 }
             }
+            AbilityEffect::DrainHealth {
+                amount,
+                damage_type,
+                scaling,
+                transfer_ratio,
+            } => {
+                for target in targets {
+                    if let Some(amount) =
+                        self.scaled_amount(ctx, amount.at(rank), scaling, target, cast_range)
+                    {
+                        self.damage.write(
+                            DamageEvent::spell(ctx.caster, target, amount, damage_type)
+                                .drained(transfer_ratio),
+                        );
+                    }
+                }
+            }
             AbilityEffect::Heal { amount, scaling } => {
                 for target in targets {
                     if let Some(amount) =
@@ -355,6 +374,41 @@ impl EffectRunner<'_, '_> {
                             amount,
                         });
                     }
+                }
+            }
+            AbilityEffect::DrainMana {
+                amount,
+                burn_ratio,
+                damage_type,
+                transfer_ratio,
+            } => {
+                for target in targets {
+                    self.drains.write(ResourceDrainEvent {
+                        source,
+                        target,
+                        resource: ResourceKind::Mana,
+                        amount: amount.at(rank),
+                        burn: (burn_ratio > 0.0).then_some((burn_ratio, damage_type)),
+                        to_source: (transfer_ratio > 0.0).then_some(transfer_ratio),
+                        convert_to: None,
+                    });
+                }
+            }
+            AbilityEffect::SpendResource {
+                resource,
+                amount,
+                convert_to,
+            } => {
+                for target in targets {
+                    self.drains.write(ResourceDrainEvent {
+                        source,
+                        target,
+                        resource,
+                        amount: amount.at(rank),
+                        burn: None,
+                        to_source: None,
+                        convert_to,
+                    });
                 }
             }
             AbilityEffect::RestoreMana { amount } => {
@@ -389,6 +443,13 @@ impl EffectRunner<'_, '_> {
                         },
                     );
                     built.dot_source = source;
+                    if built.heal_per_sec > 0.0 {
+                        // The healer's amp is taken once, here; the tick applies none.
+                        let healer_stats = source.and_then(|s| self.stats.get(s).ok());
+                        let healer_statuses = source.and_then(|s| self.statuses_of.get(s).ok());
+                        let amp = vitals::outgoing_heal_amp(healer_stats, healer_statuses);
+                        built.heal_per_sec *= (1.0 + amp).max(0.0);
+                    }
                     self.statuses.write(StatusEffectEvent {
                         source,
                         target,
@@ -531,10 +592,21 @@ pub fn resolve_ability_triggers(
     }
 }
 
-pub fn apply_heal_events(mut heals: MessageReader<HealEvent>, mut targets: Query<&mut Health>) {
+pub fn apply_heal_events(
+    mut heals: MessageReader<HealEvent>,
+    healers: Query<(Option<&CombatStats>, Option<&StatusEffects>)>,
+    mut targets: Query<(&mut Health, Option<&CombatStats>, Option<&StatusEffects>)>,
+) {
     for heal in heals.read() {
-        if let Ok(mut health) = targets.get_mut(heal.target) {
-            health.current = (health.current + heal.amount).min(health.max);
+        // The healer's amp is read before the target is borrowed (the healer may be the target).
+        let outgoing = heal
+            .source
+            .and_then(|source| healers.get(source).ok())
+            .map(|(stats, statuses)| vitals::outgoing_heal_amp(stats, statuses))
+            .unwrap_or(0.0);
+        if let Ok((mut health, stats, statuses)) = targets.get_mut(heal.target) {
+            let factor = vitals::heal_factor(HealKind::Direct, outgoing, stats, statuses);
+            vitals::apply_heal(&mut health, heal.amount, factor);
         }
     }
 }

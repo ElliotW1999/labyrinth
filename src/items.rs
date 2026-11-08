@@ -20,6 +20,7 @@ use crate::components::{
 };
 use crate::resources::SharedAssets;
 use crate::scale;
+use crate::vitals::MaxChangeRule;
 
 pub struct ItemsPlugin;
 
@@ -750,6 +751,11 @@ pub struct ItemPassives {
     pub incoming_damage_amp: f32,
     pub damage_block: f32,
     pub damage_reflect: f32,
+    pub heal_amp: f32,
+    pub heal_received_amp: f32,
+    pub lifesteal: f32,
+    pub spell_lifesteal: f32,
+    pub mana_cost_amp: f32,
 }
 
 impl ItemPassives {
@@ -774,6 +780,11 @@ impl ItemPassives {
             PassiveStat::IncomingDamageAmp => &mut self.incoming_damage_amp,
             PassiveStat::DamageBlock => &mut self.damage_block,
             PassiveStat::DamageReflect => &mut self.damage_reflect,
+            PassiveStat::HealAmp => &mut self.heal_amp,
+            PassiveStat::HealReceivedAmp => &mut self.heal_received_amp,
+            PassiveStat::Lifesteal => &mut self.lifesteal,
+            PassiveStat::SpellLifesteal => &mut self.spell_lifesteal,
+            PassiveStat::ManaCostAmp => &mut self.mana_cost_amp,
         };
         *field += amount;
     }
@@ -800,6 +811,11 @@ impl std::ops::AddAssign for ItemPassives {
             incoming_damage_amp,
             damage_block,
             damage_reflect,
+            heal_amp,
+            heal_received_amp,
+            lifesteal,
+            spell_lifesteal,
+            mana_cost_amp,
         } = rhs;
         self.max_health += max_health;
         self.health_regen += health_regen;
@@ -818,6 +834,11 @@ impl std::ops::AddAssign for ItemPassives {
         self.incoming_damage_amp += incoming_damage_amp;
         self.damage_block += damage_block;
         self.damage_reflect += damage_reflect;
+        self.heal_amp += heal_amp;
+        self.heal_received_amp += heal_received_amp;
+        self.lifesteal += lifesteal;
+        self.spell_lifesteal += spell_lifesteal;
+        self.mana_cost_amp += mana_cost_amp;
     }
 }
 
@@ -919,13 +940,9 @@ fn adjust_passives(
     attrs.intelligence += passives.intelligence * count;
     HeroAttributes::apply_delta(&before, attrs, health, mana, stats);
 
-    let max_health = passives.max_health * count;
-    health.max = (health.max + max_health).max(1.0);
-    health.current = (health.current + max_health.max(0.0)).min(health.max);
+    health.change_max(passives.max_health * count, MaxChangeRule::KeepMissing);
     health.regen_per_sec = (health.regen_per_sec + passives.health_regen * count).max(0.0);
-    let max_mana = passives.max_mana * count;
-    mana.max = (mana.max + max_mana).max(0.0);
-    mana.current = (mana.current + max_mana.max(0.0)).min(mana.max);
+    mana.change_max(passives.max_mana * count, MaxChangeRule::KeepMissing);
     mana.regen_per_sec = (mana.regen_per_sec + passives.mana_regen * count).max(0.0);
     stats.attack_damage += passives.attack_damage * count;
     stats.armor += passives.armor * count;
@@ -937,6 +954,11 @@ fn adjust_passives(
     stats.incoming_damage_amp += passives.incoming_damage_amp * count;
     stats.damage_block += passives.damage_block * count;
     stats.damage_reflect += passives.damage_reflect * count;
+    stats.heal_amp += passives.heal_amp * count;
+    stats.heal_received_amp += passives.heal_received_amp * count;
+    stats.lifesteal += passives.lifesteal * count;
+    stats.spell_lifesteal += passives.spell_lifesteal * count;
+    stats.mana_cost_amp += passives.mana_cost_amp * count;
     stats.recompute_attack_speed(attrs.agility);
 }
 
@@ -2254,7 +2276,7 @@ mod tests {
         assert_eq!(health.max, 720.0);
     }
 
-    fn passive_fields(p: &ItemPassives) -> [f32; 17] {
+    fn passive_fields(p: &ItemPassives) -> [f32; 22] {
         let ItemPassives {
             max_health,
             health_regen,
@@ -2273,6 +2295,11 @@ mod tests {
             incoming_damage_amp,
             damage_block,
             damage_reflect,
+            heal_amp,
+            heal_received_amp,
+            lifesteal,
+            spell_lifesteal,
+            mana_cost_amp,
         } = *p;
         [
             max_health,
@@ -2292,7 +2319,52 @@ mod tests {
             incoming_damage_amp,
             damage_block,
             damage_reflect,
+            heal_amp,
+            heal_received_amp,
+            lifesteal,
+            spell_lifesteal,
+            mana_cost_amp,
         ]
+    }
+
+    #[test]
+    fn passive_max_health_keeps_missing_rule() {
+        use crate::vitals::MaxChangeRule;
+        let mut health = Health {
+            current: 400.0,
+            max: 1000.0,
+            regen_per_sec: 0.0,
+        };
+        health.change_max(200.0, MaxChangeRule::KeepMissing);
+        assert_eq!((health.current, health.max), (600.0, 1200.0), "a gain adds");
+        health.change_max(-900.0, MaxChangeRule::KeepMissing);
+        assert_eq!(
+            (health.current, health.max),
+            (300.0, 300.0),
+            "a loss only clamps"
+        );
+        health.change_max(-900.0, MaxChangeRule::KeepMissing);
+        assert_eq!((health.current, health.max), (1.0, 1.0), "never below 1");
+
+        let mut mana = Mana::new(100.0, 0.0);
+        mana.current = 20.0;
+        mana.change_max(50.0, MaxChangeRule::KeepMissing);
+        assert_eq!((mana.current, mana.max), (70.0, 150.0));
+        mana.change_max(-500.0, MaxChangeRule::KeepMissing);
+        assert_eq!((mana.current, mana.max), (0.0, 0.0));
+    }
+
+    #[test]
+    fn preserve_ratio_never_kills_a_living_unit() {
+        use crate::vitals::MaxChangeRule;
+        let mut health = Health {
+            current: 1.0,
+            max: 1000.0,
+            regen_per_sec: 0.0,
+        };
+        health.change_max(-900.0, MaxChangeRule::PreserveRatio);
+        assert_eq!(health.max, 100.0);
+        assert_eq!(health.current, 1.0);
     }
 
     #[test]
@@ -2315,6 +2387,11 @@ mod tests {
             PassiveStat::IncomingDamageAmp,
             PassiveStat::DamageBlock,
             PassiveStat::DamageReflect,
+            PassiveStat::HealAmp,
+            PassiveStat::HealReceivedAmp,
+            PassiveStat::Lifesteal,
+            PassiveStat::SpellLifesteal,
+            PassiveStat::ManaCostAmp,
         ];
         let mut seen = Vec::new();
         for stat in stats {
@@ -2330,7 +2407,7 @@ mod tests {
             assert!(!seen.contains(&changed[0]), "{stat:?} shares a field");
             seen.push(changed[0]);
         }
-        assert_eq!(seen.len(), 17, "every field is reachable");
+        assert_eq!(seen.len(), 22, "every field is reachable");
     }
 
     #[test]
@@ -2753,6 +2830,7 @@ mod tests {
             .add_message::<AbilityTriggerEvent>()
             .add_message::<HealEvent>()
             .add_message::<crate::abilities::effects::ManaRestoreEvent>()
+            .add_message::<crate::vitals::ResourceDrainEvent>()
             .add_message::<crate::status::StatusEffectEvent>()
             .add_message::<crate::combat::DamageEvent>()
             .add_message::<DisplacementEvent>()
@@ -3041,6 +3119,31 @@ mod tests {
         assert_eq!(slot(&app, caster, 0).unwrap().cooldown.remaining, 0.0);
         assert_eq!(slot(&app, caster, 1).unwrap().cooldown.remaining, 0.0);
         assert!(triggers(&app).is_empty());
+    }
+
+    #[test]
+    fn mana_cost_amp_reduces_item_costs() {
+        let mut app = item_app();
+        let _defs = DefinitionOverride::install([test_item(
+            ItemId::StormRod,
+            aimed(
+                TargetType::SelfTarget,
+                TargetTeam::SelfOnly,
+                0.0,
+                0.0,
+                0.0,
+                40.0,
+            ),
+        )]);
+        let caster = spawn_caster(&mut app, 100.0);
+        app.world_mut()
+            .get_mut::<CombatStats>(caster)
+            .unwrap()
+            .mana_cost_amp = -0.5;
+        give(&mut app, caster, ItemId::StormRod);
+        request(&mut app, caster, 0, CastTarget::Point(Vec3::ZERO));
+        step(&mut app);
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 80.0);
     }
 
     #[test]

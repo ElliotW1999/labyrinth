@@ -7,6 +7,7 @@ use bevy::prelude::{Entity, Vec2, Vec3};
 use crate::components::AbilityId;
 use crate::components::DamageType;
 use crate::status::{DispelType, Leash, LeashAnchor, StatusEffect, StatusKind};
+use crate::vitals::{ManaShield, ResourceKind, ResourceStat};
 
 /// A value that scales with ability level: `clamp(base + per_rank × rank, min, max)`,
 /// or an explicit per-level table (`75|150|225|300` in the generator CSVs).
@@ -265,6 +266,29 @@ pub enum StatusSpec {
     TurnRateBonus {
         percent: RankValue,
     },
+    /// Heals `hps` health per second; the caster's heal amp is folded in on application.
+    HealOverTime {
+        hps: RankValue,
+    },
+    /// `percent` (0–100) of healing received is negated; the strongest reduction applies.
+    HealReduction {
+        percent: RankValue,
+    },
+    /// Prevents all healing.
+    HealBlock,
+    /// Diverts `absorb_percent` (0–100) of post-mitigation damage to mana, at
+    /// `damage_per_mana` damage per point of mana.
+    ManaShield {
+        absorb_percent: RankValue,
+        damage_per_mana: RankValue,
+    },
+    /// A timed resource modifier (regen, max, lifesteal, heal amp, cost) summed when read.
+    ResourceModifier {
+        id: &'static str,
+        kind: StatusKind,
+        stat: ResourceStat,
+        amount: RankValue,
+    },
     Modifier {
         id: &'static str,
         kind: StatusKind,
@@ -381,6 +405,29 @@ impl StatusSpec {
                 dispel_type: DispelType::Basic,
                 ..StatusEffect::buff("turn_rate_bonus", duration)
             },
+            StatusSpec::HealOverTime { hps } => {
+                StatusEffect::heal_over_time(hps.at(rank), duration)
+            }
+            StatusSpec::HealReduction { percent } => {
+                StatusEffect::heal_reduction((percent.at(rank) / 100.0).clamp(0.0, 1.0), duration)
+            }
+            StatusSpec::HealBlock => StatusEffect::heal_block(duration),
+            StatusSpec::ManaShield {
+                absorb_percent,
+                damage_per_mana,
+            } => StatusEffect::mana_shield(
+                ManaShield {
+                    absorb: (absorb_percent.at(rank) / 100.0).clamp(0.0, 1.0),
+                    damage_per_mana: damage_per_mana.at(rank).max(f32::EPSILON),
+                },
+                duration,
+            ),
+            StatusSpec::ResourceModifier {
+                id,
+                kind,
+                stat,
+                amount,
+            } => StatusEffect::resource_modifier(id, kind, stat, amount.at(rank), duration),
             StatusSpec::Modifier {
                 id,
                 kind,
@@ -452,6 +499,16 @@ pub enum PassiveStat {
     IncomingDamageAmp,
     DamageBlock,
     DamageReflect,
+    /// Healing the holder provides (fraction).
+    HealAmp,
+    /// Healing the holder receives (fraction).
+    HealReceivedAmp,
+    /// Fraction of basic-attack damage dealt returned as health.
+    Lifesteal,
+    /// Fraction of spell damage dealt returned as health.
+    SpellLifesteal,
+    /// Additive change to mana costs (-0.25 = 25% cheaper).
+    ManaCostAmp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -474,8 +531,31 @@ pub enum AbilityEffect {
         amount: RankValue,
         scaling: EffectScaling,
     },
+    /// Spell damage that heals the caster for `transfer_ratio` of the health actually
+    /// removed (health transfer).
+    DrainHealth {
+        amount: RankValue,
+        damage_type: DamageType,
+        scaling: EffectScaling,
+        transfer_ratio: f32,
+    },
     RestoreMana {
         amount: RankValue,
+    },
+    /// Remove mana from each target. `burn_ratio x removed` is dealt as spell damage (mana
+    /// burn) and `transfer_ratio x removed` is given to the caster (mana drain).
+    DrainMana {
+        amount: RankValue,
+        burn_ratio: f32,
+        damage_type: DamageType,
+        transfer_ratio: f32,
+    },
+    /// The target spends its own resource (health never drops below 1), optionally gaining
+    /// `ratio x spent` of another (sacrifice / conversion).
+    SpendResource {
+        resource: ResourceKind,
+        amount: RankValue,
+        convert_to: Option<(ResourceKind, f32)>,
     },
     ApplyStatus {
         status: StatusSpec,

@@ -249,9 +249,9 @@ pub(crate) fn describe_effect(entry: &AbilityEffectEntry) -> (Vec<EffectRow>, Ve
     let mut rows = effect_rows(&entry.effect);
     rows.extend(effect_text_rows(&entry.effect));
     let notes = match entry.effect {
-        AbilityEffect::Damage { scaling, .. } | AbilityEffect::Heal { scaling, .. } => {
-            scaling_note(scaling).into_iter().collect()
-        }
+        AbilityEffect::Damage { scaling, .. }
+        | AbilityEffect::DrainHealth { scaling, .. }
+        | AbilityEffect::Heal { scaling, .. } => scaling_note(scaling).into_iter().collect(),
         _ => Vec::new(),
     };
     (rows, notes)
@@ -281,8 +281,40 @@ fn effect_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
             damage_type,
             ..
         } => vec![row(format!("{} damage", damage_name(damage_type)), amount)],
+        AbilityEffect::DrainHealth {
+            amount,
+            damage_type,
+            ..
+        } => vec![row(
+            format!("{} damage (heals you)", damage_name(damage_type)),
+            amount,
+        )],
         AbilityEffect::Heal { amount, .. } => vec![row("Heal", amount)],
         AbilityEffect::RestoreMana { amount } => vec![row("Mana restore", amount)],
+        AbilityEffect::DrainMana {
+            amount,
+            burn_ratio,
+            transfer_ratio,
+            ..
+        } => {
+            let mut label = String::from("Mana removed");
+            if burn_ratio > 0.0 {
+                label.push_str(" (burned)");
+            }
+            if transfer_ratio > 0.0 {
+                label.push_str(" (drained)");
+            }
+            vec![row(label, amount)]
+        }
+        AbilityEffect::SpendResource {
+            resource, amount, ..
+        } => vec![row(
+            match resource {
+                crate::vitals::ResourceKind::Health => "Health cost",
+                crate::vitals::ResourceKind::Mana => "Mana spent",
+            },
+            amount,
+        )],
         AbilityEffect::ApplyStatus { status, duration } => status_rows(status, duration),
         AbilityEffect::Displace {
             kind,
@@ -338,6 +370,26 @@ fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
                 seconds_row("Slow duration", duration),
             ]
         }
+        StatusSpec::HealOverTime { hps } => vec![
+            row("Heal per second", hps),
+            seconds_row("Heal duration", duration),
+        ],
+        StatusSpec::HealReduction { percent } => vec![
+            row("Heal reduction %", percent),
+            seconds_row("Heal reduction duration", duration),
+        ],
+        StatusSpec::ManaShield {
+            absorb_percent,
+            damage_per_mana,
+        } => vec![
+            row("Mana shield absorb %", absorb_percent),
+            row("Damage per mana", damage_per_mana),
+            seconds_row("Mana shield duration", duration),
+        ],
+        StatusSpec::ResourceModifier { stat, amount, .. } => vec![
+            row(crate::vitals::stat_label(stat), amount),
+            seconds_row("Duration", duration),
+        ],
         StatusSpec::Leash { radius, .. } => vec![
             row(format!("{} radius", status_name(status)), radius),
             seconds_row(format!("{} duration", status_name(status)), duration),
@@ -458,6 +510,11 @@ fn status_name(status: StatusSpec) -> &'static str {
         StatusSpec::AttackSpeedSlow { .. } => "Attack speed slow",
         StatusSpec::TurnRateSlow { .. } => "Turn rate slow",
         StatusSpec::TurnRateBonus { .. } => "Turn rate bonus",
+        StatusSpec::HealOverTime { .. } => "Heal over time",
+        StatusSpec::HealReduction { .. } => "Heal reduction",
+        StatusSpec::HealBlock => "Heal block",
+        StatusSpec::ManaShield { .. } => "Mana shield",
+        StatusSpec::ResourceModifier { .. } => "Modifier",
         StatusSpec::Modifier { .. } => "Modifier",
     }
 }
@@ -480,6 +537,11 @@ pub(crate) fn passive_name(stat: super::definition::PassiveStat) -> &'static str
         PassiveStat::IncomingDamageAmp => "Incoming amp",
         PassiveStat::DamageBlock => "Damage block",
         PassiveStat::DamageReflect => "Damage reflect",
+        PassiveStat::HealAmp => "Heal amp",
+        PassiveStat::HealReceivedAmp => "Heal received amp",
+        PassiveStat::Lifesteal => "Lifesteal",
+        PassiveStat::SpellLifesteal => "Spell lifesteal",
+        PassiveStat::ManaCostAmp => "Mana cost",
     }
 }
 

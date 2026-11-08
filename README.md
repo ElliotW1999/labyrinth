@@ -190,6 +190,11 @@ IssueCommand (input / minimap / network host)
 | Leash / Tether | Clamps the unit inside a circle around a fixed point (Leash) or around the caster (Tether); basic-dispellable debuffs that never break; a teleport outside the circle is rejected |
 | Cyclone | Lifts and holds the unit: stun + invulnerable + **untargetable**, undispellable, immune to other displacement and teleports |
 | Turn rate bonus / slow | `base × (1 + Σ bonus %) × (1 − strongest slow %)` |
+| Heal over time | `StatusSpec::HealOverTime` (`heal_per_sec`, ticks through `vitals::apply_heal`); the caster's heal amp is folded in once when applied; heals nothing on a dead unit |
+| Heal reduction | Debuff: `heal_reduction` fraction of healing received is negated; the strongest one applies, they do not stack |
+| Heal block | Debuff: prevents all healing (direct, over time, leech, regen, conversion) |
+| Mana shield | Buff: diverts `absorb` of post-mitigation damage to mana at `damage_per_mana`; the `ShieldPool` absorbs first; works with `while_toggled`; absorbs nothing at 0 mana |
+| Resource modifier | Timed regen / max / lifesteal / heal amp / cost modifier (`StatusSpec::ResourceModifier`); summed when read, never stored into stats (timed max health / mana is reconciled by `vitals::sync_status_resource_caps`) |
 
 Walking speed never drops below `scale::MIN_MOVE_SPEED` (100) however many slows stack; there is no upper cap, and units with a base speed of zero stay stationary.
 
@@ -211,6 +216,30 @@ Walking speed never drops below `scale::MIN_MOVE_SPEED` (100) however many slows
 | Reflection | `damage_reflect` fraction of dealt damage returned to attacker |
 | Health scaling | `EffectScaling::{TargetMissingHealth, TargetMaxHealth, TargetCurrentHealth}` |
 | Distance falloff | `EffectScaling::DistanceFromCaster { falloff }` vs ability cast range |
+
+### Healing and resources (player terms → code)
+
+Every health increase goes through `vitals::apply_heal`; `combat::apply_damage_events` is the only place damage changes health. Rules live in `src/vitals.rs`.
+
+| Term | Code / behavior |
+| --- | --- |
+| Instant heal | `AbilityEffect::Heal` → `HealEvent` → `apply_heal_events` → `heal_factor(Direct)` + `apply_heal` (clamped at max, overheal discarded, dead units are never healed) |
+| Heal over time | `StatusSpec::HealOverTime` (generator `apply_status,heal_over_time`) |
+| Health regeneration | `Health::regen_per_sec` + timed `ResourceStat::HealthRegen`; `regen_health` uses `HealKind::Regen` (ignores amps, respects reduction and block) |
+| Healing amplification | `CombatStats::heal_amp` (provided) / `heal_received_amp` (received) plus timed modifiers; one additive bucket `1 + healer + target` |
+| Healing reduction / prevention | Heal reduction (strongest, multiplicative after amp) and heal block (factor 0, wins over amp) statuses |
+| Lifesteal | `CombatStats::lifesteal` on `DamageKind::BasicAttack` hits: fraction of health actually removed (no overkill, nothing a shield or mana shield absorbed) |
+| Spell lifesteal | `CombatStats::spell_lifesteal` on `DamageEvent::is_spell` hits |
+| Health transfer | `AbilityEffect::DrainHealth` → `DamageEvent::spell(..).drained(ratio)`: damage that heals the caster for `ratio ×` health removed |
+| Leech rules | Applied after the damage batch in the same frame via `HealKind::Leech`; DoT, reflected damage and `DamageKind::Cleave` never leech; a source killed in the same batch gets nothing |
+| Mana restoration | `AbilityEffect::RestoreMana` (generator `heal,mana`) |
+| Mana regeneration | `Mana::regen_per_sec` + timed `ResourceStat::ManaRegen`; skips dead units |
+| Mana burn / drain | `AbilityEffect::DrainMana` → `ResourceDrainEvent` → `vitals::apply_resource_drain_events` (burn deals spell damage; drain gives mana to the caster, clamped to max). Blocked only by invulnerability, not debuff immunity |
+| Health sacrifice | `AbilityEffect::SpendResource { Health }`: non-lethal (floor 1 HP), bypasses shields, reflection and leech |
+| Resource conversion | `SpendResource { convert_to }`: health → mana, or mana → health (through the central heal path) |
+| Mana shield | `StatusSpec::ManaShield` → `combat::absorb_with_mana_shield` |
+| Mana cost modification | `CombatStats::mana_cost_amp` + timed `ResourceStat::ManaCostAmp`, applied once in `ActionSources::spec` (abilities, items, toggle upkeep); evaluated again when the cast fires |
+| Max health / mana modifier | Permanent: `Health::change_max` with `MaxChangeRule::KeepMissing` (items). Timed: `PreserveRatio` via `sync_status_resource_caps` |
 
 ### Ability ranks
 
@@ -328,14 +357,31 @@ skewer,0,on_cast,caster,movement,dash,900,,0.6,,,,
 skewer,1,on_unit_contact,trigger_unit,movement,drag,,,,,,,
 ```
 
-- `trigger`: `on_cast`, `on_projectile_hit`, `on_unit_contact` (a dash or charge touched an enemy; trigger unit = that enemy), `on_movement_end` (a dash or charge ended; trigger unit = the chased unit if reached, affected units = everyone touched), `on_impact`, `on_channel_tick`, `on_channel_end` (channel completed), `on_channel_interrupted` (channel cut short by silence/stun/mute; a new order fires neither), `on_expire`, `while_toggled` (toggle abilities only: `stat_modifier` on `caster`, no duration; applied while the toggle is on; the upkeep is the ability row's `toggle_mana_per_sec`), or any other `on_…` name raised by a custom mechanic
+- `trigger`: `on_cast`, `on_projectile_hit`, `on_unit_contact` (a dash or charge touched an enemy; trigger unit = that enemy), `on_movement_end` (a dash or charge ended; trigger unit = the chased unit if reached, affected units = everyone touched), `on_impact`, `on_channel_tick`, `on_channel_end` (channel completed), `on_channel_interrupted` (channel cut short by silence/stun/mute; a new order fires neither), `on_expire`, `while_toggled` (toggle abilities only: `stat_modifier` or `apply_status,mana_shield` on `caster`, no duration; applied while the toggle is on; the upkeep is the ability row's `toggle_mana_per_sec`), or any other `on_…` name raised by a custom mechanic
 - `effect_target`: `caster`, `cast_target`, `trigger_unit`, `affected_units`, `units_in_radius` (around the trigger point; `radius` or the ability AoE; team from the ability / effect polarity)
 - `effect_type` (+ `effect_id`): `damage` (`value` or `amount`, `damage_type` physical/magical/pure), `heal` (`effect_id=mana` restores mana), `apply_status` (`stun`, `root`, `silence`, `disarm`, `slow` (% from `amount`/`value`), `turn_rate_slow`, `turn_rate_bonus` (% from `amount`, 0..400), `phased`, `forceful`, `flying`, `leash` / `tether` (`value` = radius), `debuff_immunity`, or any id as a timed `stat_modifier`), `remove_status` (`buff`/`debuff` dispel, otherwise a status id), `movement` (`knockback`, `pull`, `pull_point`, `dash`, `charge`, `drag`, `cyclone`; `value` = distance, `duration`, `amount` = charge speed — see Forced movement below; `teleport` sends `caster` / `owner` / `cast_target` / `trigger_unit` to the cast's aim point — see Teleport below), `stat_modifier` (`effect_id` = stat, `amount`, `duration`), `custom` (registered id; receives `value`, `amount`, `duration`)
-- `scaling_type`: `strength` / `agility` / `intelligence` / `attack_damage` × `scaling_value` (damage and heal)
+- `scaling_type`: `strength` / `agility` / `intelligence` / `attack_damage` × `scaling_value` (damage, heal and `health_drain`)
+- Healing and resource rows (no extra columns):
+
+| `effect_type,effect_id` | `value` | `amount` | `damage_type` | Targets |
+| --- | --- | --- | --- | --- |
+| `resource,health_drain` | damage (scaling allowed) | heal ratio (default 1) | required | other units |
+| `resource,mana_burn` | mana removed | damage per mana (default 1) | required | other units |
+| `resource,mana_drain` | mana removed | ratio given to the caster (default 1) | blank | other units |
+| `resource,spend_health` / `spend_mana` | amount spent | blank | blank | `caster` / `owner` only |
+| `resource,health_to_mana` / `mana_to_health` | amount spent | gained per point spent (required, > 0) | blank | `caster` / `owner` only |
+| `apply_status,heal_over_time` | HP per second (required) | blank | blank | any |
+| `apply_status,heal_reduction` | blank | percent 0..100 (required) | blank | any |
+| `apply_status,heal_block` | blank | blank | blank | any |
+| `apply_status,mana_shield` | absorb percent, above 0 up to 100 (required) | damage per mana, above 0 (required) | blank | any; allowed under `while_toggled` |
+| `stat_modifier,{lifesteal,spell_lifesteal,heal_amp,heal_received_amp,mana_cost_amp}` | fraction (-1..1; `mana_cost_amp` only has the floor -1; -0.25 = 25% cheaper) | blank | blank | passive → `PassiveStat`; timed or toggled → `StatusSpec::ResourceModifier` |
+| `stat_modifier,{health_regen,mana_regen,max_health,max_mana}` timed or toggled | flat | blank | blank | passive path unchanged |
+
+  Ratios are single numbers (no per-level lists). `stat_modifier` amps are fractions; `apply_status` percents are 0..100.
 
 ### Generator validation
 
-Both generators validate before writing anything and print `file:row [field=value] message` for every problem (exit 1): duplicate ids, effect rows for unknown owners, duplicate `effect_index` per owner, unknown enums, bad numbers / level lists (wrong length, negative), damage without an amount, `apply_status` / `custom` without `effect_id`, projectile speed without a projectile, `targeted` without unit targeting / `skillshot` without point or direction, charge restore time without charges, and trigger/target combinations that cannot resolve (e.g. `cast_target` on a `no_target` ability, `trigger_unit` on `on_cast` for items). `data/examples/` holds valid samples (shockwave, skewer, frost_hammer, blink_item, …) and `data/examples/invalid/` one row per error.
+Both generators validate before writing anything and print `file:row [field=value] message` for every problem (exit 1): duplicate ids, effect rows for unknown owners, duplicate `effect_index` per owner, unknown enums, bad numbers / level lists (wrong length, negative), damage without an amount, `apply_status` / `custom` without `effect_id`, projectile speed without a projectile, `targeted` without unit targeting / `skillshot` without point or direction, charge restore time without charges, resource rows that break their rules (`spend_*` / conversion on another unit, `mana_burn` without `damage_type`, `mana_shield` without `amount`, `heal_reduction` above 100, a conversion without a ratio, scaling on `mana_drain`, a fraction stat outside -1..1), and trigger/target combinations that cannot resolve (e.g. `cast_target` on a `no_target` ability, `trigger_unit` on `on_cast` for items). `data/examples/` holds valid samples (shockwave, skewer, frost_hammer, blink_item, …) and `data/examples/invalid/` one row per error.
 
 Re-running overwrites: each owner lives in a `// <ability:id>` / `// <item:id>` block, CSV rows replace their own blocks and other blocks are kept, and the output is rustfmt-ed.
 
@@ -370,7 +416,7 @@ frost_hammer,Frost Hammer,weapon,2800,1400,3,rare,false,,false,,A heavy weapon i
 
 - `item_type` component/weapon/armor/accessory/consumable/utility/recipe, `rarity` common/uncommon/rare/epic/legendary; optional extras `short_label`, `cooldown`, `components` (`;`-separated ids), `color_r/g/b`
 - Optional activation columns on items with `on_use` or a channel trigger (blank = instant no-target use): `target_type` (`unit`, `point`, `direction`, `no_target`, `self`), `target_team` (`enemy`, `ally`, `both`, `self`), `cast_range`, `cast_time`, `channel_time`, `mana_cost`, `projectile_type`, `projectile_speed` (`cooldown` remains on the item row). Unit targets require `target_team`. Point, unit, and direction targets require `cast_range`. Teleport items must be `point` or `direction` so the destination is the cast aim. Item `projectile_*` fields are reserved — the runtime only emits ability projectiles today
-- Effects use the ability effect schema with item triggers `passive` (must be `stat_modifier`: `max_health`, `health_regen`, `max_mana`, `mana_regen`, `attack_damage`, `attack_speed`, `armor`, `magic_resist`, `move_speed`, `strength`, `agility`, `intelligence`, `spell_amp`, `outgoing_physical_amp`, `incoming_damage_amp`, `damage_block`, `damage_reflect`; `health` and `mana` are aliases of `max_health` and `max_mana`), `on_use`, `on_unit_contact` / `on_movement_end` (after a dash or charge from `on_use`), `on_attack`, `on_attack_hit`, `on_channel_end` / `on_channel_interrupted` (channelled actives only), `on_damage_taken`, `on_kill`, `on_death` and targets `owner`, `cast_target` (unit and self actives), `trigger_unit`, `attacker`, `affected_units`, `units_in_radius`
+- Effects use the ability effect schema with item triggers `passive` (must be `stat_modifier`: `max_health`, `health_regen`, `max_mana`, `mana_regen`, `attack_damage`, `attack_speed`, `armor`, `magic_resist`, `move_speed`, `strength`, `agility`, `intelligence`, `spell_amp`, `outgoing_physical_amp`, `incoming_damage_amp`, `damage_block`, `damage_reflect`, `lifesteal`, `spell_lifesteal`, `heal_amp`, `heal_received_amp`, `mana_cost_amp`; `health` and `mana` are aliases of `max_health` and `max_mana`), `on_use`, `on_unit_contact` / `on_movement_end` (after a dash or charge from `on_use`), `on_attack`, `on_attack_hit`, `on_channel_end` / `on_channel_interrupted` (channelled actives only), `on_damage_taken`, `on_kill`, `on_death` and targets `owner`, `cast_target` (unit and self actives), `trigger_unit`, `attacker`, `affected_units`, `units_in_radius`
 - Consumables spend a charge (or one of the stack) when the use fires, and disappear when empty. A rejected activation spends nothing. Item charges never regenerate, so a `charge_restore_time` on an item is an error. `scaling_type=distance` is also rejected on items (they have no rank-scaled cast range); every other scaling works
 
 ### Teleport

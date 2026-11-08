@@ -2,6 +2,8 @@
 
 use bevy::prelude::*;
 
+use crate::vitals::MaxChangeRule;
+
 /// Faction affiliation. Friendly fire is disabled across systems.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Team {
@@ -37,6 +39,39 @@ impl Health {
     pub fn is_alive(self) -> bool {
         self.current > 0.0
     }
+
+    /// Change `max` by `delta` under `rule`. Never kills a living unit and never revives
+    /// a dead one; max stays at least 1.
+    pub fn change_max(&mut self, delta: f32, rule: MaxChangeRule) {
+        let old_max = self.max;
+        self.max = (self.max + delta).max(1.0);
+        if !self.is_alive() {
+            self.current = self.current.min(self.max);
+            return;
+        }
+        let next = rescale_current(self.current, old_max, self.max, delta, rule);
+        self.current = match rule {
+            MaxChangeRule::KeepMissing => next,
+            // A ratio can round a nearly empty unit down to nothing; keep it alive.
+            MaxChangeRule::PreserveRatio => next.max(1.0f32.min(self.max)),
+        };
+    }
+}
+
+/// The new `current` after a max change; shared by [`Health`] and [`Mana`].
+fn rescale_current(
+    current: f32,
+    old_max: f32,
+    new_max: f32,
+    delta: f32,
+    rule: MaxChangeRule,
+) -> f32 {
+    let next = match rule {
+        MaxChangeRule::KeepMissing => current + delta.max(0.0),
+        MaxChangeRule::PreserveRatio if old_max > 0.0 => current / old_max * new_max,
+        MaxChangeRule::PreserveRatio => current,
+    };
+    next.min(new_max)
 }
 
 #[derive(Component, Debug, Clone, Copy)]
@@ -47,6 +82,13 @@ pub struct Mana {
 }
 
 impl Mana {
+    /// Change `max` by `delta` under `rule`; max stays at least 0.
+    pub fn change_max(&mut self, delta: f32, rule: MaxChangeRule) {
+        let old_max = self.max;
+        self.max = (self.max + delta).max(0.0);
+        self.current = rescale_current(self.current, old_max, self.max, delta, rule);
+    }
+
     pub fn new(max: f32, regen_per_sec: f32) -> Self {
         Self {
             current: max,
@@ -106,6 +148,16 @@ pub struct CombatStats {
     /// Enemies within this radius take cleave_damage_ratio × attack damage.
     pub cleave_radius: f32,
     pub cleave_damage_ratio: f32,
+    /// Fraction of basic-attack damage dealt that heals the attacker.
+    pub lifesteal: f32,
+    /// Fraction of spell damage dealt that heals the caster.
+    pub spell_lifesteal: f32,
+    /// Additive bonus to healing this unit provides.
+    pub heal_amp: f32,
+    /// Additive bonus to healing this unit receives.
+    pub heal_received_amp: f32,
+    /// Additive change to mana costs (-0.25 = 25% cheaper).
+    pub mana_cost_amp: f32,
 }
 
 /// Unified HP shield consumed before health (all damage types unless pierced).
@@ -149,6 +201,11 @@ impl CombatStats {
             damage_reflect: 0.0,
             cleave_radius: 0.0,
             cleave_damage_ratio: 0.0,
+            lifesteal: 0.0,
+            spell_lifesteal: 0.0,
+            heal_amp: 0.0,
+            heal_received_amp: 0.0,
+            mana_cost_amp: 0.0,
         };
         stats.recompute_attack_speed(0.0);
         stats

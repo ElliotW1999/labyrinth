@@ -18,6 +18,8 @@ use crate::components::{AbilityId, DamageType};
 use crate::scale;
 #[allow(unused_imports)]
 use crate::status::{DispelStrength, StatusKind};
+#[allow(unused_imports)]
+use crate::vitals::{ResourceKind, ResourceStat};
 
 /// CSV-authored definition for `id`, if any.
 pub fn definition(id: AbilityId) -> Option<AbilityDefinition> {

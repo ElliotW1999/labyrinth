@@ -115,6 +115,8 @@ use crate::components::{AbilityId, DamageType};
 use crate::status::{DispelStrength, StatusKind};
 #[allow(unused_imports)]
 use crate::scale;
+#[allow(unused_imports)]
+use crate::vitals::{ResourceKind, ResourceStat};
 """
 
 
