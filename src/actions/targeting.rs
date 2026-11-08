@@ -308,6 +308,35 @@ mod tests {
     }
 
     #[test]
+    fn global_cast_range_reaches_a_unit_across_the_map() {
+        let c = caster();
+        let global = spec(
+            TargetType::Unit,
+            TargetTeam::Enemy,
+            crate::scale::GLOBAL_CAST_RANGE,
+        );
+        let far = Vec3::new(-crate::scale::MAP_HALF, 0.0, -crate::scale::MAP_HALF);
+        let far_enemy = move |_: Entity| {
+            Some(UnitInfo {
+                position: far,
+                team: Team::Dire,
+                alive: true,
+                untargetable: false,
+                bounds: 10.0,
+            })
+        };
+        let target = Entity::from_raw_u32(9).unwrap();
+        let resolved = resolve_target(&global, &c, CastTarget::Unit(target), far_enemy).unwrap();
+        assert!(
+            in_range(&global, c.position, c.bounds, &resolved),
+            "a global unit-target cast never needs the caster to walk"
+        );
+        let limited = spec(TargetType::Unit, TargetTeam::Enemy, 700.0);
+        let resolved = resolve_target(&limited, &c, CastTarget::Unit(target), far_enemy).unwrap();
+        assert!(!in_range(&limited, c.position, c.bounds, &resolved));
+    }
+
+    #[test]
     fn team_rules_filter_unit_targets() {
         let c = caster();
         let other = CastTarget::Unit(Entity::from_raw_u32(9).unwrap());

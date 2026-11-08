@@ -1469,6 +1469,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn skillshot_width_edge_cases() {
+        let base = Skillshot {
+            width: 100.0,
+            start: Vec3::new(100.0, 0.0, 100.0),
+            range: 0.0,
+            end_width: 450.0,
+            ..Default::default()
+        };
+        // A zero-length flight never divides by zero; it keeps the starting width.
+        assert_eq!(base.width_at(Vec3::new(900.0, 0.0, 100.0)), 100.0);
+        let wave = Skillshot {
+            range: 800.0,
+            ..base
+        };
+        assert_eq!(wave.width_at(wave.start), 100.0, "starting width at launch");
+        // Behind the launch point is still distance 0..range, never narrower than the start.
+        assert!(wave.width_at(Vec3::new(-300.0, 0.0, 100.0)) >= 100.0);
+        // Height does not count towards distance travelled.
+        let level = wave.width_at(Vec3::new(500.0, 0.0, 100.0));
+        let raised = wave.width_at(Vec3::new(500.0, 400.0, 100.0));
+        assert!((level - raised).abs() < 1e-3);
+        assert!(
+            (level - (100.0 + 350.0 * 0.5)).abs() < 1e-3,
+            "halfway: {level}"
+        );
+    }
+
     mod leech {
         use super::*;
         use crate::status::StatusEffect;

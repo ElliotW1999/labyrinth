@@ -2687,6 +2687,79 @@ mod tests {
         }
 
         #[test]
+        fn reapplying_a_ticking_burn_restarts_its_clock_and_tick_count() {
+            let mut app = app();
+            let target = victim(&mut app);
+            burn(&mut app, target, "shadow_strike_burn", 20.0, 3.0, 16.0);
+            // 7s in: ticks at 3s and 6s have landed.
+            for _ in 0..140 {
+                advance(&mut app, 0.05);
+            }
+            assert_eq!(dealt(&app).len(), 2);
+            // Refresh: the old burn (3 owed ticks) is replaced, not stacked or flushed.
+            burn(&mut app, target, "shadow_strike_burn", 30.0, 3.0, 16.0);
+            advance(&mut app, 0.016);
+            let burns = app
+                .world()
+                .get::<StatusEffects>(target)
+                .unwrap()
+                .effects
+                .iter()
+                .filter(|e| e.id == "shadow_strike_burn")
+                .count();
+            assert_eq!(burns, 1, "same id refreshes by replacing");
+            // 2.5s later (< one interval since the refresh) nothing new has landed.
+            for _ in 0..50 {
+                advance(&mut app, 0.05);
+            }
+            assert_eq!(dealt(&app).len(), 2, "the clock restarted at the refresh");
+            for _ in 0..400 {
+                advance(&mut app, 0.05);
+            }
+            let hits = dealt(&app);
+            assert_eq!(hits.len(), 2 + 5, "a full fresh set of five ticks");
+            assert!(hits[2..].iter().all(|h| h.amount == 30.0));
+        }
+
+        #[test]
+        fn tick_count_is_floor_of_duration_over_interval() {
+            let ticks = |every, secs| {
+                StatusEffect::burn_ticking("b", 1.0, every, DamageType::Magical, secs)
+                    .dot_ticks_left
+            };
+            assert_eq!(ticks(3.0, 16.0), 5);
+            assert_eq!(ticks(0.1, 1.4), 14);
+            assert_eq!(ticks(3.0, 2.9), 0, "shorter than one interval: no ticks");
+            assert_eq!(
+                ticks(0.0, 5.0),
+                0,
+                "no interval: the continuous form is used"
+            );
+        }
+
+        #[test]
+        fn ticks_are_attributed_to_the_burn_source() {
+            let mut app = app();
+            let target = victim(&mut app);
+            let source = app.world_mut().spawn_empty().id();
+            let mut effect =
+                StatusEffect::burn_ticking("sonic_wave_burn", 23.0, 0.1, DamageType::Pure, 1.4);
+            effect.dot_source = Some(source);
+            app.world_mut().write_message(StatusEffectEvent::new(
+                Some(source),
+                target,
+                StatusChange::Apply(effect),
+            ));
+            advance(&mut app, 0.016);
+            advance(&mut app, 2.0);
+            let hits = dealt(&app);
+            assert_eq!(hits.len(), 14);
+            assert!(hits.iter().all(|h| h.source == Some(source)
+                && h.target == target
+                && h.damage_type == DamageType::Pure));
+        }
+
+        #[test]
         fn continuous_burn_is_unchanged() {
             let mut app = app();
             let target = victim(&mut app);
