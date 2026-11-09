@@ -4,8 +4,9 @@ use bevy::prelude::*;
 
 use super::catalog::AbilityDefinitions;
 use super::definition::{AbilityBehavior, AbilityEffect, AbilityTrigger};
-use super::effects::build_status_effect;
+use super::effects::{EffectSource, base_attack_damage, build_status_effect};
 use crate::components::{AbilityId, AbilityLoadout, CombatStats, Health, HeroAttributes, Mana};
+use crate::heroes::HeroKind;
 use crate::items::{ItemPassives, apply_passives, remove_passives};
 use crate::status::{DispelType, StatusChange, StatusEffect, StatusEffectEvent, StatusEffects};
 use crate::vitals::{effective_mana_cost, outgoing_heal_amp};
@@ -136,12 +137,13 @@ pub fn tick_toggle_upkeep(
         &StatusEffects,
         &CombatStats,
         Option<&HeroAttributes>,
+        Option<&HeroKind>,
         Option<&Transform>,
     )>,
     mut status_events: MessageWriter<StatusEffectEvent>,
 ) {
     let dt = time.delta_secs();
-    for (entity, mut loadout, mut mana, statuses, stats, attrs, transform) in &mut heroes {
+    for (entity, mut loadout, mut mana, statuses, stats, attrs, kind, transform) in &mut heroes {
         let point = transform.map_or(Vec3::ZERO, |tf| tf.translation);
         let healer_amp = outgoing_heal_amp(Some(stats), Some(statuses));
         for slot in &mut loadout.slots {
@@ -176,7 +178,9 @@ pub fn tick_toggle_upkeep(
                     point,
                     Some(stats),
                     attrs,
+                    base_attack_damage(kind, Some(stats)),
                     healer_amp,
+                    EffectSource::Ability(slot.id),
                 );
                 reconcile_held_status(&mut status_events, entity, statuses, built, slot.toggled);
             }

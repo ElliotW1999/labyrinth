@@ -107,6 +107,101 @@ impl Mana {
     }
 }
 
+/// What a cleave instance belongs to. Instances of one source merge; different sources never do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CleaveSource {
+    /// Every permanent item passive; item ratios stack additively in this one instance.
+    Items,
+    /// The ability or item whose timed modifier statuses carry the cleave (e.g. Empower).
+    Effect(crate::abilities::effects::EffectSource),
+    /// A status with no known owner, keyed by its own id.
+    Status(&'static str),
+}
+
+/// One cleave: `ratio` x the main hit to enemies in its own shape. A circle of `radius`
+/// (default `scale::ATTACK_CLEAVE_RADIUS` when 0) or, when `distance` > 0, a trapezoid whose
+/// half-width grows from `radius` to `end_radius` over `distance`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CleaveInstance {
+    pub source: CleaveSource,
+    pub ratio: f32,
+    pub radius: f32,
+    pub end_radius: f32,
+    pub distance: f32,
+    /// How many statuses / item copies feed this instance; it is dropped when none is left.
+    contributors: i32,
+}
+
+/// Most cleave instances a unit can hold at once (items plus up to five timed sources).
+/// Further sources are ignored, which keeps `CombatStats` `Copy`.
+pub const MAX_CLEAVE_INSTANCES: usize = 6;
+
+/// The cleave instances of a unit, in the order their sources first appeared.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct CleaveSet {
+    slots: [Option<CleaveInstance>; MAX_CLEAVE_INSTANCES],
+}
+
+impl CleaveSet {
+    pub fn iter(&self) -> impl Iterator<Item = &CleaveInstance> {
+        self.slots.iter().flatten()
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn get(&self, source: CleaveSource) -> Option<&CleaveInstance> {
+        self.iter().find(|c| c.source == source)
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn is_empty(&self) -> bool {
+        self.iter().next().is_none()
+    }
+
+    /// Add a contribution (ratio and shape deltas, `contributors` more feeders) to the
+    /// instance of `source`, creating it if needed. A negative `contributors` removes a
+    /// contribution; the instance disappears with its last feeder.
+    pub fn adjust(
+        &mut self,
+        source: CleaveSource,
+        ratio: f32,
+        radius: f32,
+        end_radius: f32,
+        distance: f32,
+        contributors: i32,
+    ) {
+        let index = match self
+            .slots
+            .iter()
+            .position(|s| s.is_some_and(|c| c.source == source))
+        {
+            Some(index) => index,
+            None => {
+                let Some(index) = self.slots.iter().position(Option::is_none) else {
+                    return;
+                };
+                self.slots[index] = Some(CleaveInstance {
+                    source,
+                    ratio: 0.0,
+                    radius: 0.0,
+                    end_radius: 0.0,
+                    distance: 0.0,
+                    contributors: 0,
+                });
+                index
+            }
+        };
+        let instance = self.slots[index].as_mut().expect("slot was just filled");
+        instance.ratio += ratio;
+        instance.radius += radius;
+        instance.end_radius += end_radius;
+        instance.distance += distance;
+        instance.contributors += contributors;
+        if instance.contributors <= 0 {
+            self.slots[index] = None;
+        }
+    }
+}
+
 #[derive(Component, Debug, Clone, Copy)]
 #[require(
     crate::abilities::effects::TriggerCounters,
@@ -149,9 +244,9 @@ pub struct CombatStats {
     pub damage_block: f32,
     /// Fraction of mitigated damage returned to the attacker.
     pub damage_reflect: f32,
-    /// Enemies within this radius take cleave_damage_ratio × attack damage.
-    pub cleave_radius: f32,
-    pub cleave_damage_ratio: f32,
+    /// Independent cleave instances, one per source (see [`CleaveSet`]). Each deals its own
+    /// ratio × the main hit to its own area; a unit inside two areas takes both.
+    pub cleaves: CleaveSet,
     /// Chance (0..=1) that a basic attack against this unit misses. Stacks with statuses.
     pub evasion: f32,
     /// Chance (0..=1) that an attack which would miss lands anyway. 1.0 is true strike.
@@ -216,8 +311,7 @@ impl CombatStats {
             incoming_damage_amp: 0.0,
             damage_block: 0.0,
             damage_reflect: 0.0,
-            cleave_radius: 0.0,
-            cleave_damage_ratio: 0.0,
+            cleaves: CleaveSet::default(),
             evasion: 0.0,
             accuracy: 0.0,
             splash_radius: 0.0,
@@ -607,6 +701,11 @@ pub enum AbilityId {
     QueenOfPainBlink,
     ScreamOfPain,
     SonicWave,
+    // Magnus (generated stubs)
+    MagnusShockwave,
+    Empower,
+    Skewer,
+    ReversePolarity,
     // </hero_generator:ability_enum>
 }
 
@@ -644,6 +743,10 @@ impl AbilityId {
             AbilityId::QueenOfPainBlink => "QoP Blink",
             AbilityId::ScreamOfPain => "Scream of Pain",
             AbilityId::SonicWave => "Sonic Wave",
+            AbilityId::MagnusShockwave => "Shockwave",
+            AbilityId::Empower => "Empower",
+            AbilityId::Skewer => "Skewer",
+            AbilityId::ReversePolarity => "Reverse Polarity",
             // </hero_generator:ability_display_name>
         }
     }
@@ -658,7 +761,8 @@ impl AbilityId {
                 | AbilityId::Aegis
                 | AbilityId::Ritual
                 | AbilityId::Cataclysm
-                | AbilityId::SonicWave // </hero_generator:ability_ultimates>
+                | AbilityId::SonicWave
+                | AbilityId::ReversePolarity // </hero_generator:ability_ultimates>
         )
     }
 
@@ -675,6 +779,10 @@ impl AbilityId {
             AbilityId::QueenOfPainBlink => 7,
             AbilityId::ScreamOfPain => 7,
             AbilityId::SonicWave => 4,
+            AbilityId::MagnusShockwave => 7,
+            AbilityId::Empower => 7,
+            AbilityId::Skewer => 7,
+            AbilityId::ReversePolarity => 4,
             // </ability_generator:max_rank>
             _ if self.is_ultimate() => 4,
             _ => 7,
@@ -942,5 +1050,83 @@ mod movement_stat_tests {
         assert_eq!(stats.effective_move_speed(Some(&statuses)), 0.0);
         let (stats, statuses) = with_statuses(0.0, vec![flat_speed("slow", -50.0)]);
         assert_eq!(stats.effective_move_speed(Some(&statuses)), 0.0);
+    }
+}
+
+#[cfg(test)]
+mod cleave_set_tests {
+    use super::*;
+    use crate::abilities::effects::EffectSource;
+
+    const EMPOWER: CleaveSource = CleaveSource::Effect(EffectSource::Ability(AbilityId::Empower));
+
+    #[test]
+    fn float_drift_never_leaves_a_ghost_instance() {
+        let mut set = CleaveSet::default();
+        // Ratios that do not cancel exactly in f32.
+        let ratios = [0.1_f32, 0.2, 0.3, 0.7, 0.13, 0.37];
+        for r in ratios {
+            set.adjust(EMPOWER, r, 0.1, 0.3, 0.7, 1);
+        }
+        for r in ratios.iter().rev() {
+            set.adjust(EMPOWER, -r, -0.1, -0.3, -0.7, -1);
+        }
+        assert!(
+            set.is_empty(),
+            "removal is by contributor count, not by value"
+        );
+    }
+
+    #[test]
+    fn removing_a_contribution_that_was_never_added_leaves_nothing_behind() {
+        let mut set = CleaveSet::default();
+        set.adjust(CleaveSource::Items, -0.4, 0.0, 0.0, 0.0, -1);
+        assert!(set.is_empty());
+    }
+
+    #[test]
+    fn items_and_each_source_get_their_own_instance_in_first_seen_order() {
+        let mut set = CleaveSet::default();
+        set.adjust(CleaveSource::Items, 0.4, 0.0, 0.0, 0.0, 1);
+        set.adjust(EMPOWER, 0.16, 150.0, 360.0, 650.0, 1);
+        set.adjust(CleaveSource::Items, 0.4, 0.0, 0.0, 0.0, 1);
+        let sources: Vec<_> = set.iter().map(|c| c.source).collect();
+        assert_eq!(sources, [CleaveSource::Items, EMPOWER]);
+        assert!((set.get(CleaveSource::Items).unwrap().ratio - 0.8).abs() < 1e-6);
+        assert_eq!(set.get(CleaveSource::Items).unwrap().distance, 0.0);
+    }
+
+    /// Documents the silent cap: a seventh simultaneous source is dropped (and its removal is
+    /// a harmless no-op), while the six held instances stay intact.
+    #[test]
+    fn the_cap_drops_a_seventh_source_silently_and_its_removal_is_harmless() {
+        let mut set = CleaveSet::default();
+        for i in 0..MAX_CLEAVE_INSTANCES {
+            let id: &'static str = ["a", "b", "c", "d", "e", "f"][i];
+            set.adjust(CleaveSource::Status(id), 0.1, 0.0, 0.0, 0.0, 1);
+        }
+        set.adjust(EMPOWER, 0.5, 0.0, 0.0, 0.0, 1);
+        assert_eq!(set.iter().count(), MAX_CLEAVE_INSTANCES);
+        assert!(set.get(EMPOWER).is_none(), "the overflow source is ignored");
+        set.adjust(EMPOWER, -0.5, 0.0, 0.0, 0.0, -1);
+        assert_eq!(set.iter().count(), MAX_CLEAVE_INSTANCES);
+        assert!(set.iter().all(|c| (c.ratio - 0.1).abs() < 1e-6));
+    }
+
+    /// Known limitation: if a source was dropped by the cap and a slot frees before its
+    /// removal, the removal creates a phantom instance that vanishes at once (contributors
+    /// is -1), so nothing leaks. A later same-source add while the first is still ignored
+    /// would be under-counted; this pins the no-leak part.
+    #[test]
+    fn a_dropped_source_removed_after_a_slot_frees_leaks_nothing() {
+        let mut set = CleaveSet::default();
+        for id in ["a", "b", "c", "d", "e", "f"] {
+            set.adjust(CleaveSource::Status(id), 0.1, 0.0, 0.0, 0.0, 1);
+        }
+        set.adjust(EMPOWER, 0.5, 0.0, 0.0, 0.0, 1); // dropped
+        set.adjust(CleaveSource::Status("a"), -0.1, 0.0, 0.0, 0.0, -1); // frees a slot
+        set.adjust(EMPOWER, -0.5, 0.0, 0.0, 0.0, -1);
+        assert_eq!(set.iter().count(), 5);
+        assert!(set.get(EMPOWER).is_none());
     }
 }

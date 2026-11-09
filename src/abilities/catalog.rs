@@ -98,6 +98,7 @@ const PROJECTILE: AbilityMechanic = AbilityMechanic::Projectile {
     skillshot: false,
     first_hit: false,
     end_radius: None,
+    origin_offset: None,
 };
 
 const fn damage(
@@ -431,6 +432,14 @@ mod tests {
         assert_eq!(d.backswing, 0.9);
         let d = builtin(AbilityId::Dash).timing(0.1, 7.0);
         assert_eq!(d.backswing, MAX_CAST_BACKSWING);
+        assert_eq!(MAX_CAST_BACKSWING, 1.5);
+        for backswing in [1.07, 1.2, 1.3] {
+            let d = builtin(AbilityId::Dash).timing(0.3, backswing);
+            assert_eq!(
+                d.backswing, backswing,
+                "backswings up to 1.5 apply unclamped"
+            );
+        }
     }
 
     #[test]
@@ -572,6 +581,194 @@ mod tests {
         assert_eq!(wave_burn.2.at(1), 0.1);
         assert_eq!(wave_burn.3, DamageType::Pure);
         assert_eq!(wave_burn.4.at(1), 1.4);
+    }
+
+    #[test]
+    fn magnus_abilities_generate_expected_definitions() {
+        use crate::abilities::definition::{DisplacementKind, StatusSpec};
+        use crate::actions::TargetType;
+
+        // Vanguard's hand-written Shockwave is untouched by Magnus' generated Q.
+        assert!(
+            crate::abilities::generated::definition(AbilityId::Shockwave).is_none(),
+            "Magnus' Q must not replace Vanguard's Shockwave"
+        );
+        assert_eq!(AbilityId::MagnusShockwave.display_name(), "Shockwave");
+        assert_eq!(AbilityId::Empower.display_name(), "Empower");
+        assert_eq!(AbilityId::Skewer.display_name(), "Skewer");
+        assert_eq!(
+            AbilityId::ReversePolarity.display_name(),
+            "Reverse Polarity"
+        );
+
+        // Q: skillshot wave starting 48 in front, pulling toward the wave and slowing.
+        let q = builtin(AbilityId::MagnusShockwave);
+        assert_eq!(q.name, "Shockwave");
+        assert_eq!(q.max_rank, 7);
+        assert_eq!(q.target_type, TargetType::Point);
+        assert_eq!(q.cast_range.at(1), 1200.0);
+        assert_eq!(q.aoe_radius.at(1), 200.0);
+        let q_cooldowns: Vec<f32> = (1..=7).map(|r| q.cooldown.at(r)).collect();
+        assert_eq!(q_cooldowns, [13.0, 12.0, 11.0, 10.0, 9.0, 8.0, 7.0]);
+        assert_eq!(q.backswing, 1.2, "unclamped under the 1.5 cap");
+        assert!(q.mechanics.iter().any(|m| matches!(
+            m,
+            AbilityMechanic::Projectile {
+                skillshot: true,
+                first_hit: false,
+                speed: Some(speed),
+                end_radius: None,
+                origin_offset: Some(offset),
+                ..
+            } if *speed == 1200.0 && offset.at(1) == 48.0
+        )));
+        let hit: Vec<_> = q.effects_for(AbilityTrigger::OnProjectileHit).collect();
+        assert!(hit.iter().any(|e| matches!(
+            e.effect,
+            AbilityEffect::Displace {
+                kind: DisplacementKind::PullToPoint,
+                distance: Some(distance),
+                forward_offset: None,
+                ..
+            } if distance.at(1) == 150.0
+        )));
+        assert!(hit.iter().any(|e| matches!(
+            e.effect,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Slow { percent },
+                duration,
+            } if percent.at(1) == 75.0 && duration.at(1) == 0.55 && duration.at(7) == 1.45
+        )));
+        assert!(hit.iter().any(|e| matches!(
+            e.effect,
+            AbilityEffect::Damage { amount, damage_type: DamageType::Magical, .. }
+                if amount.at(1) == 75.0 && amount.at(7) == 525.0
+        )));
+
+        // W: ally unit target; percent damage, cleave ratio and the cone shape.
+        let w = builtin(AbilityId::Empower);
+        assert_eq!(w.target_type, TargetType::Unit);
+        assert_eq!(w.backswing, 1.07);
+        assert_eq!(w.cooldown.at(1), 8.0);
+        assert_eq!(w.cast_range.at(1), 800.0);
+        let modifiers: Vec<_> = w
+            .effects_for(AbilityTrigger::OnCast)
+            .filter_map(|e| match e.effect {
+                AbilityEffect::ApplyStatus {
+                    status:
+                        StatusSpec::Modifier {
+                            id,
+                            attack_damage,
+                            attack_damage_pct,
+                            cleave,
+                            cleave_radius,
+                            cleave_end_radius,
+                            cleave_distance,
+                            ..
+                        },
+                    duration,
+                } => Some((
+                    id,
+                    attack_damage,
+                    attack_damage_pct,
+                    cleave,
+                    cleave_radius,
+                    cleave_end_radius,
+                    cleave_distance,
+                    duration,
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(modifiers.len(), 5);
+        for m in &modifiers {
+            assert_eq!(m.7.at(1), 30.0);
+            assert_eq!(m.7.at(7), 48.0);
+            assert_eq!(m.1.at(1), 0.0, "no flat attack damage");
+        }
+        let by_id = |id: &str| modifiers.iter().find(|m| m.0 == id).expect(id);
+        assert_eq!(by_id("empower_attack_damage_pct").2.at(1), 16.0);
+        assert_eq!(by_id("empower_attack_damage_pct").2.at(7), 64.0);
+        assert_eq!(by_id("empower_cleave").3.at(1), 0.16);
+        assert!((by_id("empower_cleave").3.at(7) - 0.64).abs() < 1e-6);
+        assert_eq!(by_id("empower_cleave_radius").4.at(1), 150.0);
+        assert_eq!(by_id("empower_cleave_end_radius").5.at(1), 360.0);
+        assert_eq!(by_id("empower_cleave_distance").6.at(7), 650.0);
+
+        // E: global dash with a 145 contact radius, dragging and stunning under its own id.
+        let e = builtin(AbilityId::Skewer);
+        assert_eq!(e.target_type, TargetType::Point);
+        assert_eq!(e.cast_range.at(1), crate::scale::GLOBAL_CAST_RANGE);
+        let e_cooldowns: Vec<f32> = (1..=7).map(|r| e.cooldown.at(r)).collect();
+        assert_eq!(e_cooldowns, [22.0, 20.0, 18.0, 16.0, 14.0, 12.0, 10.0]);
+        assert!(e.effects_for(AbilityTrigger::OnCast).any(|x| matches!(
+            x.effect,
+            AbilityEffect::Displace {
+                kind: DisplacementKind::Dash,
+                distance: Some(distance),
+                duration,
+                contact_radius: Some(radius),
+                ..
+            } if distance.at(1) == 800.0
+                && distance.at(7) == 1400.0
+                && (duration.at(7) - 1.555556).abs() < 1e-5
+                && radius.at(1) == 145.0
+        )));
+        assert!(
+            e.effects_for(AbilityTrigger::OnUnitContact)
+                .any(|x| matches!(
+                    x.effect,
+                    AbilityEffect::Displace {
+                        kind: DisplacementKind::Drag,
+                        bound_stun: Some("skewer_stun"),
+                        ..
+                    }
+                ))
+        );
+        let end: Vec<_> = e.effects_for(AbilityTrigger::OnMovementEnd).collect();
+        assert_eq!(end.len(), 2, "damage and slow only: no stun-removal row");
+        assert!(end.iter().any(|x| matches!(
+            x.effect,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Slow { percent },
+                duration,
+            } if percent.at(1) == 20.0 && percent.at(7) == 80.0 && duration.at(1) == 3.25
+        )));
+        assert!(
+            !e.effects
+                .iter()
+                .any(|x| matches!(x.effect, AbilityEffect::RemoveStatus { .. })),
+            "no remove_status,stun"
+        );
+
+        // R: ultimate, radius 430, pull to a point 250 in front, damage and stun.
+        let r = builtin(AbilityId::ReversePolarity);
+        assert!(r.is_ultimate);
+        assert_eq!(r.max_rank, 4);
+        assert_eq!(r.target_type, TargetType::NoTarget);
+        assert_eq!(r.aoe_radius.at(1), 430.0);
+        assert_eq!(r.backswing, 1.3);
+        assert_eq!(r.cooldown.at(4), 115.0);
+        assert!(r.effects_for(AbilityTrigger::OnCast).any(|x| matches!(
+            x.effect,
+            AbilityEffect::Displace {
+                kind: DisplacementKind::PullToPoint,
+                distance: None,
+                forward_offset: Some(offset),
+                ..
+            } if offset.at(1) == 250.0
+        )));
+        assert!(r.effects_for(AbilityTrigger::OnCast).any(|x| matches!(
+            x.effect,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Stun,
+                duration,
+            } if duration.at(1) == 2.5 && duration.at(4) == 4.0
+        )));
+        assert!(r.effects_for(AbilityTrigger::OnCast).any(|x| matches!(
+            x.effect,
+            AbilityEffect::Damage { amount, .. } if amount.at(4) == 400.0
+        )));
     }
 
     #[test]

@@ -1075,7 +1075,7 @@ class ItemProjectileTests(unittest.TestCase):
         self.assertFalse([w for w in report.warnings if w.field == "projectile_type"])
         rendered = module.item_static(items[0])
         self.assertIn(
-            "mechanics: &[AbilityMechanic::Projectile { splash_radius: AreaRadius::Ability, speed: Some(1200.0), skillshot: false, first_hit: false, end_radius: None }],",
+            "mechanics: &[AbilityMechanic::Projectile { splash_radius: AreaRadius::Ability, speed: Some(1200.0), skillshot: false, first_hit: false, end_radius: None, origin_offset: None }],",
             rendered,
         )
         self.assertIn("AbilityTrigger::OnProjectileHit", rendered)
@@ -1476,6 +1476,280 @@ class ExampleCatalogTests(unittest.TestCase):
             result = self._check(script, "invalid", *files)
             self.assertEqual(result.returncode, 1, script)
             self.assertIn("validation error", result.stderr + result.stdout)
+
+
+ABILITY_COLUMNS_FOR_TESTS = (
+    "id,name,slot,ability_type,target_type,target_team,cast_range,aoe_radius,cast_time,"
+    "channel_time,cooldown,mana_cost,max_charges,charge_restore_time,projectile_type,"
+    "projectile_speed,description,cast_backswing,max_rank,toggle_mana_per_sec,"
+    "projectile_end_radius,projectile_origin_offset"
+).split(",")
+EFFECT_COLUMNS_FOR_TESTS = (
+    "ability_id,effect_index,trigger,effect_target,effect_type,effect_id,value,damage_type,"
+    "duration,radius,amount,scaling_type,scaling_value"
+).split(",")
+
+
+def load_test_ability(ability: dict[str, str] | None = None, effects: list[dict[str, str]] | None = None):
+    """Run `AbilityGenerator.load` on one temporary ability (default: a no_target Q) plus effect rows.
+
+    Returns `(abilities, report)`. `ability` overrides the default cells; each effect dict
+    overrides `{ability_id: tester, effect_index: <n>, trigger: on_cast, effect_target: caster}`.
+    """
+    import csv
+    import tempfile
+
+    import AbilityGenerator
+
+    cells = {
+        "id": "tester", "name": "Tester", "slot": "Q", "ability_type": "active",
+        "target_type": "no_target", "target_team": "enemy", "cast_time": "0.1",
+        "cooldown": "10", "mana_cost": "50", "projectile_type": "none", "description": "x",
+    }
+    cells.update(ability or {})
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        with (tmp / "a.csv").open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(ABILITY_COLUMNS_FOR_TESTS)
+            writer.writerow([cells.get(c, "") for c in ABILITY_COLUMNS_FOR_TESTS])
+        with (tmp / "ae.csv").open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(EFFECT_COLUMNS_FOR_TESTS)
+            for index, effect in enumerate(effects or []):
+                base = {"ability_id": "tester", "effect_index": str(index), "trigger": "on_cast", "effect_target": "caster"}
+                base.update(effect)
+                writer.writerow([base.get(c, "") for c in EFFECT_COLUMNS_FOR_TESTS])
+        return AbilityGenerator.load(tmp / "a.csv", tmp / "ae.csv")
+
+
+class CastBackswingTests(unittest.TestCase):
+    def test_backswing_up_to_one_and_a_half_is_accepted_silently(self) -> None:
+        for value in ("0.3", "1.2", "1.3", "1.5"):
+            _, report = load_test_ability({"cast_backswing": value})
+            self.assertEqual(report.errors, [])
+            self.assertEqual([w for w in report.warnings if w.field == "cast_backswing"], [], value)
+
+    def test_backswing_above_the_cap_warns(self) -> None:
+        _, report = load_test_ability({"cast_backswing": "1.6"})
+        self.assertEqual(report.errors, [])
+        self.assertTrue(any(w.field == "cast_backswing" and "1.5" in w.message for w in report.warnings))
+
+
+class TimedStatModifierTests(unittest.TestCase):
+    @staticmethod
+    def _stat(effect_id: str, value: str, **cells: str):
+        effect = {"effect_type": "stat_modifier", "effect_id": effect_id, "value": value, "duration": "5"}
+        effect.update(cells)
+        return load_test_ability(effects=[effect])
+
+    def test_attack_damage_pct_is_a_percentage_of_base_damage(self) -> None:
+        abilities, report = self._stat("attack_damage_pct", "16")
+        self.assertEqual(report.errors, [])
+        self.assertIn("attack_damage_pct: RankValue::fixed(16.0)", str(abilities[0].effects))
+        self.assertIn('id: "tester_attack_damage_pct"', str(abilities[0].effects))
+        # The flat attack_damage field stays zero.
+        self.assertIn("attack_damage: RankValue::ZERO", str(abilities[0].effects))
+
+    def test_attack_damage_pct_rejects_negative_and_huge_values(self) -> None:
+        for bad in ("-10", "1001", "2000"):
+            _, report = self._stat("attack_damage_pct", bad)
+            self.assertTrue(
+                any("must be within 0..1000" in e.message for e in report.errors), bad
+            )
+        _, report = self._stat("attack_damage_pct", "1000")
+        self.assertEqual(report.errors, [])
+
+
+    def test_timed_cleave_is_a_fraction_within_zero_and_one(self) -> None:
+        abilities, report = self._stat("cleave", "0.16|0.24|0.32|0.4|0.48|0.56|0.64")
+        self.assertEqual(report.errors, [])
+        self.assertIn("cleave: RankValue::from_level_1(0.16, 0.08)", str(abilities[0].effects))
+        self.assertIn('id: "tester_cleave"', str(abilities[0].effects))
+        for bad in ("1.5", "-0.2"):
+            _, report = self._stat("cleave", bad)
+            self.assertTrue(
+                any("must be within 0..1" in e.message for e in report.errors), bad
+            )
+
+    def test_cleave_shape_stats_are_positive_distances(self) -> None:
+        for stat, value in (("cleave_radius", "150"), ("cleave_end_radius", "360"), ("cleave_distance", "650")):
+            abilities, report = self._stat(stat, value)
+            self.assertEqual(report.errors, [], stat)
+            self.assertIn(f"{stat}: RankValue::fixed({value}.0)", str(abilities[0].effects))
+            self.assertIn(f'id: "tester_{stat}"', str(abilities[0].effects))
+            for bad in ("0", "-5"):
+                _, report = self._stat(stat, bad)
+                self.assertTrue(any("must be above 0" in e.message for e in report.errors), (stat, bad))
+
+
+class DashContactRadiusTests(unittest.TestCase):
+    @staticmethod
+    def _dash(effect_id: str = "dash", **cells: str):
+        effect = {"effect_type": "movement", "effect_id": effect_id, "value": "800", "duration": "1"}
+        effect.update(cells)
+        return load_test_ability({"target_type": "point", "cast_range": "800"}, [effect])
+
+    def test_dash_radius_is_the_contact_radius(self) -> None:
+        abilities, report = self._dash(radius="145")
+        self.assertEqual(report.errors, [])
+        self.assertIn("contact_radius: Some(RankValue::fixed(145.0))", str(abilities[0].effects))
+        abilities, report = self._dash()
+        self.assertIn("contact_radius: None", str(abilities[0].effects))
+
+    def test_dash_radius_must_be_above_zero(self) -> None:
+        _, report = self._dash(radius="0")
+        self.assertTrue(any("contact radius must be above 0" in e.message for e in report.errors))
+
+    def test_radius_on_other_movements_is_ignored_with_a_warning(self) -> None:
+        effect = {"effect_type": "movement", "effect_id": "knockback", "value": "300", "effect_target": "cast_target", "radius": "145"}
+        abilities, report = load_test_ability({"target_type": "unit", "cast_range": "800"}, [effect])
+        self.assertEqual(report.errors, [])
+        self.assertTrue(any(w.field == "radius" for w in report.warnings), report.warnings)
+        self.assertIn("contact_radius: None", str(abilities[0].effects))
+
+
+class PullPointForwardOffsetTests(unittest.TestCase):
+    @staticmethod
+    def _pull(**cells: str):
+        effect = {
+            "effect_type": "movement", "effect_id": "pull_point", "effect_target": "units_in_radius",
+            "duration": "0.05", "radius": "430",
+        }
+        effect.update(cells)
+        return load_test_ability({"aoe_radius": "430"}, [effect])
+
+    def test_amount_is_the_forward_offset(self) -> None:
+        abilities, report = self._pull(amount="250")
+        self.assertEqual(report.errors, [])
+        self.assertEqual([w for w in report.warnings if w.field == "amount"], [])
+        self.assertIn("forward_offset: Some(RankValue::fixed(250.0))", str(abilities[0].effects))
+
+    def test_blank_amount_keeps_the_trigger_point(self) -> None:
+        abilities, report = self._pull()
+        self.assertEqual(report.errors, [])
+        self.assertIn("forward_offset: None", str(abilities[0].effects))
+
+    def test_negative_offset_is_rejected(self) -> None:
+        _, report = self._pull(amount="-50")
+        self.assertTrue(any("forward offset cannot be negative" in e.message for e in report.errors))
+
+
+class DragStunTests(unittest.TestCase):
+    @staticmethod
+    def _drag(effect_id: str, **cells: str):
+        effect = {
+            "trigger": "on_unit_contact", "effect_type": "movement", "effect_id": effect_id,
+            "effect_target": "trigger_unit",
+        }
+        effect.update(cells)
+        dash = {"effect_type": "movement", "effect_id": "dash", "value": "800", "duration": "1"}
+        return load_test_ability({"target_type": "point", "cast_range": "800"}, [dash, effect])
+
+    def test_drag_stun_binds_a_source_unique_stun_id(self) -> None:
+        abilities, report = self._drag("drag_stun")
+        self.assertEqual(report.errors, [])
+        text = str(abilities[0].effects)
+        self.assertIn("kind: DisplacementKind::Drag", text)
+        self.assertIn('bound_stun: Some("tester_stun")', text)
+
+    def test_plain_drag_binds_nothing(self) -> None:
+        abilities, report = self._drag("drag")
+        self.assertEqual(report.errors, [])
+        self.assertIn("bound_stun: None", str(abilities[0].effects))
+
+    def test_drag_stun_follows_the_drag_target_rules(self) -> None:
+        _, report = self._drag("drag_stun", effect_target="caster")
+        self.assertTrue(any("drag carries other units" in e.message for e in report.errors))
+
+
+def _ability_rust(ability) -> str:
+    import AbilityGenerator
+
+    return AbilityGenerator.ability_fn(ability)
+
+
+class ProjectileOriginOffsetTests(unittest.TestCase):
+    @staticmethod
+    def _wave(**cells: str):
+        ability = {
+            "target_type": "point", "cast_range": "1200", "aoe_radius": "200",
+            "projectile_type": "skillshot", "projectile_speed": "1200",
+        }
+        ability.update(cells)
+        return load_test_ability(ability)
+
+    def test_offset_is_emitted_on_a_skillshot(self) -> None:
+        abilities, report = self._wave(projectile_origin_offset="48")
+        self.assertEqual(report.errors, [])
+        self.assertIn("origin_offset: Some(RankValue::fixed(48.0))", _ability_rust(abilities[0]))
+
+    def test_blank_offset_starts_at_the_caster(self) -> None:
+        abilities, report = self._wave()
+        self.assertEqual(report.errors, [])
+        self.assertIn("origin_offset: None", _ability_rust(abilities[0]))
+
+    def test_offset_needs_a_skillshot_and_a_positive_value(self) -> None:
+        _, report = self._wave(projectile_origin_offset="0")
+        self.assertTrue(any("must be above 0" in e.message for e in report.errors))
+        _, report = load_test_ability(
+            {"target_type": "unit", "target_team": "enemy", "cast_range": "600", "projectile_type": "targeted", "projectile_origin_offset": "48"}
+        )
+        self.assertTrue(any("only skillshots start in front" in e.message for e in report.errors))
+
+
+class HeroGeneratorTests(unittest.TestCase):
+    HEADER = (
+        "Hero_name,is_melee,Ability_Q_Name,Ability_W_Name,Ability_E_Name,Ability_R_Name,"
+        "base_STR,base_AGI,base_INT,STR_per_level,AGI_per_level,INT_per_level,primary,"
+        "attack_range{extra_header}"
+    )
+
+    def _load(self, is_melee: str, attack_range: str, extra_header: str = "", extra: str = ""):
+        import tempfile
+
+        import HeroGenerator
+
+        text = (
+            self.HEADER.format(extra_header=extra_header)
+            + "\nTest Hero,"
+            + is_melee
+            + ",A,B,C,D,20,15,10,2,1.5,1,STR,"
+            + attack_range
+            + extra
+            + "\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "heroes.csv"
+            path.write_text(text, encoding="utf-8")
+            return HeroGenerator.load_csv(path)
+
+    def test_long_reach_melee_hero_is_accepted(self) -> None:
+        self.assertEqual(self._load("true", "200")[0].attack_range, 200.0)
+        self.assertEqual(self._load("true", "250")[0].attack_range, 250.0)
+        self.assertEqual(self._load("true", "")[0].attack_range, 128.0)
+        self.assertEqual(self._load("false", "550")[0].attack_range, 550.0)
+
+    def test_turn_rate_is_optional_and_positive(self) -> None:
+        import HeroGenerator
+
+        hero = self._load("true", "150", ",turn_rate", ",0.8")[0]
+        self.assertEqual(hero.turn_rate, 0.8)
+        self.assertIn("                    0.8,\n", HeroGenerator.hero_def_arm(hero))
+        blank = self._load("true", "150", ",turn_rate", ",")[0]
+        self.assertIsNone(blank.turn_rate)
+        self.assertIn("crate::facing::HERO_TURN_RATE", HeroGenerator.hero_def_arm(blank))
+        for bad in ("0", "-0.5"):
+            with self.assertRaises(SystemExit) as ctx:
+                self._load("true", "150", ",turn_rate", "," + bad)
+            self.assertIn("turn_rate must be above 0", str(ctx.exception))
+
+    def test_is_melee_must_match_attack_range(self) -> None:
+        with self.assertRaises(SystemExit) as ctx:
+            self._load("true", "400")
+        self.assertIn("disagrees with attack_range", str(ctx.exception))
+        with self.assertRaises(SystemExit):
+            self._load("false", "200")
 
 
 if __name__ == "__main__":

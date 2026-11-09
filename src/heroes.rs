@@ -50,6 +50,8 @@ pub enum HeroId {
     Hexer,
     /// Generated hero — abilities are stubs until implemented.
     QueenOfPain,
+    /// Generated hero — abilities are stubs until implemented.
+    Magnus,
     // </hero_generator:hero_enum>
 }
 
@@ -63,6 +65,7 @@ impl HeroId {
             HeroId::Warden,
             HeroId::Hexer,
             HeroId::QueenOfPain,
+            HeroId::Magnus,
             // </hero_generator:hero_all>
         ]
     }
@@ -101,6 +104,7 @@ impl HeroId {
             HeroId::Warden => "Warden",
             HeroId::Hexer => "Hexer",
             HeroId::QueenOfPain => "Queen of Pain",
+            HeroId::Magnus => "Magnus",
             // </hero_generator:hero_name>
         }
     }
@@ -116,7 +120,9 @@ impl HeroId {
             HeroId::Hexer => "Int support — stub kit",
             HeroId::QueenOfPain => {
                 "Int assassin — Shadow Strike, QoP Blink, Scream of Pain, Sonic Wave"
-            } // </hero_generator:hero_blurb>
+            }
+            HeroId::Magnus => "Str initiator — Shockwave, Empower, Skewer, Reverse Polarity",
+            // </hero_generator:hero_blurb>
         }
     }
 
@@ -130,6 +136,7 @@ impl HeroId {
             HeroId::Warden => "STR",
             HeroId::Hexer => "INT",
             HeroId::QueenOfPain => "INT",
+            HeroId::Magnus => "STR",
             // </hero_generator:hero_primary>
         }
     }
@@ -342,6 +349,31 @@ impl HeroId {
                 ],
                 dimensions: UnitDimensions::HERO,
             },
+            HeroId::Magnus => HeroDef {
+                id: self,
+                attributes: HeroAttributes {
+                    strength: 23.0,
+                    agility: 14.0,
+                    intelligence: 20.0,
+                    str_per_level: 3.1,
+                    agi_per_level: 2.2,
+                    int_per_level: 2.1,
+                },
+                base_health: 211.0,
+                base_health_regen: 0.04,
+                base_mana: 75.0,
+                base_mana_regen: 0.5,
+                combat: hero_combat(
+                    61.0, 200.0, 1.8, 0.5, 0.84, 0.8, -0.96, 3.764384, 305.0, None,
+                ),
+                abilities: [
+                    AbilityId::MagnusShockwave,
+                    AbilityId::Empower,
+                    AbilityId::Skewer,
+                    AbilityId::ReversePolarity,
+                ],
+                dimensions: UnitDimensions::HERO,
+            },
             // </hero_generator:hero_def>
         }
     }
@@ -406,8 +438,7 @@ fn hero_combat(
         incoming_damage_amp: 0.0,
         damage_block: 0.0,
         damage_reflect: 0.0,
-        cleave_radius: 0.0,
-        cleave_damage_ratio: 0.0,
+        cleaves: Default::default(),
         evasion: 0.0,
         accuracy: 0.0,
         splash_radius: 0.0,
@@ -736,6 +767,25 @@ mod tests {
     }
 
     #[test]
+    fn hero_combat_carries_a_per_hero_turn_rate() {
+        let c = hero_combat(61.0, 200.0, 1.8, 0.5, 0.84, 0.8, 0.0, 0.0, 305.0, None);
+        assert_eq!(c.turn_rate, 0.8);
+        let c = hero_combat(
+            61.0,
+            200.0,
+            1.8,
+            0.5,
+            0.84,
+            crate::facing::HERO_TURN_RATE,
+            0.0,
+            0.0,
+            305.0,
+            None,
+        );
+        assert_eq!(c.turn_rate, 0.6);
+    }
+
+    #[test]
     fn hero_combat_attack_projectile_speed_override() {
         let c = hero_combat(
             50.0,
@@ -807,5 +857,63 @@ mod tests {
             stats.attack_speed
         );
         assert!(!stats.is_melee());
+    }
+
+    #[test]
+    fn magnus_matches_spec() {
+        use crate::combat::apply_damage;
+        use crate::components::DamageType;
+
+        assert_eq!(HeroId::from_cli("magnus"), Some(HeroId::Magnus));
+        assert_eq!(HeroId::Magnus.name(), "Magnus");
+        assert_eq!(HeroId::Magnus.primary_label(), "STR");
+        let def = HeroId::Magnus.def();
+        assert_eq!(
+            def.abilities,
+            [
+                AbilityId::MagnusShockwave,
+                AbilityId::Empower,
+                AbilityId::Skewer,
+                AbilityId::ReversePolarity,
+            ]
+        );
+
+        let (health, mana, stats, attrs) = def.vitals();
+        assert_eq!(health.max, 625.0);
+        assert!((health.regen_per_sec - 2.8).abs() < 1e-4);
+        assert!((mana.max - 315.0).abs() < 1e-3);
+        assert!((mana.regen_per_sec - 1.5).abs() < 1e-4);
+        assert!((stats.armor - 1.0).abs() < 1e-4, "armor {}", stats.armor);
+        let taken = apply_damage(100.0, DamageType::Magical, &stats);
+        assert!(
+            (taken - 73.0).abs() < 0.01,
+            "27% magic resist: took {taken}"
+        );
+        assert_eq!(
+            (attrs.strength, attrs.agility, attrs.intelligence),
+            (23.0, 14.0, 20.0)
+        );
+        assert_eq!(
+            (
+                attrs.str_per_level,
+                attrs.agi_per_level,
+                attrs.int_per_level
+            ),
+            (3.1, 2.2, 2.1)
+        );
+
+        assert_eq!(stats.attack_damage, 61.0);
+        assert_eq!(stats.attack_range, 200.0);
+        assert!(stats.is_melee(), "range 200 is still a melee attack");
+        assert_eq!(stats.base_attack_time, 1.8);
+        assert_eq!(stats.attack_point, 0.5);
+        assert_eq!(stats.attack_backswing, 0.84);
+        assert_eq!(stats.turn_rate, 0.8);
+        assert_eq!(stats.move_speed, 305.0);
+        assert!(
+            (stats.attack_speed - 114.0 / 100.0 / 1.8).abs() < 1e-4,
+            "APS {}",
+            stats.attack_speed
+        );
     }
 }

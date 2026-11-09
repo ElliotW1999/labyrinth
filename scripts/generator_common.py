@@ -248,6 +248,7 @@ ITEM_ACTIVATION_OPTIONAL = (
     "projectile_type",
     "projectile_speed",
     "projectile_end_radius",
+    "projectile_origin_offset",
 )
 # Effect-polarity teams (`units_in_radius` defaults); "self" areas still mean allies.
 TARGET_TEAMS = {"enemy": "Enemy", "ally": "Ally", "both": "Any", "self": "Ally"}
@@ -261,6 +262,8 @@ MOVEMENTS = {
     "dash": "Dash",
     "charge": "Charge",
     "drag": "Drag",
+    # A drag that also stuns each dragged unit (status id `<owner>_stun`) until the drag ends.
+    "drag_stun": "Drag",
     "cyclone": "Cyclone",
     "teleport": None,
 }
@@ -280,7 +283,19 @@ TIMED_STATS = {
     "attack_speed_flat": "attack_speed_flat",
     "attack_speed_mult": "attack_speed_mult",
     "attack_range": "attack_range",
+    # Percent (0..1000) of the target's base attack damage, snapshotted when applied.
+    "attack_damage_pct": "attack_damage_pct",
+    # Cleave ratio (0..1) added to the target's cleave; only melee attackers cleave.
+    "cleave": "cleave",
+    # Cone cleave shape: starting half-width, half-width at the far end, and reach. A non-zero
+    # cleave_distance turns the circular cleave into a cone (basic_attack::secondary targets).
+    "cleave_radius": "cleave_radius",
+    "cleave_end_radius": "cleave_end_radius",
+    "cleave_distance": "cleave_distance",
 }
+
+# Timed stats that shape the cleave (world units, additive like every other stat).
+CLEAVE_SHAPE_STATS = ("cleave_radius", "cleave_end_radius", "cleave_distance")
 
 # Timed resource modifiers map onto `StatusSpec::ResourceModifier` (summed when read).
 RESOURCE_STATS = {
@@ -572,6 +587,8 @@ class ActivationSpec:
     projectile_speed: float | None = None
     # Skillshots only: the width (per rank) the wave widens to by the end of its flight.
     projectile_end_radius: list[float] | None = None
+    # Skillshots only: how far in front of the caster (per rank) the wave starts.
+    projectile_origin_offset: list[float] | None = None
 
     def has_cast_range(self, kind: str) -> bool:
         if kind == "ability":
@@ -626,6 +643,7 @@ def parse_activation_spec(
     projectile = parse_enum(row, "projectile_type", PROJECTILE_TYPES, report, required=False) or "none"
     speed = parse_scalar(row, "projectile_speed", report, minimum=1)
     end_radius = parse_number(row, "projectile_end_radius", report, levels=levels, minimum=0)
+    origin_offset = parse_number(row, "projectile_origin_offset", report, levels=levels, minimum=0)
 
     if kind == "ability" and None in (target_type, target_team):
         return None
@@ -648,6 +666,7 @@ def parse_activation_spec(
         projectile_type=projectile,
         projectile_speed=speed,
         projectile_end_radius=end_radius,
+        projectile_origin_offset=origin_offset,
     )
 
 
@@ -698,6 +717,14 @@ def validate_activation(
         elif not (spec.aoe_radius and any(spec.aoe_radius)):
             err("projectile_end_radius", "requires aoe_radius (the starting width)")
 
+    if spec.projectile_origin_offset:
+        if spec.projectile_type not in SKILLSHOT_TYPES:
+            err("projectile_origin_offset", f"only skillshots start in front of the caster; projectile_type is {spec.projectile_type}")
+        elif any(v <= 0 for v in spec.projectile_origin_offset):
+            err("projectile_origin_offset", "projectile_origin_offset must be above 0 (leave it blank to start at the caster)")
+        elif kind == "item":
+            err("projectile_origin_offset", "item skillshots start at the user; leave projectile_origin_offset blank")
+
     if spec.target_team == "self" and spec.target_type not in ("self", "no_target"):
         err("target_team", f"target_team self requires target_type self or no_target (got {spec.target_type})")
     if spec.target_type == "self" and spec.target_team != "self":
@@ -727,16 +754,18 @@ def projectile_mechanic_rust(
     projectile_type: str,
     projectile_speed: float | None,
     end_radius: list[float] | None = None,
+    origin_offset: list[float] | None = None,
 ) -> str:
     """`AbilityMechanic::Projectile { ... }` for a non-"none" projectile_type (abilities and items)."""
     speed = f"Some({f32(projectile_speed)})" if projectile_speed else "None"
     skillshot = "true" if projectile_type in SKILLSHOT_TYPES else "false"
     first_hit = "true" if projectile_type == "skillshot_single" else "false"
     end = f"Some({rank_value(end_radius)})" if end_radius else "None"
+    offset = f"Some({rank_value(origin_offset)})" if origin_offset else "None"
     return (
         "AbilityMechanic::Projectile { "
         f"splash_radius: AreaRadius::Ability, speed: {speed}, skillshot: {skillshot}, "
-        f"first_hit: {first_hit}, end_radius: {end} }}"
+        f"first_hit: {first_hit}, end_radius: {end}, origin_offset: {offset} }}"
     )
 
 
@@ -1039,14 +1068,21 @@ def _displacement_effect(
     value: list[float] | None,
     duration: list[float] | None,
     amount: list[float] | None,
+    radius: list[float] | None,
     report: Report,
 ) -> str | None:
     """`AbilityEffect::Displace` for the forced-movement kinds, validated per kind.
 
-    Columns: `value` = distance, `duration` = seconds, `amount` = speed (charge only).
+    Columns: `value` = distance, `duration` = seconds, `amount` = speed (charge only),
+    `radius` = contact radius (dash and charge only), `amount` = forward offset (pull_point
+    only: pull to a point this far in front of the caster).
     """
     row = e.row
     kind = MOVEMENTS[effect_id]
+    bound_stun = "None"
+    if effect_id == "drag_stun":
+        bound_stun = f'Some("{ctx.owner_id}_stun")'
+        effect_id = "drag"
     if effect_id in ("dash", "charge") and e.target not in SELF_MOVEMENT_TARGETS:
         report.error(
             row.file,
@@ -1095,8 +1131,22 @@ def _displacement_effect(
         return None
     if effect_id == "drag":
         default_duration = 0.0  # blank: until the carrying movement ends
+    contact_radius = "None"
+    if radius and effect_id in ("dash", "charge"):
+        if any(r <= 0 for r in radius):
+            report.error(row.file, row.line, "radius", row.get("radius"), f"the {effect_id} contact radius must be above 0")
+            return None
+        contact_radius = f"Some({rank_value(radius)})"
+    elif radius and e.target != "units_in_radius":
+        _unused(e, report, "radius")
+    forward_offset = "None"
+    if effect_id == "pull_point" and amount:
+        if any(a < 0 for a in amount):
+            report.error(row.file, row.line, "amount", row.get("amount"), "the pull_point forward offset cannot be negative")
+            return None
+        forward_offset = f"Some({rank_value(amount)})"
     unused = ["damage_type"]
-    if effect_id != "charge":
+    if effect_id not in ("charge", "pull_point"):
         unused.append("amount")
     if effect_id in ("cyclone", "drag"):
         unused.append("value")
@@ -1104,7 +1154,8 @@ def _displacement_effect(
     distance = f"Some({rank_value(value)})" if value and effect_id not in ("cyclone", "drag") else "None"
     return (
         f"AbilityEffect::Displace {{ kind: DisplacementKind::{kind}, "
-        f"distance: {distance}, duration: {rank_value(duration or [default_duration])}, speed: {speed} }}"
+        f"distance: {distance}, duration: {rank_value(duration or [default_duration])}, speed: {speed}, "
+        f"contact_radius: {contact_radius}, forward_offset: {forward_offset}, bound_stun: {bound_stun} }}"
     )
 
 
@@ -1708,7 +1759,7 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
                     max_distance = f"Some({rank_value(value)})"
             effect = f"AbilityEffect::Teleport {{ min_distance: {min_distance}, max_distance: {max_distance} }}"
         else:
-            effect = _displacement_effect(e, effect_id, ctx, value, duration, amount, report)
+            effect = _displacement_effect(e, effect_id, ctx, value, duration, amount, radius, report)
             if effect is None:
                 return None
     elif t == "stat_modifier":
@@ -1737,6 +1788,15 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
                     return None
                 duration = [0.0]
             elif not _require(e, "duration", report, "timed stat modifiers need a duration (only item passives are permanent)"):
+                return None
+            if effect_id == "cleave" and any(not 0 <= v <= 1 for v in value):
+                report.error(row.file, row.line, "value", row.get("value"), "a timed cleave is a fraction of the attack damage (0.25 = 25%) and must be within 0..1")
+                return None
+            if effect_id in CLEAVE_SHAPE_STATS and any(v <= 0 for v in value):
+                report.error(row.file, row.line, "value", row.get("value"), f"{effect_id} is a distance in world units and must be above 0")
+                return None
+            if effect_id == "attack_damage_pct" and any(not 0 <= v <= 1000 for v in value):
+                report.error(row.file, row.line, "value", row.get("value"), "attack_damage_pct is a percentage of the target's base attack damage and must be within 0..1000")
                 return None
             if effect_id in RESOURCE_STATS:
                 if not _fraction_stat_ok(e, effect_id, value, report):

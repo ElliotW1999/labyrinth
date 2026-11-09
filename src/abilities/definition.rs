@@ -10,7 +10,7 @@ use crate::status::{DispelType, Leash, LeashAnchor, StatusEffect, StatusKind};
 use crate::vitals::{ManaShield, ResourceKind, ResourceStat};
 
 /// Upper bound (seconds) for an ability's cancellable backswing. The cast point stays capped at 0.5.
-pub const MAX_CAST_BACKSWING: f32 = 1.0;
+pub const MAX_CAST_BACKSWING: f32 = 1.5;
 
 /// A value that scales with ability level: `clamp(base + per_rank × rank, min, max)`,
 /// or an explicit per-level table (`75|150|225|300` in the generator CSVs).
@@ -454,6 +454,19 @@ pub enum StatusSpec {
         attack_speed_mult: RankValue,
         /// Flat attack range change (does not change melee / ranged classification).
         attack_range: RankValue,
+        /// Percent (0..=1000) of the target's base attack damage, snapshotted when the status
+        /// is built (see [`StatusBuildContext::base_attack_damage`]) and added to the flat
+        /// `attack_damage` bonus.
+        attack_damage_pct: RankValue,
+        /// Cleave ratio (0..=1) added to `CombatStats::cleave_damage_ratio`; only melee
+        /// attackers cleave.
+        cleave: RankValue,
+        /// Added to `CombatStats::cleave_radius`: the cleave's starting half-width.
+        cleave_radius: RankValue,
+        /// Added to `CombatStats::cleave_end_radius`: half-width at `cleave_distance`.
+        cleave_end_radius: RankValue,
+        /// Added to `CombatStats::cleave_distance`: a non-zero value makes the cleave a cone.
+        cleave_distance: RankValue,
     },
 }
 
@@ -476,6 +489,10 @@ pub struct StatusBuildContext {
     pub source: Option<Entity>,
     /// Where the trigger happened.
     pub point: Vec3,
+    /// The target's base attack damage, excluding item bonuses and other statuses: the hero
+    /// definition's damage for heroes, the unit's current damage otherwise. Percentage attack
+    /// damage modifiers are a snapshot of this at build time.
+    pub base_attack_damage: f32,
 }
 
 impl StatusSpec {
@@ -490,6 +507,11 @@ impl StatusSpec {
             attack_speed_flat: RankValue::ZERO,
             attack_speed_mult: RankValue::ZERO,
             attack_range: RankValue::ZERO,
+            attack_damage_pct: RankValue::ZERO,
+            cleave: RankValue::ZERO,
+            cleave_radius: RankValue::ZERO,
+            cleave_end_radius: RankValue::ZERO,
+            cleave_distance: RankValue::ZERO,
         }
     }
 
@@ -620,6 +642,11 @@ impl StatusSpec {
                 attack_speed_flat,
                 attack_speed_mult,
                 attack_range,
+                attack_damage_pct,
+                cleave,
+                cleave_radius,
+                cleave_end_radius,
+                cleave_distance,
             } => {
                 let base = match kind {
                     StatusKind::Buff => StatusEffect::buff(id, duration),
@@ -629,10 +656,15 @@ impl StatusSpec {
                     armor: armor.at(rank),
                     magic_resist: magic_resist.at(rank),
                     move_speed: move_speed.at(rank),
-                    attack_damage: attack_damage.at(rank),
+                    attack_damage: attack_damage.at(rank)
+                        + attack_damage_pct.at(rank) / 100.0 * ctx.base_attack_damage,
                     attack_speed_flat: attack_speed_flat.at(rank),
                     attack_speed_mult: attack_speed_mult.at(rank),
                     attack_range: attack_range.at(rank),
+                    cleave: cleave.at(rank),
+                    cleave_radius: cleave_radius.at(rank),
+                    cleave_end_radius: cleave_end_radius.at(rank),
+                    cleave_distance: cleave_distance.at(rank),
                     ..base
                 }
             }
@@ -777,6 +809,15 @@ pub enum AbilityEffect {
         duration: RankValue,
         /// Travel speed; only kinds that chase a unit read it.
         speed: Option<RankValue>,
+        /// Dash and charge only: the reach from the mover's centre (plus the other unit's
+        /// bound) within which it contacts enemies. `None` is body contact.
+        contact_radius: Option<RankValue>,
+        /// `PullToPoint` only: pull to a point this far in front of the caster (along its
+        /// facing) instead of the trigger point. `None` keeps the trigger point.
+        forward_offset: Option<RankValue>,
+        /// `Drag` only: each dragged unit is also stunned under this status id (unique to the
+        /// source, so no other stun is overwritten or removed) until the drag ends.
+        bound_stun: Option<&'static str>,
     },
     /// Instantly relocates each target to the trigger's aim point, validated against the
     /// map, static obstacles, and unit overlap (see `crate::teleport`). Rejected
@@ -902,6 +943,9 @@ pub enum AbilityMechanic {
         /// Skillshots only: the width (like `aoe_radius`, per rank) the wave widens to by the
         /// end of its flight. `None` keeps the width constant.
         end_radius: Option<RankValue>,
+        /// Skillshots only: the wave starts this far in front of the caster (towards the aim)
+        /// instead of at the caster's centre, and still flies the full cast range from there.
+        origin_offset: Option<RankValue>,
     },
     /// One homing spell projectile per living, targetable unit of `team` inside the ability's
     /// `aoe_radius` around `center` (the caster is never one). Each projectile carries the

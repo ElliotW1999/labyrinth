@@ -80,6 +80,7 @@ The HUD shows connection status. Host sim runs combat / creeps / AI; clients app
 | Warden | Strength | Bulwark, ShieldBash, Taunt, Aegis (stubs — implement later) |
 | Hexer | Intelligence | HexBolt, Curse, Ward, Ritual (stubs — implement later) |
 | Queen of Pain | Intelligence | Shadow Strike, QoP Blink, Scream of Pain, Sonic Wave |
+| Magnus | Strength | Shockwave, Empower, Skewer, Reverse Polarity |
 
 Each hero has its own base Str/Agi/Int and per-level growth.
 
@@ -93,7 +94,7 @@ python3 scripts/HeroGenerator.py data/heroes.example.csv
 python3 scripts/HeroGenerator.py data/heroes.example.csv --dry-run
 ```
 
-Required columns: `Hero_name`, `is_melee`, `Ability_Q/W/E/R_Name`, `base_STR/AGI/INT`, `STR/AGI/INT_per_level`. Optional: `primary`, `blurb`, `base_health`, `base_health_regen`, `base_mana`, `base_mana_regen`, `attack_damage`, `attack_range`, `base_attack_time`, `attack_point`, `attack_backswing` (both 0 to 1.0 s), `move_speed`, `armor`, `magic_resist`, and `attack_projectile_speed` (ranged heroes only, above 0: the absolute speed of the basic-attack projectile, e.g. 1500; blank derives it from the attack range; ignored with a warning on melee heroes). Blank cells use the generator defaults (see `scripts/HeroGenerator.py`). Rows whose `Hero_name` already exists are skipped.
+Required columns: `Hero_name`, `is_melee`, `Ability_Q/W/E/R_Name`, `base_STR/AGI/INT`, `STR/AGI/INT_per_level`. Optional: `primary`, `blurb`, `base_health`, `base_health_regen`, `base_mana`, `base_mana_regen`, `attack_damage`, `attack_range` (`is_melee` must agree with it: base ranges up to 250, `scale::MELEE_CLASSIFICATION_MAX_RANGE`, are melee and get the instant slash and cleave, so a melee hero may have e.g. 200; the generator rejects a mismatch), `base_attack_time`, `attack_point`, `attack_backswing` (both 0 to 1.0 s), `move_speed`, `armor`, `magic_resist`, `attack_projectile_speed` (ranged heroes only, above 0: the absolute speed of the basic-attack projectile, e.g. 1500; blank derives it from the attack range; ignored with a warning on melee heroes), and `turn_rate` (above 0; blank keeps `facing::HERO_TURN_RATE`, 0.6). Blank cells use the generator defaults (see `scripts/HeroGenerator.py`). Rows whose `Hero_name` already exists are skipped.
 
 ### World units
 
@@ -217,7 +218,7 @@ Walking speed never drops below `scale::MIN_MOVE_SPEED` (100) however many slows
 | Crit | `crit_chance` / `crit_multiplier`, rolled **once per landed attack** in `basic_attack::resolve_basic_attack_impacts` (one `CombatRng` draw, after the hit roll); the main hit is multiplied there and `DamageEvent::crit` is informational. Crit never applies to bonus damage, DoTs, cleave or splash |
 | Block | Flat `CombatStats::damage_block` per hit |
 | Shield / barrier | `ShieldPool` consumed in `resolve_incoming_damage` (Barrier ability: debuff immunity + armor + shield) |
-| Cleave | Melee only: `cleave_damage_ratio` x the post-crit main hit to enemies around the attacker (`cleave_radius`, default `scale::ATTACK_CLEAVE_RADIUS` = 300); `DamageKind::Cleave` |
+| Cleave | Melee only: each cleave instance deals its ratio x the post-crit main hit to enemies in its own area (circle radius default `scale::ATTACK_CLEAVE_RADIUS` = 300, or a cone); `DamageKind::Cleave`. Instances are independent: item passives share one (ratios add), each ability with timed cleave statuses has its own, and a unit inside several areas takes each |
 | Splash (attack) | `splash_damage_ratio` x the post-crit main hit to enemies around the struck unit (`splash_radius`, default `scale::ATTACK_SPLASH_RADIUS` = 250); any attack; `DamageKind::Splash`. Secondary hits never crit, roll to hit, leech or fire triggers |
 | Attack bonus damage | `Damage` / mana-burn effects under `on_attack` / `on_attack_hit` become `DamageKind::AttackBonus`: no spell amp, no block, leeched like a basic attack, reflectable |
 | Chain | `AbilityEffect::Chain` mechanic gate (`mechanics::chain_hops`) re-fires an `on_<name>` trigger per hop; ordinary damage rows tagged with it deal the (falloff-scaled) damage. Bolt and the `chain` CSV effect type use it |
@@ -344,6 +345,9 @@ Recipes (CSV rows, `trigger,target,effect_type,effect_id,value,...`):
 | Orb / bonus damage | `on_attack_hit,trigger_unit,damage,,40,magical` (attack bonus damage) plus any status (poison = `burn`, slow, `armor` timed modifier) |
 | Mana break | `on_attack_hit,trigger_unit,resource,mana_burn,40,physical,,,,0.8` |
 | Cleave / splash | passive `cleave` / `splash` ratios |
+| Timed cleave | `stat_modifier,cleave` (fraction 0..1, with a duration) adds to the cleave ratio of the granting ability's own cleave instance (it does not merge with item cleave) and reverts exactly; only melee attackers cleave (base attack range up to 250 counts as melee) |
+| Cone cleave | timed `cleave_radius` (half-width at the attacker), `cleave_end_radius` (half-width at the far end) and `cleave_distance` (reach), each above 0 and additive like every stat. A non-zero `cleave_distance` turns that instance's circular cleave into a trapezoid from the attacker towards the struck unit; units overlap it when their centre projects within `0..distance` (widened by their body radius) and lies within the half-width there. Without `cleave_distance` the circle (`cleave_radius`, default 300) is used. Cleave stats from one ability's statuses sum into one instance; item cleave stays a separate circle, so both can hit the same unit |
+| Percent bonus damage | timed `stat_modifier,attack_damage_pct` (0..1000): that percent of the target's base attack damage (the hero definition's damage for heroes, excluding item bonuses; the unit's current damage for other units), snapshotted when applied and reverted with the exact delta |
 | Evasion / accuracy / true strike | passive `evasion` / `accuracy`, or timed statuses `evasion`, `accuracy`, `true_strike` |
 | Instant attack | `on_cast,cast_target,perform_attack,,100` |
 | Double attack | `on_attack_hit,attacker,proc,on_double,25` + `on_double,trigger_unit,perform_attack,,100` |
@@ -416,29 +420,30 @@ python3 scripts/AbilityGenerator.py --dry-run             # print what would cha
 
 ```csv
 id,name,slot,ability_type,target_type,target_team,cast_range,aoe_radius,cast_time,channel_time,cooldown,mana_cost,max_charges,charge_restore_time,projectile_type,projectile_speed,description
-shockwave,Shockwave,Q,active,point,enemy,1200,,0.3,,13|12|11|10,85|90|95|100,,,skillshot,900,Launches a wave that damages pulls and slows enemies
+magnus_shockwave,Shockwave,Q,active,point,enemy,1200,200,0.3,,13|12|11|10|9|8|7,85|90|95|100|105|110|115,,,skillshot,1200,Sends out a wave of force that damages enemies in a line pulls each one toward the wave and slows it briefly
 ```
 
 - Enums: `slot` Q/W/E/R/innate (R ⇒ ultimate), `ability_type` active/passive/toggle, `target_type` unit/point/direction/no_target/self, `target_team` enemy/ally/both/self, `projectile_type` none/targeted/targeted_each/skillshot/skillshot_single (`skillshot_single` stops at the first enemy it strikes, for hooks; `targeted_each` is described below)
 - **Area targeting in CSV:** there is no separate `area` value. Author `target_type=point` with non-zero `aoe_radius` and `projectile_type none`; the generator emits Rust `TargetType::Area` (see `scripts/AbilityGenerator.py`). Ground-placed AoE uses the same cast / range rules as point spells.
 - Level values: a single number or `a|b|c|d` (one per rank; arithmetic lists become `RankValue::from_level_1`, others a level table). Blank = not applicable
-- Optional extra columns: `cast_backswing` (default 0.25), `max_rank` (else the level-list length, else 4 for R / 7 otherwise), `toggle_mana_per_sec` (toggle abilities only; level list allowed), `projectile_end_radius` (skillshots only; level list allowed)
-- **`cast_range=global`:** the keyword (any case, never inside a level list) makes the range the whole map (`scale::GLOBAL_CAST_RANGE`, 25,000). The hero never walks into range, and the cast indicator draws no range ring. Items accept it too in their `cast_range` column. `cast_backswing` above 1.0 s is capped (the generator warns); the cast point cap stays 0.5 s
+- Optional extra columns: `cast_backswing` (default 0.25), `max_rank` (else the level-list length, else 4 for R / 7 otherwise), `toggle_mana_per_sec` (toggle abilities only; level list allowed), `projectile_end_radius` (skillshots only; level list allowed), `projectile_origin_offset` (skillshots only; level list allowed)
+- **`cast_range=global`:** the keyword (any case, never inside a level list) makes the range the whole map (`scale::GLOBAL_CAST_RANGE`, 25,000). The hero never walks into range, and the cast indicator draws no range ring. Items accept it too in their `cast_range` column. `cast_backswing` above 1.5 s (`MAX_CAST_BACKSWING`) is capped (the generator warns); the cast point cap stays 0.5 s
 - **`projectile_end_radius` (expanding skillshots):** for `skillshot` / `skillshot_single` only, above 0, and it needs `aoe_radius`. The wave's width grows linearly from `aoe_radius` to this value over its flight (the cast range). Blank keeps the width constant. Items reject it (they have no `aoe_radius`)
+- **`projectile_origin_offset` (skillshot start):** for `skillshot` / `skillshot_single` only, above 0. The wave starts this many units in front of the caster, towards the aim, instead of at the caster's centre, and still flies the full `cast_range` from there (and the width and `projectile_end_radius` apply from that start). Blank starts at the caster. Items reject it
 - **`projectile_type=targeted_each`:** sends one homing projectile (no splash, `projectile_speed` applies) at every living, targetable unit of `target_team` inside `aoe_radius`, never the caster. It needs `target_type` `no_target` (around the caster, with the shockwave ring) or `point` (around the aim) and a non-zero `aoe_radius`; `target_team` cannot be `self`. Each projectile fires `on_projectile_hit` with the struck unit as `trigger_unit` (`affected_units` is not available there). Items reject it until they have an `aoe_radius` column
 - Mechanics are derived: `targeted` / `skillshot` → projectile (skillshots hit every enemy along `cast_range`, width = `aoe_radius`); `no_target` + AoE → shockwave ring; `point` + AoE without a projectile → area ring
 
 ```csv
 ability_id,effect_index,trigger,effect_target,effect_type,effect_id,value,damage_type,duration,radius,amount,scaling_type,scaling_value
-shockwave,0,on_projectile_hit,trigger_unit,damage,,75|150|225|300,magical,,,,,
-shockwave,1,on_projectile_hit,trigger_unit,movement,pull,,,,,,,
-skewer,0,on_cast,caster,movement,dash,900,,0.6,,,,
-skewer,1,on_unit_contact,trigger_unit,movement,drag,,,,,,,
+magnus_shockwave,0,on_projectile_hit,trigger_unit,damage,,75|150|225|300|375|450|525,magical,,,,,
+magnus_shockwave,1,on_projectile_hit,trigger_unit,movement,pull_point,150,,0.2,,,,
+skewer,0,on_cast,caster,movement,dash,800|900|1000|1100|1200|1300|1400,,0.888889|1|1.111111|1.222222|1.333333|1.444444|1.555556,145,,,
+skewer,1,on_unit_contact,trigger_unit,movement,drag_stun,,,,,,,
 ```
 
 - `trigger`: reactive triggers (below) and `on_cast`, `on_projectile_hit`, `on_unit_contact` (a dash or charge touched an enemy; trigger unit = that enemy), `on_movement_end` (a dash or charge ended; trigger unit = the chased unit if reached, affected units = everyone touched), `on_impact`, `on_channel_tick`, `on_channel_end` (channel completed), `on_channel_interrupted` (channel cut short by silence/stun/mute; a new order fires neither), `on_expire`, `while_toggled` (toggle abilities only: `stat_modifier` or `apply_status,mana_shield` on `caster`, no duration; applied while the toggle is on; the upkeep is the ability row's `toggle_mana_per_sec`), or any other `on_…` name raised by a custom mechanic
 - `effect_target`: `caster`, `cast_target`, `trigger_unit`, `affected_units`, `units_in_radius` (around the trigger point; `radius` or the ability AoE; team from the ability / effect polarity)
-- `effect_type` (+ `effect_id`): `damage` (`value` or `amount`, `damage_type` physical/magical/pure), `heal` (`effect_id=mana` restores mana), `apply_status` (`stun`, `root`, `silence`, `disarm`, `slow` (% from `amount`/`value`), `turn_rate_slow`, `turn_rate_bonus` (% from `amount`, 0..400), `phased`, `forceful`, `flying`, `leash` / `tether` (`value` = radius), `debuff_immunity`, `burn` (`value` = damage, `damage_type` required; per second by default, or per tick when `amount` sets the tick interval in seconds, above 0 and at most the duration — the first tick lands one interval after application, `floor(duration / interval)` ticks in total, flushed on natural expiry but not on dispel; the status id is `<owner>_burn`, so burns from different sources coexist and `remove_status,burn` no longer matches them), or any id as a timed `stat_modifier`), `remove_status` (`buff`/`debuff` dispel, otherwise a status id), `movement` (`knockback`, `pull`, `pull_point`, `dash`, `charge`, `drag`, `cyclone`; `value` = distance, `duration`, `amount` = charge speed — see Forced movement below; `teleport` sends `caster` / `owner` / `cast_target` / `trigger_unit` to the cast's aim point, optionally bounded (`value` = max distance, `amount` = min distance) — see Teleport below), `stat_modifier` (`effect_id` = stat, `amount`, `duration`), `custom` (registered id; receives `value`, `amount`, `duration`)
+- `effect_type` (+ `effect_id`): `damage` (`value` or `amount`, `damage_type` physical/magical/pure), `heal` (`effect_id=mana` restores mana), `apply_status` (`stun`, `root`, `silence`, `disarm`, `slow` (% from `amount`/`value`), `turn_rate_slow`, `turn_rate_bonus` (% from `amount`, 0..400), `phased`, `forceful`, `flying`, `leash` / `tether` (`value` = radius), `debuff_immunity`, `burn` (`value` = damage, `damage_type` required; per second by default, or per tick when `amount` sets the tick interval in seconds, above 0 and at most the duration — the first tick lands one interval after application, `floor(duration / interval)` ticks in total, flushed on natural expiry but not on dispel; the status id is `<owner>_burn`, so burns from different sources coexist and `remove_status,burn` no longer matches them), or any id as a timed `stat_modifier`: besides the plain stats, `attack_damage_pct` (a percent, 0..1000, of the target's base attack damage, snapshotted when applied), `cleave` (a fraction, 0..1, added to the target's cleave ratio; only melee attackers cleave) and the cone-shape stats `cleave_radius`, `cleave_end_radius`, `cleave_distance` (see Attack modifiers)), `remove_status` (`buff`/`debuff` dispel, otherwise a status id), `movement` (`knockback`, `pull`, `pull_point`, `dash`, `charge`, `drag`, `drag_stun`, `cyclone`; `value` = distance, `duration`, `amount` = charge speed (or the forward offset of `pull_point`), `radius` = dash / charge contact radius — see Forced movement below; `teleport` sends `caster` / `owner` / `cast_target` / `trigger_unit` to the cast's aim point, optionally bounded (`value` = max distance, `amount` = min distance) — see Teleport below), `stat_modifier` (`effect_id` = stat, `amount`, `duration`), `custom` (registered id; receives `value`, `amount`, `duration`)
 - `chain` effect type (gate): `effect_id` = the custom `on_<name>` trigger fired per hop, `value` = jumps (integer, at least 1), `radius` = jump radius in world units (above 0), `amount` = percent of the amount kept per jump (above 0, at most 100); the target is the start unit (`cast_target`, `trigger_unit`, `caster`/`owner`, `attacker`). Put the damage in rows tagged with the custom trigger; see `chain_lightning` / `storm_charm` in `data/examples/`
 - `scaling_type`: `strength` / `agility` / `intelligence` / `attack_damage` × `scaling_value` (damage, heal and `health_drain`)
 - Healing and resource rows (no extra columns):
@@ -547,16 +552,17 @@ frost_hammer,Frost Hammer,weapon,2800,1400,3,rare,false,,false,,A heavy weapon i
 
 ### Forced movement
 
-Knockback, pull, dash, charge, drag and cyclone are one shared primitive: `AbilityEffect::Displace { kind, distance, duration, speed }` → `DisplacementEvent` → `ForcedMovement` on the moved unit, ticked by `displacement.rs`, which is the only writer of a moving unit's `Transform`. Abilities and items use the same effect (`movement,<kind>` rows); `AbilityMechanic::Dash` writes the same event and only adds the ghost trail.
+Knockback, pull, dash, charge, drag and cyclone are one shared primitive: `AbilityEffect::Displace { kind, distance, duration, speed, contact_radius, forward_offset, bound_stun }` → `DisplacementEvent` → `ForcedMovement` on the moved unit, ticked by `displacement.rs`, which is the only writer of a moving unit's `Transform`. Abilities and items use the same effect (`movement,<kind>` rows); `AbilityMechanic::Dash` writes the same event and only adds the ghost trail.
 
 | Kind | CSV | Moves | Notes |
 | --- | --- | --- | --- |
 | `knockback` | `value` = distance, `duration` | target, away from the trigger point | |
 | `pull` | `duration` (and optional `value` = max distance) | target, toward the caster | Tracks the caster until contact; the pull time is the time to close the starting gap |
-| `pull_point` | `duration`, optional `value` | target, toward the trigger point | |
-| `dash` | `value` = max distance (required), `duration` = time at max distance (default 0.3) | caster / owner only | Straight line at constant speed; shorter dashes take proportionally less time |
+| `pull_point` | `duration`, optional `value`, optional `amount` = forward offset | target, toward the trigger point | With `amount` (not negative) the target is pulled to a point that far in front of the caster, along its facing, measured from where the caster stood when the trigger fired; a crowd gathers there without teleport occupancy rejections |
+| `dash` | `value` = max distance (required), `duration` = time at max distance (default 0.3), optional `radius` = contact radius | caster / owner only | Straight line at constant speed; shorter dashes take proportionally less time. `radius` (above 0; also on `charge`) is the reach from the mover's centre, plus the other unit's body radius, within which it contacts enemies; blank is body contact |
 | `charge` | `amount` = speed, `duration` = max time (both required), optional `value` | caster / owner only | Chases the cast target (needs `target_type unit`) until contact |
 | `drag` | optional `duration` | target (not the caster) | Rides along at a fixed offset with the caster's own dash or charge; blank duration = until that movement ends. Typically `on_unit_contact,trigger_unit` |
+| `drag_stun` | optional `duration` | target (not the caster) | A `drag` that also stuns each dragged unit under the status id `<owner>_stun` (a debuff that behaves as a stun). The stun is bound to the drag (`ForcedMovement.bound_status`): exactly that status is removed when the carrying movement ends, however it ends, so no other stun is overwritten (refresh is by id) or removed |
 | `cyclone` | `duration` (required) | target, held in place | Also applies the `cyclone` status |
 
 - **Priority.** A unit has at most one motion. A new request replaces the current one only if its priority is at least as high: own movement (dash, charge) < external (knockback, pull, drag) < suspend (cyclone). The newest wins at equal priority. A cycloned unit rejects every other displacement and teleport; another cyclone refreshes it.
@@ -569,7 +575,7 @@ Knockback, pull, dash, charge, drag and cyclone are one shared primitive: `Abili
 - **Flying.** Flying units path in a straight line and walk over trees; towers and ancients still block. When the status ends over geometry the unit is moved to the nearest walkable spot.
 - **Leash / tether.** `enforce_leashes` clamps a leashed unit to its circle after walking and after forced motion every frame, so a knockback stops at the edge. A tether whose anchor is gone does nothing. Teleporting outside a circle is rejected (`TeleportError::Leashed`).
 
-A hook is a composition: an ability with `projectile_type skillshot_single` and `on_projectile_hit,trigger_unit,movement,pull`. A skewer is `movement,dash` on cast plus `on_unit_contact,trigger_unit,movement,drag`, with consequences on `on_movement_end`.
+A hook is a composition: an ability with `projectile_type skillshot_single` and `on_projectile_hit,trigger_unit,movement,pull`. A skewer is `movement,dash` on cast plus `on_unit_contact,trigger_unit,movement,drag` (or `drag_stun`), with consequences on `on_movement_end`.
 
 ### Limitations
 

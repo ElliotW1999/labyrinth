@@ -10,15 +10,16 @@ use super::casting::AbilityCastEvent;
 use super::catalog::AbilityDefinitions;
 use super::definition::AbilityTrigger;
 use super::definition::{AbilityEffect, Condition};
-use super::effects::build_status_effect;
 use super::effects::{
     AbilityTriggerEvent, EffectSource, SpellHitEvent, StatusMeta, TriggerContext,
 };
+use super::effects::{base_attack_damage, build_status_effect};
 use super::passive::reconcile_held_status;
 use crate::combat::flat_distance;
 use crate::combat::{DamageAppliedEvent, DamageKind};
 use crate::components::{AbilityLoadout, BoundRadius, CombatStats, Health, HeroAttributes, Team};
 use crate::dimensions::{area_contains, bounds_of};
+use crate::heroes::HeroKind;
 use crate::items::{Inventory, ItemId};
 use crate::status::{StatusChange, StatusEffectEvent, StatusEffects, is_untargetable};
 use crate::status::{StatusLifecycle, StatusLifecycleEvent};
@@ -223,6 +224,7 @@ pub(crate) fn sync_conditional_statuses(
         &StatusEffects,
         &CombatStats,
         Option<&HeroAttributes>,
+        Option<&HeroKind>,
         Option<&Inventory>,
         Option<&AbilityLoadout>,
         &mut TriggerTracking,
@@ -231,8 +233,19 @@ pub(crate) fn sync_conditional_statuses(
     untargetable: Query<&StatusEffects>,
     mut status_events: MessageWriter<StatusEffectEvent>,
 ) {
-    for (owner, owner_tf, team, health, statuses, stats, attrs, inventory, loadout, mut tracking) in
-        &mut owners
+    for (
+        owner,
+        owner_tf,
+        team,
+        health,
+        statuses,
+        stats,
+        attrs,
+        kind,
+        inventory,
+        loadout,
+        mut tracking,
+    ) in &mut owners
     {
         if inventory.is_none() && loadout.is_none() && tracking.held.is_empty() {
             continue;
@@ -271,7 +284,9 @@ pub(crate) fn sync_conditional_statuses(
                         owner_tf.translation,
                         Some(stats),
                         attrs,
+                        base_attack_damage(kind, Some(stats)),
                         healer_amp,
+                        source,
                     );
                     let id = built.id;
                     reconcile_held_status(&mut status_events, owner, statuses, built, wanted);

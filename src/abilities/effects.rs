@@ -25,6 +25,7 @@ use crate::combat::{CombatRng, DamageEvent};
 use crate::components::{AbilityId, BoundRadius, CombatStats, Health, HeroAttributes, Mana, Team};
 use crate::dimensions::{area_contains, bounds_of};
 use crate::displacement::DisplacementEvent;
+use crate::heroes::HeroKind;
 use crate::items::ItemId;
 use crate::status::{
     StatusChange, StatusEffect, StatusEffectEvent, StatusEffects, StatusKind, is_untargetable,
@@ -424,6 +425,13 @@ pub(crate) fn teleport_destination(
     destination
 }
 
+/// The point `distance` in front of `origin` along the flat `facing` (`-Z` when it has no
+/// flat direction), at the height of `origin`.
+pub(crate) fn forward_point(origin: Vec3, facing: Vec3, distance: f32) -> Vec3 {
+    let direction = Vec3::new(facing.x, 0.0, facing.z).normalize_or(Vec3::NEG_Z);
+    origin + direction * distance.max(0.0)
+}
+
 /// Resolves effect targets and executes [`AbilityEffect`]s as gameplay events.
 #[derive(SystemParam)]
 pub struct EffectRunner<'w, 's> {
@@ -433,6 +441,7 @@ pub struct EffectRunner<'w, 's> {
     statuses_of: Query<'w, 's, &'static StatusEffects>,
     stats: Query<'w, 's, &'static CombatStats>,
     attributes: Query<'w, 's, &'static HeroAttributes>,
+    hero_kinds: Query<'w, 's, &'static HeroKind>,
     damage: MessageWriter<'w, DamageEvent>,
     heals: MessageWriter<'w, HealEvent>,
     mana: MessageWriter<'w, ManaRestoreEvent>,
@@ -727,7 +736,12 @@ impl EffectRunner<'_, '_> {
                         ctx.point,
                         self.stats.get(target).ok(),
                         self.attributes.get(target).ok(),
+                        base_attack_damage(
+                            self.hero_kinds.get(target).ok(),
+                            self.stats.get(target).ok(),
+                        ),
                         healer_amp,
+                        ctx.source,
                     );
                     built.reactive = ctx.reaction;
                     self.statuses.write(
@@ -761,16 +775,34 @@ impl EffectRunner<'_, '_> {
                 distance,
                 duration,
                 speed,
+                contact_radius,
+                forward_offset,
+                bound_stun,
             } => {
+                // Pull-to-point gathers in front of the caster (same facing source as a
+                // bounded teleport), measured from where the caster stood at the trigger.
+                let gather_point = forward_offset.map(|offset| {
+                    let facing = self
+                        .units
+                        .get(ctx.caster)
+                        .map_or(Vec3::NEG_Z, |(_, tf, ..)| tf.forward().as_vec3());
+                    forward_point(ctx.origin, facing, offset.at(rank))
+                });
                 for target in targets {
-                    self.displacements.write(DisplacementEvent::from_ctx(
+                    let mut event = DisplacementEvent::from_ctx(
                         ctx,
                         target,
                         kind,
                         distance.map(|d| d.at(rank)),
                         duration.at(rank),
                         speed.map(|s| s.at(rank)),
-                    ));
+                    )
+                    .with_contact_radius(contact_radius.map(|r| r.at(rank)))
+                    .with_bound_stun(bound_stun);
+                    if let Some(point) = gather_point {
+                        event.point = point;
+                    }
+                    self.displacements.write(event);
                 }
             }
             AbilityEffect::Teleport {
@@ -947,6 +979,16 @@ impl EffectRunner<'_, '_> {
     }
 }
 
+/// The base attack damage a percentage attack damage status is a snapshot of: the hero
+/// definition's damage for heroes (item bonuses and other statuses excluded), the unit's
+/// current damage for everything else.
+pub(crate) fn base_attack_damage(kind: Option<&HeroKind>, stats: Option<&CombatStats>) -> f32 {
+    match kind {
+        Some(kind) => kind.0.def().combat.attack_damage,
+        None => stats.map_or(0.0, |s| s.attack_damage),
+    }
+}
+
 /// The one place a [`super::definition::StatusSpec`] becomes a runtime [`StatusEffect`], for
 /// timed effects (`ApplyStatus`) and toggle upkeep (`WhileToggled`) alike. `caster` is the unit
 /// that causes the status (damage-over-time source, fear origin); `healer_amp` is the caster's
@@ -960,7 +1002,9 @@ pub(crate) fn build_status_effect(
     point: Vec3,
     target_stats: Option<&CombatStats>,
     target_attrs: Option<&HeroAttributes>,
+    target_base_attack_damage: f32,
     healer_amp: f32,
+    origin: EffectSource,
 ) -> StatusEffect {
     let fear_source = match spec {
         super::definition::StatusSpec::Fear => caster,
@@ -975,9 +1019,13 @@ pub(crate) fn build_status_effect(
             fear_source,
             source: caster,
             point,
+            base_attack_damage: target_base_attack_damage,
         },
     );
     built.dot_source = caster;
+    if built.carries_cleave() {
+        built.cleave_source = Some(origin);
+    }
     if built.heal_per_sec > 0.0 {
         built.heal_per_sec *= (1.0 + healer_amp).max(0.0);
     }

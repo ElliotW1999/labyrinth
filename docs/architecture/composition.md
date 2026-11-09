@@ -440,6 +440,46 @@ queen_of_pain_blink,0,on_cast,caster,movement,teleport,1075|1150|1225|1300|1375|
 
 **Sonic Wave** (interval design): one expanding skillshot (`projectile_end_radius` 450 from `aoe_radius` 100, 900 units at 642.857 u/s = 1.4 s) that hits each enemy once. On hit it applies a pure ticking burn (23/34/45/56 per tick, `tick_interval` 0.1 s, 1.4 s = exactly 14 instances, id `sonic_wave_burn`) and one knockback of 350 over 1.4 s, away from the contact point. Because the burn ids are per owner it coexists with Shadow Strike's. Tests: `sonic_wave_deals_fourteen_instances_and_one_knockback`, `shadow_strike_and_sonic_wave_dots_coexist`.
 
+### 6.12 Magnus
+
+All four abilities are data rows. Q is the generated `AbilityId::MagnusShockwave` (display name "Shockwave"); Vanguard's hand-written `AbilityId::Shockwave` is untouched (the generated Q has its own id, so `generated::definition(AbilityId::Shockwave)` stays `None`). Plan and decisions: `docs/plans/2026-11-08-magnus-hero.md`.
+
+New surface (each item is one approved gap, G1 to G10; nothing else was added):
+
+| Gap | Surface | Where it lives |
+|---|---|---|
+| G1 | Melee classification up to range 250 (`scale::MELEE_CLASSIFICATION_MAX_RANGE`); HeroGenerator rejects an `is_melee` that disagrees with `attack_range` | `scale.rs`, `HeroGenerator.py` |
+| G2 | Optional `turn_rate` hero column | `HeroGenerator.py` -> `hero_combat(turn_rate)` |
+| G3 | `MAX_CAST_BACKSWING` 1.5 | `definition.rs`, `AbilityGenerator.py` |
+| G4 | Timed stat `attack_damage_pct`: a snapshot of the target's base attack damage (`StatusBuildContext.base_attack_damage`) | Modifiers: `StatusSpec::Modifier`, `build_status_effect` |
+| G5 | Timed stat `cleave` (a ratio fed into the status source's cleave instance in `CombatStats::cleaves`) | Modifiers: `StatusEffect.cleave` in `add_status_stat_delta` |
+| G6 | Cone cleave: timed `cleave_radius`, `cleave_end_radius`, `cleave_distance` feed the same instance; a non-zero distance makes it a trapezoid | Modifiers + `basic_attack.rs` (`CleaveCone`) |
+| G7 | `radius` on `movement,dash` / `charge` = contact radius (`ForcedMovement.contact_radius`) | `displacement.rs`, `AbilityEffect::Displace.contact_radius` |
+| G8 | `amount` on `movement,pull_point` = forward offset; `EffectRunner` replaces the event's point with caster position + facing x offset | `effects.rs` (`forward_point`), `AbilityEffect::Displace.forward_offset` |
+| G9 | `movement,drag_stun`: a drag that also applies a stun under `<owner>_stun`, bound to the drag through `ForcedMovement.bound_status` and removed when the carrying movement ends | `displacement.rs`, `AbilityEffect::Displace.bound_stun` |
+| G10 | `projectile_origin_offset`: a skillshot starts that far in front of the caster | `mechanics.rs`, `AbilityMechanic::Projectile.origin_offset` |
+
+**Shockwave** (point, skillshot, width 200, speed 1200, cast range 1200): the wave starts 48 units in front of Magnus and hits each enemy once. On each hit, `movement,pull_point` pulls the unit toward the trigger point, which for `on_projectile_hit` is the projectile's position (the wave's centre), by at most 150 over 0.2 s; a unit nearer the centre stops there. A 75% slow and the damage land in the same trigger.
+
+```csv
+magnus_shockwave,1,on_projectile_hit,trigger_unit,movement,pull_point,150,,0.2,,,,
+```
+
+**Empower** (unit target, ally or self): five timed `stat_modifier` rows with one duration. `attack_damage_pct` 16 to 64 of the target's base (hero-definition) damage, `cleave` 0.16 to 0.64, and the cone shape 150 / 360 / 650. The status ids are `empower_<stat>`, so a refresh replaces the old deltas exactly. Cleave only works on melee targets (`CombatStats::is_melee`).
+
+**Cleave instances.** Cleave does not sum into one aggregate shape. `CombatStats::cleaves` (`CleaveSet`, a fixed-size `Copy` list of `CleaveInstance`) holds one instance per `CleaveSource`: all item passives share the `Items` instance (ratios add, default 300 circle), and every timed modifier status carrying a cleave field feeds the instance keyed by its owner (`StatusEffect.cleave_source`, set from the `EffectSource` in `build_status_effect`; the five Empower statuses form one instance). Fields sum per key; the instance is dropped when its last contributing status ends, and a re-cast refreshes it. On a melee hit `basic_attack.rs` runs each instance separately (own targets, own `DamageEvent::cleave(ratio x damage)`), so a unit inside two shapes takes both. No CSV or generator change.
+
+**Skewer** (point, global cast range): the dash row carries the contact radius 145; `on_unit_contact` drags and stuns; `on_movement_end,affected_units` deals the damage and a 3.25 s slow. The stun id is `skewer_stun`: it behaves as a stun (`stunned`), but refresh is by id, so another source's stun is neither overwritten nor removed when the drag ends.
+
+```csv
+skewer,0,on_cast,caster,movement,dash,800|900|1000|1100|1200|1300|1400,,0.888889|1|1.111111|1.222222|1.333333|1.444444|1.555556,145,,,
+skewer,1,on_unit_contact,trigger_unit,movement,drag_stun,,,,,,,
+```
+
+**Reverse Polarity** (no target, radius 430): one `pull_point` row on `units_in_radius` with `amount` 250 gathers every enemy at the point 250 in front of Magnus over the 0.05 s minimum; damage and stun are ordinary rows. Forced motion ignores unit collision, so the crowd stacks without teleport rejections and `resolve_unit_collisions` separates them afterwards.
+
+Tests: `magnus_matches_spec`, `magnus_abilities_generate_expected_definitions`, `magnus_shockwave_pulls_toward_wave_center_and_slows`, `skewer_drags_stunned_enemy_and_hits_at_destination`, `reverse_polarity_pulls_damages_and_stuns_in_radius`, `empower_grants_percent_damage_and_cone_cleave_to_self_and_ally`, plus one set per gap.
+
 ## 7. Checklist: adding a mechanic, effect or trigger
 
 **New mechanic or gate**

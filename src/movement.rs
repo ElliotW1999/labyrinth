@@ -796,6 +796,8 @@ mod tests {
                 duration: 0.4,
                 speed: None,
                 source: None,
+                contact_radius: None,
+                bound_stun: None,
             });
             step(&mut app, 30);
             let p = x_z(&app, pushed);

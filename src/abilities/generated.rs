@@ -34,6 +34,10 @@ pub fn definition(id: AbilityId) -> Option<AbilityDefinition> {
         AbilityId::QueenOfPainBlink => Some(queen_of_pain_blink()),
         AbilityId::ScreamOfPain => Some(scream_of_pain()),
         AbilityId::SonicWave => Some(sonic_wave()),
+        AbilityId::MagnusShockwave => Some(magnus_shockwave()),
+        AbilityId::Empower => Some(empower()),
+        AbilityId::Skewer => Some(skewer()),
+        AbilityId::ReversePolarity => Some(reverse_polarity()),
         _ => None,
     }
 }
@@ -108,6 +112,7 @@ fn arcane_lance() -> AbilityDefinition {
             skillshot: false,
             first_hit: false,
             end_radius: None,
+            origin_offset: None,
         })
         .on(
             AbilityTrigger::OnProjectileHit,
@@ -222,6 +227,11 @@ fn overcharge() -> AbilityDefinition {
                     attack_speed_flat: RankValue::ZERO,
                     attack_speed_mult: RankValue::fixed(0.2),
                     attack_range: RankValue::ZERO,
+                    attack_damage_pct: RankValue::ZERO,
+                    cleave: RankValue::ZERO,
+                    cleave_radius: RankValue::ZERO,
+                    cleave_end_radius: RankValue::ZERO,
+                    cleave_distance: RankValue::ZERO,
                 },
                 duration: RankValue::fixed(0.0),
             },
@@ -240,6 +250,11 @@ fn overcharge() -> AbilityDefinition {
                     attack_speed_flat: RankValue::ZERO,
                     attack_speed_mult: RankValue::ZERO,
                     attack_range: RankValue::ZERO,
+                    attack_damage_pct: RankValue::ZERO,
+                    cleave: RankValue::ZERO,
+                    cleave_radius: RankValue::ZERO,
+                    cleave_end_radius: RankValue::ZERO,
+                    cleave_distance: RankValue::ZERO,
                 },
                 duration: RankValue::fixed(0.0),
             },
@@ -292,6 +307,7 @@ fn shadow_strike() -> AbilityDefinition {
             skillshot: false,
             first_hit: false,
             end_radius: None,
+            origin_offset: None,
         })
         .on(
             AbilityTrigger::OnProjectileHit,
@@ -409,6 +425,7 @@ fn sonic_wave() -> AbilityDefinition {
             skillshot: true,
             first_hit: false,
             end_radius: Some(RankValue::fixed(450.0)),
+            origin_offset: None,
         })
         .on(
             AbilityTrigger::OnProjectileHit,
@@ -431,7 +448,319 @@ fn sonic_wave() -> AbilityDefinition {
                 distance: Some(RankValue::fixed(350.0)),
                 duration: RankValue::fixed(1.4),
                 speed: None,
+                contact_radius: None,
+                forward_offset: None,
+                bound_stun: None,
             },
         )
 }
 // </ability:sonic_wave>
+
+// <ability:magnus_shockwave>
+fn magnus_shockwave() -> AbilityDefinition {
+    const DESCRIPTION: &str = "Sends out a wave of force that damages enemies in a line, pulls each one toward the wave and slows it briefly";
+    AbilityDefinition::new(AbilityId::MagnusShockwave)
+        .description(DESCRIPTION)
+        .targeting(
+            TargetType::Point,
+            RankValue::fixed(1200.0),
+            RankValue::fixed(200.0),
+        )
+        .team(TargetTeam::Enemy)
+        .costs(
+            RankValue::from_level_1(13.0, -1.0),
+            RankValue::from_level_1(85.0, 5.0),
+        )
+        .timing(0.3, 1.2)
+        .mechanic(AbilityMechanic::Projectile {
+            splash_radius: AreaRadius::Ability,
+            speed: Some(1200.0),
+            skillshot: true,
+            first_hit: false,
+            end_radius: None,
+            origin_offset: Some(RankValue::fixed(48.0)),
+        })
+        .on(
+            AbilityTrigger::OnProjectileHit,
+            EffectTarget::TriggerUnit,
+            AbilityEffect::Damage {
+                amount: RankValue::from_level_1(75.0, 75.0),
+                damage_type: DamageType::Magical,
+                scaling: EffectScaling::None,
+            },
+        )
+        .on(
+            AbilityTrigger::OnProjectileHit,
+            EffectTarget::TriggerUnit,
+            AbilityEffect::Displace {
+                kind: DisplacementKind::PullToPoint,
+                distance: Some(RankValue::fixed(150.0)),
+                duration: RankValue::fixed(0.2),
+                speed: None,
+                contact_radius: None,
+                forward_offset: None,
+                bound_stun: None,
+            },
+        )
+        .on(
+            AbilityTrigger::OnProjectileHit,
+            EffectTarget::TriggerUnit,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Slow {
+                    percent: RankValue::fixed(75.0),
+                },
+                duration: RankValue::from_level_1(0.55, 0.15),
+            },
+        )
+}
+// </ability:magnus_shockwave>
+
+// <ability:empower>
+fn empower() -> AbilityDefinition {
+    const DESCRIPTION: &str = "Grants an allied hero or Magnus bonus attack damage and a cone cleave that melee heroes can use";
+    AbilityDefinition::new(AbilityId::Empower)
+        .description(DESCRIPTION)
+        .targeting(TargetType::Unit, RankValue::fixed(800.0), RankValue::ZERO)
+        .team(TargetTeam::Ally)
+        .costs(RankValue::fixed(8.0), RankValue::from_level_1(45.0, 10.0))
+        .timing(0.3, 1.07)
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::CastTarget,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Modifier {
+                    id: "empower_attack_damage_pct",
+                    kind: StatusKind::Buff,
+                    armor: RankValue::ZERO,
+                    magic_resist: RankValue::ZERO,
+                    move_speed: RankValue::ZERO,
+                    attack_damage: RankValue::ZERO,
+                    attack_speed_flat: RankValue::ZERO,
+                    attack_speed_mult: RankValue::ZERO,
+                    attack_range: RankValue::ZERO,
+                    attack_damage_pct: RankValue::from_level_1(16.0, 8.0),
+                    cleave: RankValue::ZERO,
+                    cleave_radius: RankValue::ZERO,
+                    cleave_end_radius: RankValue::ZERO,
+                    cleave_distance: RankValue::ZERO,
+                },
+                duration: RankValue::from_level_1(30.0, 3.0),
+            },
+        )
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::CastTarget,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Modifier {
+                    id: "empower_cleave",
+                    kind: StatusKind::Buff,
+                    armor: RankValue::ZERO,
+                    magic_resist: RankValue::ZERO,
+                    move_speed: RankValue::ZERO,
+                    attack_damage: RankValue::ZERO,
+                    attack_speed_flat: RankValue::ZERO,
+                    attack_speed_mult: RankValue::ZERO,
+                    attack_range: RankValue::ZERO,
+                    attack_damage_pct: RankValue::ZERO,
+                    cleave: RankValue::from_level_1(0.16, 0.08),
+                    cleave_radius: RankValue::ZERO,
+                    cleave_end_radius: RankValue::ZERO,
+                    cleave_distance: RankValue::ZERO,
+                },
+                duration: RankValue::from_level_1(30.0, 3.0),
+            },
+        )
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::CastTarget,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Modifier {
+                    id: "empower_cleave_radius",
+                    kind: StatusKind::Buff,
+                    armor: RankValue::ZERO,
+                    magic_resist: RankValue::ZERO,
+                    move_speed: RankValue::ZERO,
+                    attack_damage: RankValue::ZERO,
+                    attack_speed_flat: RankValue::ZERO,
+                    attack_speed_mult: RankValue::ZERO,
+                    attack_range: RankValue::ZERO,
+                    attack_damage_pct: RankValue::ZERO,
+                    cleave: RankValue::ZERO,
+                    cleave_radius: RankValue::fixed(150.0),
+                    cleave_end_radius: RankValue::ZERO,
+                    cleave_distance: RankValue::ZERO,
+                },
+                duration: RankValue::from_level_1(30.0, 3.0),
+            },
+        )
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::CastTarget,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Modifier {
+                    id: "empower_cleave_end_radius",
+                    kind: StatusKind::Buff,
+                    armor: RankValue::ZERO,
+                    magic_resist: RankValue::ZERO,
+                    move_speed: RankValue::ZERO,
+                    attack_damage: RankValue::ZERO,
+                    attack_speed_flat: RankValue::ZERO,
+                    attack_speed_mult: RankValue::ZERO,
+                    attack_range: RankValue::ZERO,
+                    attack_damage_pct: RankValue::ZERO,
+                    cleave: RankValue::ZERO,
+                    cleave_radius: RankValue::ZERO,
+                    cleave_end_radius: RankValue::fixed(360.0),
+                    cleave_distance: RankValue::ZERO,
+                },
+                duration: RankValue::from_level_1(30.0, 3.0),
+            },
+        )
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::CastTarget,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Modifier {
+                    id: "empower_cleave_distance",
+                    kind: StatusKind::Buff,
+                    armor: RankValue::ZERO,
+                    magic_resist: RankValue::ZERO,
+                    move_speed: RankValue::ZERO,
+                    attack_damage: RankValue::ZERO,
+                    attack_speed_flat: RankValue::ZERO,
+                    attack_speed_mult: RankValue::ZERO,
+                    attack_range: RankValue::ZERO,
+                    attack_damage_pct: RankValue::ZERO,
+                    cleave: RankValue::ZERO,
+                    cleave_radius: RankValue::ZERO,
+                    cleave_end_radius: RankValue::ZERO,
+                    cleave_distance: RankValue::fixed(650.0),
+                },
+                duration: RankValue::from_level_1(30.0, 3.0),
+            },
+        )
+}
+// </ability:empower>
+
+// <ability:skewer>
+fn skewer() -> AbilityDefinition {
+    const DESCRIPTION: &str = "Rushes forward, goring enemies and dragging them, stunned, to the destination, where they take magical damage and are slowed";
+    AbilityDefinition::new(AbilityId::Skewer)
+        .description(DESCRIPTION)
+        .targeting(
+            TargetType::Point,
+            RankValue::fixed(25000.0),
+            RankValue::ZERO,
+        )
+        .team(TargetTeam::Enemy)
+        .costs(RankValue::from_level_1(22.0, -2.0), RankValue::fixed(80.0))
+        .timing(0.3, 0.3)
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::Caster,
+            AbilityEffect::Displace {
+                kind: DisplacementKind::Dash,
+                distance: Some(RankValue::from_level_1(800.0, 100.0)),
+                duration: RankValue::from_level_1(0.888889, 0.111111),
+                speed: None,
+                contact_radius: Some(RankValue::fixed(145.0)),
+                forward_offset: None,
+                bound_stun: None,
+            },
+        )
+        .on(
+            AbilityTrigger::OnUnitContact,
+            EffectTarget::TriggerUnit,
+            AbilityEffect::Displace {
+                kind: DisplacementKind::Drag,
+                distance: None,
+                duration: RankValue::fixed(0.0),
+                speed: None,
+                contact_radius: None,
+                forward_offset: None,
+                bound_stun: Some("skewer_stun"),
+            },
+        )
+        .on(
+            AbilityTrigger::OnMovementEnd,
+            EffectTarget::AffectedUnits,
+            AbilityEffect::Damage {
+                amount: RankValue::from_level_1(80.0, 80.0),
+                damage_type: DamageType::Magical,
+                scaling: EffectScaling::None,
+            },
+        )
+        .on(
+            AbilityTrigger::OnMovementEnd,
+            EffectTarget::AffectedUnits,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Slow {
+                    percent: RankValue::from_level_1(20.0, 10.0),
+                },
+                duration: RankValue::fixed(3.25),
+            },
+        )
+}
+// </ability:skewer>
+
+// <ability:reverse_polarity>
+fn reverse_polarity() -> AbilityDefinition {
+    const DESCRIPTION: &str = "Pulls nearby enemies to a point in front of Magnus, dealing magical damage and stunning them";
+    AbilityDefinition::new(AbilityId::ReversePolarity)
+        .description(DESCRIPTION)
+        .targeting(
+            TargetType::NoTarget,
+            RankValue::ZERO,
+            RankValue::fixed(430.0),
+        )
+        .team(TargetTeam::Enemy)
+        .costs(
+            RankValue::fixed(115.0),
+            RankValue::from_level_1(150.0, 75.0),
+        )
+        .timing(0.3, 1.3)
+        .mechanic(shockwave_ring())
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::UnitsInRadius {
+                center: AreaCenter::Caster,
+                radius: AreaRadius::Ability,
+                team: TargetTeam::Enemy,
+            },
+            AbilityEffect::Displace {
+                kind: DisplacementKind::PullToPoint,
+                distance: None,
+                duration: RankValue::fixed(0.05),
+                speed: None,
+                contact_radius: None,
+                forward_offset: Some(RankValue::fixed(250.0)),
+                bound_stun: None,
+            },
+        )
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::UnitsInRadius {
+                center: AreaCenter::Caster,
+                radius: AreaRadius::Ability,
+                team: TargetTeam::Enemy,
+            },
+            AbilityEffect::Damage {
+                amount: RankValue::from_level_1(100.0, 100.0),
+                damage_type: DamageType::Magical,
+                scaling: EffectScaling::None,
+            },
+        )
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::UnitsInRadius {
+                center: AreaCenter::Caster,
+                radius: AreaRadius::Ability,
+                team: TargetTeam::Enemy,
+            },
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Stun,
+                duration: RankValue::from_level_1(2.5, 0.5),
+            },
+        )
+}
+// </ability:reverse_polarity>
