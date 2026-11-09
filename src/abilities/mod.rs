@@ -3767,6 +3767,7 @@ mod tests {
                     speed: None,
                     contact_radius: None,
                     forward_offset: None,
+                    bound_stun: None,
                 },
             );
         app.world_mut()
@@ -3816,6 +3817,7 @@ mod tests {
                     speed: None,
                     contact_radius: None,
                     forward_offset: None,
+                    bound_stun: None,
                 },
             );
         app.world_mut()
@@ -4016,6 +4018,7 @@ mod tests {
                 speed: None,
                 contact_radius: None,
                 forward_offset: None,
+                bound_stun: None,
             },
         );
         app.world_mut()
@@ -4093,6 +4096,7 @@ mod tests {
                         speed: None,
                         contact_radius: None,
                         forward_offset: None,
+                        bound_stun: None,
                     },
                 },
                 AbilityEffectEntry {
@@ -4152,6 +4156,7 @@ mod tests {
                     speed: Some(RankValue::fixed(900.0)),
                     contact_radius: None,
                     forward_offset: None,
+                    bound_stun: None,
                 },
             )
             .on(
@@ -5862,6 +5867,7 @@ mod tests {
                         speed: None,
                         contact_radius: None,
                         forward_offset: None,
+                        bound_stun: None,
                     },
                 )],
         );
@@ -6493,6 +6499,7 @@ mod tests {
                 speed: None,
                 contact_radius: None,
                 forward_offset: None,
+                bound_stun: None,
             },
         )])]);
         let victim = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
@@ -6530,6 +6537,7 @@ mod tests {
                     speed: None,
                     contact_radius: None,
                     forward_offset: None,
+                    bound_stun: None,
                 },
             ),
             entry(
@@ -6586,6 +6594,7 @@ mod tests {
                 speed: None,
                 contact_radius: None,
                 forward_offset: None,
+                bound_stun: None,
             },
         )])]);
         let caster = spawn_caster_with_inventory(&mut app, KIT);
@@ -7197,6 +7206,7 @@ mod tests {
                     speed: None,
                     contact_radius: None,
                     forward_offset: forward_offset.map(RankValue::fixed),
+                    bound_stun: None,
                 },
             )
     }

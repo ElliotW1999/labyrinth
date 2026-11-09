@@ -48,6 +48,8 @@ pub struct DisplacementEvent {
     /// Self-propelled motion only: the reach (from the mover's centre, plus the other unit's
     /// bound) within which it contacts enemies. `None` is body contact (the mover's bound).
     pub contact_radius: Option<f32>,
+    /// `Drag` only: the id of the stun the dragged unit carries until the drag ends.
+    pub bound_stun: Option<&'static str>,
 }
 
 impl DisplacementEvent {
@@ -82,7 +84,14 @@ impl DisplacementEvent {
                 reaction: ctx.reaction,
             }),
             contact_radius: None,
+            bound_stun: None,
         }
+    }
+
+    /// Stuns a dragged unit under `id` until the drag ends (see [`Self::bound_stun`]).
+    pub fn with_bound_stun(mut self, id: Option<&'static str>) -> Self {
+        self.bound_stun = id;
+        self
     }
 
     /// Sets the contact reach of a self-propelled motion (see [`Self::contact_radius`]).
@@ -178,6 +187,12 @@ pub struct ForcedMovement {
     /// `None` uses the mover's own bound.
     pub contact_radius: Option<f32>,
 }
+
+/// Backstop added to the stun a drag binds to its target, beyond the carrying movement's
+/// remaining time.
+const BOUND_STUN_SLACK: f32 = 0.25;
+/// Stun backstop when the carrying movement started this frame and its length is not known yet.
+const BOUND_STUN_FALLBACK: f32 = 3.0;
 
 /// Id of the status that mirrors a cyclone motion.
 const CYCLONE_STATUS: &str = "cyclone";
@@ -308,6 +323,29 @@ pub fn apply_displacement_events(
                     StatusChange::Apply(status),
                 )
                 .reactive(reaction),
+            );
+        }
+        if event.kind == DisplacementKind::Drag
+            && let Some(id) = event.bound_stun
+        {
+            // The stun lives exactly as long as the carrying movement: it is removed when
+            // the drag ends. Its own duration is only a backstop for a drag that is
+            // replaced without ending (a cyclone, say).
+            let carried_for = units
+                .get(event.caster)
+                .ok()
+                .and_then(|u| u.5)
+                .map_or(BOUND_STUN_FALLBACK, |m| (m.duration - m.elapsed).max(0.0));
+            let reaction = event.source.is_some_and(|s| s.reaction);
+            let mut stun = StatusEffect {
+                id,
+                ..StatusEffect::stunned(carried_for + BOUND_STUN_SLACK)
+            };
+            stun.reactive = reaction;
+            motion.bound_status = Some(id);
+            statuses.write(
+                StatusEffectEvent::new(Some(event.caster), event.target, StatusChange::Apply(stun))
+                    .reactive(reaction),
             );
         }
         pending.insert(event.target, priority);
@@ -524,6 +562,7 @@ pub fn tick_forced_movement(
     time: Res<Time>,
     grid: Res<NavGrid>,
     mut triggers: MessageWriter<AbilityTriggerEvent>,
+    mut status_changes: MessageWriter<StatusEffectEvent>,
     mut units: ParamSet<(MoverQuery, SnapQuery)>,
 ) {
     let dt = time.delta_secs();
@@ -704,6 +743,15 @@ pub fn tick_forced_movement(
                             .affected(forced.hit.clone()),
                     ));
                 }
+                // A drag takes back the stun it bound to its unit, however it ended.
+                if let (MotionPath::Attached { anchor, .. }, Some(id)) =
+                    (&forced.path, forced.bound_status)
+                {
+                    status_changes.write(
+                        StatusEffectEvent::new(Some(*anchor), entity, StatusChange::Remove(id))
+                            .reactive(true),
+                    );
+                }
                 commands
                     .entity(entity)
                     .remove::<(ForcedMovement, NavPath, NavSteering)>();
@@ -813,6 +861,7 @@ mod tests {
             speed: None,
             source: None,
             contact_radius: None,
+            bound_stun: None,
         });
     }
 
@@ -1387,6 +1436,7 @@ mod tests {
             speed,
             source: Some(own_source(charger)),
             contact_radius: None,
+            bound_stun: None,
         };
         for event in [
             charge(None, Some(900.0)),
@@ -1476,6 +1526,7 @@ mod tests {
             speed: None,
             source: None,
             contact_radius: None,
+            bound_stun: None,
         });
     }
 
@@ -1903,6 +1954,7 @@ mod tests {
             speed: None,
             source: Some(own_source(dasher)),
             contact_radius: None,
+            bound_stun: None,
         });
         run(&mut app, 3);
         assert_eq!(
@@ -1967,6 +2019,7 @@ mod tests {
             speed: None,
             source: Some(own_source(dasher)),
             contact_radius,
+            bound_stun: None,
         });
         let mut seen = Vec::new();
         for _ in 0..30 {
@@ -2008,12 +2061,144 @@ mod tests {
             speed: None,
             source: Some(own_source(dasher)),
             contact_radius: Some(145.0),
+            bound_stun: None,
         });
         step(&mut app);
         let motion = app.world().get::<ForcedMovement>(dasher).unwrap();
         assert_eq!(motion.contact_radius, Some(145.0));
         assert_eq!(
             ForcedMovement::new(motion.path.clone(), 1.0).contact_radius,
+            None
+        );
+    }
+
+    fn drag_with_bound_stun(app: &mut App, victim: Entity, anchor: Entity) {
+        let origin = pos(app, anchor);
+        app.world_mut().write_message(DisplacementEvent {
+            target: victim,
+            kind: DisplacementKind::Drag,
+            caster: anchor,
+            origin,
+            point: origin,
+            aim: origin,
+            cast_target: None,
+            distance: None,
+            duration: 0.0,
+            speed: None,
+            source: None,
+            contact_radius: None,
+            bound_stun: Some("skewer_stun"),
+        });
+    }
+
+    fn status_remaining(app: &App, unit: Entity, id: &str) -> Option<f32> {
+        statuses(app, unit)
+            .effects
+            .iter()
+            .find(|e| e.id == id)
+            .map(|e| e.remaining)
+    }
+
+    #[test]
+    fn drag_bound_stun_lasts_exactly_as_long_as_the_drag_and_spares_other_stuns() {
+        let mut app = sim_app();
+        let anchor = spawn_unit(&mut app, Team::Radiant, Vec3::ZERO, 30.0);
+        let victim = spawn_unit(&mut app, Team::Dire, Vec3::new(50.0, 0.0, 0.0), 30.0);
+        // Another source's long stun is already on the victim.
+        app.world_mut()
+            .get_mut::<StatusEffects>(victim)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::stunned(5.0));
+        step(&mut app);
+        start_own_motion(&mut app, anchor, Vec3::new(900.0, 0.0, 0.0), 1.0);
+        drag_with_bound_stun(&mut app, victim, anchor);
+        run(&mut app, 3);
+
+        // While carried: stunned by both, the foreign stun untouched by the new one.
+        assert!(app.world().get::<ForcedMovement>(victim).is_some());
+        let carried = status_remaining(&app, victim, "skewer_stun").expect("bound stun applied");
+        assert!(
+            carried <= 1.0 + 0.25 + 1e-3,
+            "backstop is the motion plus slack: {carried}"
+        );
+        let foreign = status_remaining(&app, victim, "stun").expect("foreign stun kept");
+        assert!(
+            foreign > 4.0 && foreign < 5.0,
+            "decays naturally, never reset: {foreign}"
+        );
+        assert!(statuses(&app, victim).is_stunned());
+        assert_eq!(
+            statuses(&app, victim)
+                .effects
+                .iter()
+                .filter(|e| e.stunned)
+                .count(),
+            2
+        );
+
+        // When the dash (and so the drag) ends, only the bound stun goes.
+        run(&mut app, 40);
+        assert!(app.world().get::<ForcedMovement>(anchor).is_none());
+        assert!(app.world().get::<ForcedMovement>(victim).is_none());
+        assert!(
+            status_remaining(&app, victim, "skewer_stun").is_none(),
+            "the bound stun is removed when the drag ends"
+        );
+        assert!(
+            status_remaining(&app, victim, "stun").is_some(),
+            "the other stun is left alone"
+        );
+        assert!(statuses(&app, victim).is_stunned());
+    }
+
+    #[test]
+    fn drag_bound_stun_is_removed_when_the_carrying_dash_is_interrupted() {
+        let mut app = sim_app();
+        let anchor = spawn_unit(&mut app, Team::Radiant, Vec3::ZERO, 30.0);
+        let victim = spawn_unit(&mut app, Team::Dire, Vec3::new(50.0, 0.0, 0.0), 30.0);
+        step(&mut app);
+        start_own_motion(&mut app, anchor, Vec3::new(900.0, 0.0, 0.0), 1.0);
+        drag_with_bound_stun(&mut app, victim, anchor);
+        run(&mut app, 6);
+        assert!(status_remaining(&app, victim, "skewer_stun").is_some());
+
+        // The dasher is stunned mid-dash: its motion ends, and the drag with it.
+        app.world_mut()
+            .get_mut::<StatusEffects>(anchor)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::stunned(3.0));
+        run(&mut app, 4);
+        assert!(app.world().get::<ForcedMovement>(victim).is_none());
+        assert!(status_remaining(&app, victim, "skewer_stun").is_none());
+        assert!(!statuses(&app, victim).is_stunned());
+    }
+
+    #[test]
+    fn a_drag_without_a_bound_stun_applies_none() {
+        let mut app = sim_app();
+        let anchor = spawn_unit(&mut app, Team::Radiant, Vec3::ZERO, 30.0);
+        let victim = spawn_unit(&mut app, Team::Dire, Vec3::new(50.0, 0.0, 0.0), 30.0);
+        step(&mut app);
+        start_own_motion(&mut app, anchor, Vec3::new(900.0, 0.0, 0.0), 1.0);
+        push(
+            &mut app,
+            victim,
+            anchor,
+            DisplacementKind::Drag,
+            Vec3::ZERO,
+            None,
+            0.0,
+        );
+        run(&mut app, 3);
+        assert!(app.world().get::<ForcedMovement>(victim).is_some());
+        assert!(statuses(&app, victim).effects.is_empty());
+        assert_eq!(
+            app.world()
+                .get::<ForcedMovement>(victim)
+                .unwrap()
+                .bound_status,
             None
         );
     }

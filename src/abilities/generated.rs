@@ -443,6 +443,7 @@ fn sonic_wave() -> AbilityDefinition {
                 speed: None,
                 contact_radius: None,
                 forward_offset: None,
+                bound_stun: None,
             },
         )
 }

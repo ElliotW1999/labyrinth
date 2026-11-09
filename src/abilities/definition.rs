@@ -815,6 +815,9 @@ pub enum AbilityEffect {
         /// `PullToPoint` only: pull to a point this far in front of the caster (along its
         /// facing) instead of the trigger point. `None` keeps the trigger point.
         forward_offset: Option<RankValue>,
+        /// `Drag` only: each dragged unit is also stunned under this status id (unique to the
+        /// source, so no other stun is overwritten or removed) until the drag ends.
+        bound_stun: Option<&'static str>,
     },
     /// Instantly relocates each target to the trigger's aim point, validated against the
     /// map, static obstacles, and unit overlap (see `crate::teleport`). Rejected

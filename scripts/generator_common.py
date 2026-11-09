@@ -261,6 +261,8 @@ MOVEMENTS = {
     "dash": "Dash",
     "charge": "Charge",
     "drag": "Drag",
+    # A drag that also stuns each dragged unit (status id `<owner>_stun`) until the drag ends.
+    "drag_stun": "Drag",
     "cyclone": "Cyclone",
     "teleport": None,
 }
@@ -1062,6 +1064,10 @@ def _displacement_effect(
     """
     row = e.row
     kind = MOVEMENTS[effect_id]
+    bound_stun = "None"
+    if effect_id == "drag_stun":
+        bound_stun = f'Some("{ctx.owner_id}_stun")'
+        effect_id = "drag"
     if effect_id in ("dash", "charge") and e.target not in SELF_MOVEMENT_TARGETS:
         report.error(
             row.file,
@@ -1134,7 +1140,7 @@ def _displacement_effect(
     return (
         f"AbilityEffect::Displace {{ kind: DisplacementKind::{kind}, "
         f"distance: {distance}, duration: {rank_value(duration or [default_duration])}, speed: {speed}, "
-        f"contact_radius: {contact_radius}, forward_offset: {forward_offset} }}"
+        f"contact_radius: {contact_radius}, forward_offset: {forward_offset}, bound_stun: {bound_stun} }}"
     )
 
 

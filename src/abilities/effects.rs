@@ -776,6 +776,7 @@ impl EffectRunner<'_, '_> {
                 speed,
                 contact_radius,
                 forward_offset,
+                bound_stun,
             } => {
                 // Pull-to-point gathers in front of the caster (same facing source as a
                 // bounded teleport), measured from where the caster stood at the trigger.
@@ -795,7 +796,8 @@ impl EffectRunner<'_, '_> {
                         duration.at(rank),
                         speed.map(|s| s.at(rank)),
                     )
-                    .with_contact_radius(contact_radius.map(|r| r.at(rank)));
+                    .with_contact_radius(contact_radius.map(|r| r.at(rank)))
+                    .with_bound_stun(bound_stun);
                     if let Some(point) = gather_point {
                         event.point = point;
                     }

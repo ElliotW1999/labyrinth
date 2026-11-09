@@ -1635,6 +1635,34 @@ class PullPointForwardOffsetTests(unittest.TestCase):
         self.assertTrue(any("forward offset cannot be negative" in e.message for e in report.errors))
 
 
+class DragStunTests(unittest.TestCase):
+    @staticmethod
+    def _drag(effect_id: str, **cells: str):
+        effect = {
+            "trigger": "on_unit_contact", "effect_type": "movement", "effect_id": effect_id,
+            "effect_target": "trigger_unit",
+        }
+        effect.update(cells)
+        dash = {"effect_type": "movement", "effect_id": "dash", "value": "800", "duration": "1"}
+        return load_test_ability({"target_type": "point", "cast_range": "800"}, [dash, effect])
+
+    def test_drag_stun_binds_a_source_unique_stun_id(self) -> None:
+        abilities, report = self._drag("drag_stun")
+        self.assertEqual(report.errors, [])
+        text = str(abilities[0].effects)
+        self.assertIn("kind: DisplacementKind::Drag", text)
+        self.assertIn('bound_stun: Some("tester_stun")', text)
+
+    def test_plain_drag_binds_nothing(self) -> None:
+        abilities, report = self._drag("drag")
+        self.assertEqual(report.errors, [])
+        self.assertIn("bound_stun: None", str(abilities[0].effects))
+
+    def test_drag_stun_follows_the_drag_target_rules(self) -> None:
+        _, report = self._drag("drag_stun", effect_target="caster")
+        self.assertTrue(any("drag carries other units" in e.message for e in report.errors))
+
+
 class HeroGeneratorTests(unittest.TestCase):
     HEADER = (
         "Hero_name,is_melee,Ability_Q_Name,Ability_W_Name,Ability_E_Name,Ability_R_Name,"
