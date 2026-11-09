@@ -389,7 +389,17 @@ fn plan_motion(
         }
         DisplacementKind::Dash => {
             // Constant speed: `duration` is the time for the full `distance`.
-            let toward = flat3(event.aim - from);
+            let mut toward = flat3(event.aim - from);
+            if toward.length() < MIN_TRAVEL
+                && let Some(distance) = event.distance
+            {
+                // Aimed at itself (a no-target cast): go the full distance along the
+                // mover's facing, `-Z` when it has no flat direction.
+                let facing = units
+                    .get(event.target)
+                    .map_or(Vec3::NEG_Z, |u| *u.0.forward());
+                toward = crate::abilities::effects::forward_point(from, facing, distance) - from;
+            }
             let max = event.distance.unwrap_or(toward.length());
             let travel = toward.normalize_or_zero() * toward.length().min(max);
             let path = line(travel)?;
@@ -1823,6 +1833,98 @@ mod tests {
         run(&mut app, 2);
         assert!(app.world().get::<ForcedMovement>(victim).is_none());
         assert!(app.world().get::<ForcedMovement>(anchor).is_some());
+    }
+
+    /// A dash event for `unit` aimed at `aim`, `distance` long over `duration` seconds.
+    fn dash_event(app: &mut App, unit: Entity, aim: Vec3, distance: Option<f32>, duration: f32) {
+        let at = pos(app, unit);
+        app.world_mut().write_message(DisplacementEvent {
+            target: unit,
+            kind: DisplacementKind::Dash,
+            caster: unit,
+            origin: at,
+            point: at,
+            aim,
+            cast_target: None,
+            distance,
+            duration,
+            speed: None,
+            source: Some(own_source(unit)),
+            contact_radius: None,
+            bound_stun: None,
+        });
+    }
+
+    #[test]
+    fn dash_with_aim_on_mover_goes_forward_along_facing() {
+        let mut app = sim_app();
+        let dasher = spawn_unit(&mut app, Team::Radiant, Vec3::new(100.0, 0.0, 100.0), 30.0);
+        // Face +X, then dash with the aim on the mover.
+        app.world_mut()
+            .get_mut::<Transform>(dasher)
+            .unwrap()
+            .rotation = Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2);
+        let facing = *app.world().get::<Transform>(dasher).unwrap().forward();
+        assert!(facing.x > 0.99, "test setup faces +X: {facing:?}");
+        step(&mut app);
+        let start = pos(&app, dasher);
+        dash_event(&mut app, dasher, start, Some(250.0), 0.25);
+        let mut seen = Vec::new();
+        for _ in 0..40 {
+            step(&mut app);
+            collect(&app, &mut seen);
+        }
+        let end = pos(&app, dasher);
+        assert!(
+            (end - (start + Vec3::X * 250.0)).length() < 1.0,
+            "forward 250 along facing: {end:?}"
+        );
+        let ends = ends(&seen);
+        assert_eq!(ends.len(), 1, "the dash reports its end once");
+        assert!(ends[0].point.distance(end) < 1.0);
+    }
+
+    #[test]
+    fn dash_toward_an_aim_is_unchanged() {
+        let mut app = sim_app();
+        let dasher = spawn_unit(&mut app, Team::Radiant, Vec3::ZERO, 30.0);
+        step(&mut app);
+        // Facing -Z, aim far to +X: the aim wins, capped at the distance.
+        dash_event(
+            &mut app,
+            dasher,
+            Vec3::new(1000.0, 0.0, 0.0),
+            Some(250.0),
+            0.25,
+        );
+        run(&mut app, 40);
+        let end = pos(&app, dasher);
+        assert!((end - Vec3::new(250.0, 0.0, 0.0)).length() < 1.0, "{end:?}");
+        // A nearer aim still stops there.
+        let mut app = sim_app();
+        let dasher = spawn_unit(&mut app, Team::Radiant, Vec3::ZERO, 30.0);
+        step(&mut app);
+        dash_event(
+            &mut app,
+            dasher,
+            Vec3::new(100.0, 0.0, 0.0),
+            Some(250.0),
+            0.25,
+        );
+        run(&mut app, 40);
+        assert!((pos(&app, dasher) - Vec3::new(100.0, 0.0, 0.0)).length() < 1.0);
+    }
+
+    #[test]
+    fn dash_without_distance_and_aim_on_mover_does_nothing() {
+        let mut app = sim_app();
+        let dasher = spawn_unit(&mut app, Team::Radiant, Vec3::ZERO, 30.0);
+        step(&mut app);
+        let start = pos(&app, dasher);
+        dash_event(&mut app, dasher, start, None, 0.25);
+        run(&mut app, 20);
+        assert!(app.world().get::<ForcedMovement>(dasher).is_none());
+        assert!((pos(&app, dasher) - start).length() < 1e-3);
     }
 
     #[test]
