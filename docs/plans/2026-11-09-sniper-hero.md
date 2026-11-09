@@ -1,6 +1,6 @@
 # Sniper hero: implementation spec
 
-Status: **draft, awaiting user decisions (§12).** Nothing beyond the approved gaps may be built. If implementation shows that something else is needed, stop and ask.
+Status: **approved 2026-11-09** (decisions in §12). Nothing beyond the approved gaps may be built. If implementation shows that something else is needed, stop and ask.
 
 Related plans:
 - `docs/plans/2026-11-08-magnus-hero.md`: the model for this spec (scratch-CSV HeroGenerator flow, `MAX_CAST_BACKSWING`, `turn_rate` column, `<owner>_stun` id pattern).
@@ -47,7 +47,7 @@ Basics have 7 ranks and the ultimate 4. Values extrapolate arithmetically; const
 | E | **bonus written to CSV** (total − 550) | 235, 390, 545, 700, 855, 1010, 1165 |
 | R | damage (magical) | 300, 400, 500, 600 |
 | R | cooldown | 20, 15, 10, 5 |
-| R | constants | mana 175, cast range 3000, buffer 600, cast point 2.0, backswing 1.6, projectile speed 2500, mini-stun 0.1 s |
+| R | constants | mana 175, cast range 3000, buffer 600, cast point 2.0, backswing 1.6, projectile speed 1500, mini-stun 0.1 s |
 
 **Take Aim values are totals.** All exceed base 550; the data convention is a flat bonus (`PassiveStat::AttackRange`); there is no "set range" semantics; read as bonuses, rank 4 would already reach 1800 (= `HERO_VISION_RANGE`).
 
@@ -118,7 +118,7 @@ Basics have 7 ranks and the ultimate 4. Values extrapolate arithmetically; const
 shrapnel,Shrapnel,Q,active,point,enemy,1800,400|425|450|475|500|525|550,0.3,,10,75,,,none,,"Launches a ball of shrapnel that showers the target area in explosive pellets after 1.2s, dealing magical damage every second for 10s and slowing enemies it hits",0,,,,,
 headshot,Headshot,W,passive,no_target,enemy,,,,,,,,,none,,"Grants Sniper a chance to deal extra damage and briefly knock back the attacked enemy unit",,,,,,
 take_aim,Take Aim,E,passive,no_target,self,,,,,,,,,none,,"Grants Sniper additional attack range",,,,,,
-assassinate,Assassinate,R,active,unit,enemy,3000,,2,,20|15|10|5,175,,,targeted,2500,"Locks onto an enemy unit; after a 2s aim, fires a devastating long-range shot that deals magical damage and mini-stuns the target. Cancelled if the target moves 600 beyond cast range",1.6,,,,,600
+assassinate,Assassinate,R,active,unit,enemy,3000,,2,,20|15|10|5,175,,,targeted,1500,"Locks onto an enemy unit; after a 2s aim, fires a devastating long-range shot that deals magical damage and mini-stuns the target. Cancelled if the target moves 600 beyond cast range",1.6,,,,,600
 ```
 
 ## 7. `data/ability_effects.csv` (+ examples)
@@ -159,7 +159,7 @@ Sniper,FALSE,Shrapnel,Headshot,Take Aim,Assassinate,19,27,15,2,3.2,2.6,AGI,"Agi 
 ## 9. Tests
 
 - `heroes.rs::sniper_matches_spec`: abilities `[Shrapnel, Headshot, TakeAim, Assassinate]`, AGI; level-1 health 538, regen 2.15, mana 255, regen 0.75, armor ≈ 0, magical 100 → 73.5, attrs (19,27,15), range 550 ranged, BAT 1.7, swings 0.17/0.7, turn rate 0.7, MS 285, projectile 3000, APS 0.747059.
-- `catalog.rs::sniper_abilities_generate_expected_definitions`: Q Area, range 1800, aoe at(7)=550, Zone (1.2/1/10/`on_shrapnel_tick`); W passive pseudo proc 0.4; E bonus 235 / 1165; R ultimate max rank 4, cast 2.0, backswing 1.6, buffer 600, projectile 2500, stun id `assassinate_stun`.
+- `catalog.rs::sniper_abilities_generate_expected_definitions`: Q Area, range 1800, aoe at(7)=550, Zone (1.2/1/10/`on_shrapnel_tick`); W passive pseudo proc 0.4; E bonus 235 / 1165; R ultimate max rank 4, cast 2.0, backswing 1.6, buffer 600, projectile 1500, stun id `assassinate_stun`.
 - Integration (`abilities/mod.rs`): `shrapnel_zone_waits_then_ticks_ten_times`, `shrapnel_zone_slows_units_inside_and_releases_after_leaving`, `headshot_proc_damages_slows_and_knocks_back`, `headshot_and_shrapnel_slows_coexist`, `take_aim_adds_attack_range_per_rank_and_keeps_projectile_speed`, `assassinate_fires_after_two_second_aim_and_mini_stuns`, `assassinate_cancels_free_when_target_leaves_buffer` (3700 cancels, 3300 fires), `mini_stun_spares_a_longer_foreign_stun`.
 - Per-gap unit tests (§4) incl. zones: reactive inheritance, depth cap, `attack` cleared, `item_and_ability_zone_emit_identical_ticks`.
 - `scripts/test_generator_common.py`: `zone`, `cast_range_buffer`, `mini_stun`, `<owner>_slow`, invalid examples.
@@ -197,3 +197,9 @@ Status ids: `shrapnel_slow`, `headshot_slow`, `headshot_attack_speed_flat`, `ass
 
 - G1–G6 approval (G2 required for Shrapnel).
 - U1 Shrapnel cooldown 10, no charges. U2 tick interval 1 s, slow 1.1 s. U3 `pseudo_proc` vs `proc`. U4 Assassinate projectile speed 2500 (unspecified). U5 mini-stun 0.1 s. U6 R rank-4 cooldown 5. U7 Take Aim 7 ranks. U8 keyword `mini_stun`. U9 zone visual: optional ring only.
+
+### Decisions (user, 2026-11-09)
+- G1–G6: all approved.
+- U3: `pseudo_proc`.
+- U4: Assassinate projectile speed **1500** (user choice; overrides the 2500 assumption).
+- U1, U2, U5–U9: accepted as proposed (cooldown 10 no charges; 1 s ticks, 1.1 s slow; 0.1 s mini-stun; R rank-4 cooldown 5; 7-rank Take Aim; keyword `mini_stun`; optional ring visual only).
