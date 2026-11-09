@@ -443,6 +443,10 @@ fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
             row("Heal reduction %", percent),
             seconds_row("Heal reduction duration", duration),
         ],
+        StatusSpec::DamageReduction { percent, .. } => vec![
+            row("Damage reduction %", percent),
+            seconds_row("Damage reduction duration", duration),
+        ],
         StatusSpec::ManaShield {
             absorb_percent,
             damage_per_mana,
@@ -663,6 +667,7 @@ fn status_name(status: StatusSpec) -> &'static str {
         StatusSpec::HealOverTime { .. } => "Heal over time",
         StatusSpec::HealReduction { .. } => "Heal reduction",
         StatusSpec::HealBlock => "Heal block",
+        StatusSpec::DamageReduction { .. } => "Damage reduction",
         StatusSpec::ManaShield { .. } => "Mana shield",
         StatusSpec::ResourceModifier { .. } => "Modifier",
         StatusSpec::Modifier { .. } => "Modifier",

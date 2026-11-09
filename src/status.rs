@@ -126,6 +126,8 @@ pub struct StatusEffect {
     pub resource: Option<(crate::vitals::ResourceStat, f32)>,
     /// Fraction (0..1) of healing received that is negated. The strongest one applies.
     pub heal_reduction: f32,
+    /// Fraction (0..1) of incoming damage removed after mitigation; reductions multiply.
+    pub damage_reduction: f32,
     /// Prevents all healing while active.
     pub heal_blocked: bool,
     /// Diverts incoming damage to mana while active.
@@ -211,6 +213,7 @@ impl StatusEffect {
             heal_per_sec: 0.0,
             resource: None,
             heal_reduction: 0.0,
+            damage_reduction: 0.0,
             heal_blocked: false,
             mana_shield: None,
             damage_per_sec: 0.0,
@@ -258,6 +261,14 @@ impl StatusEffect {
         Self {
             heal_reduction: fraction,
             ..Self::debuff("heal_reduction", duration)
+        }
+    }
+
+    /// `fraction` (0..1) of incoming damage is removed (a buff).
+    pub fn damage_reduction(id: &'static str, fraction: f32, duration: f32) -> Self {
+        Self {
+            damage_reduction: fraction.clamp(0.0, 1.0),
+            ..Self::buff(id, duration)
         }
     }
 
@@ -493,6 +504,16 @@ impl StatusEffects {
             .map(|e| e.heal_reduction)
             .fold(0.0, f32::max)
             .clamp(0.0, 1.0)
+    }
+
+    /// Product of `(1 - r)` over every active damage reduction: the factor applied to damage
+    /// taken after mitigation (1.0 = none).
+    pub fn damage_taken_factor(&self) -> f32 {
+        self.effects
+            .iter()
+            .filter(|e| e.remaining > 0.0 && e.damage_reduction > 0.0)
+            .map(|e| 1.0 - e.damage_reduction.clamp(0.0, 1.0))
+            .product()
     }
 
     /// The active mana shield with the highest absorb fraction.

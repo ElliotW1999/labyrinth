@@ -440,6 +440,12 @@ pub enum StatusSpec {
     },
     /// Prevents all healing.
     HealBlock,
+    /// `percent` (0-100) of incoming damage is removed after mitigation (a buff). `id` is
+    /// `<owner>_damage_reduction`; reductions from different ids multiply.
+    DamageReduction {
+        id: &'static str,
+        percent: RankValue,
+    },
     /// Diverts `absorb_percent` (0–100) of post-mitigation damage to mana, at
     /// `damage_per_mana` damage per point of mana.
     ManaShield {
@@ -631,6 +637,11 @@ impl StatusSpec {
                 StatusEffect::heal_reduction((percent.at(rank) / 100.0).clamp(0.0, 1.0), duration)
             }
             StatusSpec::HealBlock => StatusEffect::heal_block(duration),
+            StatusSpec::DamageReduction { id, percent } => StatusEffect::damage_reduction(
+                id,
+                (percent.at(rank) / 100.0).clamp(0.0, 1.0),
+                duration,
+            ),
             StatusSpec::ManaShield {
                 absorb_percent,
                 damage_per_mana,

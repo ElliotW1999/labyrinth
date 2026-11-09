@@ -881,6 +881,33 @@ class SlowStatusTests(unittest.TestCase):
         self.assertIn("<owner>_slow", report.errors[0].message)
 
 
+class DamageReductionStatusTests(unittest.TestCase):
+    def test_generated_damage_reduction_carries_a_per_owner_id(self) -> None:
+        report = Report()
+        effect, ctx = _effect("apply_status", "damage_reduction", amount="80", duration="4")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertEqual(report.errors, [])
+        self.assertIn('StatusSpec::DamageReduction { id: "tester_damage_reduction"', result[2])
+        self.assertEqual(held_status_id(effect), "tester_damage_reduction")
+        self.assertEqual(runtime_status_id("tester_damage_reduction"), "tester_damage_reduction")
+
+    def test_percent_must_be_above_zero_and_at_most_100(self) -> None:
+        for bad in ("0", "101", "-5"):
+            report = Report()
+            effect, ctx = _effect("apply_status", "damage_reduction", amount=bad, duration="4")
+            self.assertIsNone(effect_to_rust(effect, ctx, report), bad)
+            self.assertTrue(report.errors, bad)
+        report = Report()
+        effect, ctx = _effect("apply_status", "damage_reduction", duration="4")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+
+    def test_remove_status_damage_reduction_is_rejected_with_a_hint(self) -> None:
+        report = Report()
+        effect, ctx = _effect("remove_status", "damage_reduction")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertIn("<owner>_damage_reduction", report.errors[0].message)
+
+
 class DispelStrengthTests(unittest.TestCase):
     def test_amount_one_is_a_strong_dispel_without_a_warning(self) -> None:
         report = Report()

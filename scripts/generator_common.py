@@ -206,8 +206,13 @@ STATUSES = {
     "heal_over_time": (None, "heal_over_time", True),
     "heal_reduction": (None, "heal_reduction", False),
     "heal_block": ("StatusSpec::HealBlock", "heal_block", False),
+    # Per-owner ids (`<owner>_damage_reduction`), like slow and burn.
+    "damage_reduction": (None, "damage_reduction", True),
     "mana_shield": (None, "mana_shield", True),
 }
+
+# Statuses whose runtime id is `<owner>_<name>` (the keyword alone is not a status id).
+OWNER_ID_STATUSES = ("damage_reduction",)
 
 # `effect_type=resource` ids → (kind, spent resource). Hostile kinds act on other units;
 # the spend kinds act on the unit that uses them (caster/owner only).
@@ -1193,13 +1198,13 @@ def runtime_status_id(text: str) -> str | None:
     Accepts CSV status ids (`stun`), runtime ids (`spell_immunity`) and the per-owner ids that
     timed `stat_modifier` rows create (`<owner>_<stat>`) and the ones burns and slows create
     (`<owner>_burn`, `<owner>_slow`) and the ones `mini_stun` creates (`<owner>_stun`)."""
-    if text == "mini_stun":
-        return None  # the id depends on the owner: name `<owner>_stun`
+    if text in OWNER_ID_STATUSES or text == "mini_stun":
+        return None  # the id depends on the owner: name `<owner>_<status>`
     if text in STATUSES:
         return STATUSES[text][1]
     if text in {runtime for _, runtime, _ in STATUSES.values()}:
         return text
-    for stat in (*TIMED_STATS, *RESOURCE_STATS, "burn", "slow", "stun"):
+    for stat in (*TIMED_STATS, *RESOURCE_STATS, "burn", "slow", "stun", *OWNER_ID_STATUSES):
         suffix = "_" + stat
         if text.endswith(suffix) and ID_PATTERN.match(text[: -len(suffix)]):
             return text
@@ -1307,7 +1312,7 @@ def trigger_to_rust(e: EffectRow, variant: str, report: Report) -> str | None:
 def held_status_id(e: EffectRow) -> str | None:
     """Runtime id of the status a `while` row holds, or None when it cannot be told."""
     effect_id = e.row.get("effect_id").lower()
-    if e.effect_type == "apply_status" and effect_id in ("burn", "slow"):
+    if e.effect_type == "apply_status" and (effect_id in ("burn", "slow") or effect_id in OWNER_ID_STATUSES):
         return f"{e.owner}_{effect_id}"
     if e.effect_type == "apply_status" and effect_id == "mini_stun":
         return f"{e.owner}_stun"
@@ -1679,6 +1684,17 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             spec = f"StatusSpec::HealReduction {{ percent: {rank_value(percent)} }}"
             if amount:
                 _unused(e, report, "value")
+        elif effect_id == "damage_reduction":
+            percent = amount or value
+            if not percent:
+                report.error(row.file, row.line, "amount", "", "required: damage_reduction percentage (e.g. 80)")
+                return None
+            if any(not 0 < p <= 100 for p in percent):
+                report.error(row.file, row.line, "amount" if amount else "value", row.get("amount") or row.get("value"), "damage_reduction percentage must be above 0 and at most 100")
+                return None
+            spec = f'StatusSpec::DamageReduction {{ id: "{ctx.owner_id}_damage_reduction", percent: {rank_value(percent)} }}'
+            if amount:
+                _unused(e, report, "value")
         elif effect_id == "mana_shield":
             if not _require(e, "value", report, "percent of damage absorbed by mana (0..100)"):
                 return None
@@ -1742,6 +1758,9 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             return None
         elif effect_id == "mini_stun":
             report.error(row.file, row.line, "effect_id", row.get("effect_id"), "a mini_stun carries the per-owner id <owner>_stun; name that id to remove it")
+            return None
+        elif effect_id in OWNER_ID_STATUSES:
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), f"a generated {effect_id} carries the per-owner id <owner>_{effect_id}; name that id to remove it")
             return None
         elif ID_PATTERN.match(effect_id):
             status_id = STATUSES[effect_id][1] if effect_id in STATUSES else effect_id
