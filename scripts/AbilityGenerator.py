@@ -106,8 +106,9 @@ SLOTS = ("q", "w", "e", "r", "innate")
 ABILITY_TYPES = {"active": "Active", "passive": "Passive", "toggle": "Toggle"}
 LEVEL_FIELDS = ("cast_range", "aoe_radius", "cooldown", "mana_cost", "toggle_mana_per_sec", "projectile_end_radius", "projectile_origin_offset")
 EFFECT_LEVEL_FIELDS = ("value", "duration", "amount", "radius")
-# Mirrors abilities::definition::MAX_CAST_BACKSWING.
-MAX_CAST_BACKSWING = 1.5
+# Mirror abilities::definition::MAX_CAST_POINT and MAX_CAST_BACKSWING.
+MAX_CAST_POINT = 2.0
+MAX_CAST_BACKSWING = 2.0
 DEFAULT_BACKSWING = 0.25
 
 GENERATED_HEADER = """\
@@ -215,8 +216,8 @@ def parse_ability(row: Row, effect_rows: list[EffectRow], report: Report) -> Abi
     projectile = activation.projectile_type
     speed = activation.projectile_speed
 
-    if cast_time > 0.5:
-        report.warn(row.file, row.line, "cast_time", row.get("cast_time"), "cast point is capped at 0.5s")
+    if cast_time > MAX_CAST_POINT:
+        report.warn(row.file, row.line, "cast_time", row.get("cast_time"), f"cast point is capped at {MAX_CAST_POINT}s")
 
     rust_target = ability_rust_target_type(target_type, projectile, aoe_radius)
 

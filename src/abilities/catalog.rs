@@ -425,21 +425,20 @@ mod tests {
     use crate::abilities::definition::AbilityBehavior;
 
     #[test]
-    fn timing_clamps_backswing_at_max_cast_backswing_and_cast_point_at_half() {
-        use crate::abilities::definition::MAX_CAST_BACKSWING;
+    fn timing_clamps_at_max_cast_point_and_backswing() {
+        use crate::abilities::definition::{MAX_CAST_BACKSWING, MAX_CAST_POINT};
+        assert_eq!(MAX_CAST_POINT, 2.0);
+        assert_eq!(MAX_CAST_BACKSWING, 2.0);
         let d = builtin(AbilityId::Dash).timing(0.9, 0.9);
-        assert_eq!(d.cast_time, 0.5);
+        assert_eq!(d.cast_time, 0.9, "cast points up to 2.0 apply unclamped");
         assert_eq!(d.backswing, 0.9);
-        let d = builtin(AbilityId::Dash).timing(0.1, 7.0);
+        let d = builtin(AbilityId::Dash).timing(2.0, 1.6);
+        assert_eq!((d.cast_time, d.backswing), (2.0, 1.6));
+        let d = builtin(AbilityId::Dash).timing(5.0, 7.0);
+        assert_eq!(d.cast_time, MAX_CAST_POINT);
         assert_eq!(d.backswing, MAX_CAST_BACKSWING);
-        assert_eq!(MAX_CAST_BACKSWING, 1.5);
-        for backswing in [1.07, 1.2, 1.3] {
-            let d = builtin(AbilityId::Dash).timing(0.3, backswing);
-            assert_eq!(
-                d.backswing, backswing,
-                "backswings up to 1.5 apply unclamped"
-            );
-        }
+        let d = builtin(AbilityId::Dash).timing(-1.0, -1.0);
+        assert_eq!((d.cast_time, d.backswing), (0.0, 0.0));
     }
 
     #[test]

@@ -1544,16 +1544,21 @@ def load_test_ability(ability: dict[str, str] | None = None, effects: list[dict[
 
 
 class CastBackswingTests(unittest.TestCase):
-    def test_backswing_up_to_one_and_a_half_is_accepted_silently(self) -> None:
-        for value in ("0.3", "1.2", "1.3", "1.5"):
-            _, report = load_test_ability({"cast_backswing": value})
+    def test_backswing_and_cast_point_up_to_two_seconds_are_accepted_silently(self) -> None:
+        for value in ("0.3", "1.6", "2"):
+            _, report = load_test_ability({"cast_backswing": value, "cast_time": value})
             self.assertEqual(report.errors, [])
-            self.assertEqual([w for w in report.warnings if w.field == "cast_backswing"], [], value)
+            self.assertEqual([w for w in report.warnings if w.field in ("cast_backswing", "cast_time")], [], value)
 
     def test_backswing_above_the_cap_warns(self) -> None:
-        _, report = load_test_ability({"cast_backswing": "1.6"})
+        _, report = load_test_ability({"cast_backswing": "2.1"})
         self.assertEqual(report.errors, [])
-        self.assertTrue(any(w.field == "cast_backswing" and "1.5" in w.message for w in report.warnings))
+        self.assertTrue(any(w.field == "cast_backswing" and "2.0" in w.message for w in report.warnings))
+
+    def test_cast_point_above_the_cap_warns(self) -> None:
+        _, report = load_test_ability({"cast_time": "2.5"})
+        self.assertEqual(report.errors, [])
+        self.assertTrue(any(w.field == "cast_time" and "2.0" in w.message for w in report.warnings))
 
 
 class TimedStatModifierTests(unittest.TestCase):
