@@ -9,8 +9,10 @@ use crate::components::DamageType;
 use crate::status::{DispelType, Leash, LeashAnchor, StatusEffect, StatusKind};
 use crate::vitals::{ManaShield, ResourceKind, ResourceStat};
 
-/// Upper bound (seconds) for an ability's cancellable backswing. The cast point stays capped at 0.5.
-pub const MAX_CAST_BACKSWING: f32 = 1.5;
+/// Upper bound (seconds) for an ability's cast point (the aim before it fires).
+pub const MAX_CAST_POINT: f32 = 2.0;
+/// Upper bound (seconds) for an ability's cancellable backswing.
+pub const MAX_CAST_BACKSWING: f32 = 2.0;
 
 /// A value that scales with ability level: `clamp(base + per_rank × rank, min, max)`,
 /// or an explicit per-level table (`75|150|225|300` in the generator CSVs).
@@ -351,6 +353,11 @@ pub enum EffectScaling {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum StatusSpec {
     Stun,
+    /// A stun with its own status id (generated `<owner>_stun`). Same-id refresh means it never
+    /// replaces, shortens or removes a stun from another source.
+    OwnedStun {
+        id: &'static str,
+    },
     Root,
     Silence,
     Disarm,
@@ -404,8 +411,11 @@ pub enum StatusSpec {
     TrueStrike,
     /// Run away from `source` (typically the caster).
     Fear,
-    /// Reduces the target's current move speed by `percent`.
+    /// Reduces the target's move speed by `percent` of its base speed. `id` is the status id:
+    /// hand-written slows use `"slow"`, generated ones `<owner>_slow`, so slows from different
+    /// sources coexist and add while the same source refreshes.
     Slow {
+        id: &'static str,
         percent: RankValue,
     },
     /// `percent` of attack speed rating removed (same scale as move slow).
@@ -521,6 +531,10 @@ impl StatusSpec {
         let ias = (100.0 + ctx.agility).clamp(20.0, 700.0);
         match self {
             StatusSpec::Stun => StatusEffect::stunned(duration),
+            StatusSpec::OwnedStun { id } => StatusEffect {
+                id,
+                ..StatusEffect::stunned(duration)
+            },
             StatusSpec::Root => StatusEffect::rooted(duration),
             StatusSpec::Silence => StatusEffect::silenced(duration),
             StatusSpec::Disarm => StatusEffect::disarmed(duration),
@@ -583,12 +597,13 @@ impl StatusSpec {
                 ..StatusEffect::buff("true_strike", duration)
             },
             StatusSpec::Fear => StatusEffect::fear(duration, ctx.fear_source),
-            StatusSpec::Slow { percent } => {
+            StatusSpec::Slow { id, percent } => {
                 let p = (percent.at(rank) / 100.0).clamp(0.0, 1.0);
                 StatusEffect {
                     move_speed: -ctx.move_speed * p,
+                    move_slow_fraction: p,
                     dispel_type: DispelType::Basic,
-                    ..StatusEffect::debuff("slow", duration)
+                    ..StatusEffect::debuff(id, duration)
                 }
             }
             StatusSpec::AttackSpeedSlow { percent } => {
@@ -865,6 +880,20 @@ pub enum AbilityEffect {
         team: TargetTeam,
         then: AbilityTrigger,
     },
+    /// Mechanic gate: spawns a persistent area at the trigger point (the aim for `OnCast`).
+    /// After `delay` seconds, and then every `interval` seconds for `duration` seconds in
+    /// total (`floor(duration / interval)` ticks), it re-fires this context under `then`
+    /// with the units of `team` inside `radius` as the affected units (the caster is never
+    /// one). The re-fired context has no trigger unit, no affected units from the spawn and
+    /// no attack. Emits no gameplay messages itself and runs once per execution.
+    Zone {
+        radius: AreaRadius,
+        team: TargetTeam,
+        delay: RankValue,
+        duration: RankValue,
+        interval: RankValue,
+        then: AbilityTrigger,
+    },
     /// Gate: sums `TriggerContext::amount` over executions (damage taken, distance walked, or
     /// 1 per occurrence) and, whenever the sum reaches `threshold`, re-fires this trigger's
     /// context under `then` once and keeps the remainder. The sum is counted per source and
@@ -905,6 +934,7 @@ impl AbilityEffect {
                 | Self::Counter { .. }
                 | Self::Accumulate { .. }
                 | Self::Chain { .. }
+                | Self::Zone { .. }
                 | Self::PassiveStat { .. }
         )
     }
@@ -977,9 +1007,12 @@ pub struct AbilityDefinition {
     pub max_rank: u32,
     pub is_ultimate: bool,
     pub cast_range: RankValue,
+    /// Unit-targeted casts only: the cast is cancelled for free during the cast point if the
+    /// target moves further than `cast_range + cast_range_buffer` from the caster. Zero = no limit.
+    pub cast_range_buffer: RankValue,
     /// Area radius (area targets) or projectile width (point targets); also drives indicators.
     pub aoe_radius: RankValue,
-    /// Cast point: delay before the ability fires (0..=0.5).
+    /// Cast point: delay before the ability fires (0..=`MAX_CAST_POINT`).
     pub cast_time: f32,
     /// Cancellable recovery after the ability fires (0..=`MAX_CAST_BACKSWING`).
     pub backswing: f32,
@@ -1011,6 +1044,7 @@ impl AbilityDefinition {
             max_rank: id.max_rank(),
             is_ultimate: id.is_ultimate(),
             cast_range: RankValue::ZERO,
+            cast_range_buffer: RankValue::ZERO,
             aoe_radius: RankValue::ZERO,
             cast_time: 0.2,
             backswing: 0.25,
@@ -1037,6 +1071,13 @@ impl AbilityDefinition {
         self
     }
 
+    /// How far past `cast_range` a unit target may move during the cast point before the
+    /// cast is cancelled.
+    pub fn cast_range_buffer(mut self, buffer: RankValue) -> Self {
+        self.cast_range_buffer = buffer;
+        self
+    }
+
     pub fn costs(mut self, cooldown: RankValue, mana_cost: RankValue) -> Self {
         self.cooldown = cooldown;
         self.mana_cost = mana_cost;
@@ -1044,7 +1085,7 @@ impl AbilityDefinition {
     }
 
     pub fn timing(mut self, cast_time: f32, backswing: f32) -> Self {
-        self.cast_time = cast_time.clamp(0.0, 0.5);
+        self.cast_time = cast_time.clamp(0.0, MAX_CAST_POINT);
         self.backswing = backswing.clamp(0.0, MAX_CAST_BACKSWING);
         self
     }

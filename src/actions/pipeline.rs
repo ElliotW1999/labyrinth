@@ -14,7 +14,7 @@ use crate::components::{
     AbilityLoadout, AttackMoveOrder, AttackSwing, AttackTarget, BoundRadius, CastTarget,
     CombatStats, Health, Mana, MoveTarget, Team,
 };
-use crate::dimensions::bounds_of;
+use crate::dimensions::{bounds_of, cast_distance};
 use crate::items::{Inventory, commit_item, item_action_spec};
 use crate::status::StatusEffects;
 use crate::vitals::effective_mana_cost;
@@ -265,6 +265,10 @@ pub fn validate_activation_requests(
                 target: resolved.target,
                 aim: resolved.aim,
                 disable: spec.disable,
+                break_range: (spec.cast_range_buffer > 0.0
+                    && matches!(resolved.target, CastTarget::Unit(_)))
+                .then(|| spec.cast_range + spec.cast_range_buffer),
+                target_bounds: resolved.target_bounds,
                 point_remaining: spec.cast_time,
                 channel_remaining: spec.channel_time,
                 backswing_remaining: spec.backswing,
@@ -380,10 +384,11 @@ pub fn tick_activations(
         &mut Mana,
         Option<&StatusEffects>,
         &CombatStats,
+        Option<&BoundRadius>,
     )>,
 ) {
     let dt = time.delta_secs();
-    for (entity, mut transform, mut activation, mut mana, statuses, stats) in &mut casters {
+    for (entity, mut transform, mut activation, mut mana, statuses, stats, bound) in &mut casters {
         let disabled = activation.disable.blocks(statuses);
         if activation.fired {
             if activation.channel_remaining > 0.0 {
@@ -412,6 +417,20 @@ pub fn tick_activations(
             continue;
         }
         if disabled {
+            commands.entity(entity).remove::<Activation>();
+            continue;
+        }
+        // A unit target that slipped past the cast range buffer cancels the cast for free.
+        // A target that died is a point by now and is not tracked any further.
+        if let (Some(break_range), CastTarget::Unit(_)) =
+            (activation.break_range, activation.target)
+            && cast_distance(
+                transform.translation,
+                bounds_of(bound),
+                activation.aim,
+                activation.target_bounds,
+            ) > break_range
+        {
             commands.entity(entity).remove::<Activation>();
             continue;
         }

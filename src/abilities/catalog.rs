@@ -425,21 +425,20 @@ mod tests {
     use crate::abilities::definition::AbilityBehavior;
 
     #[test]
-    fn timing_clamps_backswing_at_max_cast_backswing_and_cast_point_at_half() {
-        use crate::abilities::definition::MAX_CAST_BACKSWING;
+    fn timing_clamps_at_max_cast_point_and_backswing() {
+        use crate::abilities::definition::{MAX_CAST_BACKSWING, MAX_CAST_POINT};
+        assert_eq!(MAX_CAST_POINT, 2.0);
+        assert_eq!(MAX_CAST_BACKSWING, 2.0);
         let d = builtin(AbilityId::Dash).timing(0.9, 0.9);
-        assert_eq!(d.cast_time, 0.5);
+        assert_eq!(d.cast_time, 0.9, "cast points up to 2.0 apply unclamped");
         assert_eq!(d.backswing, 0.9);
-        let d = builtin(AbilityId::Dash).timing(0.1, 7.0);
+        let d = builtin(AbilityId::Dash).timing(2.0, 1.6);
+        assert_eq!((d.cast_time, d.backswing), (2.0, 1.6));
+        let d = builtin(AbilityId::Dash).timing(5.0, 7.0);
+        assert_eq!(d.cast_time, MAX_CAST_POINT);
         assert_eq!(d.backswing, MAX_CAST_BACKSWING);
-        assert_eq!(MAX_CAST_BACKSWING, 1.5);
-        for backswing in [1.07, 1.2, 1.3] {
-            let d = builtin(AbilityId::Dash).timing(0.3, backswing);
-            assert_eq!(
-                d.backswing, backswing,
-                "backswings up to 1.5 apply unclamped"
-            );
-        }
+        let d = builtin(AbilityId::Dash).timing(-1.0, -1.0);
+        assert_eq!((d.cast_time, d.backswing), (0.0, 0.0));
     }
 
     #[test]
@@ -635,7 +634,7 @@ mod tests {
         assert!(hit.iter().any(|e| matches!(
             e.effect,
             AbilityEffect::ApplyStatus {
-                status: StatusSpec::Slow { percent },
+                status: StatusSpec::Slow { percent, .. },
                 duration,
             } if percent.at(1) == 75.0 && duration.at(1) == 0.55 && duration.at(7) == 1.45
         )));
@@ -730,7 +729,7 @@ mod tests {
         assert!(end.iter().any(|x| matches!(
             x.effect,
             AbilityEffect::ApplyStatus {
-                status: StatusSpec::Slow { percent },
+                status: StatusSpec::Slow { percent, .. },
                 duration,
             } if percent.at(1) == 20.0 && percent.at(7) == 80.0 && duration.at(1) == 3.25
         )));
@@ -821,6 +820,146 @@ mod tests {
         assert_eq!(table.at(9), 260.0);
         assert_eq!(table.scaled(0.5).at(2), 75.0);
         assert_eq!(RankValue::from_level_1(10.0, 2.0).scaled(0.5).at(2), 6.0);
+    }
+
+    #[test]
+    fn sniper_abilities_generate_expected_definitions() {
+        use crate::abilities::definition::{AreaRadius, DisplacementKind, PassiveStat, StatusSpec};
+        use crate::actions::TargetType;
+
+        assert_eq!(AbilityId::Shrapnel.display_name(), "Shrapnel");
+        assert_eq!(AbilityId::Headshot.display_name(), "Headshot");
+        assert_eq!(AbilityId::TakeAim.display_name(), "Take Aim");
+        assert_eq!(AbilityId::Assassinate.display_name(), "Assassinate");
+        assert!(AbilityId::Assassinate.is_ultimate());
+        assert!(!AbilityId::Shrapnel.is_ultimate());
+
+        // Q: ground-targeted zone, 1.2 s delay, then a tick every second for 10 s.
+        let q = builtin(AbilityId::Shrapnel);
+        assert_eq!(q.max_rank, 7);
+        assert_eq!(q.target_type, TargetType::Area);
+        assert_eq!(q.cast_range.at(1), 1800.0);
+        assert_eq!(q.aoe_radius.at(1), 400.0);
+        assert_eq!(q.aoe_radius.at(7), 550.0);
+        assert_eq!(q.cast_time, 0.3);
+        assert_eq!(q.backswing, 0.0);
+        assert_eq!(q.cooldown.at(1), 10.0);
+        assert_eq!(q.mana_cost.at(1), 75.0);
+        assert!(q.charges.is_none());
+        let zone: Vec<_> = q.effects_for(AbilityTrigger::OnCast).collect();
+        assert_eq!(zone.len(), 1);
+        assert!(matches!(
+            zone[0].effect,
+            AbilityEffect::Zone {
+                radius: AreaRadius::Ability,
+                team: TargetTeam::Enemy,
+                delay,
+                duration,
+                interval,
+                then: AbilityTrigger::Custom("on_shrapnel_tick"),
+            } if delay.at(1) == 1.2 && duration.at(1) == 10.0 && interval.at(1) == 1.0
+        ));
+        let tick = AbilityTrigger::Custom("on_shrapnel_tick");
+        assert!(q.effects_for(tick).any(|e| matches!(
+            e.effect,
+            AbilityEffect::Damage { amount, damage_type: DamageType::Magical, .. }
+                if amount.at(1) == 30.0 && amount.at(7) == 120.0
+        )));
+        assert!(q.effects_for(tick).any(|e| matches!(
+            e.effect,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Slow { id: "shrapnel_slow", percent },
+                duration,
+            } if percent.at(1) == 12.0 && percent.at(7) == 48.0 && duration.at(1) == 1.1
+        )));
+
+        // W: passive 40% pseudo-random proc on attack hit.
+        let w = builtin(AbilityId::Headshot);
+        assert_eq!(w.behavior, AbilityBehavior::Passive);
+        assert!(w.effects_for(AbilityTrigger::OnAttackHit).any(|e| matches!(
+            e.effect,
+            AbilityEffect::Proc {
+                chance,
+                then: AbilityTrigger::Custom("on_headshot"),
+                pseudo: true,
+            } if (chance.at(1) - 0.4).abs() < 1e-6
+        )));
+        let headshot = AbilityTrigger::Custom("on_headshot");
+        assert!(w.effects_for(headshot).any(|e| matches!(
+            e.effect,
+            AbilityEffect::Damage { amount, damage_type: DamageType::Physical, .. }
+                if amount.at(1) == 20.0 && amount.at(7) == 200.0
+        )));
+        assert!(w.effects_for(headshot).any(|e| matches!(
+            e.effect,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Slow { id: "headshot_slow", percent },
+                duration,
+            } if percent.at(1) == 100.0 && duration.at(1) == 0.2 && duration.at(7) == 0.8
+        )));
+        assert!(w.effects_for(headshot).any(|e| matches!(
+            e.effect,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Modifier { id: "headshot_attack_speed_flat", attack_speed_flat, .. },
+                ..
+            } if attack_speed_flat.at(1) == -100.0
+        )));
+        assert!(w.effects_for(headshot).any(|e| matches!(
+            e.effect,
+            AbilityEffect::Displace {
+                kind: DisplacementKind::Knockback,
+                distance: Some(distance),
+                duration,
+                ..
+            } if distance.at(1) == 50.0 && duration.at(1) == 0.05
+        )));
+
+        // E: attack range bonus, written as the total minus the 550 base.
+        let e = builtin(AbilityId::TakeAim);
+        assert!(e.effects_for(AbilityTrigger::Passive).any(|x| matches!(
+            x.effect,
+            AbilityEffect::PassiveStat { stat: PassiveStat::AttackRange, amount }
+                if amount.at(1) == 235.0 && amount.at(7) == 1165.0
+        )));
+
+        // R: locked-on homing shot with a 2 s aim and a 600 leash buffer.
+        let r = builtin(AbilityId::Assassinate);
+        assert!(r.is_ultimate);
+        assert_eq!(r.max_rank, 4);
+        assert_eq!(r.target_type, TargetType::Unit);
+        assert_eq!(r.cast_range.at(1), 3000.0);
+        assert_eq!(r.cast_range_buffer.at(1), 600.0);
+        assert_eq!(r.cast_time, 2.0);
+        assert_eq!(r.backswing, 1.6);
+        assert_eq!(r.mana_cost.at(1), 175.0);
+        let r_cooldowns: Vec<f32> = (1..=4).map(|rank| r.cooldown.at(rank)).collect();
+        assert_eq!(r_cooldowns, [20.0, 15.0, 10.0, 5.0]);
+        assert!(r.mechanics.iter().any(|m| matches!(
+            m,
+            AbilityMechanic::Projectile {
+                skillshot: false,
+                speed: Some(speed),
+                ..
+            } if *speed == 1500.0
+        )));
+        assert!(
+            r.effects_for(AbilityTrigger::OnProjectileHit)
+                .any(|e| matches!(
+                    e.effect,
+                    AbilityEffect::Damage { amount, damage_type: DamageType::Magical, .. }
+                        if amount.at(1) == 300.0 && amount.at(4) == 600.0
+                ))
+        );
+        assert!(
+            r.effects_for(AbilityTrigger::OnProjectileHit)
+                .any(|e| matches!(
+                    e.effect,
+                    AbilityEffect::ApplyStatus {
+                        status: StatusSpec::OwnedStun { id: "assassinate_stun" },
+                        duration,
+                    } if duration.at(1) == 0.1
+                ))
+        );
     }
 
     #[test]

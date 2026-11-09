@@ -55,6 +55,7 @@ pub fn ability_action_spec(
         target_type: def.target_type,
         target_team: def.target_team,
         cast_range: def.cast_range.at(state.rank),
+        cast_range_buffer: def.cast_range_buffer.at(state.rank),
         cast_time: def.cast_time,
         channel_time: def.channel_time,
         backswing: def.backswing,

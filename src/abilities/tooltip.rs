@@ -48,6 +48,13 @@ pub fn ability_tooltip_bits(def: &AbilityDefinition, learned_rank: u32) -> Vec<T
         max_rank,
         learned_rank,
     );
+    push_value(
+        &mut bits,
+        "Cast range buffer",
+        def.cast_range_buffer,
+        max_rank,
+        learned_rank,
+    );
     push_value(&mut bits, "Radius", def.aoe_radius, max_rank, learned_rank);
     for mechanic in &def.mechanics {
         if let AbilityMechanic::Projectile {
@@ -393,6 +400,7 @@ fn effect_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
         | AbilityEffect::Proc { .. }
         | AbilityEffect::Counter { .. }
         | AbilityEffect::Chain { .. }
+        | AbilityEffect::Zone { .. }
         | AbilityEffect::Accumulate { .. }
         | AbilityEffect::PerformAttack { .. } => Vec::new(),
     }
@@ -400,7 +408,7 @@ fn effect_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
 
 fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
     match status {
-        StatusSpec::Slow { percent } => {
+        StatusSpec::Slow { percent, .. } => {
             vec![
                 row("Slow %", percent),
                 seconds_row("Slow duration", duration),
@@ -543,6 +551,27 @@ fn effect_text_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
             "Chains up to {jumps} times, {}% per jump",
             fmt_num(falloff * 100.0)
         ))],
+        AbilityEffect::Zone {
+            radius,
+            delay,
+            duration,
+            interval,
+            ..
+        } => {
+            let radius = match radius {
+                AreaRadius::Ability => "the ability radius".to_string(),
+                AreaRadius::Fixed(value) => fmt_num(value.at(1)),
+            };
+            let delay = match delay.at(1) {
+                d if d > 0.0 => format!("after {}s, ", fmt_num(d)),
+                _ => String::new(),
+            };
+            vec![text_row(format!(
+                "Zone: radius {radius}, {delay}every {}s for {}s",
+                fmt_num(interval.at(1)),
+                fmt_num(duration.at(1))
+            ))]
+        }
         AbilityEffect::Accumulate { threshold, .. } => vec![text_row(format!(
             "Each time {} builds up",
             fmt_num(threshold.at(1))
@@ -603,7 +632,7 @@ fn damage_name(damage_type: DamageType) -> &'static str {
 
 fn status_name(status: StatusSpec) -> &'static str {
     match status {
-        StatusSpec::Stun => "Stun",
+        StatusSpec::Stun | StatusSpec::OwnedStun { .. } => "Stun",
         StatusSpec::Root => "Root",
         StatusSpec::Silence => "Silence",
         StatusSpec::Disarm => "Disarm",
@@ -740,5 +769,19 @@ mod tests {
         let bits = ability_tooltip_bits(&slam, 0);
         let levels = row_values(&bits, "Level");
         assert!(levels.iter().all(|(_, learned)| !learned));
+    }
+
+    #[test]
+    fn cast_range_buffer_row_shows_only_when_set() {
+        let slam = builtin(AbilityId::SeismicSlam);
+        let text = |def: &AbilityDefinition| -> String {
+            ability_tooltip_bits(def, 1)
+                .iter()
+                .map(|bit| bit.text.as_str())
+                .collect()
+        };
+        assert!(!text(&slam).contains("Cast range buffer"));
+        let buffered = slam.cast_range_buffer(RankValue::fixed(600.0));
+        assert!(text(&buffered).contains("Cast range buffer"));
     }
 }

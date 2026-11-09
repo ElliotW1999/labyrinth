@@ -87,6 +87,10 @@ pub struct StatusEffect {
     pub armor: f32,
     pub magic_resist: f32,
     pub move_speed: f32,
+    /// Percent slow as a fraction (0..1) of the holder's base move speed. When non-zero,
+    /// [`apply_status`] recomputes `move_speed` as `-fraction x base`, where base is the move
+    /// speed without any status deltas, so a refreshed slow never compounds on itself.
+    pub move_slow_fraction: f32,
     /// Flat IAS change from this effect (negative values slow attack speed).
     pub attack_speed_flat: f32,
     /// Multiplicative AS modifier × (1 + `attack_speed_mult`) — negative slows.
@@ -190,6 +194,7 @@ impl StatusEffect {
             armor: 0.0,
             magic_resist: 0.0,
             move_speed: 0.0,
+            move_slow_fraction: 0.0,
             attack_speed_flat: 0.0,
             attack_speed_mult: 0.0,
             turn_rate_slow_percent: 0.0,
@@ -929,7 +934,7 @@ pub(crate) fn add_status_stat_delta(effect: &StatusEffect, stats: &mut CombatSta
 pub fn apply_status(
     statuses: &mut StatusEffects,
     stats: &mut CombatStats,
-    effect: StatusEffect,
+    mut effect: StatusEffect,
     agility: f32,
 ) -> bool {
     if effect.kind == StatusKind::Debuff && statuses.has_debuff_immunity() {
@@ -939,6 +944,13 @@ pub fn apply_status(
     if let Some(existing) = statuses.effects.iter().position(|e| e.id == effect.id) {
         let old = statuses.effects.remove(existing);
         subtract_status_stat_delta(&old, stats, agility);
+    }
+    if effect.move_slow_fraction > 0.0 {
+        // Measure the slow against the speed without status deltas, after the refreshed
+        // status is gone, so refreshing never shrinks or removes the slow.
+        let status_speed: f32 = statuses.effects.iter().map(|e| e.move_speed).sum();
+        let base = (stats.move_speed - status_speed).max(0.0);
+        effect.move_speed = -effect.move_slow_fraction * base;
     }
     add_status_stat_delta(&effect, stats, agility);
     statuses.effects.push(effect);
@@ -1194,6 +1206,95 @@ mod tests {
         let expired = statuses.effects.remove(0);
         stats.armor -= expired.armor;
         assert_eq!(stats.armor, 2.0);
+    }
+
+    fn percent_slow(
+        id: &'static str,
+        percent: f32,
+        duration: f32,
+        current_speed: f32,
+    ) -> StatusEffect {
+        let built = StatusSpec::Slow {
+            id: "slow",
+            percent: RankValue::fixed(percent),
+        }
+        .build(
+            1,
+            duration,
+            StatusBuildContext {
+                move_speed: current_speed,
+                agility: 0.0,
+                fear_source: None,
+                source: None,
+                point: Vec3::ZERO,
+                base_attack_damage: 0.0,
+            },
+        );
+        StatusEffect { id, ..built }
+    }
+
+    #[test]
+    fn first_slow_application_is_unchanged() {
+        let mut statuses = StatusEffects::default();
+        let mut stats = CombatStats::simple(10.0, 8.0, 1.0, 2.0, 1.0, 300.0);
+        let slow = percent_slow("slow", 30.0, 2.0, stats.move_speed);
+        assert!((slow.move_speed + 90.0).abs() < 1e-4);
+        apply_status(&mut statuses, &mut stats, slow, 0.0);
+        assert!((stats.move_speed - 210.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn refreshed_slow_stays_at_its_percent_of_base_speed() {
+        let mut statuses = StatusEffects::default();
+        let mut stats = CombatStats::simple(10.0, 8.0, 1.0, 2.0, 1.0, 300.0);
+        for _ in 0..10 {
+            // Built against the already-slowed speed, as build_status_effect does.
+            let slow = percent_slow("slow", 30.0, 2.0, stats.move_speed);
+            apply_status(&mut statuses, &mut stats, slow, 0.0);
+        }
+        assert!((stats.move_speed - 210.0).abs() < 1e-3);
+        assert_eq!(statuses.effects.len(), 1);
+    }
+
+    #[test]
+    fn refreshed_full_slow_stays_a_full_slow() {
+        let mut statuses = StatusEffects::default();
+        let mut stats = CombatStats::simple(10.0, 8.0, 1.0, 2.0, 1.0, 300.0);
+        for _ in 0..3 {
+            let slow = percent_slow("slow", 100.0, 2.0, stats.move_speed);
+            apply_status(&mut statuses, &mut stats, slow, 0.0);
+        }
+        assert!(stats.move_speed.abs() < 1e-3);
+        assert_eq!(
+            stats.effective_move_speed(Some(&statuses)),
+            crate::scale::MIN_MOVE_SPEED
+        );
+    }
+
+    #[test]
+    fn slows_from_two_ids_add_floor_and_expire_back_to_base() {
+        let mut statuses = StatusEffects::default();
+        let mut stats = CombatStats::simple(10.0, 8.0, 1.0, 2.0, 1.0, 300.0);
+        let full = percent_slow("a_slow", 100.0, 1.0, stats.move_speed);
+        apply_status(&mut statuses, &mut stats, full, 0.0);
+        let partial = percent_slow("b_slow", 48.0, 2.0, stats.move_speed);
+        apply_status(&mut statuses, &mut stats, partial, 0.0);
+        assert_eq!(
+            stats.effective_move_speed(Some(&statuses)),
+            crate::scale::MIN_MOVE_SPEED,
+            "stacked slows floor at the minimum speed"
+        );
+        // Refreshing the partial slow while the full one is active keeps both at base-relative values.
+        let partial = percent_slow("b_slow", 48.0, 2.0, stats.move_speed);
+        apply_status(&mut statuses, &mut stats, partial, 0.0);
+        assert!((stats.move_speed - (300.0 - 300.0 - 144.0)).abs() < 1e-3);
+        for effect in std::mem::take(&mut statuses.effects) {
+            subtract_status_stat_delta(&effect, &mut stats, 0.0);
+        }
+        assert!(
+            (stats.move_speed - 300.0).abs() < 1e-3,
+            "both expire back to base"
+        );
     }
 
     #[test]

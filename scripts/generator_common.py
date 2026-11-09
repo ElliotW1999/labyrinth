@@ -89,8 +89,9 @@ REACTION_TRIGGERS = {
 # Effect types that re-fire the row's context under a custom `on_<name>` trigger.
 GATE_TYPES = ("proc", "pseudo_proc", "counter", "accumulate")
 # Every effect type that fires a custom trigger: the gates plus the Chain mechanic gate (one
-# derived context per hop). Used for reachability and reaction propagation.
-CUSTOM_TRIGGER_FEEDERS = (*GATE_TYPES, "chain")
+# derived context per hop) and the Zone mechanic gate (one per tick). Used for reachability and
+# reaction propagation.
+CUSTOM_TRIGGER_FEEDERS = (*GATE_TYPES, "chain", "zone")
 # Triggers whose resolved target is the unit that caused them (the `attacker` target).
 ATTACKER_TRIGGERS = ("on_damage_taken", "on_death")
 
@@ -162,6 +163,9 @@ EFFECT_TYPES = {
     "accumulate",
     # Mechanic gate: jump from the start unit to nearby units, re-firing a custom trigger per hop.
     "chain",
+    # Mechanic gate: a delayed, persistent area that re-fires a custom trigger on every tick with the
+    # units inside as the affected units.
+    "zone",
     # Extra basic attacks (instant / double / multi-target attack).
     "perform_attack",
 }
@@ -171,6 +175,9 @@ DAMAGE_TYPES = {"physical": "Physical", "magical": "Magical", "pure": "Pure"}
 # effect_id → (StatusSpec expression, runtime status id, is_buff)
 STATUSES = {
     "stun": ("StatusSpec::Stun", "stun", False),
+    # A stun with the per-owner id `<owner>_stun`: refreshes only itself, so a short stun never
+    # shortens a longer one from another source.
+    "mini_stun": (None, "stun", False),
     "root": ("StatusSpec::Root", "root", False),
     "silence": ("StatusSpec::Silence", "silence", False),
     "disarm": ("StatusSpec::Disarm", "disarm", False),
@@ -1184,12 +1191,15 @@ def runtime_status_id(text: str) -> str | None:
     """Runtime id for a status named in a trigger argument, or None when it is unknown.
 
     Accepts CSV status ids (`stun`), runtime ids (`spell_immunity`) and the per-owner ids that
-    timed `stat_modifier` rows create (`<owner>_<stat>`) and the ones burns create (`<owner>_burn`)."""
+    timed `stat_modifier` rows create (`<owner>_<stat>`) and the ones burns and slows create
+    (`<owner>_burn`, `<owner>_slow`) and the ones `mini_stun` creates (`<owner>_stun`)."""
+    if text == "mini_stun":
+        return None  # the id depends on the owner: name `<owner>_stun`
     if text in STATUSES:
         return STATUSES[text][1]
     if text in {runtime for _, runtime, _ in STATUSES.values()}:
         return text
-    for stat in (*TIMED_STATS, *RESOURCE_STATS, "burn"):
+    for stat in (*TIMED_STATS, *RESOURCE_STATS, "burn", "slow", "stun"):
         suffix = "_" + stat
         if text.endswith(suffix) and ID_PATTERN.match(text[: -len(suffix)]):
             return text
@@ -1297,8 +1307,10 @@ def trigger_to_rust(e: EffectRow, variant: str, report: Report) -> str | None:
 def held_status_id(e: EffectRow) -> str | None:
     """Runtime id of the status a `while` row holds, or None when it cannot be told."""
     effect_id = e.row.get("effect_id").lower()
-    if e.effect_type == "apply_status" and effect_id == "burn":
-        return f"{e.owner}_burn"
+    if e.effect_type == "apply_status" and effect_id in ("burn", "slow"):
+        return f"{e.owner}_{effect_id}"
+    if e.effect_type == "apply_status" and effect_id == "mini_stun":
+        return f"{e.owner}_stun"
     if e.effect_type == "apply_status" and effect_id in STATUSES:
         return STATUSES[effect_id][1]
     if e.effect_type == "stat_modifier" and effect_id:
@@ -1321,10 +1333,11 @@ def reaction_triggers(effects: list[EffectRow]) -> set[str]:
 
 
 def chain_fed_triggers(effects: list[EffectRow]) -> set[str]:
-    """Custom triggers fed by a `chain` row, directly or through further gates.
+    """Custom triggers fed by a `chain` or `zone` row, directly or through further gates.
 
-    Chain hops carry no `AttackMeta`, so a `perform_attack` under such a trigger would start an
-    attack whose hit re-fires the trigger that fed the chain: an unbounded loop (F7).
+    Chain hops and zone ticks carry no `AttackMeta`, so a `perform_attack` under such a trigger
+    would start an attack whose hit re-fires the trigger that fed the chain or zone: an unbounded
+    loop (F7).
     """
     fed_triggers: set[str] = set()
     changed = True
@@ -1334,7 +1347,7 @@ def chain_fed_triggers(effects: list[EffectRow]) -> set[str]:
             fed = e.row.get("effect_id").lower()
             if e.effect_type not in CUSTOM_TRIGGER_FEEDERS or fed in fed_triggers:
                 continue
-            if e.effect_type == "chain" or e.trigger in fed_triggers:
+            if e.effect_type in ("chain", "zone") or e.trigger in fed_triggers:
                 fed_triggers.add(fed)
                 changed = True
     return fed_triggers
@@ -1475,8 +1488,8 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             row.line,
             "effect_type",
             e.effect_type,
-            f"{e.trigger} is fed by a chain row; a chain hop carries no attack, so perform_attack here "
-            "could re-fire the trigger that fed the chain without end",
+            f"{e.trigger} is fed by a chain or zone row; its context carries no attack, so perform_attack here "
+            "could re-fire the trigger that fed it without end",
         )
         return None
 
@@ -1572,9 +1585,14 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             if any(not 0 <= p <= 100 for p in percent):
                 report.error(row.file, row.line, "amount" if amount else "value", row.get("amount") or row.get("value"), "slow percentage must be within 0..100")
                 return None
-            spec = f"StatusSpec::Slow {{ percent: {rank_value(percent)} }}"
+            spec = f'StatusSpec::Slow {{ id: "{ctx.owner_id}_slow", percent: {rank_value(percent)} }}'
             if amount:
                 _unused(e, report, "value")
+        elif effect_id == "mini_stun":
+            _unused(e, report, "value", "amount")
+            if any(d < 0.05 for d in duration if d > 0):
+                report.warn(row.file, row.line, "duration", row.get("duration"), "a stun shorter than 0.05s may not interrupt anything")
+            spec = f'StatusSpec::OwnedStun {{ id: "{ctx.owner_id}_stun" }}'
         elif effect_id == "shield":
             pool = amount or value
             if not pool:
@@ -1715,6 +1733,12 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             effect = (
                 f"AbilityEffect::Dispel {{ kind: StatusKind::{effect_id.capitalize()}, strength: {strength} }}"
             )
+        elif effect_id == "slow":
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), "generated slows carry the per-owner id <owner>_slow; name that id to remove one")
+            return None
+        elif effect_id == "mini_stun":
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), "a mini_stun carries the per-owner id <owner>_stun; name that id to remove it")
+            return None
         elif ID_PATTERN.match(effect_id):
             status_id = STATUSES[effect_id][1] if effect_id in STATUSES else effect_id
             beneficial = effect_id in STATUSES and not STATUSES[effect_id][2]
@@ -1906,6 +1930,61 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             f"falloff: {f32(amount[0] / 100)}, team: TargetTeam::{chain_team}, "
             f'then: AbilityTrigger::Custom("{effect_id}") }}'
         )
+    elif t == "zone":
+        if not _require(e, "effect_id", report, "the custom trigger to fire per tick (on_<name>)"):
+            return None
+        if not CUSTOM_TRIGGER_PATTERN.match(effect_id) or effect_id in ABILITY_TRIGGERS or effect_id in ITEM_TRIGGERS:
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), "must be a custom on_<name> trigger, not a built-in trigger")
+            return None
+        if effect_id == e.trigger:
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), "a zone cannot fire its own trigger")
+            return None
+        if e.target not in ("caster", "owner"):
+            report.error(row.file, row.line, "effect_target", e.target, "a zone is placed by the unit using it; use owner or caster")
+            return None
+        if ctx.owner_triggers is not None and effect_id not in ctx.owner_triggers:
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), f"no row of {e.owner!r} uses trigger {effect_id}, so this zone would do nothing")
+            return None
+        if not no_scaling():
+            return None
+        if not _require(e, "value", report, "tick interval in seconds (above 0)"):
+            return None
+        if not _require(e, "duration", report, "seconds the zone stays active (above 0)"):
+            return None
+        if any(v <= 0 for v in value):
+            report.error(row.file, row.line, "value", row.get("value"), "zone tick interval must be above 0")
+            return None
+        if any(d <= 0 for d in duration):
+            report.error(row.file, row.line, "duration", row.get("duration"), "zone duration must be above 0")
+            return None
+        for rank in range(max(len(value), len(duration))):
+            tick = value[min(rank, len(value) - 1)]
+            lasts = duration[min(rank, len(duration) - 1)]
+            if tick > lasts:
+                report.error(row.file, row.line, "value", row.get("value"), f"zone tick interval {tick:g}s exceeds the {lasts:g}s duration")
+                return None
+        if amount and any(a < 0 for a in amount):
+            report.error(row.file, row.line, "amount", row.get("amount"), "zone delay (seconds) cannot be negative")
+            return None
+        if radius:
+            if any(r <= 0 for r in radius):
+                report.error(row.file, row.line, "radius", row.get("radius"), "zone radius must be above 0")
+                return None
+            zone_radius = f"AreaRadius::Fixed({rank_value(radius)})"
+        elif ctx.has_aoe:
+            zone_radius = "AreaRadius::Ability"
+        else:
+            where = "the ability has no aoe_radius" if ctx.kind == "ability" else "items have no aoe_radius"
+            report.error(row.file, row.line, "radius", "", f"required for a zone ({where})")
+            return None
+        _unused(e, report, "damage_type")
+        zone_team = ctx.team if ctx.team in ("Enemy", "Ally", "Any") else "Enemy"
+        effect = (
+            f"AbilityEffect::Zone {{ radius: {zone_radius}, team: TargetTeam::{zone_team}, "
+            f"delay: {rank_value(amount or [0.0])}, duration: {rank_value(duration)}, "
+            f"interval: {rank_value(value)}, "
+            f'then: AbilityTrigger::Custom("{effect_id}") }}'
+        )
     elif t == "perform_attack":
         if effect_id not in ("", "exclude_trigger_unit"):
             report.error(row.file, row.line, "effect_id", row.get("effect_id"), "perform_attack effect_id must be blank or exclude_trigger_unit")
@@ -1951,7 +2030,7 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
     else:  # pragma: no cover - parse_enum already rejected it
         return None
 
-    if t not in ("movement", "chain") and e.target != "units_in_radius" and row.get("radius"):
+    if t not in ("movement", "chain", "zone") and e.target != "units_in_radius" and row.get("radius"):
         report.warn(row.file, row.line, "radius", row.get("radius"), "only used by units_in_radius targets")
 
     # --- target

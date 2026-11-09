@@ -319,6 +319,8 @@ mod tests {
             target: CastTarget::None,
             aim: Vec3::ZERO,
             disable: crate::actions::DisableRule::SilenceOrStun,
+            break_range: None,
+            target_bounds: None,
             point_remaining: 0.0,
             channel_remaining: 0.0,
             backswing_remaining: 0.3,

@@ -99,6 +99,9 @@ pub struct ActionSpec {
     pub target_type: TargetType,
     pub target_team: TargetTeam,
     pub cast_range: f32,
+    /// Unit targets: how far past `cast_range` the target may move during the cast point
+    /// before the activation is cancelled (`0` = no limit).
+    pub cast_range_buffer: f32,
     /// Seconds before the action fires (turning toward the aim comes first).
     pub cast_time: f32,
     /// Seconds the caster channels after firing (`0` = not channelled).
@@ -135,6 +138,11 @@ pub struct Activation {
     pub target: CastTarget,
     pub aim: Vec3,
     pub disable: DisableRule,
+    /// Unit target with a cast range buffer: the activation is cancelled free of charge during
+    /// the cast point once the target is further than this from the caster.
+    pub break_range: Option<f32>,
+    /// Bounding radius of the unit target, for measuring against `break_range`.
+    pub target_bounds: Option<f32>,
     /// Time left in the cast point (the action fires when this hits 0).
     pub point_remaining: f32,
     /// After firing, remaining channel time (interrupted by silence / stun).

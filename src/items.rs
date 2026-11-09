@@ -468,6 +468,7 @@ pub fn item_action_spec(inventory: &Inventory, slot: usize) -> Result<ActionSpec
         target_type: activation.target_type,
         target_team: activation.target_team,
         cast_range: activation.cast_range,
+        cast_range_buffer: 0.0,
         cast_time: activation.cast_time,
         channel_time: activation.channel_time,
         backswing: 0.0,
@@ -2958,6 +2959,7 @@ mod tests {
             .add_message::<crate::actions::ActionChannelEndEvent>()
             .add_message::<AbilityTriggerEvent>()
             .add_message::<crate::abilities::effects::SpellHitEvent>()
+            .add_message::<crate::abilities::zones::SpawnZoneEvent>()
             .add_message::<crate::abilities::reactive_triggers::CooldownReadyEvent>()
             .add_message::<HealEvent>()
             .add_message::<crate::abilities::effects::ManaRestoreEvent>()

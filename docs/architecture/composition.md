@@ -9,7 +9,7 @@ Plan and decisions: `docs/plans/2026-11-08-mechanic-composition-layers.md`. Reac
 | Layer | Purpose | Owning code | May emit | May read |
 |---|---|---|---|---|
 | **Activation** | How an action starts: targeting, range, cost, cooldown, cast point, channel | `src/actions/` (`pipeline.rs`, `targeting.rs`, `resources.rs`); source-specific halves in `abilities/casting.rs` (`ability_action_spec`, `commit_ability`) and `items.rs` (`item_action_spec`, `commit_item`) | `ActionFiredEvent`, `ActionChannelEndEvent`; facts `AbilityCastEvent` (abilities only) and `CooldownReadyEvent` (carries an `EffectSource`, written when `ActionCooldown::tick` reports the cooldown became ready) | Loadout / inventory, mana, cooldowns, statuses (`DisableRule`) |
-| **Mechanics** | How an action plays out over time and **who** is involved: dash, projectile (homing, skillshot, skillshot that widens with distance via `end_radius`), `ProjectileToEach` (one homing projectile per unit in an area), attack-unit, and the four gates (`Proc` incl. pseudo-random, `Counter`, `Accumulate`, `Chain`; gate state in `TriggerCounters { counts, prd, sums }`) | `abilities/mechanics.rs` (`MechanicRunner`, `CastContext`, `chain_hops`, `execute_ability_casts`, `execute_item_mechanics`), `combat.rs` projectile systems, `displacement.rs` motion | `AbilityTriggerEvent`, `SpawnProjectileEvent`, `DisplacementEvent` (dash). Never Damage, Heal or Status events | Positions, teams, health (alive), untargetable |
+| **Mechanics** | How an action plays out over time and **who** is involved: dash, projectile (homing, skillshot, skillshot that widens with distance via `end_radius`), `ProjectileToEach` (one homing projectile per unit in an area), attack-unit, the four gates (`Proc` incl. pseudo-random, `Counter`, `Accumulate`, `Chain`; gate state in `TriggerCounters { counts, prd, sums }`), and the `Zone` gate (a delayed, persistent area that fires a custom trigger on every tick; `abilities/zones.rs`) | `abilities/mechanics.rs` (`MechanicRunner`, `CastContext`, `chain_hops`, `execute_ability_casts`, `execute_item_mechanics`), `combat.rs` projectile systems, `displacement.rs` motion | `AbilityTriggerEvent`, `SpawnProjectileEvent`, `DisplacementEvent` (dash). Never Damage, Heal or Status events | Positions, teams, health (alive), untargetable |
 | **Triggers** | **When** effects run: `AbilityTrigger` plus the systems that emit it | `definition.rs` (`AbilityTrigger`, `StatusFilter`, `Condition`), `mechanics.rs` (`OnCast`, `projectile_hit_triggers`), `items.rs` (`OnUse`), `casting.rs` (channel end), `attack_triggers.rs`, `displacement.rs` (contact, movement end), `passive.rs` (`WhileToggled`), `reactive_triggers.rs` (dispatchers `track_travel`, `proximity_triggers`, `interval_triggers`, `cooldown_triggers`, `cast_triggers`, `damage_triggers`, `status_triggers`; state `TriggerTracking`; shared fan-out `owner_sources` / `source_triggers` / `fan_out`) | `AbilityTriggerEvent(TriggerContext)`. The dispatchers read only fact messages (I11) | The fired action; fact messages from the Effects and Gameplay-rules layers |
 | **Effects** | **What** happens: `AbilityEffect` rows executed by the single executor. This is also the only place the reaction flag is stamped (I1, I10) | `abilities/effects.rs` (`EffectRunner::execute`, `resolve_ability_triggers`, `build_status_effect`) | `DamageEvent`, `HealEvent`, `ManaRestoreEvent`, `ResourceDrainEvent`, `StatusEffectEvent` (all stamped `.reactive(ctx.reaction)`), `DisplacementEvent`, `TeleportEvent`, `ExtraAttackEvent`, derived contexts from gates; the fact `SpellHitEvent` (ability source, depth 0, cast phase only) | Context, target stats and statuses (for scaling) |
 | **Modifiers** | Persistent numeric changes | `PassiveStat` / `ItemPassives` (`items.rs`, `abilities/passive.rs`), `StatusSpec` modifier variants and `StatusEffect` stat fields (`status.rs`), `vitals::resource_stat` | Stat changes through `CombatStats` | Owned items, ranks, active statuses |
@@ -18,7 +18,7 @@ Plan and decisions: `docs/plans/2026-11-08-mechanic-composition-layers.md`. Reac
 Invariants (I1 to I9 from the composition plan, with I1, I4 and I6 amended and I10 to I12 added by the merge plan):
 
 - **I1.** `EffectRunner::execute` is the only place an `AbilityEffect` becomes gameplay messages. Every status (cast, toggle, `While`) is built by `build_status_effect`. Reactive stamping happens only there and in `reconcile_held_status`.
-- **I2.** Mechanics and gates (`Proc`, `Counter`, `Accumulate`, `Chain`) decide who and when; they never write Damage, Heal or Status events (accepted exceptions: the basic-attack hit stage, DoT ticks, reflection and burn follow-ups).
+- **I2.** Mechanics and gates (`Proc`, `Counter`, `Accumulate`, `Chain`, `Zone`) decide who and when; they never write Damage, Heal or Status events (accepted exceptions: the basic-attack hit stage, DoT ticks, reflection and burn follow-ups).
 - **I3.** Every trigger emitter carries an `EffectSource` (`Ability` or `Item`); nothing hard-codes `Ability`.
 - **I4.** Health goes down only in `combat::apply_damage_events` (the only writer of `DamageAppliedEvent`) and `vitals::apply_resource_drain_events` (floors health at 1; fires no damage, kill or death triggers). Health goes up only in `vitals::apply_heal`. Statuses change only through `StatusEffectEvent`, `tick_status_effects` and `status::wake_from_sleep`, which are the only sources of `StatusLifecycleEvent`.
 - **I5.** Immunity, untargetability, dispel and damage calculation are queried through the `status.rs` / `combat.rs` helpers. `DamageEvent::from_effect` alone chooses the damage kind; the Effects layer then stamps `.reactive(ctx.reaction)`.
@@ -87,9 +87,9 @@ All systems below run in `Update`. The two plugin chains interleave: the abiliti
    3. `emit_ability_casts`, then `resolve_item_uses` (OnUse) followed by `execute_item_mechanics`, then `execute_ability_casts` (mechanics and OnCast)
    4. `action_channel_end_triggers`, `projectile_hit_triggers`, `attack_triggers`
    5. `tick_forced_movement`, `settle_grounded_units` (contact and movement-end triggers)
-   6. reactive dispatchers, chained in this order: `track_travel`, `proximity_triggers`, `interval_triggers`, `cooldown_triggers` (reads `CooldownReadyEvent`), `cast_triggers` (reads `AbilityCastEvent`, `SpellHitEvent`), `damage_triggers` (reads `DamageAppliedEvent`), `status_triggers` (reads `StatusLifecycleEvent`, `.after(tick_status_effects)`), `sync_conditional_statuses` (`While` rows)
+   6. reactive dispatchers, chained in this order: `track_travel`, `proximity_triggers`, `interval_triggers`, `tick_zones` (fires the zone ticks that came due), `cooldown_triggers` (reads `CooldownReadyEvent`), `cast_triggers` (reads `AbilityCastEvent`, `SpellHitEvent`), `damage_triggers` (reads `DamageAppliedEvent`), `status_triggers` (reads `StatusLifecycleEvent`, `.after(tick_status_effects)`), `sync_conditional_statuses` (`While` rows)
    7. **`resolve_ability_triggers`** (effects, including gates and their derived contexts; writes `SpellHitEvent`)
-   8. `spawn_requested_projectiles`
+   8. `spawn_requested_zones` (reads `SpawnZoneEvent`; the zone starts counting next frame), `spawn_requested_projectiles`
    9. appliers in order: heals, mana restore, resource drains, displacement, status events (write `StatusLifecycleEvent`), resource-cap sync, teleport (`before(SimSet::Ai)`; writes `TeleportCompletedEvent` / `TeleportRejectedEvent`)
 3. `tick_status_effects` runs `.before(apply_damage_events)`, so DoT damage lands in the same damage pass.
 4. `SimSet::Commands` then `Ai` then `Movement` order the unit orders and locomotion.
@@ -107,6 +107,7 @@ A chain hop therefore resolves in the same frame as the trigger that started it 
 | `on_attack`, `on_attack_hit`, `on_use`, `on_cast`, `on_projectile_hit`, `on_impact` | same frame | Emitted by the activation, mechanics and `attack_triggers` systems |
 | `on_cooldown_ready`, `on_interval`, `on_move`, `on_enemy_enter`, `on_enemy_leave` | same frame | Emitted by the dispatchers from this frame's state |
 | gate output (`on_overload`, `on_chain_hit`, ...) | same frame as the trigger that fed the gate | Derived contexts resolve in the same call |
+| zone tick (`on_shrapnel_tick`, ...) | the frame the tick comes due (`delay + k x interval`), resolved in that frame's `resolve_ability_triggers` | A zone spawned in frame N starts counting in N+1; overdue ticks catch up in one frame, never more than `ticks` in total |
 | `on_channel_tick`, `on_expire` | never | Not emitted yet; both generators warn |
 
 A reaction to damage therefore lands one frame after the hit that caused it, and a chain started by that reaction resolves in that later frame.
@@ -119,7 +120,7 @@ Three storage styles coexist on purpose. Pick by the kind of change and keep a s
 |---|---|---|---|
 | **Mutate on apply** | `CombatStats` fields changed by `add_status_stat_delta` / `subtract_status_stat_delta` (statuses) and `items::apply_passives` / `remove_passives` (items, passive abilities) | Flat combat stats: armor, move speed, attack damage, attack speed, range | Reverted with the exact delta when the status ends or the item leaves |
 | **Sum on read** | `vitals::resource_stat`: permanent `CombatStats` value plus `StatusEffects::resource_sum` | Fractions and resource modifiers: lifesteal, heal amp, mana cost amp, regen, max health / mana | Always correct without revert bookkeeping |
-| **Snapshot at build** | `StatusSpec::build` reads `StatusBuildContext.move_speed` / `agility` | Percentage slows relative to the target's speed when applied | Fixed at application |
+| **Snapshot at build** | `StatusSpec::build` reads `StatusBuildContext.move_speed` / `agility` | Percentage slows relative to the target's speed when applied. `apply_status` then re-measures a slow (`move_slow_fraction`) against the speed without status deltas, so a refreshed slow never compounds. Generated slows carry the id `<owner>_slow`, so slows from different sources coexist and add (floored at `scale::MIN_MOVE_SPEED`) | Fixed at application |
 
 `build_status_effect` is the single constructor for statuses (timed, toggled and held `While` statuses). Held statuses get `dot_source = owner` and the owner's outgoing heal amp, exactly like toggle statuses.
 
@@ -480,6 +481,36 @@ skewer,1,on_unit_contact,trigger_unit,movement,drag_stun,,,,,,,
 
 Tests: `magnus_matches_spec`, `magnus_abilities_generate_expected_definitions`, `magnus_shockwave_pulls_toward_wave_center_and_slows`, `skewer_drags_stunned_enemy_and_hits_at_destination`, `reverse_polarity_pulls_damages_and_stuns_in_radius`, `empower_grants_percent_damage_and_cone_cleave_to_self_and_ally`, plus one set per gap.
 
+### 6.13 Sniper
+
+All four abilities are data rows (`shrapnel`, `headshot`, `take_aim`, `assassinate`; status ids `shrapnel_slow`, `headshot_slow`, `headshot_attack_speed_flat`, `assassinate_stun`). Plan and decisions: `docs/plans/2026-11-09-sniper-hero.md`.
+
+New surface (G1 to G6; nothing else was added):
+
+| Gap | Surface | Where it lives |
+|---|---|---|
+| G1 | `MAX_CAST_POINT` 2.0 and `MAX_CAST_BACKSWING` 2.0 | `definition.rs`, `AbilityGenerator.py` |
+| G2 | `zone` effect type / `AbilityEffect::Zone`: a delayed, persistent area that fires a custom trigger per tick with the units inside | `abilities/zones.rs`, `effects.rs`, `generator_common.py` |
+| G3 | `cast_range_buffer` column: a unit-targeted cast is cancelled free during the cast point if the target moves beyond `cast_range + buffer` | `actions/pipeline.rs` (`Activation.break_range`), `AbilityDefinition.cast_range_buffer` |
+| G4 | `apply_status,mini_stun`: a stun under `<owner>_stun` (`StatusSpec::OwnedStun`) | `definition.rs`, `generator_common.py` |
+| G5 | Generated slows carry `<owner>_slow` (`StatusSpec::Slow { id, percent }`) | `definition.rs`, `generator_common.py` |
+| G6 | A slow is measured against base move speed on every apply (`StatusEffect.move_slow_fraction`) | `status.rs` (`apply_status`) |
+
+**Shrapnel** (area target, cast range 1800, radius 400 to 550): one `zone` row on `on_cast` (centre = the aim, delay 1.2 s, duration 10 s, interval 1 s, radius from `aoe_radius`) feeds `on_shrapnel_tick`; the damage and the 1.1 s slow are ordinary `affected_units` rows on that trigger. Ticks land at 1.2, 2.2, ..., 10.2 s after the cast fires, so the total is 10 x the per-tick damage. The slow is re-applied on every tick (G5 and G6 keep it from compounding or colliding with Headshot's).
+
+```csv
+shrapnel,0,on_cast,caster,zone,on_shrapnel_tick,1,,10,,1.2,,
+shrapnel,1,on_shrapnel_tick,affected_units,damage,,30|45|60|75|90|105|120,magical,,,,,
+```
+
+**Headshot** (passive): `on_attack_hit,caster,pseudo_proc,on_headshot,40` re-fires the attack context under `on_headshot`. Its damage keeps the attack metadata (attack bonus damage, so armor applies), the 100% slow and the -100 attack speed share one duration, and the 50-unit knockback over the 0.05 s minimum pushes away from Sniper.
+
+**Take Aim** (passive): `stat_modifier,attack_range` with the total range minus the 550 base (235 to 1165). `base_attack_range()` excludes the bonus, so the projectile speed stays 3000.
+
+**Assassinate** (unit target, range 3000, cast point 2.0, backswing 1.6, `cast_range_buffer` 600, homing projectile at 1500): damage and `mini_stun` (0.1 s, id `assassinate_stun`) on `on_projectile_hit`. The stun refreshes only itself, so a longer stun from another source is neither replaced nor shortened.
+
+Tests: `sniper_matches_spec`, `sniper_abilities_generate_expected_definitions`, `shrapnel_zone_waits_then_ticks_ten_times`, `shrapnel_zone_slows_units_inside_and_releases_after_leaving`, `headshot_proc_damages_slows_and_knocks_back`, `headshot_and_shrapnel_slows_coexist`, `take_aim_adds_attack_range_per_rank_and_keeps_projectile_speed`, `assassinate_fires_after_two_second_aim_and_mini_stuns`, `assassinate_cancels_free_when_target_leaves_buffer`, `mini_stun_spares_a_longer_foreign_stun`, `item_and_ability_zone_emit_identical_ticks`, plus one set per gap.
+
 ## 7. Checklist: adding a mechanic, effect or trigger
 
 **New mechanic or gate**
@@ -490,6 +521,7 @@ Tests: `magnus_matches_spec`, `magnus_abilities_generate_expected_definitions`, 
 4. Respect `MAX_TRIGGER_DEPTH` for anything that re-fires contexts; skip untargetable units.
 5. Add the tooltip line (`tooltip.rs`; the `AbilityEffect` match is exhaustive, and `acts_on_targets` must say whether it is a spell hit: gates are not).
    - A gate builds its output with `ctx.derived(then)`, never a fresh `TriggerContext`, so `reaction`, `amount` and `status` are inherited (I10).
+   - A gate that must outlive its trigger (`Zone`) writes a spawn message from `EffectRunner::execute` and a Triggers-layer module owns the entity; it still fires only `AbilityTriggerEvent`s. Register the message in `AbilitiesPlugin` and in every test app that runs `resolve_ability_triggers` (`abilities::tests::test_app`, the items test app).
 6. Generators: add the `effect_type` / column validation in `generator_common.py`, add it to `warn_unreachable_custom_triggers` if it feeds a custom trigger, add examples in `data/examples/` and one row in `data/examples/invalid/`, add unittest cases.
 
 **New effect**
@@ -503,7 +535,7 @@ Tests: `magnus_matches_spec`, `magnus_abilities_generate_expected_definitions`, 
 
 1. Add the `AbilityTrigger` variant and its emitter. Every emitter builds the context with `TriggerContext::new` and carries an `EffectSource`.
 2. Add it to `ABILITY_TRIGGERS` / `ITEM_TRIGGERS` in `generator_common.py` (reactive ones through `REACTIVE_PLAIN_TRIGGERS` / `REACTIVE_PARAM_TRIGGERS`); if nothing emits it yet, list it in `NOT_EMITTED_TRIGGERS` (now only `on_channel_tick` and `on_expire`) so both generators warn.
-   - A dispatcher reads fact messages and writes only `AbilityTriggerEvent` (I11). Decide whether the trigger is a reaction (`is_reaction()`): reaction triggers must not be fed by reactive output, and the generator rejects `perform_attack` under them and under anything a `chain` row feeds (`chain_fed_triggers`).
+   - A dispatcher reads fact messages and writes only `AbilityTriggerEvent` (I11). Decide whether the trigger is a reaction (`is_reaction()`): reaction triggers must not be fed by reactive output, and the generator rejects `perform_attack` under them and under anything a `chain` or `zone` row feeds (`chain_fed_triggers`).
    - State its delay (same frame or next frame) in the table in section 3.
 3. Add `trigger_tag` text in `tooltip.rs`, trigger/target combination rules in the generators, and a test that the emitter fires for both abilities and items.
 

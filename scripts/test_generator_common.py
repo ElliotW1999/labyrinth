@@ -745,6 +745,142 @@ class HealStatusTests(unittest.TestCase):
         self.assertEqual(report.errors[0].field, "effect_type")
 
 
+class ZoneTests(unittest.TestCase):
+    GOOD = {"value": "1", "duration": "10", "amount": "1.2"}
+
+    def _zone(self, effect_id="on_tick", target="caster", kind="ability", **cells):
+        report = Report()
+        effect, ctx = _effect("zone", effect_id, target=target, kind=kind, **{**self.GOOD, **cells})
+        ctx.has_aoe = kind == "ability"
+        return effect_to_rust(effect, ctx, report), report
+
+    def test_zone_emits_the_effect_with_the_ability_radius(self) -> None:
+        result, report = self._zone()
+        self.assertFalse(report.errors)
+        code = result[2]
+        self.assertIn("AbilityEffect::Zone { radius: AreaRadius::Ability, team: TargetTeam::Enemy", code)
+        self.assertIn("delay: RankValue::fixed(1.2)", code)
+        self.assertIn("duration: RankValue::fixed(10.0)", code)
+        self.assertIn("interval: RankValue::fixed(1.0)", code)
+        self.assertIn('then: AbilityTrigger::Custom("on_tick")', code)
+        self.assertEqual(result[1], "EffectTarget::Caster")
+
+    def test_blank_delay_is_zero_and_levels_are_allowed(self) -> None:
+        report = Report()
+        effect, ctx = _effect("zone", "on_tick", target="caster", **{**self.GOOD, "amount": "", "value": "1|1|1|2", "duration": "10"})
+        ctx.levels, ctx.has_aoe = 4, True
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors, report.errors)
+        self.assertIn("delay: RankValue::fixed(0.0)", result[2])
+
+    def test_explicit_radius_wins_and_items_must_set_one(self) -> None:
+        result, report = self._zone(radius="350")
+        self.assertIn("radius: AreaRadius::Fixed(RankValue::fixed(350.0))", result[2])
+        result, report = self._zone(kind="item")
+        self.assertIsNone(result)
+        self.assertEqual(report.errors[0].field, "radius")
+        result, report = self._zone(kind="item", radius="350")
+        self.assertFalse(report.errors)
+        self.assertIn("AreaRadius::Fixed", result[2])
+
+    def test_invalid_zones_are_rejected(self) -> None:
+        cases = (
+            ("interval of zero", {"value": "0"}, "value"),
+            ("interval above the duration", {"value": "11"}, "value"),
+            ("negative delay", {"amount": "-1"}, "amount"),
+            ("missing duration", {"duration": ""}, "duration"),
+            ("missing interval", {"value": ""}, "value"),
+            ("zero radius", {"radius": "0"}, "radius"),
+            ("built-in trigger", {"effect_id": "on_cast"}, "effect_id"),
+        )
+        for name, cells, field in cases:
+            result, report = self._zone(**cells)
+            self.assertIsNone(result, name)
+            self.assertEqual(report.errors[0].field, field, name)
+
+    def test_zone_must_be_placed_by_the_caster(self) -> None:
+        result, report = self._zone(target="units_in_radius", radius="300")
+        self.assertIsNone(result)
+        self.assertEqual(report.errors[0].field, "effect_target")
+
+    def test_zone_feeds_its_trigger_for_reachability_and_fed_sets(self) -> None:
+        effect, _ = _effect("zone", "on_tick", **self.GOOD)
+        other, _ = _effect("damage", "", trigger="on_tick", target="affected_units")
+        self.assertEqual(chain_fed_triggers([effect]), {"on_tick"})
+        report = Report()
+        warn_unreachable_custom_triggers([effect, other], set(), report)
+        self.assertFalse(report.warnings)
+
+    def test_perform_attack_under_a_zone_fed_trigger_is_rejected(self) -> None:
+        report = Report()
+        zone, _ = _effect("zone", "on_tick", **self.GOOD)
+        attack, ctx = _effect("perform_attack", "", trigger="on_tick", target="caster")
+        ctx.chain_fed = chain_fed_triggers([zone, attack])
+        self.assertIsNone(effect_to_rust(attack, ctx, report))
+        self.assertIn("zone", report.errors[0].message)
+
+
+class MiniStunTests(unittest.TestCase):
+    def _stun(self, **cells: str):
+        report = Report()
+        effect, ctx = _effect("apply_status", "mini_stun", **cells)
+        return effect_to_rust(effect, ctx, report), report
+
+    def test_mini_stun_binds_a_per_owner_stun_id(self) -> None:
+        result, report = self._stun(duration="0.1")
+        self.assertFalse(report.errors)
+        self.assertIn('StatusSpec::OwnedStun { id: "tester_stun" }', result[2])
+
+    def test_mini_stun_needs_a_duration(self) -> None:
+        result, report = self._stun()
+        self.assertIsNone(result)
+        self.assertEqual(report.errors[0].field, "duration")
+
+    def test_mini_stun_below_one_tick_warns(self) -> None:
+        result, report = self._stun(duration="0.01")
+        self.assertIsNotNone(result)
+        self.assertTrue(any(w.field == "duration" for w in report.warnings))
+
+    def test_plain_stun_keeps_the_shared_id(self) -> None:
+        report = Report()
+        effect, ctx = _effect("apply_status", "stun", duration="1")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertIn("StatusSpec::Stun", result[2])
+        self.assertNotIn("OwnedStun", result[2])
+
+    def test_ids_resolve_for_held_conditions_and_triggers(self) -> None:
+        effect, _ = _effect("apply_status", "mini_stun", duration="0.1")
+        self.assertEqual(held_status_id(effect), "tester_stun")
+        self.assertEqual(runtime_status_id("tester_stun"), "tester_stun")
+        self.assertIsNone(runtime_status_id("mini_stun"))
+
+    def test_remove_status_mini_stun_is_rejected_with_a_hint(self) -> None:
+        report = Report()
+        effect, ctx = _effect("remove_status", "mini_stun")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertIn("<owner>_stun", report.errors[0].message)
+
+
+class SlowStatusTests(unittest.TestCase):
+    def test_generated_slow_carries_a_per_owner_id(self) -> None:
+        report = Report()
+        effect, ctx = _effect("apply_status", "slow", amount="30", duration="2")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors)
+        self.assertIn('StatusSpec::Slow { id: "tester_slow"', result[2])
+
+    def test_runtime_and_held_ids_follow_the_owner(self) -> None:
+        self.assertEqual(runtime_status_id("tester_slow"), "tester_slow")
+        effect, _ = _effect("apply_status", "slow", amount="30", duration="2")
+        self.assertEqual(held_status_id(effect), "tester_slow")
+
+    def test_remove_status_slow_is_rejected_with_a_hint(self) -> None:
+        report = Report()
+        effect, ctx = _effect("remove_status", "slow")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertIn("<owner>_slow", report.errors[0].message)
+
+
 class BurnStatusTests(unittest.TestCase):
     def _burn(self, **cells: str):
         base = {"damage_type": "magical", "duration": "16"}
@@ -1482,7 +1618,7 @@ ABILITY_COLUMNS_FOR_TESTS = (
     "id,name,slot,ability_type,target_type,target_team,cast_range,aoe_radius,cast_time,"
     "channel_time,cooldown,mana_cost,max_charges,charge_restore_time,projectile_type,"
     "projectile_speed,description,cast_backswing,max_rank,toggle_mana_per_sec,"
-    "projectile_end_radius,projectile_origin_offset"
+    "projectile_end_radius,projectile_origin_offset,cast_range_buffer"
 ).split(",")
 EFFECT_COLUMNS_FOR_TESTS = (
     "ability_id,effect_index,trigger,effect_target,effect_type,effect_id,value,damage_type,"
@@ -1524,16 +1660,64 @@ def load_test_ability(ability: dict[str, str] | None = None, effects: list[dict[
 
 
 class CastBackswingTests(unittest.TestCase):
-    def test_backswing_up_to_one_and_a_half_is_accepted_silently(self) -> None:
-        for value in ("0.3", "1.2", "1.3", "1.5"):
-            _, report = load_test_ability({"cast_backswing": value})
+    def test_backswing_and_cast_point_up_to_two_seconds_are_accepted_silently(self) -> None:
+        for value in ("0.3", "1.6", "2"):
+            _, report = load_test_ability({"cast_backswing": value, "cast_time": value})
             self.assertEqual(report.errors, [])
-            self.assertEqual([w for w in report.warnings if w.field == "cast_backswing"], [], value)
+            self.assertEqual([w for w in report.warnings if w.field in ("cast_backswing", "cast_time")], [], value)
 
     def test_backswing_above_the_cap_warns(self) -> None:
-        _, report = load_test_ability({"cast_backswing": "1.6"})
+        _, report = load_test_ability({"cast_backswing": "2.1"})
         self.assertEqual(report.errors, [])
-        self.assertTrue(any(w.field == "cast_backswing" and "1.5" in w.message for w in report.warnings))
+        self.assertTrue(any(w.field == "cast_backswing" and "2.0" in w.message for w in report.warnings))
+
+    def test_cast_point_above_the_cap_warns(self) -> None:
+        _, report = load_test_ability({"cast_time": "2.5"})
+        self.assertEqual(report.errors, [])
+        self.assertTrue(any(w.field == "cast_time" and "2.0" in w.message for w in report.warnings))
+
+
+class CastRangeBufferTests(unittest.TestCase):
+    UNIT = {"target_type": "unit", "cast_range": "3000"}
+
+    def _load(self, **cells: str):
+        return load_test_ability({**self.UNIT, **cells})
+
+    def setUp(self) -> None:
+        global AbilityGenerator
+        import AbilityGenerator
+
+    def test_buffer_is_emitted_only_when_set(self) -> None:
+        abilities, report = self._load(cast_range_buffer="600")
+        self.assertEqual(report.errors, [])
+        self.assertIn(".cast_range_buffer(RankValue::fixed(600.0))", AbilityGenerator.ability_fn(abilities[0]))
+        abilities, report = self._load()
+        self.assertEqual(report.errors, [])
+        self.assertNotIn("cast_range_buffer", AbilityGenerator.ability_fn(abilities[0]))
+
+    def test_buffer_accepts_a_level_list(self) -> None:
+        abilities, report = self._load(cast_range_buffer="100|200|300|400", max_rank="4", cooldown="1|2|3|4")
+        self.assertEqual(report.errors, [])
+        self.assertIn("RankValue::from_level_1(100.0, 100.0)", AbilityGenerator.ability_fn(abilities[0]))
+
+    def test_buffer_level_count_must_match_the_ranks(self) -> None:
+        _, report = self._load(cast_range_buffer="100|200", max_rank="4")
+        self.assertTrue(any(e.field == "cast_range_buffer" for e in report.errors))
+
+    def test_buffer_must_be_above_zero(self) -> None:
+        for bad in ("0", "-5"):
+            _, report = self._load(cast_range_buffer=bad)
+            self.assertTrue(any(e.field == "cast_range_buffer" for e in report.errors), bad)
+
+    def test_buffer_requires_a_unit_target(self) -> None:
+        for target_type in ("point", "no_target"):
+            _, report = load_test_ability({"target_type": target_type, "cast_range": "800" if target_type == "point" else "", "cast_range_buffer": "600"})
+            self.assertTrue(any(e.field == "cast_range_buffer" for e in report.errors), target_type)
+
+    def test_buffer_with_global_range_warns(self) -> None:
+        _, report = self._load(cast_range="global", cast_range_buffer="600")
+        self.assertEqual(report.errors, [])
+        self.assertTrue(any(w.field == "cast_range_buffer" for w in report.warnings))
 
 
 class TimedStatModifierTests(unittest.TestCase):

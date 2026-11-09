@@ -1,28 +1,32 @@
-id,name,slot,ability_type,target_type,target_team,cast_range,aoe_radius,cast_time,channel_time,cooldown,mana_cost,max_charges,charge_restore_time,projectile_type,projectile_speed,description,cast_backswing,max_rank,toggle_mana_per_sec,projectile_end_radius,projectile_origin_offset
-magnus_shockwave,Shockwave,Q,active,point,enemy,1200,200,0.3,,13|12|11|10|9|8|7,85|90|95|100|105|110|115,,,skillshot,1200,"Sends out a wave of force that damages enemies in a line, pulls each one toward the wave and slows it briefly",1.2,,,,48
-empower,Empower,W,active,unit,ally,800,,0.3,,8,45|55|65|75|85|95|105,,,none,,"Grants an allied hero or Magnus bonus attack damage and a cone cleave that melee heroes can use",1.07,,,,
-skewer,Skewer,E,active,point,enemy,global,,0.3,,22|20|18|16|14|12|10,80,,,none,,"Rushes forward, goring enemies and dragging them, stunned, to the destination, where they take magical damage and are slowed",0.3,,,,
-reverse_polarity,Reverse Polarity,R,active,no_target,enemy,,430,0.3,,115,150|225|300|375,,,none,,"Pulls nearby enemies to a point in front of Magnus, dealing magical damage and stunning them",1.3,,,,
-frost_lance,Frost Lance,W,active,unit,enemy,600,150,0.2,,6,70|80|90|100,2,12,targeted,1100,Homing lance; splashes and chills enemies near the target
-war_cry,War Cry,R,active,self,self,,400,0.1,,60|50|40,100|150|200,,,none,,Empowers the caster and nearby allies and knocks enemies back
-blink,Blink,Q,active,point,enemy,800,,0,,15,75,,,none,,Teleport to the target point
-mending_beam,Mending Beam,E,active,self,self,,,0.1,2,25,60,,,none,,Channel to heal; an interrupted channel heals less
-lunge,Lunge,W,active,point,enemy,600,,0.1,,10,50,,,none,,A quick dash toward the target point
-bull_rush,Bull Rush,R,active,unit,enemy,1200,,0.2,,50|45|40,100,,,none,,Charges the target and stuns it on arrival
-meat_hook,Meat Hook,Q,active,point,enemy,1100,,0.3,,14|13|12|11,100,,,skillshot_single,1200,Throws a hook that pulls the first enemy it hits to the caster
-twister,Twister,E,active,unit,enemy,700,,0.2,,18,90,,,none,,Lifts an enemy unit into the air where nothing can touch it
-snare_field,Snare Field,W,active,point,enemy,800,300,0.3,,16,110,,,none,,Confines enemies in the area to a circle around the target point
-chain_link,Chain Link,E,active,unit,enemy,600,,0.2,,14,80,,,none,,Tethers an enemy to the caster
-wings,Wings,R,active,self,self,,,0.1,,40,100,,,none,,Grants flight and quicker turning
-soul_siphon,Soul Siphon,Q,active,unit,enemy,600,,0.2,,12,80,,,none,,Damages an enemy and heals the caster for half of the health taken
-mana_scorch,Mana Scorch,W,active,unit,enemy,600,,0.2,,14,60,,,none,,Burns mana from an enemy and deals damage equal to the mana burned
-mana_leech,Mana Leech,E,active,unit,enemy,600,,0.2,,16,40,,,none,,Drains mana from an enemy and gives half of it to the caster
-arcane_ward,Arcane Ward,E,toggle,no_target,self,,,0,,1,15,,,none,,"While on, half of the damage taken is paid with mana",0,,6
-cursed_touch,Cursed Touch,W,active,unit,enemy,500,,0.2,,18,70,,,none,,Halves healing received by an enemy and prevents it for a short time
-vitality_surge,Vitality Surge,R,active,self,self,,,0.1,,45,90,,,none,,Grants maximum health and regenerates health over time
-chain_lightning,Chain Lightning,W,active,unit,enemy,700,,0.3,,12,90,,,none,,Strikes an enemy and arcs to the nearest enemies nearby
-thornskin,Thornskin,innate,passive,no_target,self,,,,,,,,,none,,Reflects part of the damage taken back at the attacker,,3,
-shadow_strike,Shadow Strike,Q,active,unit,enemy,450|500|550|600|650|700|750,,0.3,,11|9|7|5|3|3|3,100|105|110|115|120|125|130,,,targeted,,"Hurls a dagger that deals magical damage, then slows the target and deals magical damage every 3s for 16s",0.77,,,
-queen_of_pain_blink,QoP Blink,W,active,point,enemy,global,,0.33,,12|10|8|6|4|2|1,65,,,none,,"Teleports toward the target point, at least 200 and at most the maximum blink distance away",0.07,,,
-scream_of_pain,Scream of Pain,E,active,no_target,enemy,,600,0,,7.5|7|6.5|6|5.5|5|4.5,120,,,targeted_each,900,"Sends a projectile at every nearby enemy, each dealing magical damage",0.63,,,
-sonic_wave,Sonic Wave,R,active,point,enemy,900,100,0.452,,110|95|80|65,250|400|550|700,,,skillshot,642.857143,"Sends out a widening wave; each enemy struck takes pure damage 14 times over 1.4s and is knocked back",0.9,,,450
+id,name,slot,ability_type,target_type,target_team,cast_range,aoe_radius,cast_time,channel_time,cooldown,mana_cost,max_charges,charge_restore_time,projectile_type,projectile_speed,description,cast_backswing,max_rank,toggle_mana_per_sec,projectile_end_radius,projectile_origin_offset,cast_range_buffer
+magnus_shockwave,Shockwave,Q,active,point,enemy,1200,200,0.3,,13|12|11|10|9|8|7,85|90|95|100|105|110|115,,,skillshot,1200,"Sends out a wave of force that damages enemies in a line, pulls each one toward the wave and slows it briefly",1.2,,,,48,
+empower,Empower,W,active,unit,ally,800,,0.3,,8,45|55|65|75|85|95|105,,,none,,"Grants an allied hero or Magnus bonus attack damage and a cone cleave that melee heroes can use",1.07,,,,,
+skewer,Skewer,E,active,point,enemy,global,,0.3,,22|20|18|16|14|12|10,80,,,none,,"Rushes forward, goring enemies and dragging them, stunned, to the destination, where they take magical damage and are slowed",0.3,,,,,
+reverse_polarity,Reverse Polarity,R,active,no_target,enemy,,430,0.3,,115,150|225|300|375,,,none,,"Pulls nearby enemies to a point in front of Magnus, dealing magical damage and stunning them",1.3,,,,,
+frost_lance,Frost Lance,W,active,unit,enemy,600,150,0.2,,6,70|80|90|100,2,12,targeted,1100,Homing lance; splashes and chills enemies near the target,
+war_cry,War Cry,R,active,self,self,,400,0.1,,60|50|40,100|150|200,,,none,,Empowers the caster and nearby allies and knocks enemies back,
+blink,Blink,Q,active,point,enemy,800,,0,,15,75,,,none,,Teleport to the target point,
+mending_beam,Mending Beam,E,active,self,self,,,0.1,2,25,60,,,none,,Channel to heal; an interrupted channel heals less,
+lunge,Lunge,W,active,point,enemy,600,,0.1,,10,50,,,none,,A quick dash toward the target point,
+bull_rush,Bull Rush,R,active,unit,enemy,1200,,0.2,,50|45|40,100,,,none,,Charges the target and stuns it on arrival,
+meat_hook,Meat Hook,Q,active,point,enemy,1100,,0.3,,14|13|12|11,100,,,skillshot_single,1200,Throws a hook that pulls the first enemy it hits to the caster,
+twister,Twister,E,active,unit,enemy,700,,0.2,,18,90,,,none,,Lifts an enemy unit into the air where nothing can touch it,
+snare_field,Snare Field,W,active,point,enemy,800,300,0.3,,16,110,,,none,,Confines enemies in the area to a circle around the target point,
+chain_link,Chain Link,E,active,unit,enemy,600,,0.2,,14,80,,,none,,Tethers an enemy to the caster,
+wings,Wings,R,active,self,self,,,0.1,,40,100,,,none,,Grants flight and quicker turning,
+soul_siphon,Soul Siphon,Q,active,unit,enemy,600,,0.2,,12,80,,,none,,Damages an enemy and heals the caster for half of the health taken,
+mana_scorch,Mana Scorch,W,active,unit,enemy,600,,0.2,,14,60,,,none,,Burns mana from an enemy and deals damage equal to the mana burned,
+mana_leech,Mana Leech,E,active,unit,enemy,600,,0.2,,16,40,,,none,,Drains mana from an enemy and gives half of it to the caster,
+arcane_ward,Arcane Ward,E,toggle,no_target,self,,,0,,1,15,,,none,,"While on, half of the damage taken is paid with mana",0,,6,
+cursed_touch,Cursed Touch,W,active,unit,enemy,500,,0.2,,18,70,,,none,,Halves healing received by an enemy and prevents it for a short time,
+vitality_surge,Vitality Surge,R,active,self,self,,,0.1,,45,90,,,none,,Grants maximum health and regenerates health over time,
+chain_lightning,Chain Lightning,W,active,unit,enemy,700,,0.3,,12,90,,,none,,Strikes an enemy and arcs to the nearest enemies nearby,
+thornskin,Thornskin,innate,passive,no_target,self,,,,,,,,,none,,Reflects part of the damage taken back at the attacker,,3,,
+shadow_strike,Shadow Strike,Q,active,unit,enemy,450|500|550|600|650|700|750,,0.3,,11|9|7|5|3|3|3,100|105|110|115|120|125|130,,,targeted,,"Hurls a dagger that deals magical damage, then slows the target and deals magical damage every 3s for 16s",0.77,,,,
+queen_of_pain_blink,QoP Blink,W,active,point,enemy,global,,0.33,,12|10|8|6|4|2|1,65,,,none,,"Teleports toward the target point, at least 200 and at most the maximum blink distance away",0.07,,,,
+scream_of_pain,Scream of Pain,E,active,no_target,enemy,,600,0,,7.5|7|6.5|6|5.5|5|4.5,120,,,targeted_each,900,"Sends a projectile at every nearby enemy, each dealing magical damage",0.63,,,,
+sonic_wave,Sonic Wave,R,active,point,enemy,900,100,0.452,,110|95|80|65,250|400|550|700,,,skillshot,642.857143,"Sends out a widening wave; each enemy struck takes pure damage 14 times over 1.4s and is knocked back",0.9,,,450,
+shrapnel,Shrapnel,Q,active,point,enemy,1800,400|425|450|475|500|525|550,0.3,,10,75,,,none,,"Launches a ball of shrapnel that showers the target area in explosive pellets after 1.2s, dealing magical damage every second for 10s and slowing enemies it hits",0,,,,,
+headshot,Headshot,W,passive,no_target,enemy,,,,,,,,,none,,"Grants Sniper a chance to deal extra damage and briefly knock back the attacked enemy unit",,,,,,
+take_aim,Take Aim,E,passive,no_target,self,,,,,,,,,none,,"Grants Sniper additional attack range",,,,,,
+assassinate,Assassinate,R,active,unit,enemy,3000,,2,,20|15|10|5,175,,,targeted,1500,"Locks onto an enemy unit; after a 2s aim, fires a devastating long-range shot that deals magical damage and mini-stuns the target. Cancelled if the target moves 600 beyond cast range",1.6,,,,,600
