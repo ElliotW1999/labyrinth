@@ -1725,7 +1725,11 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
     elif t in ("remove_status", "dispel"):
         if not _require(e, "effect_id", report, "buff, debuff, or a status id") or not no_scaling():
             return None
-        _unused(e, report, "value", "damage_type", "duration", "amount")
+        # `amount` on dispel,buff|debuff is the strength: 1 = strong dispel (blank/0 = basic).
+        if effect_id in ("buff", "debuff") and t == "dispel":
+            _unused(e, report, "value", "damage_type", "duration")
+        else:
+            _unused(e, report, "value", "damage_type", "duration", "amount")
         if effect_id in ("buff", "debuff"):
             beneficial = effect_id == "debuff"
             strong = bool(amount and any(a >= 0.5 for a in amount))

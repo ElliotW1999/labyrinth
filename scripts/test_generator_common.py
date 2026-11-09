@@ -881,6 +881,23 @@ class SlowStatusTests(unittest.TestCase):
         self.assertIn("<owner>_slow", report.errors[0].message)
 
 
+class DispelStrengthTests(unittest.TestCase):
+    def test_amount_one_is_a_strong_dispel_without_a_warning(self) -> None:
+        report = Report()
+        effect, ctx = _effect("dispel", "debuff", target="caster", amount="1")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertEqual(report.errors, [])
+        self.assertEqual(report.warnings, [])
+        self.assertIn("DispelStrength::Strong", result[2])
+
+    def test_blank_amount_is_a_basic_dispel(self) -> None:
+        report = Report()
+        effect, ctx = _effect("dispel", "buff", target="caster")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertEqual(report.warnings, [])
+        self.assertIn("DispelStrength::Basic", result[2])
+
+
 class BurnStatusTests(unittest.TestCase):
     def _burn(self, **cells: str):
         base = {"damage_type": "magical", "duration": "16"}
