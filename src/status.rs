@@ -104,14 +104,19 @@ pub struct StatusEffect {
     pub accuracy: f32,
     /// Flat attack range change; also tracked in `CombatStats::attack_range_bonus`.
     pub attack_range: f32,
-    /// Added to `CombatStats::cleave_damage_ratio` while active (melee attackers only cleave).
+    /// Cleave ratio contributed to this status's cleave instance while active (melee
+    /// attackers only cleave). The four cleave fields sum per `cleave_source` into one
+    /// `CombatStats::cleaves` instance.
     pub cleave: f32,
-    /// Added to `CombatStats::cleave_radius` (the cleave's starting half-width) while active.
+    /// The cleave's starting half-width (circle radius) in that instance.
     pub cleave_radius: f32,
-    /// Added to `CombatStats::cleave_end_radius` while active.
+    /// Half-width at `cleave_distance` in that instance.
     pub cleave_end_radius: f32,
-    /// Added to `CombatStats::cleave_distance` while active (non-zero makes the cleave a cone).
+    /// Reach of that instance; non-zero makes it a cone.
     pub cleave_distance: f32,
+    /// Owner of the cleave instance (the ability whose statuses carry it). `None` keys the
+    /// instance by this status's id.
+    pub cleave_source: Option<crate::abilities::effects::EffectSource>,
     pub heal_per_sec: f32,
     /// Timed resource modifier, summed when read (see [`crate::vitals::resource_stat`]).
     pub resource: Option<(crate::vitals::ResourceStat, f32)>,
@@ -159,6 +164,21 @@ pub struct StatusEffect {
 }
 
 impl StatusEffect {
+    /// Whether any cleave field is set, so the status feeds a cleave instance.
+    pub(crate) fn carries_cleave(&self) -> bool {
+        self.cleave != 0.0
+            || self.cleave_radius != 0.0
+            || self.cleave_end_radius != 0.0
+            || self.cleave_distance != 0.0
+    }
+
+    fn cleave_key(&self) -> crate::components::CleaveSource {
+        match self.cleave_source {
+            Some(source) => crate::components::CleaveSource::Effect(source),
+            None => crate::components::CleaveSource::Status(self.id),
+        }
+    }
+
     pub fn buff(id: &'static str, duration: f32) -> Self {
         Self {
             id,
@@ -182,6 +202,7 @@ impl StatusEffect {
             cleave_radius: 0.0,
             cleave_end_radius: 0.0,
             cleave_distance: 0.0,
+            cleave_source: None,
             heal_per_sec: 0.0,
             resource: None,
             heal_reduction: 0.0,
@@ -868,10 +889,16 @@ pub(crate) fn subtract_status_stat_delta(
     stats.attack_speed_mult -= effect.attack_speed_mult;
     stats.attack_range -= effect.attack_range;
     stats.attack_range_bonus -= effect.attack_range;
-    stats.cleave_damage_ratio -= effect.cleave;
-    stats.cleave_radius -= effect.cleave_radius;
-    stats.cleave_end_radius -= effect.cleave_end_radius;
-    stats.cleave_distance -= effect.cleave_distance;
+    if effect.carries_cleave() {
+        stats.cleaves.adjust(
+            effect.cleave_key(),
+            -effect.cleave,
+            -effect.cleave_radius,
+            -effect.cleave_end_radius,
+            -effect.cleave_distance,
+            -1,
+        );
+    }
     stats.recompute_attack_speed(agility);
 }
 
@@ -884,10 +911,16 @@ pub(crate) fn add_status_stat_delta(effect: &StatusEffect, stats: &mut CombatSta
     stats.attack_speed_mult += effect.attack_speed_mult;
     stats.attack_range += effect.attack_range;
     stats.attack_range_bonus += effect.attack_range;
-    stats.cleave_damage_ratio += effect.cleave;
-    stats.cleave_radius += effect.cleave_radius;
-    stats.cleave_end_radius += effect.cleave_end_radius;
-    stats.cleave_distance += effect.cleave_distance;
+    if effect.carries_cleave() {
+        stats.cleaves.adjust(
+            effect.cleave_key(),
+            effect.cleave,
+            effect.cleave_radius,
+            effect.cleave_end_radius,
+            effect.cleave_distance,
+            1,
+        );
+    }
     stats.recompute_attack_speed(agility);
 }
 
@@ -1138,6 +1171,7 @@ pub fn apply_status_effect_events(
 mod tests {
     use super::*;
     use crate::abilities::definition::{RankValue, StatusBuildContext, StatusSpec};
+    use crate::components::CleaveSource;
     use bevy::ecs::system::RunSystemOnce;
 
     #[test]
@@ -1265,66 +1299,79 @@ mod tests {
         let mut statuses = StatusEffects::default();
         let mut stats =
             CombatStats::simple(10.0, crate::scale::MELEE_ATTACK_RANGE, 1.0, 0.0, 0.0, 10.0);
-        stats.cleave_damage_ratio = 0.1;
-        apply_status(
-            &mut statuses,
-            &mut stats,
-            StatusEffect {
-                cleave: 0.4,
-                cleave_radius: 150.0,
-                cleave_end_radius: 360.0,
-                cleave_distance: 650.0,
-                ..StatusEffect::buff("empower_cleave", 1.0)
-            },
-            0.0,
-        );
-        assert!((stats.cleave_damage_ratio - 0.5).abs() < 1e-6);
+        // A permanent item cleave is a separate instance and must be untouched.
+        stats
+            .cleaves
+            .adjust(CleaveSource::Items, 0.1, 0.0, 0.0, 0.0, 1);
+        let empower = || StatusEffect {
+            cleave: 0.4,
+            cleave_radius: 150.0,
+            cleave_end_radius: 360.0,
+            cleave_distance: 650.0,
+            ..StatusEffect::buff("empower_cleave", 1.0)
+        };
+        let key = CleaveSource::Status("empower_cleave");
+        apply_status(&mut statuses, &mut stats, empower(), 0.0);
+        let inst = *stats.cleaves.get(key).unwrap();
+        assert!((inst.ratio - 0.4).abs() < 1e-6);
         assert_eq!(
-            (
-                stats.cleave_radius,
-                stats.cleave_end_radius,
-                stats.cleave_distance
-            ),
+            (inst.radius, inst.end_radius, inst.distance),
             (150.0, 360.0, 650.0)
         );
+        assert!((stats.cleaves.get(CleaveSource::Items).unwrap().ratio - 0.1).abs() < 1e-6);
         // Refreshing replaces the old delta instead of stacking it.
-        apply_status(
-            &mut statuses,
-            &mut stats,
-            StatusEffect {
-                cleave: 0.4,
-                cleave_radius: 150.0,
-                cleave_end_radius: 360.0,
-                cleave_distance: 650.0,
-                ..StatusEffect::buff("empower_cleave", 1.0)
-            },
-            0.0,
-        );
-        assert!((stats.cleave_damage_ratio - 0.5).abs() < 1e-6);
-        assert_eq!(
-            (
-                stats.cleave_radius,
-                stats.cleave_end_radius,
-                stats.cleave_distance
-            ),
-            (150.0, 360.0, 650.0),
-            "a refresh replaces the old delta"
-        );
+        apply_status(&mut statuses, &mut stats, empower(), 0.0);
+        assert_eq!(stats.cleaves.get(key), Some(&inst), "a refresh replaces it");
         let unit = world.spawn((statuses, stats, Health::new(100.0))).id();
         world
             .resource_mut::<Time>()
             .advance_by(Duration::from_secs_f32(2.0));
         world.run_system_once(tick_status_effects).unwrap();
         let stats = world.get::<CombatStats>(unit).unwrap();
-        assert!((stats.cleave_damage_ratio - 0.1).abs() < 1e-6);
-        assert_eq!(
-            (
-                stats.cleave_radius,
-                stats.cleave_end_radius,
-                stats.cleave_distance
-            ),
-            (0.0, 0.0, 0.0)
+        assert!(
+            stats.cleaves.get(key).is_none(),
+            "expiry removes the instance"
         );
+        assert!((stats.cleaves.get(CleaveSource::Items).unwrap().ratio - 0.1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn statuses_of_one_source_share_an_instance_until_the_last_ends() {
+        use crate::abilities::effects::EffectSource;
+        let source = Some(EffectSource::Ability(crate::components::AbilityId::Empower));
+        let mut statuses = StatusEffects::default();
+        let mut stats =
+            CombatStats::simple(10.0, crate::scale::MELEE_ATTACK_RANGE, 1.0, 0.0, 0.0, 10.0);
+        apply_status(
+            &mut statuses,
+            &mut stats,
+            StatusEffect {
+                cleave: 0.3,
+                cleave_source: source,
+                ..StatusEffect::buff("a_cleave", 1.0)
+            },
+            0.0,
+        );
+        apply_status(
+            &mut statuses,
+            &mut stats,
+            StatusEffect {
+                cleave_distance: 500.0,
+                cleave_source: source,
+                ..StatusEffect::buff("a_cleave_distance", 2.0)
+            },
+            0.0,
+        );
+        assert_eq!(stats.cleaves.iter().count(), 1);
+        let key = CleaveSource::Effect(source.unwrap());
+        assert_eq!(stats.cleaves.get(key).unwrap().distance, 500.0);
+        let first = statuses.effects.remove(0);
+        subtract_status_stat_delta(&first, &mut stats, 0.0);
+        assert_eq!(stats.cleaves.get(key).unwrap().ratio, 0.0);
+        assert_eq!(stats.cleaves.iter().count(), 1, "one feeder remains");
+        let last = statuses.effects.remove(0);
+        subtract_status_stat_delta(&last, &mut stats, 0.0);
+        assert!(stats.cleaves.is_empty());
     }
 
     #[test]

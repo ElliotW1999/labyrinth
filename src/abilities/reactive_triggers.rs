@@ -286,6 +286,7 @@ pub(crate) fn sync_conditional_statuses(
                         attrs,
                         base_attack_damage(kind, Some(stats)),
                         healer_amp,
+                        source,
                     );
                     let id = built.id;
                     reconcile_held_status(&mut status_events, owner, statuses, built, wanted);

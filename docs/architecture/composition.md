@@ -452,8 +452,8 @@ New surface (each item is one approved gap, G1 to G10; nothing else was added):
 | G2 | Optional `turn_rate` hero column | `HeroGenerator.py` -> `hero_combat(turn_rate)` |
 | G3 | `MAX_CAST_BACKSWING` 1.5 | `definition.rs`, `AbilityGenerator.py` |
 | G4 | Timed stat `attack_damage_pct`: a snapshot of the target's base attack damage (`StatusBuildContext.base_attack_damage`) | Modifiers: `StatusSpec::Modifier`, `build_status_effect` |
-| G5 | Timed stat `cleave` (a ratio added to `CombatStats::cleave_damage_ratio`) | Modifiers: `StatusEffect.cleave` in `add_status_stat_delta` |
-| G6 | Cone cleave: timed `cleave_radius`, `cleave_end_radius`, `cleave_distance` feed `CombatStats`; a non-zero distance makes the cleave a trapezoid | Modifiers + `basic_attack.rs` (`CleaveCone`) |
+| G5 | Timed stat `cleave` (a ratio fed into the status source's cleave instance in `CombatStats::cleaves`) | Modifiers: `StatusEffect.cleave` in `add_status_stat_delta` |
+| G6 | Cone cleave: timed `cleave_radius`, `cleave_end_radius`, `cleave_distance` feed the same instance; a non-zero distance makes it a trapezoid | Modifiers + `basic_attack.rs` (`CleaveCone`) |
 | G7 | `radius` on `movement,dash` / `charge` = contact radius (`ForcedMovement.contact_radius`) | `displacement.rs`, `AbilityEffect::Displace.contact_radius` |
 | G8 | `amount` on `movement,pull_point` = forward offset; `EffectRunner` replaces the event's point with caster position + facing x offset | `effects.rs` (`forward_point`), `AbilityEffect::Displace.forward_offset` |
 | G9 | `movement,drag_stun`: a drag that also applies a stun under `<owner>_stun`, bound to the drag through `ForcedMovement.bound_status` and removed when the carrying movement ends | `displacement.rs`, `AbilityEffect::Displace.bound_stun` |
@@ -466,6 +466,8 @@ magnus_shockwave,1,on_projectile_hit,trigger_unit,movement,pull_point,150,,0.2,,
 ```
 
 **Empower** (unit target, ally or self): five timed `stat_modifier` rows with one duration. `attack_damage_pct` 16 to 64 of the target's base (hero-definition) damage, `cleave` 0.16 to 0.64, and the cone shape 150 / 360 / 650. The status ids are `empower_<stat>`, so a refresh replaces the old deltas exactly. Cleave only works on melee targets (`CombatStats::is_melee`).
+
+**Cleave instances.** Cleave does not sum into one aggregate shape. `CombatStats::cleaves` (`CleaveSet`, a fixed-size `Copy` list of `CleaveInstance`) holds one instance per `CleaveSource`: all item passives share the `Items` instance (ratios add, default 300 circle), and every timed modifier status carrying a cleave field feeds the instance keyed by its owner (`StatusEffect.cleave_source`, set from the `EffectSource` in `build_status_effect`; the five Empower statuses form one instance). Fields sum per key; the instance is dropped when its last contributing status ends, and a re-cast refreshes it. On a melee hit `basic_attack.rs` runs each instance separately (own targets, own `DamageEvent::cleave(ratio x damage)`), so a unit inside two shapes takes both. No CSV or generator change.
 
 **Skewer** (point, global cast range): the dash row carries the contact radius 145; `on_unit_contact` drags and stuns; `on_movement_end,affected_units` deals the damage and a 3.25 s slow. The stun id is `skewer_stun`: it behaves as a stun (`stunned`), but refresh is by id, so another source's stun is neither overwritten nor removed when the drag ends.
 

@@ -4,7 +4,7 @@ use bevy::prelude::*;
 
 use super::catalog::AbilityDefinitions;
 use super::definition::{AbilityBehavior, AbilityEffect, AbilityTrigger};
-use super::effects::{base_attack_damage, build_status_effect};
+use super::effects::{EffectSource, base_attack_damage, build_status_effect};
 use crate::components::{AbilityId, AbilityLoadout, CombatStats, Health, HeroAttributes, Mana};
 use crate::heroes::HeroKind;
 use crate::items::{ItemPassives, apply_passives, remove_passives};
@@ -180,6 +180,7 @@ pub fn tick_toggle_upkeep(
                     attrs,
                     base_attack_damage(kind, Some(stats)),
                     healer_amp,
+                    EffectSource::Ability(slot.id),
                 );
                 reconcile_held_status(&mut status_events, entity, statuses, built, slot.toggled);
             }

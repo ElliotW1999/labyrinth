@@ -741,6 +741,7 @@ impl EffectRunner<'_, '_> {
                             self.stats.get(target).ok(),
                         ),
                         healer_amp,
+                        ctx.source,
                     );
                     built.reactive = ctx.reaction;
                     self.statuses.write(
@@ -1003,6 +1004,7 @@ pub(crate) fn build_status_effect(
     target_attrs: Option<&HeroAttributes>,
     target_base_attack_damage: f32,
     healer_amp: f32,
+    origin: EffectSource,
 ) -> StatusEffect {
     let fear_source = match spec {
         super::definition::StatusSpec::Fear => caster,
@@ -1021,6 +1023,9 @@ pub(crate) fn build_status_effect(
         },
     );
     built.dot_source = caster;
+    if built.carries_cleave() {
+        built.cleave_source = Some(origin);
+    }
     if built.heal_per_sec > 0.0 {
         built.heal_per_sec *= (1.0 + healer_amp).max(0.0);
     }

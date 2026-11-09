@@ -1001,7 +1001,17 @@ fn adjust_passives(
     stats.crit_multiplier += passives.crit_multiplier * count;
     stats.evasion += passives.evasion * count;
     stats.accuracy += passives.accuracy * count;
-    stats.cleave_damage_ratio += passives.cleave_ratio * count;
+    if passives.cleave_ratio != 0.0 {
+        // Item cleaves stack additively in one instance with the default circle.
+        stats.cleaves.adjust(
+            crate::components::CleaveSource::Items,
+            passives.cleave_ratio * count,
+            0.0,
+            0.0,
+            0.0,
+            count.round() as i32,
+        );
+    }
     stats.splash_damage_ratio += passives.splash_ratio * count;
     stats.attack_range += passives.attack_range * count;
     stats.attack_range_bonus += passives.attack_range * count;
@@ -1790,6 +1800,7 @@ mod tests {
         Activation, ActivationRequest, QueuedActivation, refresh_activation_aims,
         resolve_queued_activations, tick_activations, validate_activation_requests,
     };
+    use crate::components::CleaveSource;
     use crate::components::{AbilityId, AbilityLoadout, MoveTarget};
     use crate::displacement::DisplacementEvent;
     use crate::resources::SharedAssets;
@@ -2044,7 +2055,15 @@ mod tests {
         );
         assert!((stats.evasion - 0.4).abs() < 1e-6);
         assert!((stats.accuracy - 0.6).abs() < 1e-6);
-        assert!((stats.cleave_damage_ratio - 0.8).abs() < 1e-6);
+        let items = stats
+            .cleaves
+            .get(CleaveSource::Items)
+            .expect("items cleave");
+        assert!(
+            (items.ratio - 0.8).abs() < 1e-6,
+            "two items stack additively"
+        );
+        assert_eq!(stats.cleaves.iter().count(), 1, "one aggregated instance");
         assert!((stats.splash_damage_ratio - 0.7).abs() < 1e-6);
         assert_eq!(stats.attack_range, scale::MELEE_ATTACK_RANGE + 200.0);
         assert_eq!(stats.base_attack_range(), scale::MELEE_ATTACK_RANGE);
@@ -2055,7 +2074,7 @@ mod tests {
         assert!((stats.crit_chance - before.crit_chance).abs() < 1e-6);
         assert!((stats.crit_multiplier - before.crit_multiplier).abs() < 1e-6);
         assert!(stats.evasion.abs() < 1e-6 && stats.accuracy.abs() < 1e-6);
-        assert!(stats.cleave_damage_ratio.abs() < 1e-6);
+        assert!(stats.cleaves.is_empty());
         assert!(stats.splash_damage_ratio.abs() < 1e-6);
         assert_eq!(stats.attack_range, before.attack_range);
         assert_eq!(stats.attack_range_bonus, 0.0);

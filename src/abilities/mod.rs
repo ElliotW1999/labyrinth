@@ -1844,7 +1844,15 @@ mod tests {
         app.world_mut()
             .get_mut::<CombatStats>(caster)
             .unwrap()
-            .cleave_damage_ratio = 0.5;
+            .cleaves
+            .adjust(
+                crate::components::CleaveSource::Items,
+                0.5,
+                0.0,
+                0.0,
+                0.0,
+                1,
+            );
 
         let log = run_one_normal_attack(&mut app, caster);
 
@@ -7564,13 +7572,17 @@ mod tests {
                 "{}",
                 stats.attack_damage
             );
-            assert!((stats.cleave_damage_ratio - 0.16).abs() < 1e-6);
+            // The five Empower statuses form ONE cleave instance keyed by the ability.
+            assert_eq!(stats.cleaves.iter().count(), 1);
+            let cleave = stats
+                .cleaves
+                .get(crate::components::CleaveSource::Effect(
+                    crate::abilities::effects::EffectSource::Ability(AbilityId::Empower),
+                ))
+                .expect("empower cleave instance");
+            assert!((cleave.ratio - 0.16).abs() < 1e-6);
             assert_eq!(
-                (
-                    stats.cleave_radius,
-                    stats.cleave_end_radius,
-                    stats.cleave_distance
-                ),
+                (cleave.radius, cleave.end_radius, cleave.distance),
                 (150.0, 360.0, 650.0)
             );
         }
@@ -7582,14 +7594,9 @@ mod tests {
         assert!(status_of(&app, ally, "empower_attack_damage_pct").is_none());
         let after = app.world().get::<CombatStats>(ally).unwrap();
         assert!((after.attack_damage - 161.0).abs() < 1e-3);
-        assert!(after.cleave_damage_ratio.abs() < 1e-6);
-        assert_eq!(
-            (
-                after.cleave_radius,
-                after.cleave_end_radius,
-                after.cleave_distance
-            ),
-            (0.0, 0.0, 0.0)
+        assert!(
+            after.cleaves.is_empty(),
+            "the instance leaves with its last status"
         );
     }
 }
