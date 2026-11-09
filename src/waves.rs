@@ -11,14 +11,18 @@ pub struct WavesPlugin;
 
 impl Plugin for WavesPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<WaveTimer>()
-            .add_systems(
-                Startup,
+        app.init_resource::<WaveTimer>().add_systems(
+            Update,
+            (
                 spawn_opening_wave
-                    .after(crate::resources::load_shared_assets)
+                    .in_set(crate::map::MapGenSet)
+                    .run_if(crate::map::map_requested)
                     .run_if(crate::net::is_sim_authority),
-            )
-            .add_systems(Update, spawn_waves.run_if(crate::net::is_sim_authority));
+                spawn_waves
+                    .run_if(crate::net::is_sim_authority)
+                    .run_if(crate::map::map_generated),
+            ),
+        );
     }
 }
 

@@ -618,6 +618,21 @@ impl HeroProgress {
             skill_points: 1,
         }
     }
+
+    /// A fresh hero that has already reached `level`, with one unspent skill point per level.
+    pub fn at_level(level: u32) -> Self {
+        let level = level.clamp(1, 25);
+        Self {
+            level,
+            xp: 0,
+            xp_to_next: if level >= 25 {
+                0
+            } else {
+                xp_required_for_level(level)
+            },
+            skill_points: level,
+        }
+    }
 }
 
 impl Default for HeroProgress {

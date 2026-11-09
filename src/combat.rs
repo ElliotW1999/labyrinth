@@ -881,8 +881,6 @@ fn despawn_dead(
     >,
     mut heroes: Query<(&Transform, &Team, &mut PlayerWallet, &mut HeroProgress), With<PlayerHero>>,
 ) {
-    const XP_SHARE_RADIUS: f32 = scale::u(18.0);
-
     for (entity, transform, health, gold_bounty, xp_bounty, team) in &dead {
         if health.is_alive() {
             continue;
@@ -899,7 +897,7 @@ fn despawn_dead(
                 }
                 let dx = hero_tf.translation.x - death_pos.x;
                 let dz = hero_tf.translation.z - death_pos.z;
-                if (dx * dx + dz * dz).sqrt() <= XP_SHARE_RADIUS {
+                if (dx * dx + dz * dz).sqrt() <= scale::XP_SHARE_RADIUS {
                     if let Some(xp) = xp_bounty {
                         add_xp(&mut progress, xp.0);
                     }
@@ -1044,6 +1042,51 @@ mod tests {
     use super::*;
     use crate::components::AbilityId;
     use bevy::ecs::system::RunSystemOnce;
+
+    /// Spawns a dead Dire creep at the origin and a Radiant player hero `hero_distance`
+    /// away, runs `despawn_dead`, and returns the hero's progress.
+    fn creep_death_xp(hero_distance: f32) -> HeroProgress {
+        let mut world = World::new();
+        world.spawn((
+            Transform::from_xyz(0.0, 0.0, 0.0),
+            Health {
+                current: 0.0,
+                max: 280.0,
+                regen_per_sec: 0.0,
+            },
+            GoldBounty(35),
+            XpBounty(45),
+            Team::Dire,
+        ));
+        let hero = world
+            .spawn((
+                Transform::from_xyz(hero_distance, 0.0, 0.0),
+                Team::Radiant,
+                PlayerHero,
+                PlayerWallet { gold: 0 },
+                HeroProgress::new(),
+            ))
+            .id();
+        world.run_system_once(despawn_dead).unwrap();
+        *world.get::<HeroProgress>(hero).unwrap()
+    }
+
+    #[test]
+    fn dying_creep_grants_xp_to_ranged_and_nearby_heroes() {
+        // A ranged hero last-hitting from its attack range must still get experience.
+        for distance in [
+            0.0,
+            scale::RANGED_ATTACK_RANGE + 100.0,
+            scale::XP_SHARE_RADIUS,
+        ] {
+            assert_eq!(creep_death_xp(distance).xp, 45, "hero {distance} away");
+        }
+    }
+
+    #[test]
+    fn dying_creep_grants_no_xp_beyond_share_radius() {
+        assert_eq!(creep_death_xp(scale::XP_SHARE_RADIUS + 50.0).xp, 0);
+    }
 
     #[test]
     fn armor_reduces_physical() {

@@ -17,8 +17,10 @@ pub struct ObstacleCoursePlugin;
 impl Plugin for ObstacleCoursePlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
-            Startup,
-            spawn_obstacle_course.after(crate::resources::load_shared_assets),
+            Update,
+            spawn_obstacle_course
+                .in_set(crate::map::MapGenSet)
+                .run_if(crate::map::map_requested),
         )
         .add_systems(
             Update,

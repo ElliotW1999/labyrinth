@@ -483,6 +483,23 @@ fn update_targeting_indicators(
     }
 }
 
+/// Radius of the blue ring shown while an ability's HUD icon is hovered: the cast range
+/// for abilities aimed at a unit, point or direction (for skillshots that is how far they
+/// travel), or the effect radius for no-target / self-target abilities, which act around
+/// the caster. Unlearned abilities preview their first rank. `None` when the ability has
+/// no meaningful distance (passives without a radius, global casts).
+pub fn hover_range_radius(def: &definition::AbilityDefinition, rank: u32) -> Option<f32> {
+    let rank = rank.max(1);
+    let cast_range = def.cast_range.at(rank);
+    let aoe_radius = def.aoe_radius.at(rank);
+    let radius = if def.target_type.is_instant() || cast_range <= 0.0 {
+        aoe_radius
+    } else {
+        cast_range
+    };
+    (radius > 0.0 && !is_global_range(radius)).then_some(radius)
+}
+
 /// Whether a cast range is `cast_range=global` (the whole map).
 fn is_global_range(cast_range: f32) -> bool {
     cast_range >= scale::GLOBAL_CAST_RANGE
@@ -643,6 +660,39 @@ mod tests {
     use super::effects::{AbilityEffectAppExt, CustomEffectInput, EffectSource, TriggerContext};
     use super::mechanics::{AbilityAppExt, CastContext};
     use super::*;
+
+    #[test]
+    fn hover_range_uses_cast_range_for_aimed_and_radius_for_instant_abilities() {
+        use crate::abilities::catalog::builtin;
+        let strike = builtin(AbilityId::ShadowStrike);
+        assert_eq!(
+            hover_range_radius(&strike, 1),
+            Some(strike.cast_range.at(1))
+        );
+        let wave = builtin(AbilityId::MagnusShockwave);
+        assert_eq!(hover_range_radius(&wave, 2), Some(wave.cast_range.at(2)));
+        // No-target AoE around the caster: the ring shows the effect radius.
+        let scream = builtin(AbilityId::ScreamOfPain);
+        assert!(scream.target_type.is_instant());
+        assert_eq!(
+            hover_range_radius(&scream, 1),
+            Some(scream.aoe_radius.at(1))
+        );
+        // Unlearned abilities preview rank 1.
+        assert_eq!(
+            hover_range_radius(&strike, 0),
+            hover_range_radius(&strike, 1)
+        );
+    }
+
+    #[test]
+    fn hover_range_skips_global_and_rangeless_abilities() {
+        let mut def = definition::AbilityDefinition::new(AbilityId::ShadowStrike);
+        assert_eq!(hover_range_radius(&def, 1), None);
+        def.target_type = crate::actions::TargetType::Unit;
+        def.cast_range = definition::RankValue::fixed(scale::GLOBAL_CAST_RANGE);
+        assert_eq!(hover_range_radius(&def, 1), None);
+    }
     use crate::actions::{
         ActionChannelEndEvent, ActionFiredEvent, Activation, ActivationRequest, QueuedActivation,
     };
