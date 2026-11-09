@@ -745,6 +745,81 @@ class HealStatusTests(unittest.TestCase):
         self.assertEqual(report.errors[0].field, "effect_type")
 
 
+class ZoneTests(unittest.TestCase):
+    GOOD = {"value": "1", "duration": "10", "amount": "1.2"}
+
+    def _zone(self, effect_id="on_tick", target="caster", kind="ability", **cells):
+        report = Report()
+        effect, ctx = _effect("zone", effect_id, target=target, kind=kind, **{**self.GOOD, **cells})
+        ctx.has_aoe = kind == "ability"
+        return effect_to_rust(effect, ctx, report), report
+
+    def test_zone_emits_the_effect_with_the_ability_radius(self) -> None:
+        result, report = self._zone()
+        self.assertFalse(report.errors)
+        code = result[2]
+        self.assertIn("AbilityEffect::Zone { radius: AreaRadius::Ability, team: TargetTeam::Enemy", code)
+        self.assertIn("delay: RankValue::fixed(1.2)", code)
+        self.assertIn("duration: RankValue::fixed(10.0)", code)
+        self.assertIn("interval: RankValue::fixed(1.0)", code)
+        self.assertIn('then: AbilityTrigger::Custom("on_tick")', code)
+        self.assertEqual(result[1], "EffectTarget::Caster")
+
+    def test_blank_delay_is_zero_and_levels_are_allowed(self) -> None:
+        report = Report()
+        effect, ctx = _effect("zone", "on_tick", target="caster", **{**self.GOOD, "amount": "", "value": "1|1|1|2", "duration": "10"})
+        ctx.levels, ctx.has_aoe = 4, True
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors, report.errors)
+        self.assertIn("delay: RankValue::fixed(0.0)", result[2])
+
+    def test_explicit_radius_wins_and_items_must_set_one(self) -> None:
+        result, report = self._zone(radius="350")
+        self.assertIn("radius: AreaRadius::Fixed(RankValue::fixed(350.0))", result[2])
+        result, report = self._zone(kind="item")
+        self.assertIsNone(result)
+        self.assertEqual(report.errors[0].field, "radius")
+        result, report = self._zone(kind="item", radius="350")
+        self.assertFalse(report.errors)
+        self.assertIn("AreaRadius::Fixed", result[2])
+
+    def test_invalid_zones_are_rejected(self) -> None:
+        cases = (
+            ("interval of zero", {"value": "0"}, "value"),
+            ("interval above the duration", {"value": "11"}, "value"),
+            ("negative delay", {"amount": "-1"}, "amount"),
+            ("missing duration", {"duration": ""}, "duration"),
+            ("missing interval", {"value": ""}, "value"),
+            ("zero radius", {"radius": "0"}, "radius"),
+            ("built-in trigger", {"effect_id": "on_cast"}, "effect_id"),
+        )
+        for name, cells, field in cases:
+            result, report = self._zone(**cells)
+            self.assertIsNone(result, name)
+            self.assertEqual(report.errors[0].field, field, name)
+
+    def test_zone_must_be_placed_by_the_caster(self) -> None:
+        result, report = self._zone(target="units_in_radius", radius="300")
+        self.assertIsNone(result)
+        self.assertEqual(report.errors[0].field, "effect_target")
+
+    def test_zone_feeds_its_trigger_for_reachability_and_fed_sets(self) -> None:
+        effect, _ = _effect("zone", "on_tick", **self.GOOD)
+        other, _ = _effect("damage", "", trigger="on_tick", target="affected_units")
+        self.assertEqual(chain_fed_triggers([effect]), {"on_tick"})
+        report = Report()
+        warn_unreachable_custom_triggers([effect, other], set(), report)
+        self.assertFalse(report.warnings)
+
+    def test_perform_attack_under_a_zone_fed_trigger_is_rejected(self) -> None:
+        report = Report()
+        zone, _ = _effect("zone", "on_tick", **self.GOOD)
+        attack, ctx = _effect("perform_attack", "", trigger="on_tick", target="caster")
+        ctx.chain_fed = chain_fed_triggers([zone, attack])
+        self.assertIsNone(effect_to_rust(attack, ctx, report))
+        self.assertIn("zone", report.errors[0].message)
+
+
 class MiniStunTests(unittest.TestCase):
     def _stun(self, **cells: str):
         report = Report()

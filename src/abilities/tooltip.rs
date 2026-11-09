@@ -400,6 +400,7 @@ fn effect_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
         | AbilityEffect::Proc { .. }
         | AbilityEffect::Counter { .. }
         | AbilityEffect::Chain { .. }
+        | AbilityEffect::Zone { .. }
         | AbilityEffect::Accumulate { .. }
         | AbilityEffect::PerformAttack { .. } => Vec::new(),
     }
@@ -550,6 +551,27 @@ fn effect_text_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
             "Chains up to {jumps} times, {}% per jump",
             fmt_num(falloff * 100.0)
         ))],
+        AbilityEffect::Zone {
+            radius,
+            delay,
+            duration,
+            interval,
+            ..
+        } => {
+            let radius = match radius {
+                AreaRadius::Ability => "the ability radius".to_string(),
+                AreaRadius::Fixed(value) => fmt_num(value.at(1)),
+            };
+            let delay = match delay.at(1) {
+                d if d > 0.0 => format!("after {}s, ", fmt_num(d)),
+                _ => String::new(),
+            };
+            vec![text_row(format!(
+                "Zone: radius {radius}, {delay}every {}s for {}s",
+                fmt_num(interval.at(1)),
+                fmt_num(duration.at(1))
+            ))]
+        }
         AbilityEffect::Accumulate { threshold, .. } => vec![text_row(format!(
             "Each time {} builds up",
             fmt_num(threshold.at(1))

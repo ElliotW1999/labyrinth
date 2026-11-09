@@ -89,8 +89,9 @@ REACTION_TRIGGERS = {
 # Effect types that re-fire the row's context under a custom `on_<name>` trigger.
 GATE_TYPES = ("proc", "pseudo_proc", "counter", "accumulate")
 # Every effect type that fires a custom trigger: the gates plus the Chain mechanic gate (one
-# derived context per hop). Used for reachability and reaction propagation.
-CUSTOM_TRIGGER_FEEDERS = (*GATE_TYPES, "chain")
+# derived context per hop) and the Zone mechanic gate (one per tick). Used for reachability and
+# reaction propagation.
+CUSTOM_TRIGGER_FEEDERS = (*GATE_TYPES, "chain", "zone")
 # Triggers whose resolved target is the unit that caused them (the `attacker` target).
 ATTACKER_TRIGGERS = ("on_damage_taken", "on_death")
 
@@ -162,6 +163,9 @@ EFFECT_TYPES = {
     "accumulate",
     # Mechanic gate: jump from the start unit to nearby units, re-firing a custom trigger per hop.
     "chain",
+    # Mechanic gate: a delayed, persistent area that re-fires a custom trigger on every tick with the
+    # units inside as the affected units.
+    "zone",
     # Extra basic attacks (instant / double / multi-target attack).
     "perform_attack",
 }
@@ -1329,10 +1333,11 @@ def reaction_triggers(effects: list[EffectRow]) -> set[str]:
 
 
 def chain_fed_triggers(effects: list[EffectRow]) -> set[str]:
-    """Custom triggers fed by a `chain` row, directly or through further gates.
+    """Custom triggers fed by a `chain` or `zone` row, directly or through further gates.
 
-    Chain hops carry no `AttackMeta`, so a `perform_attack` under such a trigger would start an
-    attack whose hit re-fires the trigger that fed the chain: an unbounded loop (F7).
+    Chain hops and zone ticks carry no `AttackMeta`, so a `perform_attack` under such a trigger
+    would start an attack whose hit re-fires the trigger that fed the chain or zone: an unbounded
+    loop (F7).
     """
     fed_triggers: set[str] = set()
     changed = True
@@ -1342,7 +1347,7 @@ def chain_fed_triggers(effects: list[EffectRow]) -> set[str]:
             fed = e.row.get("effect_id").lower()
             if e.effect_type not in CUSTOM_TRIGGER_FEEDERS or fed in fed_triggers:
                 continue
-            if e.effect_type == "chain" or e.trigger in fed_triggers:
+            if e.effect_type in ("chain", "zone") or e.trigger in fed_triggers:
                 fed_triggers.add(fed)
                 changed = True
     return fed_triggers
@@ -1483,8 +1488,8 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             row.line,
             "effect_type",
             e.effect_type,
-            f"{e.trigger} is fed by a chain row; a chain hop carries no attack, so perform_attack here "
-            "could re-fire the trigger that fed the chain without end",
+            f"{e.trigger} is fed by a chain or zone row; its context carries no attack, so perform_attack here "
+            "could re-fire the trigger that fed it without end",
         )
         return None
 
@@ -1925,6 +1930,61 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             f"falloff: {f32(amount[0] / 100)}, team: TargetTeam::{chain_team}, "
             f'then: AbilityTrigger::Custom("{effect_id}") }}'
         )
+    elif t == "zone":
+        if not _require(e, "effect_id", report, "the custom trigger to fire per tick (on_<name>)"):
+            return None
+        if not CUSTOM_TRIGGER_PATTERN.match(effect_id) or effect_id in ABILITY_TRIGGERS or effect_id in ITEM_TRIGGERS:
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), "must be a custom on_<name> trigger, not a built-in trigger")
+            return None
+        if effect_id == e.trigger:
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), "a zone cannot fire its own trigger")
+            return None
+        if e.target not in ("caster", "owner"):
+            report.error(row.file, row.line, "effect_target", e.target, "a zone is placed by the unit using it; use owner or caster")
+            return None
+        if ctx.owner_triggers is not None and effect_id not in ctx.owner_triggers:
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), f"no row of {e.owner!r} uses trigger {effect_id}, so this zone would do nothing")
+            return None
+        if not no_scaling():
+            return None
+        if not _require(e, "value", report, "tick interval in seconds (above 0)"):
+            return None
+        if not _require(e, "duration", report, "seconds the zone stays active (above 0)"):
+            return None
+        if any(v <= 0 for v in value):
+            report.error(row.file, row.line, "value", row.get("value"), "zone tick interval must be above 0")
+            return None
+        if any(d <= 0 for d in duration):
+            report.error(row.file, row.line, "duration", row.get("duration"), "zone duration must be above 0")
+            return None
+        for rank in range(max(len(value), len(duration))):
+            tick = value[min(rank, len(value) - 1)]
+            lasts = duration[min(rank, len(duration) - 1)]
+            if tick > lasts:
+                report.error(row.file, row.line, "value", row.get("value"), f"zone tick interval {tick:g}s exceeds the {lasts:g}s duration")
+                return None
+        if amount and any(a < 0 for a in amount):
+            report.error(row.file, row.line, "amount", row.get("amount"), "zone delay (seconds) cannot be negative")
+            return None
+        if radius:
+            if any(r <= 0 for r in radius):
+                report.error(row.file, row.line, "radius", row.get("radius"), "zone radius must be above 0")
+                return None
+            zone_radius = f"AreaRadius::Fixed({rank_value(radius)})"
+        elif ctx.has_aoe:
+            zone_radius = "AreaRadius::Ability"
+        else:
+            where = "the ability has no aoe_radius" if ctx.kind == "ability" else "items have no aoe_radius"
+            report.error(row.file, row.line, "radius", "", f"required for a zone ({where})")
+            return None
+        _unused(e, report, "damage_type")
+        zone_team = ctx.team if ctx.team in ("Enemy", "Ally", "Any") else "Enemy"
+        effect = (
+            f"AbilityEffect::Zone {{ radius: {zone_radius}, team: TargetTeam::{zone_team}, "
+            f"delay: {rank_value(amount or [0.0])}, duration: {rank_value(duration)}, "
+            f"interval: {rank_value(value)}, "
+            f'then: AbilityTrigger::Custom("{effect_id}") }}'
+        )
     elif t == "perform_attack":
         if effect_id not in ("", "exclude_trigger_unit"):
             report.error(row.file, row.line, "effect_id", row.get("effect_id"), "perform_attack effect_id must be blank or exclude_trigger_unit")
@@ -1970,7 +2030,7 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
     else:  # pragma: no cover - parse_enum already rejected it
         return None
 
-    if t not in ("movement", "chain") and e.target != "units_in_radius" and row.get("radius"):
+    if t not in ("movement", "chain", "zone") and e.target != "units_in_radius" and row.get("radius"):
         report.warn(row.file, row.line, "radius", row.get("radius"), "only used by units_in_radius targets")
 
     # --- target

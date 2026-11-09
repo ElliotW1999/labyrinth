@@ -2959,6 +2959,7 @@ mod tests {
             .add_message::<crate::actions::ActionChannelEndEvent>()
             .add_message::<AbilityTriggerEvent>()
             .add_message::<crate::abilities::effects::SpellHitEvent>()
+            .add_message::<crate::abilities::zones::SpawnZoneEvent>()
             .add_message::<crate::abilities::reactive_triggers::CooldownReadyEvent>()
             .add_message::<HealEvent>()
             .add_message::<crate::abilities::effects::ManaRestoreEvent>()

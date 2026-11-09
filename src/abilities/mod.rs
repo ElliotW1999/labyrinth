@@ -26,6 +26,7 @@ pub mod mechanics;
 pub mod passive;
 pub mod reactive_triggers;
 pub mod tooltip;
+pub mod zones;
 
 use bevy::prelude::*;
 
@@ -73,6 +74,7 @@ impl Plugin for AbilitiesPlugin {
             .add_message::<AbilityCastEvent>()
             .add_message::<AbilityTriggerEvent>()
             .add_message::<crate::abilities::effects::SpellHitEvent>()
+            .add_message::<zones::SpawnZoneEvent>()
             .add_message::<crate::abilities::reactive_triggers::CooldownReadyEvent>()
             .add_message::<HealEvent>()
             .add_message::<ManaRestoreEvent>()
@@ -115,6 +117,7 @@ impl Plugin for AbilitiesPlugin {
                         reactive_triggers::track_travel,
                         reactive_triggers::proximity_triggers,
                         reactive_triggers::interval_triggers,
+                        zones::tick_zones,
                         reactive_triggers::cooldown_triggers,
                         reactive_triggers::cast_triggers,
                         reactive_triggers::damage_triggers,
@@ -124,6 +127,7 @@ impl Plugin for AbilitiesPlugin {
                     )
                         .chain(),
                     resolve_ability_triggers,
+                    zones::spawn_requested_zones,
                     spawn_requested_projectiles,
                     (
                         apply_heal_events,
@@ -676,6 +680,7 @@ mod tests {
             .add_message::<AbilityCastEvent>()
             .add_message::<AbilityTriggerEvent>()
             .add_message::<crate::abilities::effects::SpellHitEvent>()
+            .add_message::<zones::SpawnZoneEvent>()
             .add_message::<crate::abilities::reactive_triggers::CooldownReadyEvent>()
             .add_message::<HealEvent>()
             .add_message::<ManaRestoreEvent>()
@@ -716,6 +721,7 @@ mod tests {
                         reactive_triggers::track_travel,
                         reactive_triggers::proximity_triggers,
                         reactive_triggers::interval_triggers,
+                        zones::tick_zones,
                         reactive_triggers::cooldown_triggers,
                         reactive_triggers::cast_triggers,
                         reactive_triggers::damage_triggers,
@@ -725,6 +731,7 @@ mod tests {
                     )
                         .chain(),
                     resolve_ability_triggers,
+                    zones::spawn_requested_zones,
                     apply_heal_events,
                     (
                         apply_mana_restore_events,
@@ -7892,5 +7899,406 @@ mod tests {
             vec![false],
             "the channel was interrupted, not completed"
         );
+    }
+
+    // ---- zones (AbilityEffect::Zone) ----
+
+    const ZONE_TICK: AbilityTrigger = AbilityTrigger::Custom("on_zone_tick");
+
+    fn zone_effect(team: TargetTeam, delay: f32, duration: f32, interval: f32) -> AbilityEffect {
+        AbilityEffect::Zone {
+            radius: AreaRadius::Fixed(RankValue::fixed(300.0)),
+            team,
+            delay: RankValue::fixed(delay),
+            duration: RankValue::fixed(duration),
+            interval: RankValue::fixed(interval),
+            then: ZONE_TICK,
+        }
+    }
+
+    /// An instant no-target cast that drops a zone on the caster, damaging whoever stands in
+    /// it on every tick.
+    fn zone_ability(effect: AbilityEffect) -> AbilityDefinition {
+        AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::NoTarget, RankValue::ZERO, RankValue::ZERO)
+            .costs(RankValue::ZERO, RankValue::ZERO)
+            .timing(0.0, 0.0)
+            .on(AbilityTrigger::OnCast, EffectTarget::Caster, effect)
+            .on(
+                ZONE_TICK,
+                EffectTarget::AffectedUnits,
+                fixed_magical_damage(10.0),
+            )
+    }
+
+    fn zone_count(app: &mut App) -> usize {
+        app.world_mut()
+            .query::<&zones::AbilityZone>()
+            .iter(app.world())
+            .count()
+    }
+
+    /// The zone ticks written in the last update.
+    fn zone_ticks(app: &App) -> Vec<TriggerContext> {
+        app.world()
+            .resource::<Messages<AbilityTriggerEvent>>()
+            .iter_current_update_messages()
+            .filter(|event| event.0.trigger == ZONE_TICK)
+            .map(|event| event.0.clone())
+            .collect()
+    }
+
+    /// Steps until `seconds` of game time passed and returns the elapsed time of each tick.
+    fn run_zone(app: &mut App, seconds: f32) -> Vec<f32> {
+        let mut ticks = Vec::new();
+        let steps = (seconds / 0.05).round() as usize;
+        for index in 1..=steps {
+            step(app);
+            ticks.extend(zone_ticks(app).iter().map(|_| index as f32 * 0.05));
+        }
+        ticks
+    }
+
+    #[test]
+    fn zone_waits_for_its_delay_then_ticks_on_schedule() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(zone_ability(zone_effect(TargetTeam::Enemy, 1.2, 10.0, 1.0)));
+        let caster = spawn_caster(&mut app, KIT);
+        let inside = spawn_unit(&mut app, Team::Dire, Vec3::new(200.0, 0.0, 0.0));
+        let outside = spawn_unit(&mut app, Team::Dire, Vec3::new(900.0, 0.0, 0.0));
+        request(&mut app, caster, 3, CastTarget::None);
+
+        let ticks = run_zone(&mut app, 14.0);
+        assert_eq!(ticks.len(), 10, "{ticks:?}");
+        assert!(
+            ticks[0] >= 1.2 && ticks[0] < 1.5,
+            "no tick before the delay: {}",
+            ticks[0]
+        );
+        for pair in ticks.windows(2) {
+            assert!(
+                (pair[1] - pair[0] - 1.0).abs() < 0.11,
+                "one tick a second: {ticks:?}"
+            );
+        }
+        assert_eq!(health(&app, inside), 1000.0 - 100.0);
+        assert_eq!(health(&app, outside), 1000.0);
+        assert_eq!(
+            zone_count(&mut app),
+            0,
+            "the zone ended after delay + duration"
+        );
+    }
+
+    #[test]
+    fn zone_tick_count_is_floor_of_duration_over_interval() {
+        for (duration, interval, expected) in [(10.0, 3.0, 3), (1.4, 0.1, 14), (2.0, 2.0, 1)] {
+            let mut app = test_app();
+            app.world_mut()
+                .resource_mut::<AbilityDefinitions>()
+                .insert(zone_ability(zone_effect(
+                    TargetTeam::Enemy,
+                    0.0,
+                    duration,
+                    interval,
+                )));
+            let caster = spawn_caster(&mut app, KIT);
+            request(&mut app, caster, 3, CastTarget::None);
+            let ticks = run_zone(&mut app, duration + 1.0);
+            assert_eq!(ticks.len(), expected, "{duration}/{interval}: {ticks:?}");
+        }
+    }
+
+    #[test]
+    fn zone_with_no_delay_ticks_on_the_frame_after_it_spawns() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(zone_ability(zone_effect(TargetTeam::Enemy, 0.0, 2.0, 1.0)));
+        let caster = spawn_caster(&mut app, KIT);
+        request(&mut app, caster, 3, CastTarget::None);
+        let ticks = run_zone(&mut app, 3.0);
+        assert_eq!(ticks.len(), 2);
+        assert!(
+            ticks[0] <= 0.15,
+            "the first tick is immediate: {}",
+            ticks[0]
+        );
+    }
+
+    #[test]
+    fn zone_reports_nothing_when_empty_and_never_the_caster() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(zone_ability(zone_effect(TargetTeam::Any, 0.0, 2.0, 1.0)));
+        let caster = spawn_caster(&mut app, KIT);
+        request(&mut app, caster, 3, CastTarget::None);
+        let mut contexts = Vec::new();
+        for _ in 0..50 {
+            step(&mut app);
+            contexts.extend(zone_ticks(&app));
+        }
+        assert_eq!(contexts.len(), 2, "empty ticks are still written");
+        assert!(contexts.iter().all(|ctx| ctx.affected_units.is_empty()));
+        assert_eq!(
+            health(&app, caster),
+            1000.0,
+            "the caster is never a zone target"
+        );
+    }
+
+    #[test]
+    fn zone_tick_context_is_derived_without_unit_or_attack() {
+        let mut app = test_app();
+        app.world_mut().resource_mut::<AbilityDefinitions>().insert(
+            zone_ability(zone_effect(TargetTeam::Enemy, 0.0, 1.0, 1.0)).on(
+                AbilityTrigger::OnDamageTaken,
+                EffectTarget::Caster,
+                zone_effect(TargetTeam::Enemy, 0.0, 1.0, 1.0),
+            ),
+        );
+        let caster = spawn_caster(&mut app, KIT);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        app.world_mut().write_message(AbilityTriggerEvent(
+            TriggerContext::new(
+                AbilityTrigger::OnDamageTaken,
+                EffectSource::Ability(AbilityId::Bulwark),
+                caster,
+                Team::Radiant,
+                1,
+                Vec3::ZERO,
+                Vec3::new(5.0, 0.0, 7.0),
+            )
+            .trigger_unit(Some(enemy))
+            .affected(vec![enemy])
+            .attack(effects::AttackMeta {
+                extra: false,
+                crit: false,
+            }),
+        ));
+        let mut contexts = Vec::new();
+        for _ in 0..30 {
+            step(&mut app);
+            contexts.extend(zone_ticks(&app));
+        }
+        assert_eq!(contexts.len(), 1);
+        let tick = &contexts[0];
+        assert!(
+            tick.reaction,
+            "a zone spawned by a reaction stays a reaction"
+        );
+        assert_eq!(tick.depth, 1);
+        assert_eq!(tick.trigger_unit, None);
+        assert_eq!(tick.attack, None);
+        assert_eq!(
+            tick.affected_units,
+            vec![enemy],
+            "the units inside, not the spawn's"
+        );
+        assert_eq!(tick.source, EffectSource::Ability(AbilityId::Bulwark));
+        assert_eq!(tick.rank, 1);
+    }
+
+    #[test]
+    fn zone_is_a_no_op_past_the_depth_cap() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(zone_ability(zone_effect(TargetTeam::Enemy, 0.0, 2.0, 1.0)));
+        let caster = spawn_caster(&mut app, KIT);
+        let mut deep = TriggerContext::new(
+            AbilityTrigger::OnCast,
+            EffectSource::Ability(AbilityId::Bulwark),
+            caster,
+            Team::Radiant,
+            1,
+            Vec3::ZERO,
+            Vec3::ZERO,
+        );
+        deep.depth = effects::MAX_TRIGGER_DEPTH;
+        app.world_mut().write_message(AbilityTriggerEvent(deep));
+        for _ in 0..5 {
+            step(&mut app);
+        }
+        assert_eq!(zone_count(&mut app), 0);
+
+        // One hop below the cap still spawns it.
+        let mut shallow = TriggerContext::new(
+            AbilityTrigger::OnCast,
+            EffectSource::Ability(AbilityId::Bulwark),
+            caster,
+            Team::Radiant,
+            1,
+            Vec3::ZERO,
+            Vec3::ZERO,
+        );
+        shallow.depth = effects::MAX_TRIGGER_DEPTH - 1;
+        app.world_mut().write_message(AbilityTriggerEvent(shallow));
+        step(&mut app);
+        assert_eq!(zone_count(&mut app), 1);
+    }
+
+    #[test]
+    fn zone_ignores_a_zero_interval_duration_or_radius() {
+        for effect in [
+            zone_effect(TargetTeam::Enemy, 0.0, 2.0, 0.0),
+            zone_effect(TargetTeam::Enemy, 0.0, 0.0, 1.0),
+            zone_effect(TargetTeam::Enemy, 0.0, 0.5, 1.0),
+            AbilityEffect::Zone {
+                radius: AreaRadius::Ability,
+                team: TargetTeam::Enemy,
+                delay: RankValue::ZERO,
+                duration: RankValue::fixed(2.0),
+                interval: RankValue::fixed(1.0),
+                then: ZONE_TICK,
+            },
+        ] {
+            let mut app = test_app();
+            app.world_mut()
+                .resource_mut::<AbilityDefinitions>()
+                .insert(zone_ability(effect));
+            let caster = spawn_caster(&mut app, KIT);
+            request(&mut app, caster, 3, CastTarget::None);
+            for _ in 0..10 {
+                step(&mut app);
+            }
+            assert_eq!(zone_count(&mut app), 0, "{effect:?}");
+        }
+    }
+
+    #[test]
+    fn zone_outlives_its_casters_death_but_not_its_despawn() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(zone_ability(zone_effect(TargetTeam::Enemy, 0.0, 5.0, 1.0)));
+        let caster = spawn_caster(&mut app, KIT);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        request(&mut app, caster, 3, CastTarget::None);
+        step(&mut app);
+        step(&mut app);
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 0.0;
+        let ticks = run_zone(&mut app, 2.0);
+        assert!(!ticks.is_empty(), "a dead caster's zone keeps ticking");
+        assert_eq!(zone_count(&mut app), 1);
+        app.world_mut().entity_mut(caster).despawn();
+        step(&mut app);
+        assert_eq!(zone_count(&mut app), 0);
+        assert!(health(&app, enemy) < 1000.0);
+    }
+
+    #[test]
+    fn overdue_zone_ticks_catch_up_in_one_frame() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(zone_ability(zone_effect(TargetTeam::Enemy, 1.2, 10.0, 1.0)));
+        let caster = spawn_caster(&mut app, KIT);
+        request(&mut app, caster, 3, CastTarget::None);
+        step(&mut app);
+        step(&mut app);
+        assert_eq!(zone_count(&mut app), 1);
+        // One 5 s frame: the ticks due at 1.2, 2.2, 3.2 and 4.2 all fire.
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_secs_f32(5.0));
+        app.update();
+        assert_eq!(zone_ticks(&app).len(), 4);
+        // A huge frame never fires more than the zone's total.
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_secs_f32(60.0));
+        app.update();
+        assert_eq!(zone_ticks(&app).len(), 6, "10 ticks in total, never more");
+        assert_eq!(zone_count(&mut app), 0);
+    }
+
+    #[test]
+    fn item_and_ability_zone_emit_identical_ticks() {
+        static ITEM_EFFECTS: std::sync::OnceLock<&'static [AbilityEffectEntry]> =
+            std::sync::OnceLock::new();
+        let item_effects = ITEM_EFFECTS.get_or_init(|| {
+            Box::leak(Box::new([
+                AbilityEffectEntry {
+                    trigger: AbilityTrigger::OnUse,
+                    target: EffectTarget::Caster,
+                    effect: zone_effect(TargetTeam::Enemy, 0.5, 3.0, 1.0),
+                },
+                AbilityEffectEntry {
+                    trigger: ZONE_TICK,
+                    target: EffectTarget::AffectedUnits,
+                    effect: fixed_magical_damage(10.0),
+                },
+            ]))
+        });
+        let item = ItemDefinition {
+            id: ItemId::StormRod,
+            name: "Parity Zone",
+            short_label: "PZ",
+            item_type: ItemType::Miscellaneous,
+            cost: 1,
+            sell_value: 0,
+            tier: 1,
+            rarity: ItemRarity::Common,
+            max_stack: 1,
+            consumable: false,
+            max_charges: None,
+            cooldown: 0.0,
+            activation: ItemActivation {
+                target_type: TargetType::NoTarget,
+                target_team: TargetTeam::Enemy,
+                cast_range: 0.0,
+                cast_time: 0.0,
+                channel_time: 0.0,
+                mana_cost: 0.0,
+            },
+            components: &[],
+            color: [1.0, 1.0, 1.0],
+            description: "test",
+            effects: item_effects,
+            mechanics: &[],
+        };
+
+        let mut ability_app = test_app();
+        ability_app
+            .world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(zone_ability(zone_effect(TargetTeam::Enemy, 0.5, 3.0, 1.0)));
+        let ability_caster = spawn_caster(&mut ability_app, KIT);
+        let ability_enemy = spawn_unit(&mut ability_app, Team::Dire, Vec3::new(200.0, 0.0, 0.0));
+        request(&mut ability_app, ability_caster, 3, CastTarget::None);
+
+        let mut item_app = test_app();
+        let _defs = install_test_item_definitions([item]);
+        let item_caster = spawn_caster_with_inventory(&mut item_app, KIT);
+        give_item(&mut item_app, item_caster, ItemId::StormRod);
+        let item_enemy = spawn_unit(&mut item_app, Team::Dire, Vec3::new(200.0, 0.0, 0.0));
+        request_item(&mut item_app, item_caster, 0, CastTarget::None);
+
+        let shape = |app: &mut App, enemy: Entity| {
+            let mut ticks = Vec::new();
+            for index in 0..100 {
+                step(app);
+                for tick in zone_ticks(app) {
+                    ticks.push((
+                        index,
+                        tick.affected_units == vec![enemy],
+                        tick.depth,
+                        tick.reaction,
+                        tick.attack,
+                    ));
+                }
+            }
+            ticks
+        };
+        let from_ability = shape(&mut ability_app, ability_enemy);
+        let from_item = shape(&mut item_app, item_enemy);
+        assert_eq!(from_ability.len(), 3);
+        assert_eq!(from_ability, from_item);
+        assert_eq!(health(&ability_app, ability_enemy), 970.0);
+        assert_eq!(health(&item_app, item_enemy), 970.0);
     }
 }

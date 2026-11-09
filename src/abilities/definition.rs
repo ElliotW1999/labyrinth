@@ -880,6 +880,20 @@ pub enum AbilityEffect {
         team: TargetTeam,
         then: AbilityTrigger,
     },
+    /// Mechanic gate: spawns a persistent area at the trigger point (the aim for `OnCast`).
+    /// After `delay` seconds, and then every `interval` seconds for `duration` seconds in
+    /// total (`floor(duration / interval)` ticks), it re-fires this context under `then`
+    /// with the units of `team` inside `radius` as the affected units (the caster is never
+    /// one). The re-fired context has no trigger unit, no affected units from the spawn and
+    /// no attack. Emits no gameplay messages itself and runs once per execution.
+    Zone {
+        radius: AreaRadius,
+        team: TargetTeam,
+        delay: RankValue,
+        duration: RankValue,
+        interval: RankValue,
+        then: AbilityTrigger,
+    },
     /// Gate: sums `TriggerContext::amount` over executions (damage taken, distance walked, or
     /// 1 per occurrence) and, whenever the sum reaches `threshold`, re-fires this trigger's
     /// context under `then` once and keeps the remainder. The sum is counted per source and
@@ -920,6 +934,7 @@ impl AbilityEffect {
                 | Self::Counter { .. }
                 | Self::Accumulate { .. }
                 | Self::Chain { .. }
+                | Self::Zone { .. }
                 | Self::PassiveStat { .. }
         )
     }

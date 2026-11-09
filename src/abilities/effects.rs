@@ -19,6 +19,7 @@ use super::definition::{
     EffectScaling, EffectTarget, StatusBuildContext, TargetTeam,
 };
 use super::mechanics::{ChainCandidate, chain_hops};
+use super::zones::SpawnZoneEvent;
 use crate::actions::{ActionId, team_allows};
 use crate::basic_attack::ExtraAttackEvent;
 use crate::combat::{CombatRng, DamageEvent};
@@ -450,6 +451,7 @@ pub struct EffectRunner<'w, 's> {
     displacements: MessageWriter<'w, DisplacementEvent>,
     teleports: MessageWriter<'w, TeleportEvent>,
     extra_attacks: MessageWriter<'w, ExtraAttackEvent>,
+    zones: MessageWriter<'w, SpawnZoneEvent>,
     rng: ResMut<'w, CombatRng>,
     counters: Query<'w, 's, &'static mut TriggerCounters>,
     /// Contexts produced by gates since the last [`Self::take_derived`].
@@ -615,6 +617,7 @@ impl EffectRunner<'_, '_> {
         effect: &AbilityEffect,
         targets: Vec<Entity>,
         cast_range: f32,
+        aoe_radius: f32,
     ) {
         let source = Some(ctx.caster);
         let rank = ctx.rank;
@@ -942,6 +945,44 @@ impl EffectRunner<'_, '_> {
                     }
                 }
             }
+            AbilityEffect::Zone {
+                radius,
+                team,
+                delay,
+                duration,
+                interval,
+                then,
+            } => {
+                if !self.gate_open(ctx) {
+                    return;
+                }
+                let (interval, duration) = (interval.at(rank), duration.at(rank));
+                let radius = match radius {
+                    AreaRadius::Ability => aoe_radius,
+                    AreaRadius::Fixed(value) => value.at(rank),
+                };
+                if interval <= 0.0 || duration <= 0.0 || radius <= 0.0 {
+                    return;
+                }
+                let ticks = (duration / interval + 1e-4).floor() as u32;
+                if ticks == 0 {
+                    return;
+                }
+                let mut template = ctx.derived(then);
+                template.trigger_unit = None;
+                template.affected_units.clear();
+                template.attack = None;
+                self.zones.write(SpawnZoneEvent {
+                    template,
+                    center: ctx.point,
+                    radius,
+                    team,
+                    delay: delay.at(rank).max(0.0),
+                    duration,
+                    interval,
+                    ticks,
+                });
+            }
             AbilityEffect::Accumulate { threshold, then } => {
                 if !self.gate_open(ctx) {
                     return;
@@ -1111,7 +1152,13 @@ pub fn resolve_ability_triggers(
                     }
                 }
             }
-            runner.execute(&ctx, &entry.effect, targets, params.cast_range);
+            runner.execute(
+                &ctx,
+                &entry.effect,
+                targets,
+                params.cast_range,
+                params.aoe_radius,
+            );
         }
         if let Some(ability) = spell {
             for target in enemies_hit {
