@@ -615,6 +615,11 @@ pub enum AbilityId {
     QueenOfPainBlink,
     ScreamOfPain,
     SonicWave,
+    // Magnus (generated stubs)
+    MagnusShockwave,
+    Empower,
+    Skewer,
+    ReversePolarity,
     // </hero_generator:ability_enum>
 }
 
@@ -652,6 +657,10 @@ impl AbilityId {
             AbilityId::QueenOfPainBlink => "QoP Blink",
             AbilityId::ScreamOfPain => "Scream of Pain",
             AbilityId::SonicWave => "Sonic Wave",
+            AbilityId::MagnusShockwave => "Shockwave",
+            AbilityId::Empower => "Empower",
+            AbilityId::Skewer => "Skewer",
+            AbilityId::ReversePolarity => "Reverse Polarity",
             // </hero_generator:ability_display_name>
         }
     }
@@ -666,7 +675,8 @@ impl AbilityId {
                 | AbilityId::Aegis
                 | AbilityId::Ritual
                 | AbilityId::Cataclysm
-                | AbilityId::SonicWave // </hero_generator:ability_ultimates>
+                | AbilityId::SonicWave
+                | AbilityId::ReversePolarity // </hero_generator:ability_ultimates>
         )
     }
 
@@ -683,6 +693,10 @@ impl AbilityId {
             AbilityId::QueenOfPainBlink => 7,
             AbilityId::ScreamOfPain => 7,
             AbilityId::SonicWave => 4,
+            AbilityId::MagnusShockwave => 7,
+            AbilityId::Empower => 7,
+            AbilityId::Skewer => 7,
+            AbilityId::ReversePolarity => 4,
             // </ability_generator:max_rank>
             _ if self.is_ultimate() => 4,
             _ => 7,

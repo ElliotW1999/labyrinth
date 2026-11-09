@@ -7344,4 +7344,252 @@ mod tests {
         );
         assert!(wave.target_pos.distance(Vec3::new(0.0, 0.0, 1248.0)) < 1e-3);
     }
+
+    const MAGNUS: [AbilityId; 4] = [
+        AbilityId::MagnusShockwave,
+        AbilityId::Empower,
+        AbilityId::Skewer,
+        AbilityId::ReversePolarity,
+    ];
+
+    fn status_of<'a>(
+        app: &'a App,
+        unit: Entity,
+        id: &str,
+    ) -> Option<&'a crate::status::StatusEffect> {
+        app.world()
+            .get::<StatusEffects>(unit)
+            .unwrap()
+            .effects
+            .iter()
+            .find(|e| e.id == id)
+    }
+
+    #[test]
+    fn magnus_shockwave_pulls_toward_wave_center_and_slows() {
+        let mut app = qop_app();
+        let caster = spawn_caster(&mut app, MAGNUS);
+        // Two enemies beside the wave's path: one close to the wave's centre, one far.
+        let near = spawn_unit(&mut app, Team::Dire, Vec3::new(400.0, 0.0, 100.0));
+        let far = spawn_unit(&mut app, Team::Dire, Vec3::new(400.0, 0.0, 300.0));
+        let spawned = cast_for_projectiles(&mut app, caster, 0, CastTarget::Point(Vec3::X * 800.0));
+        assert_eq!(spawned.len(), 1);
+        let wave = spawned[0];
+        assert!(
+            wave.origin.distance(Vec3::new(48.0, 0.0, 0.0)) < 1e-3,
+            "the wave starts 48 units in front: {}",
+            wave.origin
+        );
+        assert_eq!(wave.skillshot_width, Some(200.0));
+        assert_eq!(wave.speed, Some(1200.0));
+
+        let centre = Vec3::new(400.0, 0.0, 0.0);
+        app.world_mut()
+            .write_message(hit(wave.payload, centre, Some(near), vec![]));
+        app.world_mut()
+            .write_message(hit(wave.payload, centre, Some(far), vec![]));
+        for _ in 0..6 {
+            step(&mut app);
+        }
+        // The close unit stops at the centre; the far one is pulled the full 150.
+        assert!(
+            position(&app, near).distance(centre) < 1.0,
+            "{}",
+            position(&app, near)
+        );
+        assert!(
+            (position(&app, far).distance(centre) - 150.0).abs() < 1.0,
+            "{}",
+            position(&app, far)
+        );
+        for unit in [near, far] {
+            assert_eq!(
+                health(&app, unit),
+                1000.0 - 75.0,
+                "75 magical, no resistance"
+            );
+            let slow = status_of(&app, unit, "slow").expect("slowed");
+            assert!(
+                slow.remaining <= 0.55 && slow.remaining > 0.1,
+                "{}",
+                slow.remaining
+            );
+            assert!(
+                (slow.move_speed + 300.0 * 0.75).abs() < 1e-3,
+                "75% of 300: {}",
+                slow.move_speed
+            );
+        }
+        // The slow is brief: it is gone after another second.
+        for _ in 0..20 {
+            step(&mut app);
+        }
+        assert!(status_of(&app, near, "slow").is_none());
+    }
+
+    #[test]
+    fn skewer_drags_stunned_enemy_and_hits_at_destination() {
+        let mut app = qop_app();
+        let caster = spawn_caster(&mut app, MAGNUS);
+        let victim = spawn_unit(&mut app, Team::Dire, Vec3::new(300.0, 0.0, 100.0));
+        let bystander = spawn_unit(&mut app, Team::Dire, Vec3::new(300.0, 0.0, 400.0));
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(300.0, 0.0, 50.0));
+        // The victim already carries someone else's long stun.
+        app.world_mut()
+            .get_mut::<StatusEffects>(victim)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::stunned(30.0));
+        request(&mut app, caster, 2, CastTarget::Point(Vec3::X * 600.0));
+
+        let mut seen_bound = false;
+        let mut carried_with_both_stuns = false;
+        for _ in 0..80 {
+            step(&mut app);
+            if status_of(&app, victim, "skewer_stun").is_some() {
+                seen_bound = true;
+                carried_with_both_stuns |= status_of(&app, victim, "stun").is_some()
+                    && app.world().get::<ForcedMovement>(victim).is_some();
+            }
+        }
+        assert!(
+            seen_bound,
+            "the contact stunned the victim while it was dragged"
+        );
+        assert!(
+            carried_with_both_stuns,
+            "the foreign stun was never overwritten"
+        );
+        assert!(
+            app.world().get::<ForcedMovement>(caster).is_none()
+                && app.world().get::<ForcedMovement>(victim).is_none(),
+            "the dash and the drag are over"
+        );
+
+        // At the destination: dragged along, the bound stun removed, the other stun intact.
+        assert!(position(&app, caster).distance(Vec3::X * 600.0) < 2.0);
+        assert!(position(&app, victim).distance(position(&app, caster)) < 2.0);
+        assert!(status_of(&app, victim, "skewer_stun").is_none());
+        assert!(
+            status_of(&app, victim, "stun").is_some(),
+            "the other stun is untouched"
+        );
+        // Damage and slow land at the destination.
+        assert_eq!(health(&app, victim), 1000.0 - 80.0);
+        let slow = status_of(&app, victim, "slow").expect("slowed at the end");
+        assert!(
+            (slow.move_speed + 300.0 * 0.20).abs() < 1e-3,
+            "{}",
+            slow.move_speed
+        );
+        assert!(
+            slow.remaining > 0.0 && slow.remaining <= 3.25,
+            "{}",
+            slow.remaining
+        );
+        // Outside the 145 reach, and allies, are not touched.
+        assert_eq!(health(&app, bystander), 1000.0);
+        assert_eq!(position(&app, bystander), Vec3::new(300.0, 0.0, 400.0));
+        assert_eq!(health(&app, ally), 1000.0);
+        assert_eq!(position(&app, ally), Vec3::new(300.0, 0.0, 50.0));
+    }
+
+    #[test]
+    fn reverse_polarity_pulls_damages_and_stuns_in_radius() {
+        let mut app = qop_app();
+        let caster = spawn_caster(&mut app, MAGNUS);
+        app.world_mut()
+            .get_mut::<Transform>(caster)
+            .unwrap()
+            .rotation = Transform::default().looking_to(Vec3::X, Vec3::Y).rotation;
+        let behind = spawn_unit(&mut app, Team::Dire, Vec3::new(-200.0, 0.0, 0.0));
+        let side = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, 400.0));
+        let outside = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, -500.0));
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(100.0, 0.0, 100.0));
+        request(&mut app, caster, 3, CastTarget::None);
+        for _ in 0..24 {
+            step(&mut app);
+        }
+        let gather = Vec3::new(250.0, 0.0, 0.0);
+        for unit in [behind, side] {
+            assert!(
+                position(&app, unit).distance(gather) < 1.0,
+                "{}",
+                position(&app, unit)
+            );
+            assert_eq!(health(&app, unit), 1000.0 - 100.0);
+            let stun = status_of(&app, unit, "stun").expect("stunned");
+            assert!(stun.stunned);
+            assert!(
+                stun.remaining <= 2.5 && stun.remaining > 1.0,
+                "{}",
+                stun.remaining
+            );
+        }
+        assert_eq!(position(&app, outside), Vec3::new(0.0, 0.0, -500.0));
+        assert_eq!(health(&app, outside), 1000.0);
+        assert!(status_of(&app, outside, "stun").is_none());
+        assert_eq!(position(&app, ally), Vec3::new(100.0, 0.0, 100.0));
+        assert!(status_of(&app, ally, "stun").is_none());
+    }
+
+    #[test]
+    fn empower_grants_percent_damage_and_cone_cleave_to_self_and_ally() {
+        use crate::heroes::{HeroId, HeroKind};
+        let mut app = qop_app();
+        let magnus = spawn_caster(&mut app, MAGNUS);
+        let helper = spawn_caster(&mut app, MAGNUS);
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(150.0, 0.0, 0.0));
+        for unit in [magnus, helper, ally] {
+            app.world_mut()
+                .entity_mut(unit)
+                .insert(HeroKind(HeroId::Magnus));
+            app.world_mut()
+                .get_mut::<CombatStats>(unit)
+                .unwrap()
+                .attack_damage = 61.0 + 100.0; // 100 of it from items
+        }
+
+        // Self-cast, and a cast on an ally by someone else.
+        request(&mut app, magnus, 1, CastTarget::Unit(magnus));
+        request(&mut app, helper, 1, CastTarget::Unit(ally));
+        for _ in 0..12 {
+            step(&mut app);
+        }
+        for unit in [magnus, ally] {
+            let stats = app.world().get::<CombatStats>(unit).unwrap();
+            // 16% of the hero definition's 61, not of the 161 the unit currently has.
+            assert!(
+                (stats.attack_damage - (161.0 + 0.16 * 61.0)).abs() < 1e-3,
+                "{}",
+                stats.attack_damage
+            );
+            assert!((stats.cleave_damage_ratio - 0.16).abs() < 1e-6);
+            assert_eq!(
+                (
+                    stats.cleave_radius,
+                    stats.cleave_end_radius,
+                    stats.cleave_distance
+                ),
+                (150.0, 360.0, 650.0)
+            );
+        }
+
+        // After the 30 seconds everything is exactly back.
+        for _ in 0..620 {
+            step(&mut app);
+        }
+        assert!(status_of(&app, ally, "empower_attack_damage_pct").is_none());
+        let after = app.world().get::<CombatStats>(ally).unwrap();
+        assert!((after.attack_damage - 161.0).abs() < 1e-3);
+        assert!(after.cleave_damage_ratio.abs() < 1e-6);
+        assert_eq!(
+            (
+                after.cleave_radius,
+                after.cleave_end_radius,
+                after.cleave_distance
+            ),
+            (0.0, 0.0, 0.0)
+        );
+    }
 }

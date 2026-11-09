@@ -302,3 +302,41 @@ Approved gaps: **G1, G2, G3, G4, G5, G6, G7, G8 (modified), G9 (modified), G10.*
 - **U9.** Superseded by the G9 decision.
 
 Constraint: build nothing beyond these approved items. If implementation shows that anything else is needed, stop and ask the user.
+
+## 13. Implementation notes (2026-11-09)
+
+Each approved gap landed as its own commit (G1 to G10, in that order), each with Rust and generator tests and, for every new validation rule, a row in `data/examples/invalid/`; the Magnus data, docs and hero tests came last. Nothing was built beyond G1 to G10. Where §12 left the exact surface open, the choices below were made (each is the smallest form that expresses the approved design):
+
+1. **G1.** `scale::MELEE_CLASSIFICATION_MAX_RANGE` is 250 and `is_melee_attack_range` no longer has the `+ 0.5` slack (no unit's base range lies between 150 and 500). HeroGenerator exposes `is_melee_range` and rejects a row whose `is_melee` disagrees with `attack_range` (blank ranges still default to 128 / 500, so existing rows pass).
+2. **G2.** `turn_rate` is the last hero column (after `attack_projectile_speed`). Both hero CSV headers gained it; short rows parse as blank.
+3. **G3.** The cap is 1.5. Magnus' 1.2, 1.07 and 1.3 backswings apply unclamped, and the generator emitted no `cast_backswing` warning.
+4. **G4.** `StatusSpec::Modifier.attack_damage_pct` (a percent, 0..1000) is added to the flat bonus as `pct / 100 x StatusBuildContext.base_attack_damage`. The base comes from a new `base_attack_damage(Option<&HeroKind>, Option<&CombatStats>)` helper: the hero definition's `combat.attack_damage` for heroes (U8), and **the unit's current damage for units that have no hero definition** (creeps, test units). The spec did not say what a non-hero should use; this was the least surprising fallback. `build_status_effect` gained a `target_base_attack_damage` parameter, so the three call sites (`EffectRunner`, `sync_conditional_statuses`, `tick_toggle_upkeep`) now query `HeroKind`.
+5. **G5.** `StatusEffect.cleave` is a delta on `cleave_damage_ratio` (applied and reverted by `add_status_stat_delta` / `subtract_status_stat_delta`). The generator checks the value is within 0..1.
+6. **G6 (deviation from the proposal).** §9 left the columns open ("`radius` = start, plus new semantics for end and distance"). A single row has only `radius` and `amount` free and the shape needs three numbers, so the shape is three more **timed stats** instead, each above 0 and additive like every stat: `cleave_radius` (start half-width, the existing `CombatStats::cleave_radius`), `cleave_end_radius` and `cleave_distance` (new `CombatStats` fields). A non-zero `cleave_distance` turns the cleave into a cone. Consequences:
+   - Empower has five rows (`attack_damage_pct`, `cleave`, `cleave_radius`, `cleave_end_radius`, `cleave_distance`), all with the same duration.
+   - Shapes from different sources **add** (the proposal's "largest shape wins" is not implemented; there is only one source today).
+   - The widths are half-widths measured on the centre line (`lateral <= lerp(start, end, t)`, exactly as written in §9), widened by the other unit's body radius. If `cleave_end_radius` is unset, the end equals the start.
+7. **G7.** Contact is `center_distance <= contact_radius + other.bound` (the mover's own bound is replaced, not added). Blank keeps body contact. The new `radius` meaning is only read for `dash` and `charge`; on other movements that are not `units_in_radius` the generator warns that it is ignored.
+8. **G8.** `forward_offset` is `caster position when the trigger fired + flat facing x amount`, with `-Z` when the facing has no flat direction (the same fallback as bounded teleports). `amount` must not be negative. `PullToPoint` with no `value` pulls the whole way, so units end exactly on the gather point.
+9. **G9 (deviation from the §6 rows).** §12 asked for a bound stun with a source-unique id without a `remove_status` row. The CSV needed one keyword to say "this drag also stuns", so `movement,drag_stun` was added (a `drag` plus `bound_stun: Some("<owner>_stun")`). The drag itself applies the stun, so the old row 2 (`apply_status,stun`) is also gone and Skewer has four rows: dash, `drag_stun`, damage, slow.
+   - `apply_displacement_events` applies a stun status with the unique id and records it in `ForcedMovement.bound_status`; `tick_forced_movement` writes `StatusChange::Remove(id)` when an `Attached` motion ends, however it ends (arrival, block, stun, death, vanished anchor).
+   - The stun's own duration is only a backstop for a drag that is replaced without ending (a cyclone, say): the carrying dash's remaining time plus 0.25 s, or 3.0 s when the dash started in the same frame.
+   - Refresh is by id, so another source's stun is neither overwritten nor removed (covered by `drag_bound_stun_lasts_exactly_as_long_as_the_drag_and_spares_other_stuns` and `skewer_drags_stunned_enemy_and_hits_at_destination`).
+   - The cyclone's use of `bound_status` (end the motion when the status is gone, on `Hold` paths) is unchanged.
+10. **G10.** The column is `projectile_origin_offset` (skillshots only, level list, above 0; items reject it). The wave starts `offset` in front of the caster towards the aim and flies the full cast range **from there** (it ends `offset` further than before). The width and `projectile_end_radius` apply from the new start.
+11. **Data.**
+    - The Q id is `magnus_shockwave` with the display name "Shockwave"; `generated.rs` has no `AbilityId::Shockwave` arm.
+    - `data/heroes.csv` replaced the stale Magnus row (attack range 200, `turn_rate` 0.8) and `data/heroes.example.csv` got the same row. HeroGenerator ran only on a scratch CSV holding the header and the Magnus row.
+    - `data/examples/` replaced the old `shockwave` / `skewer` rows with Magnus' rows and appended `empower` and `reverse_polarity`.
+    - Descriptions of Empower and Reverse Polarity were edited to match what the rows do (cone cleave; gather point in front).
+    - README samples that quoted the old `shockwave` / `skewer` rows now quote the Magnus rows.
+12. **Superseded test names.** §10 expected the W status id `empower_attack_damage`; with G4 and G5 the ids are `empower_attack_damage_pct`, `empower_cleave`, `empower_cleave_radius`, `empower_cleave_end_radius` and `empower_cleave_distance`. `empower_grants_flat_attack_damage_to_ally_and_self` became `empower_grants_percent_damage_and_cone_cleave_to_self_and_ally`.
+13. **Environment.** The build needs system libraries that this container lacked (`libwayland-dev`, `libxkbcommon-dev`, `libasound2-dev`, `libudev-dev`, `libx11-dev`, `pkg-config`); they were installed with apt. No repository file was changed for this.
+
+Remaining limitations:
+
+- Skewer's slow and Shockwave's slow share the id `slow`, so the last one applied wins.
+- Tooltips show no row for a dash contact radius, a pull-point forward offset or a skillshot origin offset.
+- `data/ability_pseudos/*.pseudo.txt` mention behaviour that §12 did not approve (a 50% larger Empower bonus when cast on self, an attack-speed slow on Skewer). None of it is implemented.
+- Empower's `attack_damage_pct` for a non-hero target is a snapshot of that unit's current damage, which includes any item bonuses it has at that moment.
+- The hero-select UI may overflow with seven heroes (cosmetic).

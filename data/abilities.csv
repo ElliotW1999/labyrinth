@@ -9,3 +9,7 @@ shadow_strike,Shadow Strike,Q,active,unit,enemy,450|500|550|600|650|700|750,,0.3
 queen_of_pain_blink,QoP Blink,W,active,point,enemy,global,,0.33,,12|10|8|6|4|2|1,65,,,none,,"Teleports toward the target point, at least 200 and at most the maximum blink distance away",0.07,,,
 scream_of_pain,Scream of Pain,E,active,no_target,enemy,,600,0,,7.5|7|6.5|6|5.5|5|4.5,120,,,targeted_each,900,"Sends a projectile at every nearby enemy, each dealing magical damage",0.63,,,
 sonic_wave,Sonic Wave,R,active,point,enemy,900,100,0.452,,110|95|80|65,250|400|550|700,,,skillshot,642.857143,"Sends out a widening wave; each enemy struck takes pure damage 14 times over 1.4s and is knocked back",0.9,,,450
+magnus_shockwave,Shockwave,Q,active,point,enemy,1200,200,0.3,,13|12|11|10|9|8|7,85|90|95|100|105|110|115,,,skillshot,1200,"Sends out a wave of force that damages enemies in a line, pulls each one toward the wave and slows it briefly",1.2,,,,48
+empower,Empower,W,active,unit,ally,800,,0.3,,8,45|55|65|75|85|95|105,,,none,,"Grants an allied hero or Magnus bonus attack damage and a cone cleave that melee heroes can use",1.07,,,,
+skewer,Skewer,E,active,point,enemy,global,,0.3,,22|20|18|16|14|12|10,80,,,none,,"Rushes forward, goring enemies and dragging them, stunned, to the destination, where they take magical damage and are slowed",0.3,,,,
+reverse_polarity,Reverse Polarity,R,active,no_target,enemy,,430,0.3,,115,150|225|300|375,,,none,,"Pulls nearby enemies to a point in front of Magnus, dealing magical damage and stunning them",1.3,,,,
