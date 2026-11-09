@@ -1187,6 +1187,7 @@ pub fn apply_status_effect_events(
         Option<&mut ShieldPool>,
         Option<&HeroAttributes>,
     )>,
+    teams: Query<&Team>,
 ) {
     for event in events.read() {
         let Ok((entity, mut statuses, mut stats, mut shield, attrs)) = units.get_mut(event.target)
@@ -1197,13 +1198,20 @@ pub fn apply_status_effect_events(
         match &event.change {
             StatusChange::Apply(effect) => {
                 // Status resistance shortens finite debuffs that another unit puts on this
-                // one. Self-applied, reactive/held and permanent statuses are left alone.
+                // one. Only hostile sources count: self-applied, ally-applied, reactive/held and permanent statuses are left alone.
                 let mut scaled;
                 let effect = if effect.kind == StatusKind::Debuff
                     && !event.reactive
                     && !effect.reactive
                     && effect.remaining.is_finite()
-                    && event.source.is_some_and(|source| source != entity)
+                    && event.source.is_some_and(|source| {
+                        hostile(
+                            source,
+                            entity,
+                            teams.get(source).ok().copied(),
+                            teams.get(entity).ok().copied(),
+                        )
+                    })
                     && statuses.status_resistance_factor() < 1.0
                 {
                     scaled = effect.clone();
@@ -3253,6 +3261,32 @@ mod tests {
             // Another unit is unaffected.
             apply(&mut app, Some(holder), enemy, StatusEffect::stunned(4.0));
             assert_eq!(remaining(&app, enemy, "stun"), Some(4.0));
+        }
+
+        #[test]
+        fn status_resistance_ignores_debuffs_from_allies() {
+            let mut app = app();
+            let ally = unit(&mut app);
+            let enemy = unit(&mut app);
+            let holder = unit(&mut app);
+            app.world_mut().entity_mut(ally).insert(Team::Radiant);
+            app.world_mut().entity_mut(holder).insert(Team::Radiant);
+            app.world_mut().entity_mut(enemy).insert(Team::Dire);
+            apply(
+                &mut app,
+                Some(holder),
+                holder,
+                StatusEffect::status_resistance("res", 0.5, 10.0),
+            );
+            apply(&mut app, Some(ally), holder, StatusEffect::stunned(4.0));
+            assert_eq!(remaining(&app, holder, "stun"), Some(4.0));
+            apply(
+                &mut app,
+                Some(enemy),
+                holder,
+                StatusEffect::debuff("hex", 4.0),
+            );
+            assert_eq!(remaining(&app, holder, "hex"), Some(2.0));
         }
 
         #[test]
