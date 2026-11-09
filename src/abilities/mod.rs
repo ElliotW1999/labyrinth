@@ -8742,4 +8742,172 @@ mod tests {
             }
         }
     }
+    /// Every damage event written in the last update.
+    fn damage_events(app: &App) -> Vec<DamageEvent> {
+        app.world()
+            .resource::<Messages<DamageEvent>>()
+            .iter_current_update_messages()
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn headshot_damage_is_attack_bonus_damage_and_shrapnel_ticks_are_not() {
+        use crate::combat::DamageKind;
+
+        let mut app = sniper_app();
+        let caster = spawn_caster(&mut app, SNIPER);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(400.0, 0.0, 0.0));
+        let mut headshot = None;
+        for _ in 0..40 {
+            write_attack_hit(&mut app, caster, enemy);
+            step(&mut app);
+            headshot = damage_events(&app)
+                .into_iter()
+                .find(|event| event.target == enemy);
+            if headshot.is_some() {
+                break;
+            }
+        }
+        let headshot = headshot.expect("Headshot proc'd");
+        assert_eq!(headshot.kind, DamageKind::AttackBonus);
+        assert!(!headshot.is_spell, "Headshot is not spell damage");
+        assert_eq!(headshot.damage_type, DamageType::Physical);
+        assert_eq!(headshot.source, Some(caster));
+
+        let mut app = sniper_app();
+        let caster = spawn_caster(&mut app, SNIPER);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(1000.0, 0.0, 0.0));
+        request(
+            &mut app,
+            caster,
+            0,
+            CastTarget::Point(Vec3::new(1000.0, 0.0, 0.0)),
+        );
+        let mut tick = None;
+        for _ in 0..60 {
+            step(&mut app);
+            tick = damage_events(&app)
+                .into_iter()
+                .find(|event| event.target == enemy);
+            if tick.is_some() {
+                break;
+            }
+        }
+        let tick = tick.expect("Shrapnel ticked");
+        assert_ne!(tick.kind, DamageKind::AttackBonus);
+        assert!(tick.is_spell, "Shrapnel ticks are spell damage");
+        assert_eq!(tick.damage_type, DamageType::Magical);
+    }
+
+    #[test]
+    fn headshot_knockback_points_away_from_the_attacker_on_every_side() {
+        for (attacker, target, expected) in [
+            (
+                Vec3::new(500.0, 0.0, 0.0),
+                Vec3::new(100.0, 0.0, 0.0),
+                Vec3::new(50.0, 0.0, 0.0),
+            ),
+            (
+                Vec3::new(0.0, 0.0, 500.0),
+                Vec3::new(0.0, 0.0, 100.0),
+                Vec3::new(0.0, 0.0, 50.0),
+            ),
+            (
+                Vec3::new(0.0, 0.0, -300.0),
+                Vec3::new(0.0, 0.0, 100.0),
+                Vec3::new(0.0, 0.0, 150.0),
+            ),
+        ] {
+            let mut app = sniper_app();
+            let caster = spawn_caster(&mut app, SNIPER);
+            app.world_mut()
+                .get_mut::<Transform>(caster)
+                .unwrap()
+                .translation = attacker;
+            let enemy = spawn_unit(&mut app, Team::Dire, target);
+            hit_until_headshot(&mut app, caster, enemy);
+            for _ in 0..4 {
+                step(&mut app);
+            }
+            let at = position(&app, enemy);
+            assert!(
+                at.distance(expected) < 1.0,
+                "attacker {attacker:?} target {target:?}: expected {expected:?}, got {at:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn shrapnel_fires_exactly_ten_ticks_at_uneven_frame_times() {
+        let mut app = sniper_app();
+        let caster = spawn_caster(&mut app, SNIPER);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(1000.0, 0.0, 0.0));
+        request(
+            &mut app,
+            caster,
+            0,
+            CastTarget::Point(Vec3::new(1000.0, 0.0, 0.0)),
+        );
+        let frames = [0.016, 0.033, 0.2, 0.007, 0.5, 0.041];
+        let mut total = 0.0;
+        let mut ticks = 0;
+        let mut index = 0;
+        while total < 16.0 {
+            let dt = frames[index % frames.len()];
+            index += 1;
+            total += dt;
+            app.world_mut()
+                .resource_mut::<Time>()
+                .advance_by(Duration::from_secs_f32(dt));
+            app.update();
+            let in_frame = shrapnel_ticks(&app).len();
+            // A 0.5 s frame can owe at most one tick; ticks never bunch beyond what is overdue.
+            assert!(in_frame <= 1, "{in_frame} ticks in one {dt}s frame");
+            ticks += in_frame;
+        }
+        assert_eq!(ticks, 10, "10 ticks in total at any frame rate");
+        assert_eq!(health(&app, enemy), 1000.0 - 10.0 * 30.0);
+        assert_eq!(zone_count(&mut app), 0, "the zone is gone after 10 s");
+        assert!(status_of(&app, enemy, "shrapnel_slow").is_none());
+        assert_eq!(
+            app.world().get::<CombatStats>(enemy).unwrap().move_speed,
+            300.0
+        );
+    }
+
+    #[test]
+    fn a_broken_assassinate_lock_leaves_no_state_behind_and_can_be_recast() {
+        let mut app = sniper_app();
+        let caster = spawn_caster(&mut app, SNIPER);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(2800.0, 0.0, 0.0));
+        request(&mut app, caster, 3, CastTarget::Unit(target));
+        for _ in 0..10 {
+            step(&mut app);
+        }
+        app.world_mut()
+            .get_mut::<Transform>(target)
+            .unwrap()
+            .translation = Vec3::new(3700.0, 0.0, 0.0);
+        step(&mut app);
+        assert!(
+            app.world().get::<Activation>(caster).is_none(),
+            "lock broken"
+        );
+        assert!(app.world().get::<QueuedActivation>(caster).is_none());
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 1000.0);
+
+        app.world_mut()
+            .get_mut::<Transform>(target)
+            .unwrap()
+            .translation = Vec3::new(2800.0, 0.0, 0.0);
+        request(&mut app, caster, 3, CastTarget::Unit(target));
+        let mut fired = false;
+        for _ in 0..60 {
+            step(&mut app);
+            fired |= !fired_events(&app).is_empty();
+        }
+        assert!(fired, "a fresh cast after a broken lock still fires");
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 825.0);
+    }
 }
