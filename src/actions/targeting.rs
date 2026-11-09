@@ -207,6 +207,7 @@ mod tests {
             target_type,
             target_team,
             cast_range,
+            cast_range_buffer: 0.0,
             cast_time: 0.0,
             channel_time: 0.0,
             backswing: 0.0,

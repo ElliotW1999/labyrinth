@@ -48,6 +48,13 @@ pub fn ability_tooltip_bits(def: &AbilityDefinition, learned_rank: u32) -> Vec<T
         max_rank,
         learned_rank,
     );
+    push_value(
+        &mut bits,
+        "Cast range buffer",
+        def.cast_range_buffer,
+        max_rank,
+        learned_rank,
+    );
     push_value(&mut bits, "Radius", def.aoe_radius, max_rank, learned_rank);
     for mechanic in &def.mechanics {
         if let AbilityMechanic::Projectile {
@@ -740,5 +747,19 @@ mod tests {
         let bits = ability_tooltip_bits(&slam, 0);
         let levels = row_values(&bits, "Level");
         assert!(levels.iter().all(|(_, learned)| !learned));
+    }
+
+    #[test]
+    fn cast_range_buffer_row_shows_only_when_set() {
+        let slam = builtin(AbilityId::SeismicSlam);
+        let text = |def: &AbilityDefinition| -> String {
+            ability_tooltip_bits(def, 1)
+                .iter()
+                .map(|bit| bit.text.as_str())
+                .collect()
+        };
+        assert!(!text(&slam).contains("Cast range buffer"));
+        let buffered = slam.cast_range_buffer(RankValue::fixed(600.0));
+        assert!(text(&buffered).contains("Cast range buffer"));
     }
 }

@@ -983,6 +983,9 @@ pub struct AbilityDefinition {
     pub max_rank: u32,
     pub is_ultimate: bool,
     pub cast_range: RankValue,
+    /// Unit-targeted casts only: the cast is cancelled for free during the cast point if the
+    /// target moves further than `cast_range + cast_range_buffer` from the caster. Zero = no limit.
+    pub cast_range_buffer: RankValue,
     /// Area radius (area targets) or projectile width (point targets); also drives indicators.
     pub aoe_radius: RankValue,
     /// Cast point: delay before the ability fires (0..=`MAX_CAST_POINT`).
@@ -1017,6 +1020,7 @@ impl AbilityDefinition {
             max_rank: id.max_rank(),
             is_ultimate: id.is_ultimate(),
             cast_range: RankValue::ZERO,
+            cast_range_buffer: RankValue::ZERO,
             aoe_radius: RankValue::ZERO,
             cast_time: 0.2,
             backswing: 0.25,
@@ -1040,6 +1044,13 @@ impl AbilityDefinition {
         self.target_type = target_type;
         self.cast_range = cast_range;
         self.aoe_radius = aoe_radius;
+        self
+    }
+
+    /// How far past `cast_range` a unit target may move during the cast point before the
+    /// cast is cancelled.
+    pub fn cast_range_buffer(mut self, buffer: RankValue) -> Self {
+        self.cast_range_buffer = buffer;
         self
     }
 

@@ -43,6 +43,7 @@ from generator_common import (  # noqa: E402
     SKILLSHOT_TYPES,
     TARGET_TEAMS,
     EffectContext,
+    GLOBAL_CAST_RANGE,
     EffectRow,
     Report,
     Row,
@@ -100,11 +101,12 @@ ABILITY_COLUMNS = (
 # toggle_mana_per_sec (toggle abilities only; level list allowed), projectile_end_radius
 # (skillshots only; level list allowed; the width the wave widens to, needs aoe_radius),
 # projectile_origin_offset (skillshots only; level list allowed; how far in front of the caster
-# the wave starts).
+# the wave starts), cast_range_buffer (unit-targeted abilities only; level list allowed; the cast is
+# cancelled for free during the cast point if the target moves further than cast_range + buffer).
 
 SLOTS = ("q", "w", "e", "r", "innate")
 ABILITY_TYPES = {"active": "Active", "passive": "Passive", "toggle": "Toggle"}
-LEVEL_FIELDS = ("cast_range", "aoe_radius", "cooldown", "mana_cost", "toggle_mana_per_sec", "projectile_end_radius", "projectile_origin_offset")
+LEVEL_FIELDS = ("cast_range", "aoe_radius", "cooldown", "mana_cost", "toggle_mana_per_sec", "projectile_end_radius", "projectile_origin_offset", "cast_range_buffer")
 EFFECT_LEVEL_FIELDS = ("value", "duration", "amount", "radius")
 # Mirror abilities::definition::MAX_CAST_POINT and MAX_CAST_BACKSWING.
 MAX_CAST_POINT = 2.0
@@ -164,6 +166,7 @@ class Ability:
     toggle_mana_per_sec: list[float] | None = None
     projectile_end_radius: list[float] | None = None
     projectile_origin_offset: list[float] | None = None
+    cast_range_buffer: list[float] | None = None
     effects: list[str] = field(default_factory=list)
 
 
@@ -197,6 +200,10 @@ def parse_ability(row: Row, effect_rows: list[EffectRow], report: Report) -> Abi
     backswing = parse_scalar(row, "cast_backswing", report, minimum=0)
     if backswing is not None and backswing > MAX_CAST_BACKSWING:
         report.warn(row.file, row.line, "cast_backswing", row.get("cast_backswing"), f"exceeds {MAX_CAST_BACKSWING}s; the runtime clamps it to {MAX_CAST_BACKSWING}")
+    cast_range_buffer = parse_number(row, "cast_range_buffer", report, levels=True)
+    if cast_range_buffer is not None and any(b <= 0 for b in cast_range_buffer):
+        report.error(row.file, row.line, "cast_range_buffer", row.get("cast_range_buffer"), "must be above 0; leave blank for no buffer")
+        cast_range_buffer = None
     toggle_upkeep = parse_number(row, "toggle_mana_per_sec", report, levels=True, minimum=0)
     if toggle_upkeep is not None and ability_type != "toggle":
         report.error(row.file, row.line, "toggle_mana_per_sec", row.get("toggle_mana_per_sec"), "only toggle abilities have mana upkeep (ability_type toggle)")
@@ -218,6 +225,13 @@ def parse_ability(row: Row, effect_rows: list[EffectRow], report: Report) -> Abi
 
     if cast_time > MAX_CAST_POINT:
         report.warn(row.file, row.line, "cast_time", row.get("cast_time"), f"cast point is capped at {MAX_CAST_POINT}s")
+
+    if cast_range_buffer is not None:
+        if target_type != "unit":
+            report.error(row.file, row.line, "cast_range_buffer", row.get("cast_range_buffer"), "only unit-targeted abilities track a target past the cast range (target_type unit)")
+            cast_range_buffer = None
+        elif cast_range == [GLOBAL_CAST_RANGE]:
+            report.warn(row.file, row.line, "cast_range_buffer", row.get("cast_range_buffer"), "has no effect with cast_range global")
 
     rust_target = ability_rust_target_type(target_type, projectile, aoe_radius)
 
@@ -247,6 +261,7 @@ def parse_ability(row: Row, effect_rows: list[EffectRow], report: Report) -> Abi
         toggle_mana_per_sec=toggle_upkeep,
         projectile_end_radius=activation.projectile_end_radius,
         projectile_origin_offset=activation.projectile_origin_offset,
+        cast_range_buffer=cast_range_buffer,
     )
 
 
@@ -318,6 +333,8 @@ def ability_fn(a: Ability) -> str:
         aoe = "RankValue::fixed(scale::ABILITY_PROJECTILE_WIDTH)"
     lines.append(f"        .targeting(TargetType::{a.rust_target_type}, {rank_value(a.cast_range)}, {aoe})")
     lines.append(f"        .team(TargetTeam::{ACTION_TEAMS[a.target_team]})")
+    if a.cast_range_buffer:
+        lines.append(f"        .cast_range_buffer({rank_value(a.cast_range_buffer)})")
     lines.append(f"        .costs({rank_value(a.cooldown)}, {rank_value(a.mana_cost)})")
     lines.append(f"        .timing({f32(a.cast_time)}, {f32(a.backswing)})")
     if a.channel_time:

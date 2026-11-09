@@ -7704,4 +7704,100 @@ mod tests {
         assert!(stats.cleaves.is_empty());
         assert!((stats.attack_damage - 161.0).abs() < 1e-3);
     }
+
+    fn buffered_lock_on(buffer: f32) -> AbilityDefinition {
+        AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::Unit, RankValue::fixed(600.0), RankValue::ZERO)
+            .cast_range_buffer(RankValue::fixed(buffer))
+            .costs(RankValue::fixed(8.0), RankValue::fixed(100.0))
+            .timing(1.0, 0.0)
+    }
+
+    fn lock_on_and_move_target(buffer: f32, moved_to: f32) -> (App, Entity, Entity) {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(buffered_lock_on(buffer));
+        let caster = spawn_caster(&mut app, KIT);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(500.0, 0.0, 0.0));
+        request(&mut app, caster, 3, CastTarget::Unit(target));
+        step(&mut app);
+        assert!(app.world().get::<Activation>(caster).is_some());
+        app.world_mut()
+            .get_mut::<Transform>(target)
+            .unwrap()
+            .translation = Vec3::new(moved_to, 0.0, 0.0);
+        (app, caster, target)
+    }
+
+    #[test]
+    fn target_beyond_the_cast_range_buffer_cancels_the_cast_free() {
+        let (mut app, caster, _) = lock_on_and_move_target(200.0, 850.0);
+        let mut fired = Vec::new();
+        for _ in 0..30 {
+            step(&mut app);
+            fired.extend(fired_events(&app));
+        }
+        assert!(fired.is_empty(), "{fired:?}");
+        assert!(app.world().get::<Activation>(caster).is_none());
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 1000.0);
+        let slot = &app.world().get::<AbilityLoadout>(caster).unwrap().slots[3];
+        assert_eq!(
+            slot.cooldown.remaining, 0.0,
+            "no cooldown for a cancelled cast"
+        );
+    }
+
+    #[test]
+    fn target_inside_the_cast_range_buffer_still_fires() {
+        let (mut app, caster, target) = lock_on_and_move_target(200.0, 750.0);
+        let mut fired = Vec::new();
+        for _ in 0..30 {
+            step(&mut app);
+            fired.extend(fired_events(&app));
+        }
+        assert_eq!(
+            fired,
+            vec![(CastTarget::Unit(target), Vec3::new(750.0, 0.0, 0.0))]
+        );
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 900.0);
+    }
+
+    #[test]
+    fn without_a_buffer_the_target_may_leave_the_cast_range() {
+        let (mut app, _, target) = lock_on_and_move_target(0.0, 5000.0);
+        let mut fired = Vec::new();
+        for _ in 0..30 {
+            step(&mut app);
+            fired.extend(fired_events(&app));
+        }
+        assert_eq!(
+            fired,
+            vec![(CastTarget::Unit(target), Vec3::new(5000.0, 0.0, 0.0))]
+        );
+    }
+
+    #[test]
+    fn dead_target_with_a_buffer_still_fires_at_its_last_position() {
+        let (mut app, _, _) = lock_on_and_move_target(200.0, 500.0);
+        let target = app
+            .world_mut()
+            .query_filtered::<Entity, With<Health>>()
+            .iter(app.world())
+            .find(|e| app.world().get::<Team>(*e) == Some(&Team::Dire))
+            .unwrap();
+        app.world_mut().get_mut::<Health>(target).unwrap().current = 0.0;
+        // Moving the corpse far away does not cancel: it is a point target now.
+        app.world_mut()
+            .get_mut::<Transform>(target)
+            .unwrap()
+            .translation = Vec3::new(5000.0, 0.0, 0.0);
+        let mut fired = Vec::new();
+        for _ in 0..30 {
+            step(&mut app);
+            fired.extend(fired_events(&app));
+        }
+        assert_eq!(fired.len(), 1);
+        assert!(matches!(fired[0].0, CastTarget::Point(_)));
+    }
 }

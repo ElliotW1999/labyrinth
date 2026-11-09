@@ -1502,7 +1502,7 @@ ABILITY_COLUMNS_FOR_TESTS = (
     "id,name,slot,ability_type,target_type,target_team,cast_range,aoe_radius,cast_time,"
     "channel_time,cooldown,mana_cost,max_charges,charge_restore_time,projectile_type,"
     "projectile_speed,description,cast_backswing,max_rank,toggle_mana_per_sec,"
-    "projectile_end_radius,projectile_origin_offset"
+    "projectile_end_radius,projectile_origin_offset,cast_range_buffer"
 ).split(",")
 EFFECT_COLUMNS_FOR_TESTS = (
     "ability_id,effect_index,trigger,effect_target,effect_type,effect_id,value,damage_type,"
@@ -1559,6 +1559,49 @@ class CastBackswingTests(unittest.TestCase):
         _, report = load_test_ability({"cast_time": "2.5"})
         self.assertEqual(report.errors, [])
         self.assertTrue(any(w.field == "cast_time" and "2.0" in w.message for w in report.warnings))
+
+
+class CastRangeBufferTests(unittest.TestCase):
+    UNIT = {"target_type": "unit", "cast_range": "3000"}
+
+    def _load(self, **cells: str):
+        return load_test_ability({**self.UNIT, **cells})
+
+    def setUp(self) -> None:
+        global AbilityGenerator
+        import AbilityGenerator
+
+    def test_buffer_is_emitted_only_when_set(self) -> None:
+        abilities, report = self._load(cast_range_buffer="600")
+        self.assertEqual(report.errors, [])
+        self.assertIn(".cast_range_buffer(RankValue::fixed(600.0))", AbilityGenerator.ability_fn(abilities[0]))
+        abilities, report = self._load()
+        self.assertEqual(report.errors, [])
+        self.assertNotIn("cast_range_buffer", AbilityGenerator.ability_fn(abilities[0]))
+
+    def test_buffer_accepts_a_level_list(self) -> None:
+        abilities, report = self._load(cast_range_buffer="100|200|300|400", max_rank="4", cooldown="1|2|3|4")
+        self.assertEqual(report.errors, [])
+        self.assertIn("RankValue::from_level_1(100.0, 100.0)", AbilityGenerator.ability_fn(abilities[0]))
+
+    def test_buffer_level_count_must_match_the_ranks(self) -> None:
+        _, report = self._load(cast_range_buffer="100|200", max_rank="4")
+        self.assertTrue(any(e.field == "cast_range_buffer" for e in report.errors))
+
+    def test_buffer_must_be_above_zero(self) -> None:
+        for bad in ("0", "-5"):
+            _, report = self._load(cast_range_buffer=bad)
+            self.assertTrue(any(e.field == "cast_range_buffer" for e in report.errors), bad)
+
+    def test_buffer_requires_a_unit_target(self) -> None:
+        for target_type in ("point", "no_target"):
+            _, report = load_test_ability({"target_type": target_type, "cast_range": "800" if target_type == "point" else "", "cast_range_buffer": "600"})
+            self.assertTrue(any(e.field == "cast_range_buffer" for e in report.errors), target_type)
+
+    def test_buffer_with_global_range_warns(self) -> None:
+        _, report = self._load(cast_range="global", cast_range_buffer="600")
+        self.assertEqual(report.errors, [])
+        self.assertTrue(any(w.field == "cast_range_buffer" for w in report.warnings))
 
 
 class TimedStatModifierTests(unittest.TestCase):
