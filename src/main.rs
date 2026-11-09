@@ -33,6 +33,8 @@ mod picking;
 mod progression;
 mod resources;
 mod scale;
+#[cfg(test)]
+mod sim_tests;
 mod status;
 mod teleport;
 mod ui;

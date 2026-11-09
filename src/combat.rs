@@ -61,7 +61,10 @@ impl Plugin for CombatPlugin {
                     apply_projectile_hits,
                     apply_damage_events,
                     tick_lifetimes,
-                    despawn_dead,
+                    // After the AI and movement stages: their systems queue inserts on
+                    // units (`MoveTarget`, `AttackTarget`, ...), and a unit despawned
+                    // before those commands are applied panics the app.
+                    despawn_dead.after(crate::movement::SimSet::Movement),
                 )
                     .chain()
                     .run_if(crate::net::is_sim_authority),
