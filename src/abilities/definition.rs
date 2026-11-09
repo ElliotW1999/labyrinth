@@ -587,6 +587,7 @@ impl StatusSpec {
                 let p = (percent.at(rank) / 100.0).clamp(0.0, 1.0);
                 StatusEffect {
                     move_speed: -ctx.move_speed * p,
+                    move_slow_fraction: p,
                     dispel_type: DispelType::Basic,
                     ..StatusEffect::debuff("slow", duration)
                 }
