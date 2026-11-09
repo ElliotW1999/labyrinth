@@ -81,6 +81,7 @@ The HUD shows connection status. Host sim runs combat / creeps / AI; clients app
 | Hexer | Intelligence | HexBolt, Curse, Ward, Ritual (stubs — implement later) |
 | Queen of Pain | Intelligence | Shadow Strike, QoP Blink, Scream of Pain, Sonic Wave |
 | Magnus | Strength | Shockwave, Empower, Skewer, Reverse Polarity |
+| Sniper | Agility | Shrapnel, Headshot, Take Aim, Assassinate |
 
 Each hero has its own base Str/Agi/Int and per-level growth.
 

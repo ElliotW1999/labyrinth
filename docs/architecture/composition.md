@@ -481,6 +481,36 @@ skewer,1,on_unit_contact,trigger_unit,movement,drag_stun,,,,,,,
 
 Tests: `magnus_matches_spec`, `magnus_abilities_generate_expected_definitions`, `magnus_shockwave_pulls_toward_wave_center_and_slows`, `skewer_drags_stunned_enemy_and_hits_at_destination`, `reverse_polarity_pulls_damages_and_stuns_in_radius`, `empower_grants_percent_damage_and_cone_cleave_to_self_and_ally`, plus one set per gap.
 
+### 6.13 Sniper
+
+All four abilities are data rows (`shrapnel`, `headshot`, `take_aim`, `assassinate`; status ids `shrapnel_slow`, `headshot_slow`, `headshot_attack_speed_flat`, `assassinate_stun`). Plan and decisions: `docs/plans/2026-11-09-sniper-hero.md`.
+
+New surface (G1 to G6; nothing else was added):
+
+| Gap | Surface | Where it lives |
+|---|---|---|
+| G1 | `MAX_CAST_POINT` 2.0 and `MAX_CAST_BACKSWING` 2.0 | `definition.rs`, `AbilityGenerator.py` |
+| G2 | `zone` effect type / `AbilityEffect::Zone`: a delayed, persistent area that fires a custom trigger per tick with the units inside | `abilities/zones.rs`, `effects.rs`, `generator_common.py` |
+| G3 | `cast_range_buffer` column: a unit-targeted cast is cancelled free during the cast point if the target moves beyond `cast_range + buffer` | `actions/pipeline.rs` (`Activation.break_range`), `AbilityDefinition.cast_range_buffer` |
+| G4 | `apply_status,mini_stun`: a stun under `<owner>_stun` (`StatusSpec::OwnedStun`) | `definition.rs`, `generator_common.py` |
+| G5 | Generated slows carry `<owner>_slow` (`StatusSpec::Slow { id, percent }`) | `definition.rs`, `generator_common.py` |
+| G6 | A slow is measured against base move speed on every apply (`StatusEffect.move_slow_fraction`) | `status.rs` (`apply_status`) |
+
+**Shrapnel** (area target, cast range 1800, radius 400 to 550): one `zone` row on `on_cast` (centre = the aim, delay 1.2 s, duration 10 s, interval 1 s, radius from `aoe_radius`) feeds `on_shrapnel_tick`; the damage and the 1.1 s slow are ordinary `affected_units` rows on that trigger. Ticks land at 1.2, 2.2, ..., 10.2 s after the cast fires, so the total is 10 x the per-tick damage. The slow is re-applied on every tick (G5 and G6 keep it from compounding or colliding with Headshot's).
+
+```csv
+shrapnel,0,on_cast,caster,zone,on_shrapnel_tick,1,,10,,1.2,,
+shrapnel,1,on_shrapnel_tick,affected_units,damage,,30|45|60|75|90|105|120,magical,,,,,
+```
+
+**Headshot** (passive): `on_attack_hit,caster,pseudo_proc,on_headshot,40` re-fires the attack context under `on_headshot`. Its damage keeps the attack metadata (attack bonus damage, so armor applies), the 100% slow and the -100 attack speed share one duration, and the 50-unit knockback over the 0.05 s minimum pushes away from Sniper.
+
+**Take Aim** (passive): `stat_modifier,attack_range` with the total range minus the 550 base (235 to 1165). `base_attack_range()` excludes the bonus, so the projectile speed stays 3000.
+
+**Assassinate** (unit target, range 3000, cast point 2.0, backswing 1.6, `cast_range_buffer` 600, homing projectile at 1500): damage and `mini_stun` (0.1 s, id `assassinate_stun`) on `on_projectile_hit`. The stun refreshes only itself, so a longer stun from another source is neither replaced nor shortened.
+
+Tests: `sniper_matches_spec`, `sniper_abilities_generate_expected_definitions`, `shrapnel_zone_waits_then_ticks_ten_times`, `shrapnel_zone_slows_units_inside_and_releases_after_leaving`, `headshot_proc_damages_slows_and_knocks_back`, `headshot_and_shrapnel_slows_coexist`, `take_aim_adds_attack_range_per_rank_and_keeps_projectile_speed`, `assassinate_fires_after_two_second_aim_and_mini_stuns`, `assassinate_cancels_free_when_target_leaves_buffer`, `mini_stun_spares_a_longer_foreign_stun`, `item_and_ability_zone_emit_identical_ticks`, plus one set per gap.
+
 ## 7. Checklist: adding a mechanic, effect or trigger
 
 **New mechanic or gate**

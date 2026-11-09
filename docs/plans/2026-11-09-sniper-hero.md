@@ -203,3 +203,35 @@ Status ids: `shrapnel_slow`, `headshot_slow`, `headshot_attack_speed_flat`, `ass
 - U3: `pseudo_proc`.
 - U4: Assassinate projectile speed **1500** (user choice; overrides the 2500 assumption).
 - U1, U2, U5–U9: accepted as proposed (cooldown 10 no charges; 1 s ticks, 1.1 s slow; 0.1 s mini-stun; R rank-4 cooldown 5; 7-rank Take Aim; keyword `mini_stun`; optional ring visual only).
+
+## 13. Implementation notes (2026-11-09)
+
+Steps ran in the §5 order, one commit each (G6, G5, G1, G3, G4, G2, data, docs), with `cargo fmt`, `cargo build` and `cargo test` green between them. Nothing outside G1 to G6 was built.
+
+**What was built**
+- **G6.** `StatusEffect.move_slow_fraction`, set by `StatusSpec::Slow`; `apply_status` recomputes the slow against `stats.move_speed - Σ statuses.move_speed` after removing the same-id status. First application is unchanged. Tests in `status.rs`: `first_slow_application_is_unchanged`, `refreshed_slow_stays_at_its_percent_of_base_speed`, `refreshed_full_slow_stays_a_full_slow`, `slows_from_two_ids_add_floor_and_expire_back_to_base`.
+- **G5.** `StatusSpec::Slow { id, percent }`; generated slows use `<owner>_slow`. The only generated diff was the four existing Slow sites. The tests that asserted `"slow"` on generated abilities now use `shadow_strike_slow`, `magnus_shockwave_slow` and `skewer_slow`.
+- **G1.** `MAX_CAST_POINT` 2.0 and `MAX_CAST_BACKSWING` 2.0, mirrored in `AbilityGenerator.py`. `timing_clamps_at_max_cast_point_and_backswing` replaces the old clamp test.
+- **G3.** `AbilityDefinition.cast_range_buffer` plus builder, `ActionSpec.cast_range_buffer`, `Activation.break_range` / `target_bounds`; the break check sits in `tick_activations` after the disable check and before the turn and cast point countdown. Column `cast_range_buffer` appended to the three ability CSV headers (existing rows padded with one comma). Tooltip row "Cast range buffer".
+- **G4.** `StatusSpec::OwnedStun { id }`; `apply_status,mini_stun` binds `<owner>_stun`.
+- **G2.** `AbilityEffect::Zone`, `abilities/zones.rs` (`SpawnZoneEvent`, `AbilityZone`, `spawn_requested_zones`, `tick_zones`), the `zone` effect type in the generators, five invalid example rows and `ZoneTests`.
+- **Data.** HeroGenerator ran only on a scratch CSV (header plus the Sniper row, kept in the session scratchpad outside the repo): `--dry-run` showed `Shrapnel/Headshot/TakeAim/Assassinate`, then the real run patched `heroes.rs`, `components.rs` and the README table. AbilityGenerator added the four ability blocks (ranks 7/7/7/4) and the generated diff is additions only. Sniper rows were added to `data/heroes.csv`, `data/heroes.example.csv` and the ability CSVs, examples included. Assassinate's projectile speed is 1500 (decision U4).
+
+**Deviations from the spec (all small and additive)**
+1. `SpawnZoneEvent` and `AbilityZone` carry a `duration` field in addition to the §4 list. Despawn is specified at `delay + duration`, which cannot be recovered from `ticks` alone when the duration is not a multiple of the interval.
+2. `EffectRunner::execute` gained an `aoe_radius: f32` parameter (its single caller passes `params.aoe_radius`), so a `Zone` with `AreaRadius::Ability` resolves the way `UnitsInRadius` does.
+3. `remove_status,slow` and `remove_status,mini_stun` are rejected with a hint to name `<owner>_slow` / `<owner>_stun`. Without it, a generated `remove_status,slow` would have become a silent no-op once G5 renamed the ids.
+4. `runtime_status_id("mini_stun")` returns `None`; only `<owner>_stun` is accepted as a trigger argument, because the keyword's id depends on the owner. `<owner>_slow` and `<owner>_stun` are accepted by the same suffix rule as `<owner>_burn`.
+5. The zone's activation ring (a Nova ring, only when `SharedAssets` exists) is spawned at the first tick rather than when the zone spawns. The generator also adds the usual cast-time `nova_ring()` mechanic to Shrapnel because it is an active area ability with a radius; both are cosmetic.
+6. The "Assassinate does not fire at 1.9 s, fires at 2.0 s" check is two tests (`assassinate_does_not_fire_before_the_aim_completes`, and the timing assertion in `assassinate_fires_after_two_second_aim_and_mini_stuns`) with one frame (0.05 s) of tolerance for the f32 countdown. In that test the foreign stun lasts 10 s instead of 3 s, because a 3 s stun would already have run out during the 2 s aim.
+7. `mini_stun_spares_a_longer_foreign_stun` uses a minimal test ability with `StatusSpec::OwnedStun`; `assassinate_fires_after_two_second_aim_and_mini_stuns` covers the Assassinate case. `mini_stun_interrupts_a_channelling_target` covers the interruption.
+8. Extra tests beyond §9: `shrapnel_ticks_scale_with_rank`, `shrapnel_slow_is_refreshed_not_compounded_while_inside`, and the zone and cast-range-buffer unit tests.
+9. The status ticker is not part of `abilities::tests::test_app`, so tests that need expiry use `qop_app()`; the generic zone and G3/G4 tests do not rely on expiry.
+
+**Environment.** The build needed system libraries this container lacked (`libwayland-dev`, `libxkbcommon-dev`, `libasound2-dev`, `libudev-dev`, `pkg-config`); they were installed with apt. No repository file changed for this.
+
+**Remaining limitations**
+- A zone has no persistent visual: one Nova ring at its first tick, nothing for the rest of its life.
+- Zone ticks and the cast-range-buffer cancel are abilities-only for the buffer (items follow-up, as approved) while zones work for items; no shipped item uses a zone.
+- Take Aim at rank 7 (1715) puts Sniper's attacks at the edge of vision (1800), and Assassinate's 3000 exceeds vision; no vision rule was changed.
+- `data/ability_pseudos/*.pseudo.txt` were not touched.
