@@ -42,6 +42,10 @@ pub fn definition(id: AbilityId) -> Option<AbilityDefinition> {
         AbilityId::Headshot => Some(headshot()),
         AbilityId::TakeAim => Some(take_aim()),
         AbilityId::Assassinate => Some(assassinate()),
+        AbilityId::Earthshock => Some(earthshock()),
+        AbilityId::Overpower => Some(overpower()),
+        AbilityId::FurySwipes => Some(fury_swipes()),
+        AbilityId::Enrage => Some(enrage()),
         _ => None,
     }
 }
@@ -968,3 +972,177 @@ fn assassinate() -> AbilityDefinition {
         )
 }
 // </ability:assassinate>
+
+// <ability:earthshock>
+fn earthshock() -> AbilityDefinition {
+    const DESCRIPTION: &str = "Leaps forward, then causes a powerful shock that damages and slows all enemy units around the landing point";
+    AbilityDefinition::new(AbilityId::Earthshock)
+        .description(DESCRIPTION)
+        .targeting(
+            TargetType::NoTarget,
+            RankValue::ZERO,
+            RankValue::fixed(385.0),
+        )
+        .team(TargetTeam::Enemy)
+        .costs(RankValue::from_level_1(15.0, -2.0), RankValue::fixed(95.0))
+        .timing(0.0, 0.0)
+        .mechanic(shockwave_ring())
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::Caster,
+            AbilityEffect::Displace {
+                kind: DisplacementKind::Dash,
+                distance: Some(RankValue::fixed(250.0)),
+                duration: RankValue::fixed(0.25),
+                speed: None,
+                contact_radius: None,
+                forward_offset: None,
+                bound_stun: None,
+            },
+        )
+        .on(
+            AbilityTrigger::OnMovementEnd,
+            EffectTarget::UnitsInRadius {
+                center: AreaCenter::TriggerPoint,
+                radius: AreaRadius::Ability,
+                team: TargetTeam::Enemy,
+            },
+            AbilityEffect::Damage {
+                amount: RankValue::from_level_1(75.0, 50.0),
+                damage_type: DamageType::Magical,
+                scaling: EffectScaling::None,
+            },
+        )
+        .on(
+            AbilityTrigger::OnMovementEnd,
+            EffectTarget::UnitsInRadius {
+                center: AreaCenter::TriggerPoint,
+                radius: AreaRadius::Ability,
+                team: TargetTeam::Enemy,
+            },
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Slow {
+                    id: "earthshock_slow",
+                    percent: RankValue::from_level_1(22.0, 6.0),
+                },
+                duration: RankValue::fixed(4.0),
+            },
+        )
+}
+// </ability:earthshock>
+
+// <ability:overpower>
+fn overpower() -> AbilityDefinition {
+    const DESCRIPTION: &str = "Greatly increases Ursa's attack speed for her next several attacks";
+    AbilityDefinition::new(AbilityId::Overpower)
+        .description(DESCRIPTION)
+        .targeting(TargetType::NoTarget, RankValue::ZERO, RankValue::ZERO)
+        .team(TargetTeam::SelfOnly)
+        .costs(
+            RankValue::from_level_1(12.0, -1.0),
+            RankValue::from_level_1(45.0, 5.0),
+        )
+        .timing(0.3, 0.0)
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::Caster,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Modifier {
+                    id: "overpower_attack_speed_flat",
+                    kind: StatusKind::Buff,
+                    armor: RankValue::ZERO,
+                    magic_resist: RankValue::ZERO,
+                    move_speed: RankValue::ZERO,
+                    attack_damage: RankValue::ZERO,
+                    attack_speed_flat: RankValue::fixed(400.0),
+                    attack_speed_mult: RankValue::ZERO,
+                    attack_range: RankValue::ZERO,
+                    attack_damage_pct: RankValue::ZERO,
+                    cleave: RankValue::ZERO,
+                    cleave_radius: RankValue::ZERO,
+                    cleave_end_radius: RankValue::ZERO,
+                    cleave_distance: RankValue::ZERO,
+                    attack_charges: RankValue::from_level_1(3.0, 1.0),
+                },
+                duration: RankValue::fixed(20.0),
+            },
+        )
+}
+// </ability:overpower>
+
+// <ability:fury_swipes>
+fn fury_swipes() -> AbilityDefinition {
+    const DESCRIPTION: &str = "Each attack on a target deepens its wounds: consecutive attacks on the same target deal increasing bonus physical damage. The stacks are lost if the target is not attacked again before the debuff expires";
+    AbilityDefinition::new(AbilityId::FurySwipes)
+        .description(DESCRIPTION)
+        .behavior(AbilityBehavior::Passive)
+        .targeting(TargetType::NoTarget, RankValue::ZERO, RankValue::ZERO)
+        .team(TargetTeam::SelfOnly)
+        .costs(RankValue::ZERO, RankValue::ZERO)
+        .timing(0.0, 0.25)
+        .on(
+            AbilityTrigger::OnAttackHit,
+            EffectTarget::TriggerUnit,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Stacks {
+                    id: "fury_swipes_stacks",
+                },
+                duration: RankValue::from_level_1(8.0, 4.0),
+            },
+        )
+        .on(
+            AbilityTrigger::OnAttackHit,
+            EffectTarget::TriggerUnit,
+            AbilityEffect::Damage {
+                amount: RankValue::from_level_1(12.0, 8.0),
+                damage_type: DamageType::Physical,
+                scaling: EffectScaling::TargetStacks {
+                    id: "fury_swipes_stacks",
+                    offset: 1,
+                },
+            },
+        )
+}
+// </ability:fury_swipes>
+
+// <ability:enrage>
+fn enrage() -> AbilityDefinition {
+    const DESCRIPTION: &str = "Ursa removes all debuffs from herself, then takes greatly reduced damage and resists debuffs for a few seconds";
+    AbilityDefinition::new(AbilityId::Enrage)
+        .description(DESCRIPTION)
+        .targeting(TargetType::NoTarget, RankValue::ZERO, RankValue::ZERO)
+        .team(TargetTeam::SelfOnly)
+        .costs(RankValue::from_level_1(60.0, -15.0), RankValue::fixed(0.0))
+        .timing(0.0, 0.0)
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::Caster,
+            AbilityEffect::Dispel {
+                kind: StatusKind::Debuff,
+                strength: DispelStrength::Strong,
+            },
+        )
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::Caster,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::DamageReduction {
+                    id: "enrage_damage_reduction",
+                    percent: RankValue::fixed(80.0),
+                },
+                duration: RankValue::from_level_1(4.0, 0.5),
+            },
+        )
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::Caster,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::StatusResistance {
+                    id: "enrage_status_resistance",
+                    percent: RankValue::fixed(50.0),
+                },
+                duration: RankValue::from_level_1(4.0, 0.5),
+            },
+        )
+}
+// </ability:enrage>

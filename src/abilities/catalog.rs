@@ -963,6 +963,150 @@ mod tests {
     }
 
     #[test]
+    fn ursa_abilities_generate_expected_definitions() {
+        use crate::abilities::definition::{
+            AbilityEffectEntry, AreaCenter, AreaRadius, DisplacementKind, StatusSpec,
+        };
+        use crate::actions::TargetType;
+        use crate::status::DispelStrength;
+
+        assert_eq!(AbilityId::Earthshock.display_name(), "Earthshock");
+        assert_eq!(AbilityId::Overpower.display_name(), "Overpower");
+        assert_eq!(AbilityId::FurySwipes.display_name(), "Fury Swipes");
+        assert_eq!(AbilityId::Enrage.display_name(), "Enrage");
+        assert!(AbilityId::Enrage.is_ultimate());
+        assert!(!AbilityId::Earthshock.is_ultimate());
+
+        // Q: no-target leap of 250 over 0.25 s, then a landing-point shock.
+        let q = builtin(AbilityId::Earthshock);
+        assert_eq!(q.max_rank, 7);
+        assert_eq!(q.target_type, TargetType::NoTarget);
+        assert_eq!(q.aoe_radius.at(1), 385.0);
+        assert_eq!(q.cast_time, 0.0);
+        assert_eq!(q.backswing, 0.0);
+        assert_eq!(q.mana_cost.at(1), 95.0);
+        let cooldowns: Vec<f32> = (1..=7).map(|rank| q.cooldown.at(rank)).collect();
+        assert_eq!(cooldowns, [15.0, 13.0, 11.0, 9.0, 7.0, 5.0, 3.0]);
+        assert!(q.effects_for(AbilityTrigger::OnCast).any(|e| matches!(
+            e.effect,
+            AbilityEffect::Displace {
+                kind: DisplacementKind::Dash,
+                distance: Some(distance),
+                duration,
+                ..
+            } if distance.at(1) == 250.0 && duration.at(1) == 0.25
+        )));
+        let shock = |x: &&AbilityEffectEntry| {
+            matches!(
+                x.target,
+                EffectTarget::UnitsInRadius {
+                    center: AreaCenter::TriggerPoint,
+                    radius: AreaRadius::Ability,
+                    team: TargetTeam::Enemy,
+                }
+            )
+        };
+        assert!(
+            q.effects_for(AbilityTrigger::OnMovementEnd)
+                .filter(shock)
+                .any(|e| matches!(
+                    e.effect,
+                    AbilityEffect::Damage { amount, damage_type: DamageType::Magical, .. }
+                        if amount.at(1) == 75.0 && amount.at(7) == 375.0
+                ))
+        );
+        assert!(
+            q.effects_for(AbilityTrigger::OnMovementEnd)
+                .filter(shock)
+                .any(|e| matches!(
+                    e.effect,
+                    AbilityEffect::ApplyStatus {
+                        status: StatusSpec::Slow { id: "earthshock_slow", percent },
+                        duration,
+                    } if percent.at(1) == 22.0 && percent.at(7) == 58.0 && duration.at(1) == 4.0
+                ))
+        );
+
+        // W: +400 attack speed for the next 3 .. 9 attacks, 20 s at most.
+        let w = builtin(AbilityId::Overpower);
+        assert_eq!(w.cast_time, 0.3);
+        assert_eq!(w.mana_cost.at(1), 45.0);
+        assert_eq!(w.mana_cost.at(7), 75.0);
+        assert_eq!(w.cooldown.at(1), 12.0);
+        assert_eq!(w.cooldown.at(7), 6.0);
+        assert!(w.effects_for(AbilityTrigger::OnCast).any(|e| matches!(
+            e.effect,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Modifier {
+                    id: "overpower_attack_speed_flat",
+                    attack_speed_flat,
+                    attack_charges,
+                    ..
+                },
+                duration,
+            } if attack_speed_flat.at(1) == 400.0
+                && attack_charges.at(1) == 3.0
+                && attack_charges.at(7) == 9.0
+                && duration.at(1) == 20.0
+        )));
+
+        // E: passive stacking debuff plus stack-scaled physical bonus damage.
+        let e = builtin(AbilityId::FurySwipes);
+        assert_eq!(e.behavior, AbilityBehavior::Passive);
+        assert!(e.effects_for(AbilityTrigger::OnAttackHit).any(|x| matches!(
+            x.effect,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Stacks { id: "fury_swipes_stacks" },
+                duration,
+            } if duration.at(1) == 8.0 && duration.at(7) == 32.0
+        )));
+        assert!(e.effects_for(AbilityTrigger::OnAttackHit).any(|x| matches!(
+            x.effect,
+            AbilityEffect::Damage {
+                amount,
+                damage_type: DamageType::Physical,
+                scaling: EffectScaling::TargetStacks { id: "fury_swipes_stacks", offset: 1 },
+            } if amount.at(1) == 12.0 && amount.at(7) == 60.0
+        )));
+
+        // R: strong dispel on herself, then 80% damage reduction and 50% status resistance.
+        let r = builtin(AbilityId::Enrage);
+        assert!(r.is_ultimate);
+        assert_eq!(r.max_rank, 4);
+        assert_eq!(r.mana_cost.at(1), 0.0);
+        let r_cooldowns: Vec<f32> = (1..=4).map(|rank| r.cooldown.at(rank)).collect();
+        assert_eq!(r_cooldowns, [60.0, 45.0, 30.0, 15.0]);
+        let on_cast: Vec<_> = r.effects_for(AbilityTrigger::OnCast).collect();
+        assert_eq!(on_cast.len(), 3, "dispel first, then the two buffs");
+        assert!(matches!(
+            on_cast[0].effect,
+            AbilityEffect::Dispel {
+                kind: crate::status::StatusKind::Debuff,
+                strength: DispelStrength::Strong,
+            }
+        ));
+        assert!(matches!(
+            on_cast[1].effect,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::DamageReduction { id: "enrage_damage_reduction", percent },
+                duration,
+            } if percent.at(1) == 80.0 && duration.at(1) == 4.0 && duration.at(4) == 5.5
+        ));
+        assert!(matches!(
+            on_cast[2].effect,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::StatusResistance { id: "enrage_status_resistance", percent },
+                duration,
+            } if percent.at(1) == 50.0 && duration.at(4) == 5.5
+        ));
+        assert!(
+            on_cast
+                .iter()
+                .all(|x| matches!(x.target, EffectTarget::Caster))
+        );
+    }
+
+    #[test]
     fn mechanics_and_effects_are_separate() {
         let bolt = builtin(AbilityId::Bolt);
         assert!(bolt.mechanics.contains(&PROJECTILE));

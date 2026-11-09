@@ -82,6 +82,7 @@ The HUD shows connection status. Host sim runs combat / creeps / AI; clients app
 | Queen of Pain | Intelligence | Shadow Strike, QoP Blink, Scream of Pain, Sonic Wave |
 | Magnus | Strength | Shockwave, Empower, Skewer, Reverse Polarity |
 | Sniper | Agility | Shrapnel, Headshot, Take Aim, Assassinate |
+| Ursa | Agility | Earthshock, Overpower, Fury Swipes, Enrage |
 
 Each hero has its own base Str/Agi/Int and per-level growth. Heroes start at **level 6** (6 skill points, five levels of attribute growth applied) with **25000 gold** (`units::STARTING_HERO_LEVEL` / `STARTING_GOLD`). The hero select screen is a grid grouped by primary attribute; the map (terrain, buildings, shops, obstacle course, creep waves) is generated only once a hero is picked. Enemy heroes within **1500** units (`scale::XP_SHARE_RADIUS`) of a dying unit share its XP bounty.
 

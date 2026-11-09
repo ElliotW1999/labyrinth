@@ -30,3 +30,7 @@ shrapnel,Shrapnel,Q,active,point,enemy,1800,400|425|450|475|500|525|550,0.3,,10,
 headshot,Headshot,W,passive,no_target,enemy,,,,,,,,,none,,"Grants Sniper a chance to deal extra damage and briefly knock back the attacked enemy unit",,,,,,
 take_aim,Take Aim,E,passive,no_target,self,,,,,,,,,none,,"Grants Sniper additional attack range",,,,,,
 assassinate,Assassinate,R,active,unit,enemy,3000,,2,,20|15|10|5,175,,,targeted,1500,"Locks onto an enemy unit; after a 2s aim, fires a devastating long-range shot that deals magical damage and mini-stuns the target. Cancelled if the target moves 600 beyond cast range",1.6,,,,,600
+earthshock,Earthshock,Q,active,no_target,enemy,,385,0,,15|13|11|9|7|5|3,95,,,none,,"Leaps forward, then causes a powerful shock that damages and slows all enemy units around the landing point",0,,,,,
+overpower,Overpower,W,active,no_target,self,,,0.3,,12|11|10|9|8|7|6,45|50|55|60|65|70|75,,,none,,"Greatly increases Ursa's attack speed for her next several attacks",0,,,,,
+fury_swipes,Fury Swipes,E,passive,no_target,self,,,,,,,,,none,,"Each attack on a target deepens its wounds: consecutive attacks on the same target deal increasing bonus physical damage. The stacks are lost if the target is not attacked again before the debuff expires",,,,,,
+enrage,Enrage,R,active,no_target,self,,,0,,60|45|30|15,0,,,none,,"Ursa removes all debuffs from herself, then takes greatly reduced damage and resists debuffs for a few seconds",0,,,,,
