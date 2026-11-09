@@ -9490,4 +9490,168 @@ mod tests {
             .remaining;
         assert!(cooldown > 14.0 && cooldown <= 15.0, "{cooldown}");
     }
+
+    // ---- Ursa verification: G1/G7 regressions on Skewer and Vanguard Dash, Enrage edges ----
+
+    #[test]
+    fn rooted_skewer_changes_nothing_even_though_it_reports_its_end() {
+        let mut app = qop_app();
+        let caster = spawn_caster(&mut app, MAGNUS);
+        let victim = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        app.world_mut()
+            .get_mut::<StatusEffects>(caster)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::rooted(5.0));
+        request(&mut app, caster, 2, CastTarget::Point(Vec3::X * 600.0));
+        for _ in 0..40 {
+            step(&mut app);
+        }
+        assert!(position(&app, caster).length() < 1e-3, "did not move");
+        assert_eq!(position(&app, victim), Vec3::new(100.0, 0.0, 0.0));
+        assert_eq!(health(&app, victim), 1000.0, "no end-of-dash damage");
+        assert!(status_of(&app, victim, "skewer_slow").is_none());
+        assert!(status_of(&app, victim, "skewer_stun").is_none());
+    }
+
+    #[test]
+    fn skewer_clicked_on_the_caster_dashes_along_the_facing() {
+        let mut app = qop_app();
+        let caster = spawn_caster(&mut app, MAGNUS);
+        step(&mut app);
+        let here = position(&app, caster);
+        request(&mut app, caster, 2, CastTarget::Point(here));
+        for _ in 0..80 {
+            step(&mut app);
+        }
+        let moved = position(&app, caster) - here;
+        assert!(moved.length() > 100.0, "G1: it dashes: {moved:?}");
+        assert!(
+            moved.z < 0.0 && moved.x.abs() < 1.0,
+            "along -Z facing: {moved:?}"
+        );
+        assert!(app.world().get::<ForcedMovement>(caster).is_none());
+    }
+
+    #[test]
+    fn vanguard_dash_toward_a_point_is_unchanged_and_self_click_goes_forward() {
+        for self_click in [false, true] {
+            let mut app = qop_app();
+            let caster = spawn_caster(
+                &mut app,
+                [
+                    AbilityId::Dash,
+                    AbilityId::Bolt,
+                    AbilityId::Execute,
+                    AbilityId::Bulwark,
+                ],
+            );
+            step(&mut app);
+            let here = position(&app, caster);
+            let aim = if self_click {
+                here
+            } else {
+                here + Vec3::X * 60.0
+            };
+            request(&mut app, caster, 0, CastTarget::Point(aim));
+            for _ in 0..60 {
+                step(&mut app);
+            }
+            let moved = position(&app, caster) - here;
+            if self_click {
+                assert!(moved.z < -50.0 && moved.x.abs() < 1.0, "forward: {moved:?}");
+            } else {
+                assert!(
+                    (moved - Vec3::X * 60.0).length() < 2.0,
+                    "short aim wins: {moved:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn enrage_recast_and_later_strong_dispels_keep_its_own_buffs() {
+        use crate::status::{DispelStrength, StatusChange, StatusKind};
+
+        let mut app = ursa_app();
+        let caster = spawn_caster(&mut app, URSA);
+        request(&mut app, caster, 3, CastTarget::None);
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        assert!(status_of(&app, caster, "enrage_damage_reduction").is_some());
+        // Recast: the strong dispel row must not strip the buffs it is about to refresh.
+        app.world_mut()
+            .get_mut::<AbilityLoadout>(caster)
+            .unwrap()
+            .slots[3]
+            .cooldown
+            .remaining = 0.0;
+        request(&mut app, caster, 3, CastTarget::None);
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        // A strong dispel of debuffs, from anyone, leaves buffs alone.
+        for kind in [StatusKind::Debuff, StatusKind::Buff] {
+            let before = [
+                status_of(&app, caster, "enrage_damage_reduction").is_some(),
+                status_of(&app, caster, "enrage_status_resistance").is_some(),
+            ];
+            assert_eq!(before, [true, true]);
+            if kind == StatusKind::Buff {
+                break;
+            }
+            app.world_mut().write_message(StatusEffectEvent::new(
+                Some(caster),
+                caster,
+                StatusChange::Dispel {
+                    kind,
+                    strength: DispelStrength::Strong,
+                },
+            ));
+            step(&mut app);
+        }
+        let stacks = app
+            .world()
+            .get::<StatusEffects>(caster)
+            .unwrap()
+            .effects
+            .iter()
+            .filter(|e| e.id == "enrage_damage_reduction")
+            .count();
+        assert_eq!(stacks, 1, "refreshed, not duplicated");
+        // 100 pure still 20 (not 4: reductions do not stack on a refresh).
+        app.world_mut()
+            .write_message(DamageEvent::new(caster, 100.0, DamageType::Pure));
+        step(&mut app);
+        assert!((health(&app, caster) - 980.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn overpower_charges_survive_hits_by_extra_attacks_and_fury_swipes_still_stacks() {
+        let mut app = ursa_app();
+        let caster = spawn_caster(&mut app, URSA);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        request(&mut app, caster, 1, CastTarget::None);
+        for _ in 0..8 {
+            step(&mut app);
+        }
+        // A release that misses (no hit event) still spends a charge; a hit event alone
+        // (as an extra attack's landing) does not.
+        write_attack_release(&mut app, caster, enemy);
+        step(&mut app);
+        let charges = |app: &App| {
+            status_of(app, caster, "overpower_attack_speed_flat")
+                .unwrap()
+                .attack_charges
+        };
+        assert_eq!(charges(&app), 2);
+        write_attack_hit(&mut app, caster, enemy);
+        step(&mut app);
+        assert_eq!(
+            charges(&app),
+            2,
+            "a hit without a normal release spends nothing"
+        );
+    }
 }

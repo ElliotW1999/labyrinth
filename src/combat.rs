@@ -1919,6 +1919,50 @@ mod tests {
         }
 
         #[test]
+        fn damage_reduction_multiplies_with_incoming_amp_and_follows_block() {
+            let (mut world, t) = target_with(vec![reduction("a", 0.8, 5.0)]);
+            {
+                let mut stats = world.get_mut::<CombatStats>(t).unwrap();
+                stats.incoming_damage_amp = 0.5;
+            }
+            // 100 pure: armor/resist do not apply, amp x1.5, reduction x0.2 = 30.
+            assert!((taken(&mut world, t, DamageType::Pure) - 30.0).abs() < 1e-3);
+            // Block comes off the raw amount first, then reduction scales what is left.
+            let a = resolve_incoming_damage(
+                100.0,
+                DamageType::Pure,
+                &CombatStats {
+                    damage_block: 40.0,
+                    ..CombatStats::simple(0.0, 0.0, 1.0, 10.0, 0.0, 0.0)
+                },
+                None,
+                false,
+                true,
+                false,
+                0.2,
+            );
+            assert!((a.health_delta - 12.0).abs() < 1e-3, "{}", a.health_delta);
+        }
+
+        #[test]
+        fn damage_reduction_applies_before_the_mana_shield_pays() {
+            let (mut world, t) = target_with(vec![reduction("a", 0.5, 5.0)]);
+            world.entity_mut(t).insert(Mana::new(1000.0, 0.0));
+            let mut st = world.get_mut::<StatusEffects>(t).unwrap();
+            st.effects.push(StatusEffect::mana_shield(
+                crate::vitals::ManaShield {
+                    absorb: 1.0,
+                    damage_per_mana: 1.0,
+                },
+                5.0,
+            ));
+            drop(st);
+            // 100 raw -> 50 after reduction; the shield absorbs those 50, health untouched.
+            assert!(taken(&mut world, t, DamageType::Pure).abs() < 1e-3);
+            assert!((world.get::<Mana>(t).unwrap().current - 950.0).abs() < 1e-3);
+        }
+
+        #[test]
         fn damage_reduction_ends_on_expiry() {
             let (mut world, t) = target_with(vec![reduction("a", 0.8, 0.0)]);
             assert_eq!(
