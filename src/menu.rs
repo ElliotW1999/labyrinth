@@ -1,16 +1,11 @@
-//! Esc main menu: New Game, Settings, Quit.
+//! Esc main menu: New Game, Change Hero, Settings, Quit.
 
 use bevy::prelude::*;
 
 use crate::abilities::{AbilityTargeting, cancel_targeting_if_any};
-use crate::basic_attack::{BasicAttackInFlight, BasicAttackProjectileVisual};
-use crate::components::{Creep, PlayerHero, Projectile};
-use crate::heroes::{HeroSelectRoot, LocalHeroChoice, spawn_hero_select_ui_force};
 use crate::items::{InventoryContextMenu, ShopUiState};
-use crate::net::NetworkedHero;
-use crate::obstacle_course::HazardOrb;
+use crate::map::ResetMatchRequest;
 use crate::ui::InventorySellMenu;
-use crate::waves::WaveTimer;
 
 pub struct MenuPlugin;
 
@@ -46,6 +41,7 @@ struct SettingsPanel;
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 enum MainMenuButton {
     NewGame,
+    ChangeHero,
     Settings,
     Quit,
     SettingsClose,
@@ -95,6 +91,7 @@ fn spawn_main_menu_ui(mut commands: Commands) {
                     },
                 ));
                 spawn_menu_button(panel, MainMenuButton::NewGame, "New Game");
+                spawn_menu_button(panel, MainMenuButton::ChangeHero, "Change Hero");
                 spawn_menu_button(panel, MainMenuButton::Settings, "Settings");
                 spawn_menu_button(panel, MainMenuButton::Quit, "Quit");
             });
@@ -234,40 +231,19 @@ fn handle_main_menu_buttons(
     interactions: Query<(&Interaction, &MainMenuButton), Changed<Interaction>>,
     mut menu: ResMut<MainMenuState>,
     mut exit: MessageWriter<AppExit>,
-    mut commands: Commands,
-    mut choice: ResMut<LocalHeroChoice>,
+    mut reset: MessageWriter<ResetMatchRequest>,
     mut time: ResMut<Time<Virtual>>,
-    mut wave: ResMut<WaveTimer>,
-    heroes: Query<Entity, Or<(With<PlayerHero>, With<NetworkedHero>)>>,
-    creeps: Query<Entity, With<Creep>>,
-    projectiles: Query<
-        Entity,
-        Or<(
-            With<Projectile>,
-            With<BasicAttackInFlight>,
-            With<BasicAttackProjectileVisual>,
-            With<HazardOrb>,
-        )>,
-    >,
-    select_roots: Query<Entity, With<HeroSelectRoot>>,
 ) {
     for (interaction, button) in &interactions {
         if *interaction != Interaction::Pressed {
             continue;
         }
         match *button {
-            MainMenuButton::NewGame => {
-                for e in heroes.iter().chain(creeps.iter()).chain(projectiles.iter()) {
-                    commands.entity(e).despawn();
-                }
-                for e in &select_roots {
-                    commands.entity(e).despawn();
-                }
-                choice.hero = None;
-                choice.spawned = false;
-                choice.from_cli = false;
-                wave.0 = Timer::from_seconds(8.0, TimerMode::Repeating);
-                spawn_hero_select_ui_force(&mut commands);
+            MainMenuButton::NewGame | MainMenuButton::ChangeHero => {
+                // Restart on a fresh map; Change Hero goes through hero select first.
+                reset.write(ResetMatchRequest {
+                    change_hero: *button == MainMenuButton::ChangeHero,
+                });
                 menu.open = false;
                 menu.settings_open = false;
                 time.unpause();

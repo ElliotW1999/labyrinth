@@ -58,6 +58,8 @@ pub const CREEP_MOVE_SPEED: f32 = 195.0;
 pub const HERO_VISION_RANGE: f32 = 1800.0;
 pub const TOWER_VISION_RANGE: f32 = 1900.0;
 pub const CREEP_VISION_RANGE: f32 = 800.0;
+/// Enemy heroes within this distance of a dying unit share its experience bounty.
+pub const XP_SHARE_RADIUS: f32 = 1500.0;
 
 /// How far a cycloned unit is lifted above the ground.
 pub const CYCLONE_HEIGHT: f32 = 140.0;

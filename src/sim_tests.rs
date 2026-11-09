@@ -122,3 +122,110 @@ fn scream_of_pain_at_dying_lane_creeps_does_not_panic() {
         }
     }
 }
+
+/// The match lifecycle plugins (hero select → map generation → reset) on top of the
+/// gameplay sim, with the asset stores the map spawners write to.
+fn match_app() -> App {
+    let mut app = sim_app();
+    app.insert_resource(crate::net::NetConfig {
+        mode: crate::net::NetMode::Offline,
+        addr: "127.0.0.1:7777".parse().unwrap(),
+    })
+    .init_resource::<crate::net::NetSession>()
+    .init_resource::<crate::resources::MatchConfig>()
+    .init_resource::<crate::fog::FogFreeZones>()
+    .init_resource::<crate::picking::HoveredUnit>()
+    .init_resource::<crate::picking::SelectedUnit>()
+    .init_resource::<crate::items::ShopUndoLog>()
+    .init_resource::<crate::items::InventoryContextMenu>()
+    .init_resource::<Assets<Mesh>>()
+    .init_resource::<Assets<StandardMaterial>>()
+    .add_plugins((
+        crate::map::MapPlugin,
+        crate::heroes::HeroesPlugin,
+        crate::waves::WavesPlugin,
+        crate::obstacle_course::ObstacleCoursePlugin,
+    ));
+    app
+}
+
+fn count<C: Component>(app: &mut App) -> usize {
+    app.world_mut()
+        .query_filtered::<Entity, With<C>>()
+        .iter(app.world())
+        .count()
+}
+
+fn pick_hero(app: &mut App, hero: HeroId) {
+    app.world_mut()
+        .resource_mut::<crate::heroes::LocalHeroChoice>()
+        .hero = Some(hero);
+    for _ in 0..3 {
+        app.update();
+    }
+}
+
+#[test]
+fn map_is_generated_only_after_a_hero_is_picked_and_resets_on_change_hero() {
+    use crate::components::{Ancient, Creep, Obstacle, PlayerHero, Tower};
+    use crate::heroes::{HeroKind, HeroSelectRoot};
+    use crate::map::{MapState, ResetMatchRequest};
+
+    let mut app = match_app();
+    for _ in 0..3 {
+        app.update();
+    }
+    // Hero select is up and nothing of the battlefield exists yet.
+    assert_eq!(count::<HeroSelectRoot>(&mut app), 1);
+    assert!(!app.world().resource::<MapState>().generated);
+    assert_eq!(count::<Tower>(&mut app), 0);
+    assert_eq!(count::<Ancient>(&mut app), 0);
+    assert_eq!(count::<Obstacle>(&mut app), 0);
+    assert_eq!(count::<Creep>(&mut app), 0);
+
+    pick_hero(&mut app, HeroId::Vanguard);
+    assert!(app.world().resource::<MapState>().generated);
+    assert_eq!(count::<HeroSelectRoot>(&mut app), 0);
+    assert_eq!(count::<PlayerHero>(&mut app), 1);
+    let towers = count::<Tower>(&mut app);
+    let obstacles = count::<Obstacle>(&mut app);
+    let creeps = count::<Creep>(&mut app);
+    assert!(towers > 0 && obstacles > 0 && creeps > 0);
+    assert_eq!(count::<Ancient>(&mut app), 2);
+
+    // Change Hero: everything is torn down and hero select comes back.
+    app.world_mut()
+        .write_message(ResetMatchRequest { change_hero: true });
+    app.update();
+    app.update();
+    assert!(!app.world().resource::<MapState>().generated);
+    assert_eq!(count::<HeroSelectRoot>(&mut app), 1);
+    assert_eq!(count::<PlayerHero>(&mut app), 0);
+    assert_eq!(count::<Tower>(&mut app), 0);
+    assert_eq!(count::<Obstacle>(&mut app), 0);
+    assert_eq!(count::<Creep>(&mut app), 0);
+
+    // Picking again rebuilds the map from its initial state, with the new hero.
+    pick_hero(&mut app, HeroId::Sniper);
+    assert_eq!(count::<Tower>(&mut app), towers);
+    assert_eq!(count::<Obstacle>(&mut app), obstacles);
+    assert_eq!(count::<Creep>(&mut app), creeps);
+    assert_eq!(count::<Ancient>(&mut app), 2);
+    let kinds: Vec<HeroId> = app
+        .world_mut()
+        .query_filtered::<&HeroKind, With<PlayerHero>>()
+        .iter(app.world())
+        .map(|kind| kind.0)
+        .collect();
+    assert_eq!(kinds, vec![HeroId::Sniper]);
+
+    // New Game keeps the hero and regenerates the map without the select screen.
+    app.world_mut()
+        .write_message(ResetMatchRequest { change_hero: false });
+    for _ in 0..4 {
+        app.update();
+    }
+    assert_eq!(count::<HeroSelectRoot>(&mut app), 0);
+    assert_eq!(count::<PlayerHero>(&mut app), 1);
+    assert_eq!(count::<Tower>(&mut app), towers);
+}

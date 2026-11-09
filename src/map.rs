@@ -11,14 +11,134 @@ pub struct MapPlugin;
 
 impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            Startup,
-            spawn_map.after(crate::resources::load_shared_assets),
-        );
+        app.init_resource::<MapState>()
+            .add_message::<ResetMatchRequest>()
+            .configure_sets(Update, MapGenSet.after(crate::heroes::HeroSpawnSet))
+            .add_systems(
+                Update,
+                (
+                    spawn_map.in_set(MapGenSet).run_if(map_requested),
+                    finish_map_generation.after(MapGenSet),
+                ),
+            )
+            // `Last`: every Update system's queued commands (AI move orders, attack
+            // targets, ...) have been applied by then, so despawning the world cannot
+            // race an insert onto a unit that no longer exists.
+            .add_systems(Last, reset_match);
     }
 }
 
-fn spawn_map(
+/// Whether the battlefield exists. The map is generated only once a hero has been picked
+/// (see [`MapGenSet`]) and is torn down by [`ResetMatchRequest`].
+#[derive(Resource, Debug, Default, Clone, Copy)]
+pub struct MapState {
+    /// Generation was asked for (a hero was picked) and runs this frame.
+    pub requested: bool,
+    /// The map, its buildings, shops and creep waves exist.
+    pub generated: bool,
+}
+
+impl MapState {
+    /// Ask for the map to be generated (no-op when it already exists).
+    pub fn request(&mut self) {
+        if !self.generated {
+            self.requested = true;
+        }
+    }
+}
+
+/// Systems that build the battlefield from its initial state: terrain, buildings, shops,
+/// the obstacle course and the opening creep wave. They run once, on the frame after a
+/// hero is picked, instead of at startup. Members also carry `run_if(map_requested)`
+/// themselves, so plugins used without `MapPlugin` (tests) never generate a map.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MapGenSet;
+
+pub fn map_requested(state: Option<Res<MapState>>) -> bool {
+    state.is_some_and(|s| s.requested && !s.generated)
+}
+
+pub fn map_generated(state: Option<Res<MapState>>) -> bool {
+    state.is_some_and(|s| s.generated)
+}
+
+fn finish_map_generation(mut state: ResMut<MapState>) {
+    if state.requested {
+        state.requested = false;
+        state.generated = true;
+    }
+}
+
+/// Tear the match down to its initial state: every world entity (map, buildings, units,
+/// projectiles, effects) is despawned and match resources are reset. With `change_hero`
+/// the hero select screen is shown and the map is regenerated once a hero is picked;
+/// otherwise the same hero respawns on a fresh map straight away.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct ResetMatchRequest {
+    pub change_hero: bool,
+}
+
+/// Root world-space entities that belong to the match. The camera and the fog overlay
+/// persist across matches; UI nodes carry no `Transform`.
+type MatchEntityFilter = (
+    With<Transform>,
+    Without<ChildOf>,
+    Without<Camera>,
+    Without<crate::fog::FogTile>,
+);
+
+#[allow(clippy::too_many_arguments)]
+fn reset_match(
+    mut requests: MessageReader<ResetMatchRequest>,
+    mut commands: Commands,
+    world_entities: Query<Entity, MatchEntityFilter>,
+    select_roots: Query<Entity, With<crate::heroes::HeroSelectRoot>>,
+    mut map: ResMut<MapState>,
+    mut choice: ResMut<crate::heroes::LocalHeroChoice>,
+    mut wave: ResMut<crate::waves::WaveTimer>,
+    mut fog_free: ResMut<crate::fog::FogFreeZones>,
+    mut targeting: ResMut<crate::abilities::AbilityTargeting>,
+    mut shop: ResMut<crate::items::ShopUiState>,
+    mut undo: ResMut<crate::items::ShopUndoLog>,
+    mut sell: ResMut<crate::items::InventoryContextMenu>,
+    mut hovered: ResMut<crate::picking::HoveredUnit>,
+    mut selected: ResMut<crate::picking::SelectedUnit>,
+    mut session: ResMut<crate::net::NetSession>,
+) {
+    let Some(request) = requests.read().last().copied() else {
+        return;
+    };
+    for entity in &world_entities {
+        commands.entity(entity).despawn();
+    }
+    for entity in &select_roots {
+        commands.entity(entity).despawn();
+    }
+
+    *map = MapState::default();
+    *wave = crate::waves::WaveTimer::default();
+    fog_free.rects.clear();
+    targeting.active = None;
+    *shop = default();
+    *undo = default();
+    *sell = default();
+    hovered.0 = None;
+    selected.0 = None;
+    session.local_hero_entity = None;
+    session.remote_hero_entity = None;
+
+    choice.spawned = false;
+    if request.change_hero || choice.hero.is_none() {
+        choice.hero = None;
+        choice.from_cli = false;
+        crate::heroes::spawn_hero_select_ui_force(&mut commands);
+    } else {
+        // Re-confirm the current hero without showing the select screen.
+        choice.from_cli = true;
+    }
+}
+
+pub(crate) fn spawn_map(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     assets: Res<SharedAssets>,

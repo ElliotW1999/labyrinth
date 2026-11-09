@@ -59,6 +59,7 @@ impl Plugin for UiPlugin {
                 (
                     update_item_tooltips,
                     update_ability_tooltips,
+                    sync_ability_hover_range_ring,
                     refresh_net_status,
                     refresh_minimap,
                     handle_minimap_clicks,
@@ -2227,6 +2228,66 @@ fn update_item_tooltips(
         }
     } else {
         *tip_vis = Visibility::Hidden;
+    }
+}
+
+/// Blue ring around the local hero showing the hovered ability's reach
+/// (see [`crate::abilities::hover_range_radius`]).
+#[derive(Component)]
+struct AbilityHoverRangeRing;
+
+fn sync_ability_hover_range_ring(
+    mut commands: Commands,
+    assets: Res<crate::resources::SharedAssets>,
+    defs: Res<AbilityDefinitions>,
+    hero: Query<(&AbilityLoadout, &GlobalTransform), With<PlayerHero>>,
+    icons: Query<(&Interaction, &SpellIcon)>,
+    plus: Query<(&Interaction, &SpellLevelButton)>,
+    mut rings: Query<(Entity, &mut Transform), With<AbilityHoverRangeRing>>,
+) {
+    let hovered = icons
+        .iter()
+        .find(|(interaction, _)| {
+            matches!(**interaction, Interaction::Hovered | Interaction::Pressed)
+        })
+        .map(|(_, icon)| icon.index)
+        .or_else(|| {
+            plus.iter()
+                .find(|(interaction, _)| {
+                    matches!(**interaction, Interaction::Hovered | Interaction::Pressed)
+                })
+                .map(|(_, button)| button.index)
+        });
+    let ring = hovered
+        .zip(hero.single().ok())
+        .and_then(|(index, (loadout, tf))| {
+            let slot = loadout.slots.get(index)?;
+            let def = defs
+                .get(slot.id)
+                .cloned()
+                .unwrap_or_else(|| crate::abilities::catalog::builtin(slot.id));
+            crate::abilities::hover_range_radius(&def, slot.rank).map(|r| (r, tf.translation()))
+        });
+
+    let Some((radius, hero_pos)) = ring else {
+        for (entity, _) in &rings {
+            commands.entity(entity).despawn();
+        }
+        return;
+    };
+    let transform =
+        Transform::from_translation(Vec3::new(hero_pos.x, crate::scale::u(0.08), hero_pos.z))
+            .with_scale(Vec3::new(radius, 1.0, radius));
+    if let Some((_, mut tf)) = rings.iter_mut().next() {
+        *tf = transform;
+    } else {
+        commands.spawn((
+            Name::new("Ability Hover Range Ring"),
+            AbilityHoverRangeRing,
+            Mesh3d(assets.indicator_ring_mesh.clone()),
+            MeshMaterial3d(assets.indicator_range_mat.clone()),
+            transform,
+        ));
     }
 }
 

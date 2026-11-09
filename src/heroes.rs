@@ -520,6 +520,10 @@ struct HeroSelectButton {
     hero: HeroId,
 }
 
+/// Hero select input and local hero spawning; the map is generated after it.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct HeroSpawnSet;
+
 pub struct HeroesPlugin;
 
 impl Plugin for HeroesPlugin {
@@ -536,7 +540,8 @@ impl Plugin for HeroesPlugin {
                     handle_hero_select_buttons,
                     maybe_spawn_local_hero,
                 )
-                    .chain(),
+                    .chain()
+                    .in_set(HeroSpawnSet),
             );
     }
 }
@@ -585,68 +590,103 @@ pub(crate) fn spawn_hero_select_ui_force(commands: &mut Commands) {
                 TextFont::from_font_size(16.0),
                 TextColor(Color::srgb(0.7, 0.8, 0.9)),
             ));
-            root.spawn(Node {
-                flex_direction: FlexDirection::Row,
-                column_gap: px(16),
-                ..default()
-            })
-            .with_children(|row| {
-                for (i, hero) in HeroId::all().iter().copied().enumerate() {
-                    let def = hero.def();
-                    row.spawn((
-                        Button,
-                        HeroSelectButton { hero },
+            for (label, title, accent) in PRIMARY_GROUPS {
+                let members: Vec<(usize, HeroId)> = HeroId::all()
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .filter(|(_, hero)| hero.primary_label() == label)
+                    .collect();
+                if members.is_empty() {
+                    continue;
+                }
+                root.spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    align_items: AlignItems::Center,
+                    column_gap: px(16),
+                    ..default()
+                })
+                .with_children(|group| {
+                    group.spawn((
+                        Text::new(title),
+                        TextFont::from_font_size(20.0),
+                        TextColor(accent),
                         Node {
-                            width: px(260),
-                            height: px(220),
-                            flex_direction: FlexDirection::Column,
-                            align_items: AlignItems::Center,
-                            justify_content: JustifyContent::Center,
-                            row_gap: px(6),
-                            padding: UiRect::all(px(14)),
-                            border: UiRect::all(px(2)),
-                            border_radius: BorderRadius::all(px(10)),
+                            width: px(120),
                             ..default()
                         },
-                        BackgroundColor(Color::srgba(0.12, 0.14, 0.18, 0.95)),
-                        BorderColor::all(Color::srgb(0.35, 0.4, 0.5)),
-                    ))
-                    .with_children(|card| {
-                        card.spawn((
-                            Text::new(format!("{}  ·  {}", i + 1, hero.name())),
-                            TextFont::from_font_size(24.0),
-                            TextColor(Color::WHITE),
-                        ));
-                        card.spawn((
-                            Text::new(format!(
-                                "{}  Str {:.0}  Agi {:.0}  Int {:.0}",
-                                hero.primary_label(),
-                                def.attributes.strength,
-                                def.attributes.agility,
-                                def.attributes.intelligence
-                            )),
-                            TextFont::from_font_size(14.0),
-                            TextColor(Color::srgb(0.95, 0.8, 0.55)),
-                        ));
-                        card.spawn((
-                            Text::new(format!(
-                                "+{:.1} / +{:.1} / +{:.1} per level",
-                                def.attributes.str_per_level,
-                                def.attributes.agi_per_level,
-                                def.attributes.int_per_level
-                            )),
-                            TextFont::from_font_size(13.0),
-                            TextColor(Color::srgb(0.75, 0.85, 0.95)),
-                        ));
-                        card.spawn((
-                            Text::new(hero.blurb()),
-                            TextFont::from_font_size(13.0),
-                            TextColor(Color::srgb(0.8, 0.85, 0.9)),
-                        ));
-                    });
-                }
-            });
+                    ));
+                    group
+                        .spawn(Node {
+                            display: Display::Grid,
+                            grid_template_columns: RepeatedGridTrack::px(
+                                HERO_GRID_COLUMNS,
+                                HERO_CARD_WIDTH,
+                            ),
+                            grid_auto_rows: vec![GridTrack::px(HERO_CARD_HEIGHT)],
+                            column_gap: px(10),
+                            row_gap: px(10),
+                            ..default()
+                        })
+                        .with_children(|grid| {
+                            for (i, hero) in members {
+                                spawn_hero_card(grid, i, hero, accent);
+                            }
+                        });
+                });
+            }
         });
+}
+
+/// Hero select rows: primary attribute label, row title, accent colour.
+const PRIMARY_GROUPS: [(&str, &str, Color); 3] = [
+    ("STR", "Strength", Color::srgb(0.95, 0.4, 0.35)),
+    ("AGI", "Agility", Color::srgb(0.45, 0.9, 0.45)),
+    ("INT", "Intelligence", Color::srgb(0.45, 0.7, 1.0)),
+];
+const HERO_GRID_COLUMNS: u16 = 5;
+const HERO_CARD_WIDTH: f32 = 200.0;
+const HERO_CARD_HEIGHT: f32 = 130.0;
+
+fn spawn_hero_card(grid: &mut ChildSpawnerCommands, index: usize, hero: HeroId, accent: Color) {
+    let def = hero.def();
+    grid.spawn((
+        Button,
+        HeroSelectButton { hero },
+        Node {
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            row_gap: px(4),
+            padding: UiRect::all(px(8)),
+            border: UiRect::all(px(2)),
+            border_radius: BorderRadius::all(px(8)),
+            ..default()
+        },
+        BackgroundColor(Color::srgba(0.12, 0.14, 0.18, 0.95)),
+        BorderColor::all(Color::srgb(0.35, 0.4, 0.5)),
+    ))
+    .with_children(|card| {
+        card.spawn((
+            Text::new(format!("{}  ·  {}", index + 1, hero.name())),
+            TextFont::from_font_size(18.0),
+            TextColor(Color::WHITE),
+        ));
+        card.spawn((
+            Text::new(format!(
+                "Str {:.0}  Agi {:.0}  Int {:.0}",
+                def.attributes.strength, def.attributes.agility, def.attributes.intelligence
+            )),
+            TextFont::from_font_size(12.0),
+            TextColor(accent),
+        ));
+        card.spawn((
+            Text::new(hero.blurb()),
+            TextFont::from_font_size(11.0),
+            TextColor(Color::srgb(0.8, 0.85, 0.9)),
+            TextLayout::justify(Justify::Center),
+        ));
+    });
 }
 
 fn handle_hero_select_input(
@@ -703,6 +743,7 @@ fn maybe_spawn_local_hero(
     config: Res<NetConfig>,
     mut choice: ResMut<LocalHeroChoice>,
     mut session: ResMut<NetSession>,
+    mut map: ResMut<crate::map::MapState>,
     roots: Query<Entity, With<HeroSelectRoot>>,
     mut buttons: Query<(&HeroSelectButton, &mut BorderColor)>,
 ) {
@@ -763,6 +804,9 @@ fn maybe_spawn_local_hero(
             choice.spawned = true;
         }
     }
+
+    // The battlefield is only built once a hero has been picked.
+    map.request();
 
     for entity in &roots {
         commands.entity(entity).despawn();

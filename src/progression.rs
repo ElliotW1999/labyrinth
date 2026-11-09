@@ -70,7 +70,9 @@ fn apply_level_ups(
     mut last_levels: Local<std::collections::HashMap<Entity, u32>>,
 ) {
     for (entity, progress, mut attrs, mut health, mut mana, mut stats) in &mut heroes {
-        let previous = *last_levels.get(&entity).unwrap_or(&1);
+        // A hero spawns with the attributes of its starting level already applied, so the
+        // first level seen is the baseline; only levels gained after that grow attributes.
+        let previous = *last_levels.entry(entity).or_insert(progress.level);
         if progress.level > previous {
             for _ in previous..progress.level {
                 let before = *attrs;
@@ -161,6 +163,62 @@ mod tests {
         });
         world.run_system_once(regen_health).unwrap();
         assert_eq!(world.get::<Health>(e).unwrap().current, 100.0);
+    }
+
+    #[test]
+    fn hero_progress_at_level_has_one_point_per_level() {
+        let progress = HeroProgress::at_level(6);
+        assert_eq!(progress.level, 6);
+        assert_eq!(progress.skill_points, 6);
+        assert_eq!(progress.xp, 0);
+        assert_eq!(progress.xp_to_next, xp_required_for_level(6));
+    }
+
+    #[test]
+    fn heroes_spawn_at_starting_level_with_starting_gold_and_full_vitals() {
+        use crate::components::PlayerWallet;
+        use crate::heroes::HeroId;
+        use crate::resources::SharedAssets;
+        use crate::units::{STARTING_GOLD, STARTING_HERO_LEVEL, spawn_hero_entity};
+
+        let mut world = World::new();
+        world.init_resource::<SharedAssets>();
+        let hero = world.resource_scope(|world, assets: Mut<SharedAssets>| {
+            let mut queue = bevy::ecs::world::CommandQueue::default();
+            let mut commands = Commands::new(&mut queue, world);
+            let hero = spawn_hero_entity(
+                &mut commands,
+                &assets,
+                crate::components::Team::Radiant,
+                true,
+                1,
+                Vec3::ZERO,
+                HeroId::Vanguard,
+            );
+            queue.apply(world);
+            hero
+        });
+        assert_eq!(STARTING_HERO_LEVEL, 6);
+        assert_eq!(STARTING_GOLD, 25_000);
+        let progress = *world.get::<HeroProgress>(hero).unwrap();
+        assert_eq!(progress.level, STARTING_HERO_LEVEL);
+        assert_eq!(progress.skill_points, STARTING_HERO_LEVEL);
+        assert_eq!(world.get::<PlayerWallet>(hero).unwrap().gold, STARTING_GOLD);
+
+        // Attributes include five levels of growth over the level-1 definition.
+        let base = HeroId::Vanguard.def().attributes;
+        let attrs = *world.get::<HeroAttributes>(hero).unwrap();
+        let expected = base.strength + 5.0 * base.str_per_level;
+        assert!((attrs.strength - expected).abs() < 1e-3);
+        let health = *world.get::<Health>(hero).unwrap();
+        assert_eq!(health.current, health.max);
+        let mana = world.get::<Mana>(hero).unwrap();
+        assert_eq!(mana.current, mana.max);
+
+        // The level-up system treats the starting level as the baseline: no double growth.
+        world.run_system_once(apply_level_ups).unwrap();
+        let after = *world.get::<HeroAttributes>(hero).unwrap();
+        assert_eq!(after.strength, attrs.strength);
     }
 
     #[test]

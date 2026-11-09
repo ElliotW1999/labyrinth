@@ -60,7 +60,7 @@ The HUD shows connection status. Host sim runs combat / creeps / AI; clients app
 | Ctrl+Q / W / E / R | Spend a skill point to rank that ability |
 | Spell bar `+` | Rank up when highlighted |
 | A S D Z X C | Use inventory item in that slot (actives only) |
-| Esc | Main menu (New Game / Settings / Quit) |
+| Esc | Main menu (New Game = same hero on a fresh map / Change Hero = back to hero select, then a fresh map / Settings / Quit) |
 | RMB inventory slot | Open sell menu at cursor (LMB Sell = 50% refund near shop) |
 | `$` shop button (bottom-right, shows gold) | Toggle item shop panel |
 | LMB shop item | Open components / buy popup (recipes hidden from grid) |
@@ -83,7 +83,7 @@ The HUD shows connection status. Host sim runs combat / creeps / AI; clients app
 | Magnus | Strength | Shockwave, Empower, Skewer, Reverse Polarity |
 | Sniper | Agility | Shrapnel, Headshot, Take Aim, Assassinate |
 
-Each hero has its own base Str/Agi/Int and per-level growth.
+Each hero has its own base Str/Agi/Int and per-level growth. Heroes start at **level 6** (6 skill points, five levels of attribute growth applied) with **25000 gold** (`units::STARTING_HERO_LEVEL` / `STARTING_GOLD`). The hero select screen is a grid grouped by primary attribute; the map (terrain, buildings, shops, obstacle course, creep waves) is generated only once a hero is picked. Enemy heroes within **1500** units (`scale::XP_SHARE_RADIUS`) of a dying unit share its XP bounty.
 
 ### Adding heroes (HeroGenerator)
 
@@ -130,6 +130,7 @@ Each unit carries three explicit gameplay dimensions from `dimensions::UnitDimen
 - Attacks use **foreswing** (0–0.5s) then fire, then **backswing** (0–0.5s; cancelled by move/stop/new orders)
 - **Melee** auto-attacks (range ≤ 150) deal damage instantly with a rectangular slash VFX; **ranged** attacks still use projectiles
 - A **white ring** on the ground shows the local hero's attack range
+- Hovering an ability icon shows a **blue ring**: its cast range (for skillshots, how far they travel), or its effect radius for no-target abilities
 - Attack speed rating: `(base AS + agility + flat bonuses) × (1 + mult)`, clamped **20–700**; APS = `(IAS/100) / BAT`
 - Abilities use **cast point** then fire, then cancellable **cast backswing**
 

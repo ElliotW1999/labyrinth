@@ -3,8 +3,8 @@
 use bevy::prelude::*;
 
 use crate::components::{
-    Ancient, AttackCooldown, CombatStats, Creep, GoldBounty, Health, Lane, PlayerHero,
-    PlayerWallet, Team, Tower, TrainingDummy, XpBounty,
+    Ancient, AttackCooldown, CombatStats, Creep, GoldBounty, Health, HeroAttributes, Lane,
+    PlayerHero, PlayerWallet, Team, Tower, TrainingDummy, XpBounty,
 };
 use crate::dimensions::UnitDimensions;
 use crate::heroes::{HeroId, HeroKind};
@@ -27,6 +27,11 @@ fn grounded(position: Vec3, model_height: f32) -> Vec3 {
     Vec3::new(position.x, model_height * 0.5, position.z)
 }
 
+/// Level every hero starts the match at.
+pub const STARTING_HERO_LEVEL: u32 = 6;
+/// Gold every hero starts the match with.
+pub const STARTING_GOLD: u32 = 25_000;
+
 /// Spawn a playable hero. `local` adds `PlayerHero` (this machine's controlled unit).
 pub fn spawn_hero_entity(
     commands: &mut Commands,
@@ -38,7 +43,16 @@ pub fn spawn_hero_entity(
     hero: HeroId,
 ) -> Entity {
     let def = hero.def();
-    let (health, mana, stats, attrs) = def.vitals();
+    let (mut health, mut mana, mut stats, mut attrs) = def.vitals();
+    // Heroes enter the match already at `STARTING_HERO_LEVEL`: apply the attribute growth
+    // of the levels they skipped, then top them up.
+    for _ in 1..STARTING_HERO_LEVEL {
+        let before = attrs;
+        attrs.level_up();
+        HeroAttributes::apply_delta(&before, &attrs, &mut health, &mut mana, &mut stats);
+    }
+    health.current = health.max;
+    mana.current = mana.max;
 
     let mat = match team {
         Team::Radiant => assets.radiant_mat.clone(),
@@ -59,13 +73,15 @@ pub fn spawn_hero_entity(
         NetworkedHero,
         NetworkId(network_id),
         HeroKind(hero),
-        PlayerWallet { gold: 600 },
+        PlayerWallet {
+            gold: STARTING_GOLD,
+        },
         health,
         mana,
         stats,
         AttackCooldown(0.0),
         hero.loadout(),
-        crate::components::HeroProgress::new(),
+        crate::components::HeroProgress::at_level(STARTING_HERO_LEVEL),
     ));
     entity.insert((
         def.dimensions.components(),

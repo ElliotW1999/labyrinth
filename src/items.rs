@@ -32,8 +32,10 @@ impl Plugin for ItemsPlugin {
             .add_message::<SellItemRequest>()
             .add_message::<UndoShopRequest>()
             .add_systems(
-                Startup,
-                spawn_shops.after(crate::resources::load_shared_assets),
+                Update,
+                spawn_shops
+                    .in_set(crate::map::MapGenSet)
+                    .run_if(crate::map::map_requested),
             )
             .add_systems(
                 Update,

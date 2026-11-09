@@ -66,7 +66,7 @@ struct FogOverlayAssets {
 }
 
 #[derive(Component, Debug, Clone, Copy)]
-struct FogTile {
+pub(crate) struct FogTile {
     center: Vec3,
 }
 
