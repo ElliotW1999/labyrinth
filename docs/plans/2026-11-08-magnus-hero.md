@@ -345,3 +345,9 @@ Remaining limitations:
 
 1. **Independent cleaves (changes the G6/G5 stacking rule).** Each cleave source works on its own instead of being summed into one aggregate shape. An item's permanent cleave and each timed cleave status (e.g. Empower) is its own instance with its own ratio and shape: a circle of `cleave_radius` (default `ATTACK_CLEAVE_RADIUS`), or a cone when its distance is non-zero. On each melee attack hit, every instance independently selects its own secondary targets and deals its own ratio × attack damage. A unit inside two shapes takes both. The CSV surface is unchanged: the same timed stats, now grouped per status rather than summed into `CombatStats`.
 2. **G4 non-hero base damage.** Confirmed: units with no hero definition snapshot their current attack damage.
+3. **Cleave grouping (2026-11-09, refines item 1).** The user chose option 1: an internal cleave-group key, with no CSV or generator change.
+   - Each timed cleave modifier status carries a cleave source key, the owning ability id. Statuses with the same key make up **one** cleave instance: ratio and shape fields are summed per key.
+   - The instance is removed when its last contributing status ends. A re-cast refreshes the single instance.
+   - **Items:** item cleave ratios stack with each other additively, as today (two 40% items give 80%), in one "items" instance with the default circle.
+   - **Items and abilities stack:** the item instance and every ability instance each deal their own cleave on the same hit, so their damage adds.
+   - Item 1's wording "grouped per status" is superseded by this item.
