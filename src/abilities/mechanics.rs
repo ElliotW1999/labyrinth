@@ -202,24 +202,27 @@ impl MechanicRunner<'_, '_> {
                 skillshot,
                 first_hit,
                 end_radius,
+                origin_offset,
             } => {
                 let unit = ctx
                     .unit_target
                     .filter(|_| !skillshot)
                     .and_then(|e| self.units.get(e).ok().map(|(tf, _)| (e, tf.translation)));
+                let dir = Vec3::new(ctx.aim.x - ctx.origin.x, 0.0, ctx.aim.z - ctx.origin.z)
+                    .normalize_or(Vec3::X);
+                // A skillshot may start in front of the caster; it flies the cast range from there.
+                let start = match origin_offset {
+                    Some(offset) if *skillshot => ctx.origin + dir * offset.at(ctx.rank).max(0.0),
+                    _ => ctx.origin,
+                };
                 let target_pos = match unit {
                     Some((_, pos)) => pos,
-                    None if *skillshot => {
-                        let dir =
-                            Vec3::new(ctx.aim.x - ctx.origin.x, 0.0, ctx.aim.z - ctx.origin.z)
-                                .normalize_or(Vec3::X);
-                        ctx.origin + dir * ctx.cast_range
-                    }
+                    None if *skillshot => start + dir * ctx.cast_range,
                     None => ctx.aim,
                 };
                 self.projectiles.write(SpawnProjectileEvent {
                     team: ctx.team,
-                    origin: ctx.origin,
+                    origin: start,
                     target: unit.map(|(e, _)| e),
                     target_pos,
                     speed: *speed,

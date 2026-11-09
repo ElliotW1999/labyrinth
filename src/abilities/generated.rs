@@ -108,6 +108,7 @@ fn arcane_lance() -> AbilityDefinition {
             skillshot: false,
             first_hit: false,
             end_radius: None,
+            origin_offset: None,
         })
         .on(
             AbilityTrigger::OnProjectileHit,
@@ -302,6 +303,7 @@ fn shadow_strike() -> AbilityDefinition {
             skillshot: false,
             first_hit: false,
             end_radius: None,
+            origin_offset: None,
         })
         .on(
             AbilityTrigger::OnProjectileHit,
@@ -419,6 +421,7 @@ fn sonic_wave() -> AbilityDefinition {
             skillshot: true,
             first_hit: false,
             end_radius: Some(RankValue::fixed(450.0)),
+            origin_offset: None,
         })
         .on(
             AbilityTrigger::OnProjectileHit,

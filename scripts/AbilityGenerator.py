@@ -98,11 +98,13 @@ ABILITY_COLUMNS = (
 )
 # Optional extras: cast_backswing (default 0.25), max_rank (default from level counts / slot),
 # toggle_mana_per_sec (toggle abilities only; level list allowed), projectile_end_radius
-# (skillshots only; level list allowed; the width the wave widens to, needs aoe_radius).
+# (skillshots only; level list allowed; the width the wave widens to, needs aoe_radius),
+# projectile_origin_offset (skillshots only; level list allowed; how far in front of the caster
+# the wave starts).
 
 SLOTS = ("q", "w", "e", "r", "innate")
 ABILITY_TYPES = {"active": "Active", "passive": "Passive", "toggle": "Toggle"}
-LEVEL_FIELDS = ("cast_range", "aoe_radius", "cooldown", "mana_cost", "toggle_mana_per_sec", "projectile_end_radius")
+LEVEL_FIELDS = ("cast_range", "aoe_radius", "cooldown", "mana_cost", "toggle_mana_per_sec", "projectile_end_radius", "projectile_origin_offset")
 EFFECT_LEVEL_FIELDS = ("value", "duration", "amount", "radius")
 # Mirrors abilities::definition::MAX_CAST_BACKSWING.
 MAX_CAST_BACKSWING = 1.5
@@ -160,6 +162,7 @@ class Ability:
     max_rank: int
     toggle_mana_per_sec: list[float] | None = None
     projectile_end_radius: list[float] | None = None
+    projectile_origin_offset: list[float] | None = None
     effects: list[str] = field(default_factory=list)
 
 
@@ -242,6 +245,7 @@ def parse_ability(row: Row, effect_rows: list[EffectRow], report: Report) -> Abi
         max_rank=max_rank,
         toggle_mana_per_sec=toggle_upkeep,
         projectile_end_radius=activation.projectile_end_radius,
+        projectile_origin_offset=activation.projectile_origin_offset,
     )
 
 
@@ -326,7 +330,7 @@ def ability_fn(a: Ability) -> str:
             lines.append("        .mechanic(shockwave_ring())")
         lines.append(f"        .mechanic({projectile_each_mechanic_rust(a.target_type, a.target_team, a.projectile_speed)})")
     elif a.projectile != "none":
-        lines.append(f"        .mechanic({projectile_mechanic_rust(a.projectile, a.projectile_speed, a.projectile_end_radius)})")
+        lines.append(f"        .mechanic({projectile_mechanic_rust(a.projectile, a.projectile_speed, a.projectile_end_radius, a.projectile_origin_offset)})")
     elif a.behavior == "Active" and a.aoe_radius and any(a.aoe_radius):
         if a.rust_target_type in ("NoTarget", "SelfTarget"):
             lines.append("        .mechanic(shockwave_ring())")

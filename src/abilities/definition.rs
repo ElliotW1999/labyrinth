@@ -943,6 +943,9 @@ pub enum AbilityMechanic {
         /// Skillshots only: the width (like `aoe_radius`, per rank) the wave widens to by the
         /// end of its flight. `None` keeps the width constant.
         end_radius: Option<RankValue>,
+        /// Skillshots only: the wave starts this far in front of the caster (towards the aim)
+        /// instead of at the caster's centre, and still flies the full cast range from there.
+        origin_offset: Option<RankValue>,
     },
     /// One homing spell projectile per living, targetable unit of `team` inside the ability's
     /// `aoe_radius` around `center` (the caster is never one). Each projectile carries the

@@ -1075,7 +1075,7 @@ class ItemProjectileTests(unittest.TestCase):
         self.assertFalse([w for w in report.warnings if w.field == "projectile_type"])
         rendered = module.item_static(items[0])
         self.assertIn(
-            "mechanics: &[AbilityMechanic::Projectile { splash_radius: AreaRadius::Ability, speed: Some(1200.0), skillshot: false, first_hit: false, end_radius: None }],",
+            "mechanics: &[AbilityMechanic::Projectile { splash_radius: AreaRadius::Ability, speed: Some(1200.0), skillshot: false, first_hit: false, end_radius: None, origin_offset: None }],",
             rendered,
         )
         self.assertIn("AbilityTrigger::OnProjectileHit", rendered)
@@ -1482,7 +1482,7 @@ ABILITY_COLUMNS_FOR_TESTS = (
     "id,name,slot,ability_type,target_type,target_team,cast_range,aoe_radius,cast_time,"
     "channel_time,cooldown,mana_cost,max_charges,charge_restore_time,projectile_type,"
     "projectile_speed,description,cast_backswing,max_rank,toggle_mana_per_sec,"
-    "projectile_end_radius"
+    "projectile_end_radius,projectile_origin_offset"
 ).split(",")
 EFFECT_COLUMNS_FOR_TESTS = (
     "ability_id,effect_index,trigger,effect_target,effect_type,effect_id,value,damage_type,"
@@ -1661,6 +1661,41 @@ class DragStunTests(unittest.TestCase):
     def test_drag_stun_follows_the_drag_target_rules(self) -> None:
         _, report = self._drag("drag_stun", effect_target="caster")
         self.assertTrue(any("drag carries other units" in e.message for e in report.errors))
+
+
+def _ability_rust(ability) -> str:
+    import AbilityGenerator
+
+    return AbilityGenerator.ability_fn(ability)
+
+
+class ProjectileOriginOffsetTests(unittest.TestCase):
+    @staticmethod
+    def _wave(**cells: str):
+        ability = {
+            "target_type": "point", "cast_range": "1200", "aoe_radius": "200",
+            "projectile_type": "skillshot", "projectile_speed": "1200",
+        }
+        ability.update(cells)
+        return load_test_ability(ability)
+
+    def test_offset_is_emitted_on_a_skillshot(self) -> None:
+        abilities, report = self._wave(projectile_origin_offset="48")
+        self.assertEqual(report.errors, [])
+        self.assertIn("origin_offset: Some(RankValue::fixed(48.0))", _ability_rust(abilities[0]))
+
+    def test_blank_offset_starts_at_the_caster(self) -> None:
+        abilities, report = self._wave()
+        self.assertEqual(report.errors, [])
+        self.assertIn("origin_offset: None", _ability_rust(abilities[0]))
+
+    def test_offset_needs_a_skillshot_and_a_positive_value(self) -> None:
+        _, report = self._wave(projectile_origin_offset="0")
+        self.assertTrue(any("must be above 0" in e.message for e in report.errors))
+        _, report = load_test_ability(
+            {"target_type": "unit", "target_team": "enemy", "cast_range": "600", "projectile_type": "targeted", "projectile_origin_offset": "48"}
+        )
+        self.assertTrue(any("only skillshots start in front" in e.message for e in report.errors))
 
 
 class HeroGeneratorTests(unittest.TestCase):

@@ -248,6 +248,7 @@ ITEM_ACTIVATION_OPTIONAL = (
     "projectile_type",
     "projectile_speed",
     "projectile_end_radius",
+    "projectile_origin_offset",
 )
 # Effect-polarity teams (`units_in_radius` defaults); "self" areas still mean allies.
 TARGET_TEAMS = {"enemy": "Enemy", "ally": "Ally", "both": "Any", "self": "Ally"}
@@ -586,6 +587,8 @@ class ActivationSpec:
     projectile_speed: float | None = None
     # Skillshots only: the width (per rank) the wave widens to by the end of its flight.
     projectile_end_radius: list[float] | None = None
+    # Skillshots only: how far in front of the caster (per rank) the wave starts.
+    projectile_origin_offset: list[float] | None = None
 
     def has_cast_range(self, kind: str) -> bool:
         if kind == "ability":
@@ -640,6 +643,7 @@ def parse_activation_spec(
     projectile = parse_enum(row, "projectile_type", PROJECTILE_TYPES, report, required=False) or "none"
     speed = parse_scalar(row, "projectile_speed", report, minimum=1)
     end_radius = parse_number(row, "projectile_end_radius", report, levels=levels, minimum=0)
+    origin_offset = parse_number(row, "projectile_origin_offset", report, levels=levels, minimum=0)
 
     if kind == "ability" and None in (target_type, target_team):
         return None
@@ -662,6 +666,7 @@ def parse_activation_spec(
         projectile_type=projectile,
         projectile_speed=speed,
         projectile_end_radius=end_radius,
+        projectile_origin_offset=origin_offset,
     )
 
 
@@ -712,6 +717,14 @@ def validate_activation(
         elif not (spec.aoe_radius and any(spec.aoe_radius)):
             err("projectile_end_radius", "requires aoe_radius (the starting width)")
 
+    if spec.projectile_origin_offset:
+        if spec.projectile_type not in SKILLSHOT_TYPES:
+            err("projectile_origin_offset", f"only skillshots start in front of the caster; projectile_type is {spec.projectile_type}")
+        elif any(v <= 0 for v in spec.projectile_origin_offset):
+            err("projectile_origin_offset", "projectile_origin_offset must be above 0 (leave it blank to start at the caster)")
+        elif kind == "item":
+            err("projectile_origin_offset", "item skillshots start at the user; leave projectile_origin_offset blank")
+
     if spec.target_team == "self" and spec.target_type not in ("self", "no_target"):
         err("target_team", f"target_team self requires target_type self or no_target (got {spec.target_type})")
     if spec.target_type == "self" and spec.target_team != "self":
@@ -741,16 +754,18 @@ def projectile_mechanic_rust(
     projectile_type: str,
     projectile_speed: float | None,
     end_radius: list[float] | None = None,
+    origin_offset: list[float] | None = None,
 ) -> str:
     """`AbilityMechanic::Projectile { ... }` for a non-"none" projectile_type (abilities and items)."""
     speed = f"Some({f32(projectile_speed)})" if projectile_speed else "None"
     skillshot = "true" if projectile_type in SKILLSHOT_TYPES else "false"
     first_hit = "true" if projectile_type == "skillshot_single" else "false"
     end = f"Some({rank_value(end_radius)})" if end_radius else "None"
+    offset = f"Some({rank_value(origin_offset)})" if origin_offset else "None"
     return (
         "AbilityMechanic::Projectile { "
         f"splash_radius: AreaRadius::Ability, speed: {speed}, skillshot: {skillshot}, "
-        f"first_hit: {first_hit}, end_radius: {end} }}"
+        f"first_hit: {first_hit}, end_radius: {end}, origin_offset: {offset} }}"
     )
 
 

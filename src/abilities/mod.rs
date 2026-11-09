@@ -1007,6 +1007,7 @@ mod tests {
                 skillshot: false,
                 first_hit: false,
                 end_radius: None,
+                origin_offset: None,
             })
     }
 
@@ -3126,6 +3127,7 @@ mod tests {
             skillshot: false,
             first_hit: false,
             end_radius: None,
+            origin_offset: None,
         }];
         let effects: &'static [AbilityEffectEntry] = Box::leak(entries.into_boxed_slice());
         ItemDefinition {
@@ -3222,6 +3224,7 @@ mod tests {
                 skillshot: false,
                 first_hit: false,
                 end_radius: None,
+                origin_offset: None,
             })
             .on(
                 AbilityTrigger::OnProjectileHit,
@@ -7276,5 +7279,69 @@ mod tests {
                 < 1e-4
         );
         assert!(forward_point(origin, Vec3::Y, 100.0).distance(Vec3::new(10.0, 3.0, -90.0)) < 1e-4);
+    }
+
+    fn offset_wave(origin_offset: Option<f32>) -> AbilityDefinition {
+        AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(
+                TargetType::Point,
+                RankValue::fixed(1200.0),
+                RankValue::fixed(200.0),
+            )
+            .team(TargetTeam::Enemy)
+            .costs(RankValue::fixed(8.0), RankValue::fixed(10.0))
+            .mechanic(AbilityMechanic::Projectile {
+                splash_radius: super::definition::AreaRadius::Ability,
+                speed: Some(1200.0),
+                skillshot: true,
+                first_hit: false,
+                end_radius: None,
+                origin_offset: origin_offset.map(RankValue::fixed),
+            })
+    }
+
+    #[test]
+    fn skillshot_origin_offset_starts_the_wave_in_front_and_keeps_the_full_range() {
+        for (offset, expected_start) in [(Some(48.0), 48.0), (None, 0.0)] {
+            let mut app = test_app();
+            app.world_mut()
+                .resource_mut::<AbilityDefinitions>()
+                .insert(offset_wave(offset));
+            let caster = spawn_caster(&mut app, KIT);
+            let spawned =
+                cast_for_projectiles(&mut app, caster, 3, CastTarget::Point(Vec3::X * 800.0));
+            assert_eq!(spawned.len(), 1);
+            let wave = spawned[0];
+            assert!(
+                wave.origin.distance(Vec3::new(expected_start, 0.0, 0.0)) < 1e-3,
+                "starts at {} for {offset:?}",
+                wave.origin
+            );
+            assert!(
+                wave.target_pos
+                    .distance(Vec3::new(expected_start + 1200.0, 0.0, 0.0))
+                    < 1e-3,
+                "flies the full cast range from the start: {}",
+                wave.target_pos
+            );
+            assert_eq!(wave.skillshot_width, Some(200.0));
+        }
+    }
+
+    #[test]
+    fn skillshot_origin_offset_follows_the_aim_direction_not_the_facing() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(offset_wave(Some(48.0)));
+        let caster = spawn_caster(&mut app, KIT);
+        let spawned = cast_for_projectiles(&mut app, caster, 3, CastTarget::Point(Vec3::Z * 600.0));
+        let wave = spawned[0];
+        assert!(
+            wave.origin.distance(Vec3::new(0.0, 0.0, 48.0)) < 1e-3,
+            "{}",
+            wave.origin
+        );
+        assert!(wave.target_pos.distance(Vec3::new(0.0, 0.0, 1248.0)) < 1e-3);
     }
 }
