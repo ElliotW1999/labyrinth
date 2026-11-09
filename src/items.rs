@@ -3921,4 +3921,66 @@ mod tests {
         );
         assert_eq!(slot(&app, caster, 1).unwrap().cooldown.remaining, 0.0);
     }
+
+    #[test]
+    fn selling_an_item_mid_empower_only_changes_the_items_instance() {
+        use crate::abilities::effects::EffectSource;
+        use crate::status::{StatusEffect, StatusEffects, apply_status};
+        let mut health = Health::new(720.0);
+        let mut mana = Mana::new(320.0, 12.0);
+        let mut stats = CombatStats::simple(55.0, scale::MELEE_ATTACK_RANGE, 1.1, 4.0, 3.0, 12.0);
+        let mut attrs = HeroAttributes::starter();
+        let mut passives = ItemPassives::default();
+        passives.add_stat(PassiveStat::CleaveRatio, 0.4);
+        let empower = CleaveSource::Effect(EffectSource::Ability(AbilityId::Empower));
+        let source = Some(EffectSource::Ability(AbilityId::Empower));
+
+        apply_passives(passives, &mut health, &mut mana, &mut stats, &mut attrs);
+        let mut statuses = StatusEffects::default();
+        for (id, ratio, dist) in [("e_ratio", 0.16, 0.0), ("e_shape", 0.0, 650.0)] {
+            apply_status(
+                &mut statuses,
+                &mut stats,
+                StatusEffect {
+                    cleave: ratio,
+                    cleave_distance: dist,
+                    cleave_source: source,
+                    ..StatusEffect::buff(id, 30.0)
+                },
+                0.0,
+            );
+        }
+        apply_passives(passives, &mut health, &mut mana, &mut stats, &mut attrs);
+        assert_eq!(stats.cleaves.iter().count(), 2);
+        assert!((stats.cleaves.get(CleaveSource::Items).unwrap().ratio - 0.8).abs() < 1e-6);
+
+        // Sell one copy mid-fight, then the other (and a third removal that cannot exist).
+        remove_passives(passives, 1, &mut health, &mut mana, &mut stats, &mut attrs);
+        assert!((stats.cleaves.get(CleaveSource::Items).unwrap().ratio - 0.4).abs() < 1e-6);
+        remove_passives(passives, 1, &mut health, &mut mana, &mut stats, &mut attrs);
+        assert!(stats.cleaves.get(CleaveSource::Items).is_none());
+        let cone = stats.cleaves.get(empower).expect("empower is untouched");
+        assert!((cone.ratio - 0.16).abs() < 1e-6 && cone.distance == 650.0);
+
+        // Expiring the statuses afterwards leaves a clean set.
+        for effect in std::mem::take(&mut statuses.effects) {
+            crate::status::subtract_status_stat_delta(&effect, &mut stats, 0.0);
+        }
+        assert!(stats.cleaves.is_empty());
+    }
+
+    #[test]
+    fn removing_several_copies_at_once_drops_the_items_instance() {
+        let mut health = Health::new(720.0);
+        let mut mana = Mana::new(320.0, 12.0);
+        let mut stats = CombatStats::simple(55.0, scale::MELEE_ATTACK_RANGE, 1.1, 4.0, 3.0, 12.0);
+        let mut attrs = HeroAttributes::starter();
+        let mut passives = ItemPassives::default();
+        passives.add_stat(PassiveStat::CleaveRatio, 0.4);
+        for _ in 0..3 {
+            apply_passives(passives, &mut health, &mut mana, &mut stats, &mut attrs);
+        }
+        remove_passives(passives, 3, &mut health, &mut mana, &mut stats, &mut attrs);
+        assert!(stats.cleaves.is_empty());
+    }
 }

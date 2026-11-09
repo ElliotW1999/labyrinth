@@ -1776,4 +1776,69 @@ mod tests {
             .unwrap();
         assert!(landed.extra);
     }
+
+    #[test]
+    fn cleave_never_hits_the_primary_and_skips_targets_in_no_area() {
+        let (mut world, mut schedule) = world_with_pipeline();
+        let (attacker, target) = melee_duel(&mut world);
+        with_ratios(&mut world, attacker, 0.4, 0.0);
+        empower_cone(&mut world, attacker, 0.5);
+        // The primary sits inside both the circle and the cone; behind and far to the side is
+        // inside neither.
+        let outside = bystander(&mut world, Vec3::new(-900.0, 0.0, 900.0));
+        run_frames(&mut world, &mut schedule, 12);
+        assert!(
+            (hp(&world, target) - expected_hit()).abs() < 1e-3,
+            "the primary takes the main hit only, no cleave from either instance"
+        );
+        assert_eq!(hp(&world, outside), 1000.0, "outside every area: no cleave");
+    }
+
+    #[test]
+    fn recasting_empower_does_not_double_the_cleave_damage() {
+        use crate::status::{StatusEffects, apply_status};
+        let (mut world, mut schedule) = world_with_pipeline();
+        let (attacker, _target) = melee_duel(&mut world);
+        let effects = empower_cone(&mut world, attacker, 0.5);
+        // Re-apply the same statuses (a re-cast while active) several times.
+        for _ in 0..3 {
+            let mut statuses = world.get_mut::<StatusEffects>(attacker).unwrap().clone();
+            let mut stats = *world.get::<CombatStats>(attacker).unwrap();
+            for effect in effects.clone() {
+                apply_status(&mut statuses, &mut stats, effect, 0.0);
+            }
+            *world.get_mut::<CombatStats>(attacker).unwrap() = stats;
+            *world.get_mut::<StatusEffects>(attacker).unwrap() = statuses;
+        }
+        {
+            let stats = world.get::<CombatStats>(attacker).unwrap();
+            assert_eq!(stats.cleaves.iter().count(), 1);
+            let cone = stats.cleaves.iter().next().unwrap();
+            assert!((cone.ratio - 0.5).abs() < 1e-6);
+            assert_eq!(
+                (cone.radius, cone.end_radius, cone.distance),
+                (150.0, 360.0, 650.0)
+            );
+        }
+        let cone_only = bystander(&mut world, Vec3::new(600.0, 0.0, 200.0));
+        run_frames(&mut world, &mut schedule, 12);
+        assert!((1000.0 - hp(&world, cone_only) - hit_of(25.0)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn ranged_attackers_ignore_every_cleave_instance() {
+        let (mut world, mut schedule) = world_with_pipeline();
+        let target_pos = Vec3::new(300.0, 0.0, 0.0);
+        let target = spawn_unit(&mut world, Team::Dire, target_pos, passive_stats());
+        let attacker = spawn_attacker(&mut world, 500.0, target, target_pos);
+        world
+            .get_mut::<CombatStats>(attacker)
+            .unwrap()
+            .cleaves
+            .adjust(CleaveSource::Items, 0.5, 0.0, 0.0, 0.0, 1);
+        let near = bystander(&mut world, Vec3::new(300.0, 0.0, 100.0));
+        run_frames(&mut world, &mut schedule, 60);
+        assert_eq!(hp(&world, near), 1000.0);
+        assert!(hp(&world, target) < 1000.0);
+    }
 }

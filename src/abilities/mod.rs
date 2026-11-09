@@ -7599,4 +7599,109 @@ mod tests {
             "the instance leaves with its last status"
         );
     }
+
+    #[test]
+    fn empower_recast_while_active_keeps_one_instance_and_dispel_clears_it() {
+        use crate::components::CleaveSource;
+        use crate::heroes::{HeroId, HeroKind};
+        use crate::status::{DispelStrength, StatusChange, StatusEffectEvent, StatusKind};
+        let mut app = qop_app();
+        let a = spawn_caster(&mut app, MAGNUS);
+        let b = spawn_caster(&mut app, MAGNUS);
+        let target = spawn_unit(&mut app, Team::Radiant, Vec3::new(150.0, 0.0, 0.0));
+        for unit in [a, b, target] {
+            app.world_mut()
+                .entity_mut(unit)
+                .insert(HeroKind(HeroId::Magnus));
+            app.world_mut()
+                .get_mut::<CombatStats>(unit)
+                .unwrap()
+                .attack_damage = 161.0;
+        }
+        let key = CleaveSource::Effect(crate::abilities::effects::EffectSource::Ability(
+            AbilityId::Empower,
+        ));
+        let expected_damage = 161.0 + 0.16 * 61.0;
+        let check = |app: &App, label: &str| {
+            let stats = app.world().get::<CombatStats>(target).unwrap();
+            assert_eq!(stats.cleaves.iter().count(), 1, "{label}: one instance");
+            let cone = stats.cleaves.get(key).expect("empower instance");
+            assert!(
+                (cone.ratio - 0.16).abs() < 1e-5,
+                "{label}: ratio {}",
+                cone.ratio
+            );
+            assert_eq!(
+                (cone.radius, cone.end_radius, cone.distance),
+                (150.0, 360.0, 650.0),
+                "{label}: shape"
+            );
+            assert!(
+                (stats.attack_damage - expected_damage).abs() < 1e-3,
+                "{label}: damage {}",
+                stats.attack_damage
+            );
+        };
+
+        request(&mut app, a, 1, CastTarget::Unit(target));
+        for _ in 0..12 {
+            step(&mut app);
+        }
+        check(&app, "first cast");
+        // A second caster re-casts it while the first is still running.
+        request(&mut app, b, 1, CastTarget::Unit(target));
+        for _ in 0..12 {
+            step(&mut app);
+        }
+        check(&app, "recast while active");
+
+        // A dispel (Strong, buffs) must remove statuses and the instance together.
+        app.world_mut().write_message(StatusEffectEvent::new(
+            None,
+            target,
+            StatusChange::Dispel {
+                kind: StatusKind::Buff,
+                strength: DispelStrength::Strong,
+            },
+        ));
+        step(&mut app);
+        let left = app
+            .world()
+            .get::<StatusEffects>(target)
+            .unwrap()
+            .effects
+            .iter()
+            .filter(|e| e.carries_cleave())
+            .count();
+        let stats = app.world().get::<CombatStats>(target).unwrap();
+        assert_eq!(
+            stats.cleaves.is_empty(),
+            left == 0,
+            "instance exists iff a cleave status remains"
+        );
+        if left == 0 {
+            assert!((stats.attack_damage - 161.0).abs() < 1e-3);
+        }
+        // Explicit removal of every Empower status id also leaves nothing behind.
+        let ids: Vec<&'static str> = app
+            .world()
+            .get::<StatusEffects>(target)
+            .unwrap()
+            .effects
+            .iter()
+            .map(|e| e.id)
+            .filter(|id| id.starts_with("empower"))
+            .collect();
+        for id in ids {
+            app.world_mut().write_message(StatusEffectEvent::new(
+                None,
+                target,
+                StatusChange::Remove(id),
+            ));
+        }
+        step(&mut app);
+        let stats = app.world().get::<CombatStats>(target).unwrap();
+        assert!(stats.cleaves.is_empty());
+        assert!((stats.attack_damage - 161.0).abs() < 1e-3);
+    }
 }

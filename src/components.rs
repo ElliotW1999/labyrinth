@@ -1052,3 +1052,81 @@ mod movement_stat_tests {
         assert_eq!(stats.effective_move_speed(Some(&statuses)), 0.0);
     }
 }
+
+#[cfg(test)]
+mod cleave_set_tests {
+    use super::*;
+    use crate::abilities::effects::EffectSource;
+
+    const EMPOWER: CleaveSource = CleaveSource::Effect(EffectSource::Ability(AbilityId::Empower));
+
+    #[test]
+    fn float_drift_never_leaves_a_ghost_instance() {
+        let mut set = CleaveSet::default();
+        // Ratios that do not cancel exactly in f32.
+        let ratios = [0.1_f32, 0.2, 0.3, 0.7, 0.13, 0.37];
+        for r in ratios {
+            set.adjust(EMPOWER, r, 0.1, 0.3, 0.7, 1);
+        }
+        for r in ratios.iter().rev() {
+            set.adjust(EMPOWER, -r, -0.1, -0.3, -0.7, -1);
+        }
+        assert!(
+            set.is_empty(),
+            "removal is by contributor count, not by value"
+        );
+    }
+
+    #[test]
+    fn removing_a_contribution_that_was_never_added_leaves_nothing_behind() {
+        let mut set = CleaveSet::default();
+        set.adjust(CleaveSource::Items, -0.4, 0.0, 0.0, 0.0, -1);
+        assert!(set.is_empty());
+    }
+
+    #[test]
+    fn items_and_each_source_get_their_own_instance_in_first_seen_order() {
+        let mut set = CleaveSet::default();
+        set.adjust(CleaveSource::Items, 0.4, 0.0, 0.0, 0.0, 1);
+        set.adjust(EMPOWER, 0.16, 150.0, 360.0, 650.0, 1);
+        set.adjust(CleaveSource::Items, 0.4, 0.0, 0.0, 0.0, 1);
+        let sources: Vec<_> = set.iter().map(|c| c.source).collect();
+        assert_eq!(sources, [CleaveSource::Items, EMPOWER]);
+        assert!((set.get(CleaveSource::Items).unwrap().ratio - 0.8).abs() < 1e-6);
+        assert_eq!(set.get(CleaveSource::Items).unwrap().distance, 0.0);
+    }
+
+    /// Documents the silent cap: a seventh simultaneous source is dropped (and its removal is
+    /// a harmless no-op), while the six held instances stay intact.
+    #[test]
+    fn the_cap_drops_a_seventh_source_silently_and_its_removal_is_harmless() {
+        let mut set = CleaveSet::default();
+        for i in 0..MAX_CLEAVE_INSTANCES {
+            let id: &'static str = ["a", "b", "c", "d", "e", "f"][i];
+            set.adjust(CleaveSource::Status(id), 0.1, 0.0, 0.0, 0.0, 1);
+        }
+        set.adjust(EMPOWER, 0.5, 0.0, 0.0, 0.0, 1);
+        assert_eq!(set.iter().count(), MAX_CLEAVE_INSTANCES);
+        assert!(set.get(EMPOWER).is_none(), "the overflow source is ignored");
+        set.adjust(EMPOWER, -0.5, 0.0, 0.0, 0.0, -1);
+        assert_eq!(set.iter().count(), MAX_CLEAVE_INSTANCES);
+        assert!(set.iter().all(|c| (c.ratio - 0.1).abs() < 1e-6));
+    }
+
+    /// Known limitation: if a source was dropped by the cap and a slot frees before its
+    /// removal, the removal creates a phantom instance that vanishes at once (contributors
+    /// is -1), so nothing leaks. A later same-source add while the first is still ignored
+    /// would be under-counted; this pins the no-leak part.
+    #[test]
+    fn a_dropped_source_removed_after_a_slot_frees_leaks_nothing() {
+        let mut set = CleaveSet::default();
+        for id in ["a", "b", "c", "d", "e", "f"] {
+            set.adjust(CleaveSource::Status(id), 0.1, 0.0, 0.0, 0.0, 1);
+        }
+        set.adjust(EMPOWER, 0.5, 0.0, 0.0, 0.0, 1); // dropped
+        set.adjust(CleaveSource::Status("a"), -0.1, 0.0, 0.0, 0.0, -1); // frees a slot
+        set.adjust(EMPOWER, -0.5, 0.0, 0.0, 0.0, -1);
+        assert_eq!(set.iter().count(), 5);
+        assert!(set.get(EMPOWER).is_none());
+    }
+}
