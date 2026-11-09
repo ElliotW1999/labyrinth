@@ -208,11 +208,12 @@ STATUSES = {
     "heal_block": ("StatusSpec::HealBlock", "heal_block", False),
     # Per-owner ids (`<owner>_damage_reduction`), like slow and burn.
     "damage_reduction": (None, "damage_reduction", True),
+    "status_resistance": (None, "status_resistance", True),
     "mana_shield": (None, "mana_shield", True),
 }
 
 # Statuses whose runtime id is `<owner>_<name>` (the keyword alone is not a status id).
-OWNER_ID_STATUSES = ("damage_reduction",)
+OWNER_ID_STATUSES = ("damage_reduction", "status_resistance")
 
 # `effect_type=resource` ids → (kind, spent resource). Hostile kinds act on other units;
 # the spend kinds act on the unit that uses them (caster/owner only).
@@ -1684,15 +1685,16 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             spec = f"StatusSpec::HealReduction {{ percent: {rank_value(percent)} }}"
             if amount:
                 _unused(e, report, "value")
-        elif effect_id == "damage_reduction":
+        elif effect_id in ("damage_reduction", "status_resistance"):
             percent = amount or value
             if not percent:
-                report.error(row.file, row.line, "amount", "", "required: damage_reduction percentage (e.g. 80)")
+                report.error(row.file, row.line, "amount", "", f"required: {effect_id} percentage (e.g. 80)")
                 return None
             if any(not 0 < p <= 100 for p in percent):
-                report.error(row.file, row.line, "amount" if amount else "value", row.get("amount") or row.get("value"), "damage_reduction percentage must be above 0 and at most 100")
+                report.error(row.file, row.line, "amount" if amount else "value", row.get("amount") or row.get("value"), f"{effect_id} percentage must be above 0 and at most 100")
                 return None
-            spec = f'StatusSpec::DamageReduction {{ id: "{ctx.owner_id}_damage_reduction", percent: {rank_value(percent)} }}'
+            variant = "".join(part.capitalize() for part in effect_id.split("_"))
+            spec = f'StatusSpec::{variant} {{ id: "{ctx.owner_id}_{effect_id}", percent: {rank_value(percent)} }}'
             if amount:
                 _unused(e, report, "value")
         elif effect_id == "mana_shield":
