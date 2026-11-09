@@ -54,6 +54,7 @@ from generator_common import (  # noqa: E402
     find_emitted_custom_triggers,
     find_registered_custom_effects,
     chain_fed_triggers,
+    owner_has_stacks_row,
     reaction_triggers,
     warn_duplicate_held_statuses,
     warn_unemitted_triggers,
@@ -499,6 +500,7 @@ def load(abilities_csv: Path, effects_csv: Path, *, repo_root: Path | None = Non
         ctx = effect_context(ability)
         ctx.registered_custom = registered_custom
         ctx.owner_triggers = {e.trigger for e in by_owner.get(ability.id, [])}
+        ctx.owner_has_stacks = owner_has_stacks_row(by_owner.get(ability.id, []))
         ctx.reaction = reaction_triggers(by_owner.get(ability.id, []))
         ctx.chain_fed = chain_fed_triggers(by_owner.get(ability.id, []))
         warn_unreachable_custom_triggers(by_owner.get(ability.id, []), emitted_triggers, report)

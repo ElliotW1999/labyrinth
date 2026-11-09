@@ -3461,6 +3461,121 @@ mod tests {
         );
     }
 
+    fn stacking_hit(offset: u32) -> [AbilityEffect; 2] {
+        [
+            AbilityEffect::Damage {
+                amount: RankValue::fixed(10.0),
+                damage_type: DamageType::Pure,
+                scaling: EffectScaling::TargetStacks {
+                    id: "tester_stacks",
+                    offset,
+                },
+            },
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Stacks {
+                    id: "tester_stacks",
+                },
+                duration: RankValue::fixed(30.0),
+            },
+        ]
+    }
+
+    fn stacking_ability(offset: u32) -> AbilityDefinition {
+        let [damage, stack] = stacking_hit(offset);
+        AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::Unit, RankValue::fixed(500.0), RankValue::ZERO)
+            .costs(RankValue::ZERO, RankValue::ZERO)
+            .timing(0.0, 0.0)
+            .on(AbilityTrigger::OnCast, EffectTarget::CastTarget, damage)
+            .on(AbilityTrigger::OnCast, EffectTarget::CastTarget, stack)
+    }
+
+    fn cast_at(app: &mut App, caster: Entity, target: Entity) -> f32 {
+        let before = health(app, target);
+        request(app, caster, 3, CastTarget::Unit(target));
+        for _ in 0..4 {
+            step(app);
+        }
+        before - health(app, target)
+    }
+
+    #[test]
+    fn target_stacks_scales_by_stacks_plus_offset() {
+        for (offset, expected) in [(1, [10.0, 20.0, 30.0]), (0, [0.0, 10.0, 20.0])] {
+            let mut app = test_app();
+            app.world_mut()
+                .resource_mut::<AbilityDefinitions>()
+                .insert(stacking_ability(offset));
+            let caster = spawn_caster(&mut app, KIT);
+            let target = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+            let dealt: Vec<f32> = (0..3).map(|_| cast_at(&mut app, caster, target)).collect();
+            for (got, want) in dealt.iter().zip(expected) {
+                assert!((got - want).abs() < 1e-3, "offset {offset}: {dealt:?}");
+            }
+            assert_eq!(
+                app.world()
+                    .get::<StatusEffects>(target)
+                    .unwrap()
+                    .stacks("tester_stacks"),
+                3
+            );
+        }
+    }
+
+    #[test]
+    fn different_targets_keep_separate_stacks() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(stacking_ability(1));
+        let caster = spawn_caster(&mut app, KIT);
+        let a = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        let b = spawn_unit(&mut app, Team::Dire, Vec3::new(-80.0, 0.0, 0.0));
+        assert_eq!(cast_at(&mut app, caster, a), 10.0);
+        assert_eq!(cast_at(&mut app, caster, a), 20.0);
+        assert_eq!(cast_at(&mut app, caster, b), 10.0, "b has its own count");
+        assert_eq!(cast_at(&mut app, caster, a), 30.0);
+    }
+
+    #[test]
+    fn item_and_ability_target_stacks_scale_alike() {
+        let effects: &'static [AbilityEffectEntry] = Box::leak(Box::new({
+            let [damage, stack] = stacking_hit(1);
+            [
+                AbilityEffectEntry {
+                    trigger: AbilityTrigger::OnUse,
+                    target: EffectTarget::CastTarget,
+                    effect: damage,
+                },
+                AbilityEffectEntry {
+                    trigger: AbilityTrigger::OnUse,
+                    target: EffectTarget::CastTarget,
+                    effect: stack,
+                },
+            ]
+        }));
+        let _defs = install_test_item_definitions([item_with(
+            effects,
+            TargetType::Unit,
+            TargetTeam::Enemy,
+            500.0,
+        )]);
+        let mut app = test_app();
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        let mut dealt = Vec::new();
+        for _ in 0..2 {
+            let before = health(&app, target);
+            request_item(&mut app, caster, 0, CastTarget::Unit(target));
+            for _ in 0..4 {
+                step(&mut app);
+            }
+            dealt.push(before - health(&app, target));
+        }
+        assert_eq!(dealt, [10.0, 20.0]);
+    }
+
     fn costed_self_cast(mana_cost: f32, cast_time: f32) -> AbilityDefinition {
         AbilityDefinition::new(AbilityId::Bulwark)
             .costs(RankValue::ZERO, RankValue::fixed(mana_cost))

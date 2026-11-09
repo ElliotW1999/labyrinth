@@ -580,6 +580,11 @@ impl EffectRunner<'_, '_> {
                 .get(target)
                 .ok()
                 .map(|(_, _, _, hp, _)| base + ratio * hp.current),
+            EffectScaling::TargetStacks { id, offset } => {
+                let stacks = self.statuses_of.get(target).map_or(0, |s| s.stacks(id));
+                let count = stacks + offset;
+                (count > 0).then(|| base * count as f32)
+            }
             EffectScaling::DistanceFromCaster { falloff } => {
                 let target_pos = self
                     .units

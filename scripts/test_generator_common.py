@@ -932,6 +932,85 @@ class StatusResistanceStatusTests(unittest.TestCase):
         self.assertIn("<owner>_status_resistance", report.errors[0].message)
 
 
+class StackingStatusTests(unittest.TestCase):
+    def test_stacks_status_carries_a_per_owner_id(self) -> None:
+        report = Report()
+        effect, ctx = _effect("apply_status", "stacks", target="trigger_unit", duration="8")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertEqual(report.errors, [])
+        self.assertIn('StatusSpec::Stacks { id: "tester_stacks" }', result[2])
+        self.assertEqual(held_status_id(effect), "tester_stacks")
+        self.assertEqual(runtime_status_id("tester_stacks"), "tester_stacks")
+
+    def test_stacks_needs_a_duration_and_rejects_while(self) -> None:
+        report = Report()
+        effect, ctx = _effect("apply_status", "stacks", target="trigger_unit")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertEqual(report.errors[0].field, "duration")
+        report = Report()
+        effect, ctx = _effect("apply_status", "stacks", target="caster", trigger="while", duration="8")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+
+    def test_remove_status_stacks_is_rejected_with_a_hint(self) -> None:
+        report = Report()
+        effect, ctx = _effect("remove_status", "stacks")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertIn("<owner>_stacks", report.errors[0].message)
+
+    def _damage(self, ctx_has_stacks, **cells):
+        report = Report()
+        cells = {"scaling_value": "1", **cells}
+        effect, ctx = _effect(
+            "damage", "", target="trigger_unit", value="12|20", damage_type="physical",
+            scaling_type="target_stacks", **cells,
+        )
+        ctx.owner_has_stacks = ctx_has_stacks
+        ctx.levels = 2
+        return effect_to_rust(effect, ctx, report), report
+
+    def test_target_stacks_scaling_reads_the_owners_stacks_with_an_offset(self) -> None:
+        result, report = self._damage(True)
+        self.assertEqual(report.errors, [])
+        self.assertIn('EffectScaling::TargetStacks { id: "tester_stacks", offset: 1 }', result[2])
+        result, report = self._damage(True, scaling_value="0")
+        self.assertIn("offset: 0 }", result[2])
+
+    def test_target_stacks_offset_must_be_zero_or_one(self) -> None:
+        for bad in ("2", "-1", "0.5"):
+            result, report = self._damage(True, scaling_value=bad)
+            self.assertIsNone(result, bad)
+            self.assertEqual(report.errors[0].field, "scaling_value", bad)
+
+    def test_target_stacks_needs_a_stacks_row(self) -> None:
+        result, report = self._damage(False)
+        self.assertIsNone(result)
+        self.assertIn("apply_status,stacks", report.errors[0].message)
+        result, report = self._damage(None)
+        self.assertEqual(report.errors, [], "unknown owner rows skip the check")
+
+    def test_whole_ability_with_stacks_and_scaled_damage_generates(self) -> None:
+        abilities, report = load_test_ability(
+            ability={"ability_type": "passive", "target_type": "no_target"},
+            effects=[
+                {"trigger": "on_attack_hit", "effect_target": "trigger_unit", "effect_type": "apply_status",
+                 "effect_id": "stacks", "duration": "8"},
+                {"trigger": "on_attack_hit", "effect_target": "trigger_unit", "effect_type": "damage",
+                 "value": "12", "damage_type": "physical", "scaling_type": "target_stacks", "scaling_value": "1"},
+            ],
+        )
+        self.assertEqual(report.errors, [])
+        self.assertIn("EffectScaling::TargetStacks", str(abilities[0].effects))
+        # Without the stacks row the scaled row is rejected.
+        _, report = load_test_ability(
+            ability={"ability_type": "passive", "target_type": "no_target"},
+            effects=[
+                {"trigger": "on_attack_hit", "effect_target": "trigger_unit", "effect_type": "damage",
+                 "value": "12", "damage_type": "physical", "scaling_type": "target_stacks", "scaling_value": "1"},
+            ],
+        )
+        self.assertTrue(report.errors)
+
+
 class DispelStrengthTests(unittest.TestCase):
     def test_amount_one_is_a_strong_dispel_without_a_warning(self) -> None:
         report = Report()

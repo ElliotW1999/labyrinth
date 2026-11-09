@@ -208,12 +208,13 @@ STATUSES = {
     "heal_block": ("StatusSpec::HealBlock", "heal_block", False),
     # Per-owner ids (`<owner>_damage_reduction`), like slow and burn.
     "damage_reduction": (None, "damage_reduction", True),
+    "stacks": (None, "stacks", False),
     "status_resistance": (None, "status_resistance", True),
     "mana_shield": (None, "mana_shield", True),
 }
 
 # Statuses whose runtime id is `<owner>_<name>` (the keyword alone is not a status id).
-OWNER_ID_STATUSES = ("damage_reduction", "status_resistance")
+OWNER_ID_STATUSES = ("damage_reduction", "status_resistance", "stacks")
 
 # `effect_type=resource` ids → (kind, spent resource). Hostile kinds act on other units;
 # the spend kinds act on the unit that uses them (caster/owner only).
@@ -385,6 +386,8 @@ SCALING_TYPES = {
     "target_max_health": "EffectScaling::TargetMaxHealth({v})",
     "target_current_health": "EffectScaling::TargetCurrentHealth({v})",
     "distance": "EffectScaling::DistanceFromCaster {{ falloff: {v} }}",
+    # Multiplies the amount by the target's `<owner>_stacks` count plus the offset (0 or 1).
+    "target_stacks": 'EffectScaling::TargetStacks {{ id: "{owner}_stacks", offset: {v} }}',
 }
 
 
@@ -942,6 +945,16 @@ class EffectContext:
     reaction: set[str] | None = None
     #: Custom triggers fed (directly or through gates) by a `chain` row (see `chain_fed_triggers`).
     chain_fed: set[str] | None = None
+    #: Whether the owner has an `apply_status,stacks` row (None = unknown, skip the check).
+    owner_has_stacks: bool | None = None
+
+
+def owner_has_stacks_row(effects: list[EffectRow]) -> bool:
+    """Whether an owner's rows include `apply_status,stacks` (what `target_stacks` reads)."""
+    return any(
+        e.effect_type == "apply_status" and e.row.get("effect_id").lower() == "stacks"
+        for e in effects
+    )
 
 
 def _levels(e: EffectRow, name: str, ctx: EffectContext, report: Report, **kwargs) -> list[float] | None:
@@ -1528,7 +1541,15 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
         )
         return None
     scaling = "EffectScaling::None"
-    if scaling_type:
+    if scaling_type == "target_stacks":
+        if scaling_value not in (0, 1):
+            report.error(row.file, row.line, "scaling_value", row.get("scaling_value"), "target_stacks offset must be 0 or 1 (stacks counted before this hit, plus the offset)")
+            return None
+        if ctx.owner_has_stacks is False:
+            report.error(row.file, row.line, "scaling_type", scaling_type, f"target_stacks needs an apply_status,stacks row on {e.owner!r} to count")
+            return None
+        scaling = SCALING_TYPES[scaling_type].format(owner=ctx.owner_id, v=int(scaling_value))
+    elif scaling_type:
         scaling = SCALING_TYPES[scaling_type].format(v=f32(scaling_value))
 
     def no_scaling() -> bool:
@@ -1685,6 +1706,12 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             spec = f"StatusSpec::HealReduction {{ percent: {rank_value(percent)} }}"
             if amount:
                 _unused(e, report, "value")
+        elif effect_id == "stacks":
+            if e.trigger in ("while", "while_toggled"):
+                report.error(row.file, row.line, "trigger", e.trigger, "stacks is a timed debuff; it cannot be held by while or while_toggled")
+                return None
+            _unused(e, report, "value", "amount")
+            spec = f'StatusSpec::Stacks {{ id: "{ctx.owner_id}_stacks" }}'
         elif effect_id in ("damage_reduction", "status_resistance"):
             percent = amount or value
             if not percent:

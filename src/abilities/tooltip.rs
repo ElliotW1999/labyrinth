@@ -443,6 +443,7 @@ fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
             row("Heal reduction %", percent),
             seconds_row("Heal reduction duration", duration),
         ],
+        StatusSpec::Stacks { .. } => vec![seconds_row("Stack duration", duration)],
         StatusSpec::DamageReduction { percent, .. } => vec![
             row("Damage reduction %", percent),
             seconds_row("Damage reduction duration", duration),
@@ -628,6 +629,10 @@ fn scaling_note(scaling: EffectScaling) -> Option<String> {
         EffectScaling::TargetMissingHealth(ratio) => Some(format!("+ {ratio:.2}× missing health")),
         EffectScaling::TargetMaxHealth(ratio) => Some(format!("+ {ratio:.2}× max health")),
         EffectScaling::TargetCurrentHealth(ratio) => Some(format!("+ {ratio:.2}× current health")),
+        EffectScaling::TargetStacks { offset: 0, .. } => Some("× stacks on the target".to_string()),
+        EffectScaling::TargetStacks { offset, .. } => {
+            Some(format!("× (stacks on the target + {offset})"))
+        }
         EffectScaling::DistanceFromCaster { falloff } => {
             Some(format!("−{:.0}% at max range", falloff * 100.0))
         }
@@ -676,6 +681,7 @@ fn status_name(status: StatusSpec) -> &'static str {
         StatusSpec::HealReduction { .. } => "Heal reduction",
         StatusSpec::HealBlock => "Heal block",
         StatusSpec::DamageReduction { .. } => "Damage reduction",
+        StatusSpec::Stacks { .. } => "Stacks",
         StatusSpec::StatusResistance { .. } => "Status resistance",
         StatusSpec::ManaShield { .. } => "Mana shield",
         StatusSpec::ResourceModifier { .. } => "Modifier",

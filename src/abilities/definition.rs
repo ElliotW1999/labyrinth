@@ -344,6 +344,9 @@ pub enum EffectScaling {
     TargetMaxHealth(f32),
     /// Adds `ratio × current` health to the base amount.
     TargetCurrentHealth(f32),
+    /// Multiplies the amount by `stacks of status id on the target + offset`. The hit is
+    /// skipped when that is zero.
+    TargetStacks { id: &'static str, offset: u32 },
     /// At max cast range, damage is multiplied by `(1 − falloff)`; linear in between.
     DistanceFromCaster { falloff: f32 },
 }
@@ -440,6 +443,12 @@ pub enum StatusSpec {
     },
     /// Prevents all healing.
     HealBlock,
+    /// One stack of a per-target stacking debuff (generated `<owner>_stacks`, undispellable).
+    /// Applying it again adds a stack and refreshes the duration; the stacks vanish when it
+    /// expires. [`EffectScaling::TargetStacks`] reads the count.
+    Stacks {
+        id: &'static str,
+    },
     /// `percent` (0-100) of incoming damage is removed after mitigation (a buff). `id` is
     /// `<owner>_damage_reduction`; reductions from different ids multiply.
     DamageReduction {
@@ -647,6 +656,7 @@ impl StatusSpec {
                 StatusEffect::heal_reduction((percent.at(rank) / 100.0).clamp(0.0, 1.0), duration)
             }
             StatusSpec::HealBlock => StatusEffect::heal_block(duration),
+            StatusSpec::Stacks { id } => StatusEffect::stack(id, duration),
             StatusSpec::StatusResistance { id, percent } => StatusEffect::status_resistance(
                 id,
                 (percent.at(rank) / 100.0).clamp(0.0, 1.0),
