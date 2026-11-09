@@ -340,3 +340,8 @@ Remaining limitations:
 - `data/ability_pseudos/*.pseudo.txt` mention behaviour that §12 did not approve (a 50% larger Empower bonus when cast on self, an attack-speed slow on Skewer). None of it is implemented.
 - Empower's `attack_damage_pct` for a non-hero target is a snapshot of that unit's current damage, which includes any item bonuses it has at that moment.
 - The hero-select UI may overflow with seven heroes (cosmetic).
+
+## 14. Follow-up user decisions (2026-11-09)
+
+1. **Independent cleaves (changes the G6/G5 stacking rule).** Each cleave source works on its own instead of being summed into one aggregate shape. An item's permanent cleave and each timed cleave status (e.g. Empower) is its own instance with its own ratio and shape: a circle of `cleave_radius` (default `ATTACK_CLEAVE_RADIUS`), or a cone when its distance is non-zero. On each melee attack hit, every instance independently selects its own secondary targets and deals its own ratio × attack damage. A unit inside two shapes takes both. The CSV surface is unchanged: the same timed stats, now grouped per status rather than summed into `CombatStats`.
+2. **G4 non-hero base damage.** Confirmed: units with no hero definition snapshot their current attack damage.
