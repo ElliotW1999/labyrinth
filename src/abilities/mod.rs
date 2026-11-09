@@ -113,6 +113,7 @@ impl Plugin for AbilitiesPlugin {
                     // frame. The reactive dispatchers run last, in this order.
                     (
                         attack_triggers::attack_triggers,
+                        crate::status::consume_attack_charges,
                         (tick_forced_movement, settle_grounded_units).chain(),
                         reactive_triggers::track_travel,
                         reactive_triggers::proximity_triggers,
@@ -767,6 +768,7 @@ mod tests {
                     projectile_hit_triggers,
                     (
                         attack_triggers::attack_triggers,
+                        crate::status::consume_attack_charges,
                         (tick_forced_movement, settle_grounded_units).chain(),
                         reactive_triggers::track_travel,
                         reactive_triggers::proximity_triggers,
@@ -3029,6 +3031,7 @@ mod tests {
             cleave_radius: RankValue::ZERO,
             cleave_end_radius: RankValue::ZERO,
             cleave_distance: RankValue::ZERO,
+            attack_charges: RankValue::ZERO,
         };
         let mut app = test_app();
         let toggle = AbilityDefinition::new(AbilityId::Overcharge)
@@ -6419,6 +6422,7 @@ mod tests {
                     cleave_radius: RankValue::ZERO,
                     cleave_end_radius: RankValue::ZERO,
                     cleave_distance: RankValue::ZERO,
+                    attack_charges: RankValue::ZERO,
                 },
                 duration: RankValue::ZERO,
             },
@@ -7196,6 +7200,7 @@ mod tests {
             cleave_radius: RankValue::ZERO,
             cleave_end_radius: RankValue::ZERO,
             cleave_distance: RankValue::ZERO,
+            attack_charges: RankValue::ZERO,
         }
     }
 

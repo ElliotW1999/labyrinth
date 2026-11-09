@@ -1814,7 +1814,15 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
     elif t == "stat_modifier":
         if not _require(e, "effect_id", report, "stat to modify") or not _require(e, "value", report, "stat bonus") or not no_scaling():
             return None
-        _unused(e, report, "damage_type", "amount")
+        _unused(e, report, "damage_type")
+        # On a timed row `amount` is the number of attack charges (see below).
+        charges_ok = e.trigger not in ("passive", "while", "while_toggled") and effect_id in TIMED_STATS
+        if amount and not charges_ok:
+            report.error(
+                row.file, row.line, "amount", row.get("amount"),
+                "attack charges (amount) only apply to timed stat modifiers (not passive, while, while_toggled or resource stats)",
+            )
+            return None
         if e.trigger == "passive":
             if effect_id not in PASSIVE_STATS:
                 report.error(row.file, row.line, "effect_id", row.get("effect_id"), f"unknown passive stat; expected one of: {', '.join(PASSIVE_STATS)}")
@@ -1865,6 +1873,10 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
                 kind = "Buff" if beneficial else "Debuff"
                 fields = {name: "RankValue::ZERO" for name in TIMED_STATS.values()}
                 fields[TIMED_STATS[effect_id]] = rank_value(value)
+                if amount and any(not float(a).is_integer() or a < 1 for a in amount):
+                    report.error(row.file, row.line, "amount", row.get("amount"), "attack charges must be whole numbers of at least 1")
+                    return None
+                fields["attack_charges"] = rank_value(amount) if amount else "RankValue::ZERO"
                 body = ", ".join(f"{k}: {v}" for k, v in fields.items())
                 effect = (
                     f'AbilityEffect::ApplyStatus {{ status: StatusSpec::Modifier {{ id: "{ctx.owner_id}_{effect_id}", '

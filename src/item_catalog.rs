@@ -429,6 +429,7 @@ static WARDSTONE_CLOAK: ItemDefinition = ItemDefinition {
                     cleave_radius: RankValue::ZERO,
                     cleave_end_radius: RankValue::ZERO,
                     cleave_distance: RankValue::ZERO,
+                    attack_charges: RankValue::ZERO,
                 },
                 duration: RankValue::fixed(5.0),
             },

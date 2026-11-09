@@ -1835,6 +1835,62 @@ class TimedStatModifierTests(unittest.TestCase):
                 self.assertTrue(any("must be above 0" in e.message for e in report.errors), (stat, bad))
 
 
+class AttackChargeTests(unittest.TestCase):
+    @staticmethod
+    def _charged(**cells: str):
+        effect = {
+            "effect_type": "stat_modifier",
+            "effect_id": "attack_speed_flat",
+            "value": "400",
+            "duration": "20",
+            "amount": "3|4|5",
+        }
+        effect.update(cells)
+        return load_test_ability(effects=[effect])
+
+    def test_amount_on_a_timed_row_is_the_attack_charge_count(self) -> None:
+        abilities, report = self._charged()
+        self.assertEqual(report.errors, [])
+        self.assertEqual(report.warnings, [])
+        text = str(abilities[0].effects)
+        self.assertIn("attack_charges: RankValue::from_level_1(3.0, 1.0)", text)
+        self.assertIn("attack_speed_flat: RankValue::fixed(400.0)", text)
+
+    def test_blank_amount_is_not_charge_limited(self) -> None:
+        abilities, report = self._charged(amount="")
+        self.assertEqual(report.errors, [])
+        self.assertIn("attack_charges: RankValue::ZERO", str(abilities[0].effects))
+
+    def test_charges_must_be_whole_numbers_of_at_least_one(self) -> None:
+        for bad in ("0", "2.5", "-1"):
+            _, report = self._charged(amount=bad)
+            self.assertTrue(
+                any("whole numbers of at least 1" in e.message for e in report.errors), bad
+            )
+
+    def test_charges_are_rejected_on_while_and_resource_rows(self) -> None:
+        for trigger in ("while_toggled", "passive"):
+            report = Report()
+            effect, ctx = _effect(
+                "stat_modifier", "attack_speed_flat", trigger=trigger, target="caster",
+                value="400", amount="3",
+            )
+            self.assertIsNone(effect_to_rust(effect, ctx, report), trigger)
+            self.assertTrue(any(e.field == "amount" for e in report.errors), trigger)
+        _, report = self._charged(effect_id="lifesteal", value="0.2", amount="3")
+        self.assertTrue(any(e.field == "amount" for e in report.errors))
+
+    def test_items_get_the_same_charges(self) -> None:
+        report = Report()
+        effect, ctx = _effect(
+            "stat_modifier", "attack_speed_flat", kind="item", target="owner",
+            trigger="on_use", value="400", duration="20", amount="3",
+        )
+        result = effect_to_rust(effect, ctx, report)
+        self.assertEqual(report.errors, [])
+        self.assertIn("attack_charges: RankValue::fixed(3.0)", result[2])
+
+
 class DashContactRadiusTests(unittest.TestCase):
     @staticmethod
     def _dash(effect_id: str = "dash", **cells: str):

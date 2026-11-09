@@ -131,6 +131,9 @@ pub struct StatusEffect {
     /// Fraction (0..1) by which the durations of new hostile debuffs are shortened;
     /// resistances multiply. Read by [`apply_status_effect_events`] when a debuff lands.
     pub status_resistance: f32,
+    /// Basic attacks (released, hit or miss) this status survives; `0` = not charge-limited.
+    /// Decremented by [`StatusChange::ConsumeAttackCharge`]; the status ends at zero.
+    pub attack_charges: u32,
     /// Prevents all healing while active.
     pub heal_blocked: bool,
     /// Diverts incoming damage to mana while active.
@@ -218,6 +221,7 @@ impl StatusEffect {
             heal_reduction: 0.0,
             damage_reduction: 0.0,
             status_resistance: 0.0,
+            attack_charges: 0,
             heal_blocked: false,
             mana_shield: None,
             damage_per_sec: 0.0,
@@ -739,6 +743,9 @@ pub enum StatusChange {
         strength: DispelStrength,
     },
     Remove(&'static str),
+    /// One of the target's basic attacks was released: every live status with attack
+    /// charges loses one, and ends (as `Expired`) when it has none left.
+    ConsumeAttackCharge,
 }
 
 /// Single entry point for adding/removing statuses so debuff immunity and stat
@@ -1121,6 +1128,28 @@ pub fn hostile(
     caster != target && (target_team != caster_team || target_team.is_none())
 }
 
+/// Spend one attack charge per released basic attack (extra attacks never spend one).
+/// Only writes [`StatusEffectEvent`]s; the consumption itself is in
+/// [`apply_status_effect_events`].
+pub fn consume_attack_charges(
+    mut releases: MessageReader<crate::basic_attack::BasicAttackReleaseEvent>,
+    holders: Query<&StatusEffects>,
+    mut changes: MessageWriter<StatusEffectEvent>,
+) {
+    for release in releases.read().filter(|r| !r.extra) {
+        if holders
+            .get(release.attacker)
+            .is_ok_and(|s| s.effects.iter().any(|e| e.attack_charges > 0))
+        {
+            changes.write(StatusEffectEvent::new(
+                Some(release.attacker),
+                release.attacker,
+                StatusChange::ConsumeAttackCharge,
+            ));
+        }
+    }
+}
+
 pub fn apply_status_effect_events(
     mut commands: Commands,
     mut events: MessageReader<StatusEffectEvent>,
@@ -1224,6 +1253,33 @@ pub fn apply_status_effect_events(
                     event.source,
                     event.reactive,
                     StatusLifecycle::Dispelled,
+                    removed,
+                );
+            }
+            StatusChange::ConsumeAttackCharge => {
+                let mut spent: Vec<&'static str> = Vec::new();
+                for effect in statuses.effects.iter_mut().filter(|e| e.attack_charges > 0) {
+                    effect.attack_charges -= 1;
+                    if effect.attack_charges == 0 {
+                        spent.push(effect.id);
+                    }
+                }
+                if spent.is_empty() {
+                    continue;
+                }
+                let removed = remove_statuses(
+                    &mut statuses,
+                    &mut stats,
+                    agility,
+                    shield.as_deref_mut(),
+                    |e| e.attack_charges == 0 && spent.contains(&e.id),
+                );
+                report_removed(
+                    &mut lifecycle,
+                    entity,
+                    event.source,
+                    event.reactive,
+                    StatusLifecycle::Expired,
                     removed,
                 );
             }
@@ -3242,6 +3298,182 @@ mod tests {
             );
             apply(&mut app, Some(enemy), holder, StatusEffect::stunned(4.0));
             assert_eq!(remaining(&app, holder, "stun"), Some(4.0));
+        }
+    }
+
+    mod attack_charges {
+        use super::*;
+        use crate::basic_attack::BasicAttackReleaseEvent;
+
+        fn app() -> App {
+            let mut app = App::new();
+            app.init_resource::<Time>()
+                .add_message::<StatusEffectEvent>()
+                .add_message::<StatusLifecycleEvent>()
+                .add_message::<DamageEvent>()
+                .add_message::<crate::combat::DamageAppliedEvent>()
+                .add_message::<BasicAttackReleaseEvent>()
+                .add_systems(
+                    Update,
+                    (
+                        consume_attack_charges,
+                        apply_status_effect_events,
+                        tick_status_effects,
+                    )
+                        .chain(),
+                );
+            app
+        }
+
+        fn unit(app: &mut App) -> Entity {
+            app.world_mut()
+                .spawn((
+                    StatusEffects::default(),
+                    CombatStats::simple(10.0, 8.0, 1.0, 0.0, 0.0, 10.0),
+                    HeroAttributes::starter(),
+                    Health::new(500.0),
+                ))
+                .id()
+        }
+
+        fn charged(charges: u32, duration: f32) -> StatusEffect {
+            StatusEffect {
+                attack_speed_flat: 400.0,
+                attack_charges: charges,
+                ..StatusEffect::buff("charged", duration)
+            }
+        }
+
+        fn give(app: &mut App, unit: Entity, effect: StatusEffect) {
+            app.world_mut().write_message(StatusEffectEvent::new(
+                Some(unit),
+                unit,
+                StatusChange::Apply(effect),
+            ));
+            frame(app, 0.0);
+        }
+
+        fn frame(app: &mut App, dt: f32) {
+            app.world_mut()
+                .resource_mut::<Time>()
+                .advance_by(std::time::Duration::from_secs_f32(dt));
+            app.update();
+        }
+
+        fn release(app: &mut App, attacker: Entity, extra: bool) {
+            app.world_mut().write_message(BasicAttackReleaseEvent {
+                attacker,
+                target: attacker,
+                damage: 10.0,
+                extra,
+            });
+            frame(app, 0.0);
+        }
+
+        fn charges(app: &App, unit: Entity) -> Option<u32> {
+            app.world()
+                .get::<StatusEffects>(unit)
+                .unwrap()
+                .effects
+                .iter()
+                .find(|e| e.id == "charged")
+                .map(|e| e.attack_charges)
+        }
+
+        fn rating(app: &App, unit: Entity) -> f32 {
+            app.world()
+                .get::<CombatStats>(unit)
+                .unwrap()
+                .attack_speed_flat
+        }
+
+        #[test]
+        fn attack_charges_are_consumed_per_release_and_revert_at_zero() {
+            let mut app = app();
+            let unit = unit(&mut app);
+            let base = rating(&app, unit);
+            give(&mut app, unit, charged(3, 20.0));
+            assert_eq!(rating(&app, unit), base + 400.0);
+            release(&mut app, unit, false);
+            release(&mut app, unit, false);
+            assert_eq!(charges(&app, unit), Some(1));
+            assert_eq!(rating(&app, unit), base + 400.0, "two of three used");
+            release(&mut app, unit, false);
+            assert_eq!(charges(&app, unit), None, "the third attack ends it");
+            assert_eq!(rating(&app, unit), base, "stat delta reverted");
+            // A fourth attack finds nothing to consume.
+            release(&mut app, unit, false);
+            assert_eq!(rating(&app, unit), base);
+        }
+
+        #[test]
+        fn extra_attacks_do_not_consume_charges() {
+            let mut app = app();
+            let unit = unit(&mut app);
+            give(&mut app, unit, charged(2, 20.0));
+            release(&mut app, unit, true);
+            release(&mut app, unit, true);
+            assert_eq!(charges(&app, unit), Some(2));
+        }
+
+        #[test]
+        fn recast_resets_attack_charges() {
+            let mut app = app();
+            let unit = unit(&mut app);
+            let base = rating(&app, unit);
+            give(&mut app, unit, charged(3, 20.0));
+            release(&mut app, unit, false);
+            release(&mut app, unit, false);
+            assert_eq!(charges(&app, unit), Some(1));
+            give(&mut app, unit, charged(3, 20.0));
+            assert_eq!(charges(&app, unit), Some(3));
+            assert_eq!(rating(&app, unit), base + 400.0, "refreshed, not stacked");
+        }
+
+        #[test]
+        fn charged_status_still_expires_on_duration() {
+            let mut app = app();
+            let unit = unit(&mut app);
+            let base = rating(&app, unit);
+            give(&mut app, unit, charged(5, 1.0));
+            release(&mut app, unit, false);
+            frame(&mut app, 1.5);
+            assert_eq!(charges(&app, unit), None);
+            assert_eq!(rating(&app, unit), base);
+        }
+
+        #[test]
+        fn expiry_by_charges_is_reported_as_expired() {
+            let mut app = app();
+            let unit = unit(&mut app);
+            give(&mut app, unit, charged(1, 20.0));
+            app.world_mut()
+                .resource_mut::<Messages<StatusLifecycleEvent>>()
+                .clear();
+            release(&mut app, unit, false);
+            let events: Vec<_> = app
+                .world()
+                .resource::<Messages<StatusLifecycleEvent>>()
+                .iter_current_update_messages()
+                .map(|e| (e.id, e.change))
+                .collect();
+            assert_eq!(events, [("charged", StatusLifecycle::Expired)]);
+        }
+
+        #[test]
+        fn statuses_without_charges_are_not_touched() {
+            let mut app = app();
+            let unit = unit(&mut app);
+            give(&mut app, unit, StatusEffect::buff("plain", 20.0));
+            release(&mut app, unit, false);
+            assert!(
+                app.world()
+                    .get::<StatusEffects>(unit)
+                    .unwrap()
+                    .effects
+                    .iter()
+                    .any(|e| e.id == "plain")
+            );
         }
     }
 }

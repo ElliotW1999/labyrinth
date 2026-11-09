@@ -489,6 +489,9 @@ pub enum StatusSpec {
         cleave_end_radius: RankValue,
         /// Added to `CombatStats::cleave_distance`: a non-zero value makes the cleave a cone.
         cleave_distance: RankValue,
+        /// Whole basic attacks (released, hit or miss) the status lasts for; ZERO = not
+        /// charge-limited. It still ends on its duration.
+        attack_charges: RankValue,
     },
 }
 
@@ -534,6 +537,7 @@ impl StatusSpec {
             cleave_radius: RankValue::ZERO,
             cleave_end_radius: RankValue::ZERO,
             cleave_distance: RankValue::ZERO,
+            attack_charges: RankValue::ZERO,
         }
     }
 
@@ -684,6 +688,7 @@ impl StatusSpec {
                 cleave_radius,
                 cleave_end_radius,
                 cleave_distance,
+                attack_charges,
             } => {
                 let base = match kind {
                     StatusKind::Buff => StatusEffect::buff(id, duration),
@@ -702,6 +707,7 @@ impl StatusSpec {
                     cleave_radius: cleave_radius.at(rank),
                     cleave_end_radius: cleave_end_radius.at(rank),
                     cleave_distance: cleave_distance.at(rank),
+                    attack_charges: attack_charges.at(rank).round().max(0.0) as u32,
                     ..base
                 }
             }
