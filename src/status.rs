@@ -1215,6 +1215,7 @@ mod tests {
         current_speed: f32,
     ) -> StatusEffect {
         let built = StatusSpec::Slow {
+            id: "slow",
             percent: RankValue::fixed(percent),
         }
         .build(

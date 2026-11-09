@@ -1184,12 +1184,13 @@ def runtime_status_id(text: str) -> str | None:
     """Runtime id for a status named in a trigger argument, or None when it is unknown.
 
     Accepts CSV status ids (`stun`), runtime ids (`spell_immunity`) and the per-owner ids that
-    timed `stat_modifier` rows create (`<owner>_<stat>`) and the ones burns create (`<owner>_burn`)."""
+    timed `stat_modifier` rows create (`<owner>_<stat>`) and the ones burns and slows create
+    (`<owner>_burn`, `<owner>_slow`)."""
     if text in STATUSES:
         return STATUSES[text][1]
     if text in {runtime for _, runtime, _ in STATUSES.values()}:
         return text
-    for stat in (*TIMED_STATS, *RESOURCE_STATS, "burn"):
+    for stat in (*TIMED_STATS, *RESOURCE_STATS, "burn", "slow"):
         suffix = "_" + stat
         if text.endswith(suffix) and ID_PATTERN.match(text[: -len(suffix)]):
             return text
@@ -1297,8 +1298,8 @@ def trigger_to_rust(e: EffectRow, variant: str, report: Report) -> str | None:
 def held_status_id(e: EffectRow) -> str | None:
     """Runtime id of the status a `while` row holds, or None when it cannot be told."""
     effect_id = e.row.get("effect_id").lower()
-    if e.effect_type == "apply_status" and effect_id == "burn":
-        return f"{e.owner}_burn"
+    if e.effect_type == "apply_status" and effect_id in ("burn", "slow"):
+        return f"{e.owner}_{effect_id}"
     if e.effect_type == "apply_status" and effect_id in STATUSES:
         return STATUSES[effect_id][1]
     if e.effect_type == "stat_modifier" and effect_id:
@@ -1572,7 +1573,7 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             if any(not 0 <= p <= 100 for p in percent):
                 report.error(row.file, row.line, "amount" if amount else "value", row.get("amount") or row.get("value"), "slow percentage must be within 0..100")
                 return None
-            spec = f"StatusSpec::Slow {{ percent: {rank_value(percent)} }}"
+            spec = f'StatusSpec::Slow {{ id: "{ctx.owner_id}_slow", percent: {rank_value(percent)} }}'
             if amount:
                 _unused(e, report, "value")
         elif effect_id == "shield":
@@ -1715,6 +1716,9 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             effect = (
                 f"AbilityEffect::Dispel {{ kind: StatusKind::{effect_id.capitalize()}, strength: {strength} }}"
             )
+        elif effect_id == "slow":
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), "generated slows carry the per-owner id <owner>_slow; name that id to remove one")
+            return None
         elif ID_PATTERN.match(effect_id):
             status_id = STATUSES[effect_id][1] if effect_id in STATUSES else effect_id
             beneficial = effect_id in STATUSES and not STATUSES[effect_id][2]

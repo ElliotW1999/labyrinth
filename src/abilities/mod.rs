@@ -2365,7 +2365,7 @@ mod tests {
             .collect();
         assert!(ids.contains(&"shadow_strike_burn"), "{ids:?}");
         assert!(ids.contains(&"sonic_wave_burn"), "{ids:?}");
-        assert!(ids.contains(&"slow"), "{ids:?}");
+        assert!(ids.contains(&"shadow_strike_slow"), "{ids:?}");
         // Run past both durations (16s): 50 hit + 5 x 20 + 14 x 23.
         for _ in 0..340 {
             step(&mut app);
@@ -7416,7 +7416,7 @@ mod tests {
                 1000.0 - 75.0,
                 "75 magical, no resistance"
             );
-            let slow = status_of(&app, unit, "slow").expect("slowed");
+            let slow = status_of(&app, unit, "magnus_shockwave_slow").expect("slowed");
             assert!(
                 slow.remaining <= 0.55 && slow.remaining > 0.1,
                 "{}",
@@ -7432,7 +7432,7 @@ mod tests {
         for _ in 0..20 {
             step(&mut app);
         }
-        assert!(status_of(&app, near, "slow").is_none());
+        assert!(status_of(&app, near, "magnus_shockwave_slow").is_none());
     }
 
     #[test]
@@ -7484,7 +7484,7 @@ mod tests {
         );
         // Damage and slow land at the destination.
         assert_eq!(health(&app, victim), 1000.0 - 80.0);
-        let slow = status_of(&app, victim, "slow").expect("slowed at the end");
+        let slow = status_of(&app, victim, "skewer_slow").expect("slowed at the end");
         assert!(
             (slow.move_speed + 300.0 * 0.20).abs() < 1e-3,
             "{}",

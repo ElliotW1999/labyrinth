@@ -745,6 +745,26 @@ class HealStatusTests(unittest.TestCase):
         self.assertEqual(report.errors[0].field, "effect_type")
 
 
+class SlowStatusTests(unittest.TestCase):
+    def test_generated_slow_carries_a_per_owner_id(self) -> None:
+        report = Report()
+        effect, ctx = _effect("apply_status", "slow", amount="30", duration="2")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors)
+        self.assertIn('StatusSpec::Slow { id: "tester_slow"', result[2])
+
+    def test_runtime_and_held_ids_follow_the_owner(self) -> None:
+        self.assertEqual(runtime_status_id("tester_slow"), "tester_slow")
+        effect, _ = _effect("apply_status", "slow", amount="30", duration="2")
+        self.assertEqual(held_status_id(effect), "tester_slow")
+
+    def test_remove_status_slow_is_rejected_with_a_hint(self) -> None:
+        report = Report()
+        effect, ctx = _effect("remove_status", "slow")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertIn("<owner>_slow", report.errors[0].message)
+
+
 class BurnStatusTests(unittest.TestCase):
     def _burn(self, **cells: str):
         base = {"damage_type": "magical", "duration": "16"}

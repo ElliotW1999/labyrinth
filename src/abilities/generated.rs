@@ -81,6 +81,7 @@ fn seismic_slam() -> AbilityDefinition {
             },
             AbilityEffect::ApplyStatus {
                 status: StatusSpec::Slow {
+                    id: "seismic_slam_slow",
                     percent: RankValue::fixed(30.0),
                 },
                 duration: RankValue::fixed(1.5),
@@ -323,6 +324,7 @@ fn shadow_strike() -> AbilityDefinition {
             EffectTarget::TriggerUnit,
             AbilityEffect::ApplyStatus {
                 status: StatusSpec::Slow {
+                    id: "shadow_strike_slow",
                     percent: RankValue::from_level_1(25.0, 10.0),
                 },
                 duration: RankValue::fixed(16.0),
@@ -507,6 +509,7 @@ fn magnus_shockwave() -> AbilityDefinition {
             EffectTarget::TriggerUnit,
             AbilityEffect::ApplyStatus {
                 status: StatusSpec::Slow {
+                    id: "magnus_shockwave_slow",
                     percent: RankValue::fixed(75.0),
                 },
                 duration: RankValue::from_level_1(0.55, 0.15),
@@ -695,6 +698,7 @@ fn skewer() -> AbilityDefinition {
             EffectTarget::AffectedUnits,
             AbilityEffect::ApplyStatus {
                 status: StatusSpec::Slow {
+                    id: "skewer_slow",
                     percent: RankValue::from_level_1(20.0, 10.0),
                 },
                 duration: RankValue::fixed(3.25),

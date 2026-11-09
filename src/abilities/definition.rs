@@ -404,8 +404,11 @@ pub enum StatusSpec {
     TrueStrike,
     /// Run away from `source` (typically the caster).
     Fear,
-    /// Reduces the target's current move speed by `percent`.
+    /// Reduces the target's move speed by `percent` of its base speed. `id` is the status id:
+    /// hand-written slows use `"slow"`, generated ones `<owner>_slow`, so slows from different
+    /// sources coexist and add while the same source refreshes.
     Slow {
+        id: &'static str,
         percent: RankValue,
     },
     /// `percent` of attack speed rating removed (same scale as move slow).
@@ -583,13 +586,13 @@ impl StatusSpec {
                 ..StatusEffect::buff("true_strike", duration)
             },
             StatusSpec::Fear => StatusEffect::fear(duration, ctx.fear_source),
-            StatusSpec::Slow { percent } => {
+            StatusSpec::Slow { id, percent } => {
                 let p = (percent.at(rank) / 100.0).clamp(0.0, 1.0);
                 StatusEffect {
                     move_speed: -ctx.move_speed * p,
                     move_slow_fraction: p,
                     dispel_type: DispelType::Basic,
-                    ..StatusEffect::debuff("slow", duration)
+                    ..StatusEffect::debuff(id, duration)
                 }
             }
             StatusSpec::AttackSpeedSlow { percent } => {

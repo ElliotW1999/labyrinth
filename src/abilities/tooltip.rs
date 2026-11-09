@@ -400,7 +400,7 @@ fn effect_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
 
 fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
     match status {
-        StatusSpec::Slow { percent } => {
+        StatusSpec::Slow { percent, .. } => {
             vec![
                 row("Slow %", percent),
                 seconds_row("Slow duration", duration),

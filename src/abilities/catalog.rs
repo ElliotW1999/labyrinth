@@ -635,7 +635,7 @@ mod tests {
         assert!(hit.iter().any(|e| matches!(
             e.effect,
             AbilityEffect::ApplyStatus {
-                status: StatusSpec::Slow { percent },
+                status: StatusSpec::Slow { percent, .. },
                 duration,
             } if percent.at(1) == 75.0 && duration.at(1) == 0.55 && duration.at(7) == 1.45
         )));
@@ -730,7 +730,7 @@ mod tests {
         assert!(end.iter().any(|x| matches!(
             x.effect,
             AbilityEffect::ApplyStatus {
-                status: StatusSpec::Slow { percent },
+                status: StatusSpec::Slow { percent, .. },
                 duration,
             } if percent.at(1) == 20.0 && percent.at(7) == 80.0 && duration.at(1) == 3.25
         )));
