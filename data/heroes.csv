@@ -4,3 +4,4 @@ Warden,TRUE,Bulwark,ShieldBash,Taunt,Aegis,24,14,12,3,1.4,1.2,STR,Str tank — s
 Hexer,FALSE,HexBolt,Curse,Ward,Ritual,13,15,25,1.5,1.6,3.1,INT,Int support — stub kit,,,,,,,
 Magnus,TRUE,Magnus Shockwave,Empower,Skewer,Reverse Polarity,23,14,20,3.1,2.2,2.1,STR,"Str initiator — Shockwave, Empower, Skewer, Reverse Polarity",211,75,61,200,305,-0.96,3.764384,0.04,0.5,1.8,0.5,0.84,,0.8
 Queen of Pain,FALSE,Shadow Strike,Queen of Pain Blink,Scream of Pain,Sonic Wave,20,20,25,2.4,2.5,3.4,INT,"Int assassin — Shadow Strike, QoP Blink, Scream of Pain, Sonic Wave",200,75,54,550,290,-2.8,3.321839,-0.15,0,1.5,0.56,0.41,1500
+Sniper,FALSE,Shrapnel,Headshot,Take Aim,Assassinate,19,27,15,2,3.2,2.6,AGI,"Agi marksman — Shrapnel, Headshot, Take Aim, Assassinate",196,75,43,550,285,-3.78,4.20907,-0.13,0,1.7,0.17,0.7,3000,0.7

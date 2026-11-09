@@ -706,6 +706,11 @@ pub enum AbilityId {
     Empower,
     Skewer,
     ReversePolarity,
+    // Sniper (generated stubs)
+    Shrapnel,
+    Headshot,
+    TakeAim,
+    Assassinate,
     // </hero_generator:ability_enum>
 }
 
@@ -747,6 +752,10 @@ impl AbilityId {
             AbilityId::Empower => "Empower",
             AbilityId::Skewer => "Skewer",
             AbilityId::ReversePolarity => "Reverse Polarity",
+            AbilityId::Shrapnel => "Shrapnel",
+            AbilityId::Headshot => "Headshot",
+            AbilityId::TakeAim => "Take Aim",
+            AbilityId::Assassinate => "Assassinate",
             // </hero_generator:ability_display_name>
         }
     }
@@ -762,7 +771,8 @@ impl AbilityId {
                 | AbilityId::Ritual
                 | AbilityId::Cataclysm
                 | AbilityId::SonicWave
-                | AbilityId::ReversePolarity // </hero_generator:ability_ultimates>
+                | AbilityId::ReversePolarity
+                | AbilityId::Assassinate // </hero_generator:ability_ultimates>
         )
     }
 
@@ -783,6 +793,10 @@ impl AbilityId {
             AbilityId::Empower => 7,
             AbilityId::Skewer => 7,
             AbilityId::ReversePolarity => 4,
+            AbilityId::Shrapnel => 7,
+            AbilityId::Headshot => 7,
+            AbilityId::TakeAim => 7,
+            AbilityId::Assassinate => 4,
             // </ability_generator:max_rank>
             _ if self.is_ultimate() => 4,
             _ => 7,

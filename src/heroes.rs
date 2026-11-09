@@ -52,6 +52,8 @@ pub enum HeroId {
     QueenOfPain,
     /// Generated hero — abilities are stubs until implemented.
     Magnus,
+    /// Generated hero — abilities are stubs until implemented.
+    Sniper,
     // </hero_generator:hero_enum>
 }
 
@@ -66,6 +68,7 @@ impl HeroId {
             HeroId::Hexer,
             HeroId::QueenOfPain,
             HeroId::Magnus,
+            HeroId::Sniper,
             // </hero_generator:hero_all>
         ]
     }
@@ -105,6 +108,7 @@ impl HeroId {
             HeroId::Hexer => "Hexer",
             HeroId::QueenOfPain => "Queen of Pain",
             HeroId::Magnus => "Magnus",
+            HeroId::Sniper => "Sniper",
             // </hero_generator:hero_name>
         }
     }
@@ -122,6 +126,7 @@ impl HeroId {
                 "Int assassin — Shadow Strike, QoP Blink, Scream of Pain, Sonic Wave"
             }
             HeroId::Magnus => "Str initiator — Shockwave, Empower, Skewer, Reverse Polarity",
+            HeroId::Sniper => "Agi marksman — Shrapnel, Headshot, Take Aim, Assassinate",
             // </hero_generator:hero_blurb>
         }
     }
@@ -137,6 +142,7 @@ impl HeroId {
             HeroId::Hexer => "INT",
             HeroId::QueenOfPain => "INT",
             HeroId::Magnus => "STR",
+            HeroId::Sniper => "AGI",
             // </hero_generator:hero_primary>
         }
     }
@@ -371,6 +377,40 @@ impl HeroId {
                     AbilityId::Empower,
                     AbilityId::Skewer,
                     AbilityId::ReversePolarity,
+                ],
+                dimensions: UnitDimensions::HERO,
+            },
+            HeroId::Sniper => HeroDef {
+                id: self,
+                attributes: HeroAttributes {
+                    strength: 19.0,
+                    agility: 27.0,
+                    intelligence: 15.0,
+                    str_per_level: 2.0,
+                    agi_per_level: 3.2,
+                    int_per_level: 2.6,
+                },
+                base_health: 196.0,
+                base_health_regen: -0.13,
+                base_mana: 75.0,
+                base_mana_regen: 0.0,
+                combat: hero_combat(
+                    43.0,
+                    550.0,
+                    1.7,
+                    0.17,
+                    0.7,
+                    0.7,
+                    -3.78,
+                    4.20907,
+                    285.0,
+                    Some(3000.0),
+                ),
+                abilities: [
+                    AbilityId::Shrapnel,
+                    AbilityId::Headshot,
+                    AbilityId::TakeAim,
+                    AbilityId::Assassinate,
                 ],
                 dimensions: UnitDimensions::HERO,
             },
@@ -915,5 +955,67 @@ mod tests {
             "APS {}",
             stats.attack_speed
         );
+    }
+
+    #[test]
+    fn sniper_matches_spec() {
+        use crate::combat::apply_damage;
+        use crate::components::DamageType;
+
+        assert_eq!(HeroId::from_cli("sniper"), Some(HeroId::Sniper));
+        assert_eq!(HeroId::Sniper.name(), "Sniper");
+        assert_eq!(HeroId::Sniper.primary_label(), "AGI");
+        let def = HeroId::Sniper.def();
+        assert_eq!(
+            def.abilities,
+            [
+                AbilityId::Shrapnel,
+                AbilityId::Headshot,
+                AbilityId::TakeAim,
+                AbilityId::Assassinate,
+            ]
+        );
+
+        let (health, mana, stats, attrs) = def.vitals();
+        assert!((health.max - 538.0).abs() < 1e-3, "health {}", health.max);
+        assert!((health.regen_per_sec - 2.15).abs() < 1e-4);
+        assert!((mana.max - 255.0).abs() < 1e-3, "mana {}", mana.max);
+        assert!((mana.regen_per_sec - 0.75).abs() < 1e-4);
+        assert!(stats.armor.abs() < 1e-3, "armor {}", stats.armor);
+        let taken = apply_damage(100.0, DamageType::Magical, &stats);
+        assert!(
+            (taken - 73.5).abs() < 0.01,
+            "26.5% magic resist: took {taken}"
+        );
+        assert_eq!(
+            (attrs.strength, attrs.agility, attrs.intelligence),
+            (19.0, 27.0, 15.0)
+        );
+        assert_eq!(
+            (
+                attrs.str_per_level,
+                attrs.agi_per_level,
+                attrs.int_per_level
+            ),
+            (2.0, 3.2, 2.6)
+        );
+
+        assert_eq!(stats.attack_damage, 43.0);
+        assert_eq!(stats.attack_range, 550.0);
+        assert!(!stats.is_melee());
+        assert_eq!(stats.base_attack_time, 1.7);
+        assert_eq!(stats.attack_point, 0.17);
+        assert_eq!(stats.attack_backswing, 0.7);
+        assert_eq!(stats.turn_rate, 0.7);
+        assert_eq!(stats.move_speed, 285.0);
+        let projectile_speed = crate::basic_attack::projectile_speed_for(stats.base_attack_range())
+            + stats.attack_projectile_speed_bonus;
+        assert!((projectile_speed - 3000.0).abs() < 1e-3);
+        assert!(
+            (stats.attack_speed - 127.0 / 100.0 / 1.7).abs() < 1e-4,
+            "APS {}",
+            stats.attack_speed
+        );
+        assert!((stats.attack_speed - 0.747059).abs() < 1e-5);
     }
 }

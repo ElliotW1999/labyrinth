@@ -38,6 +38,10 @@ pub fn definition(id: AbilityId) -> Option<AbilityDefinition> {
         AbilityId::Empower => Some(empower()),
         AbilityId::Skewer => Some(skewer()),
         AbilityId::ReversePolarity => Some(reverse_polarity()),
+        AbilityId::Shrapnel => Some(shrapnel()),
+        AbilityId::Headshot => Some(headshot()),
+        AbilityId::TakeAim => Some(take_aim()),
+        AbilityId::Assassinate => Some(assassinate()),
         _ => None,
     }
 }
@@ -768,3 +772,191 @@ fn reverse_polarity() -> AbilityDefinition {
         )
 }
 // </ability:reverse_polarity>
+
+// <ability:shrapnel>
+fn shrapnel() -> AbilityDefinition {
+    const DESCRIPTION: &str = "Launches a ball of shrapnel that showers the target area in explosive pellets after 1.2s, dealing magical damage every second for 10s and slowing enemies it hits";
+    AbilityDefinition::new(AbilityId::Shrapnel)
+        .description(DESCRIPTION)
+        .targeting(
+            TargetType::Area,
+            RankValue::fixed(1800.0),
+            RankValue::from_level_1(400.0, 25.0),
+        )
+        .team(TargetTeam::Enemy)
+        .costs(RankValue::fixed(10.0), RankValue::fixed(75.0))
+        .timing(0.3, 0.0)
+        .mechanic(nova_ring())
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::Caster,
+            AbilityEffect::Zone {
+                radius: AreaRadius::Ability,
+                team: TargetTeam::Enemy,
+                delay: RankValue::fixed(1.2),
+                duration: RankValue::fixed(10.0),
+                interval: RankValue::fixed(1.0),
+                then: AbilityTrigger::Custom("on_shrapnel_tick"),
+            },
+        )
+        .on(
+            AbilityTrigger::Custom("on_shrapnel_tick"),
+            EffectTarget::AffectedUnits,
+            AbilityEffect::Damage {
+                amount: RankValue::from_level_1(30.0, 15.0),
+                damage_type: DamageType::Magical,
+                scaling: EffectScaling::None,
+            },
+        )
+        .on(
+            AbilityTrigger::Custom("on_shrapnel_tick"),
+            EffectTarget::AffectedUnits,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Slow {
+                    id: "shrapnel_slow",
+                    percent: RankValue::from_level_1(12.0, 6.0),
+                },
+                duration: RankValue::fixed(1.1),
+            },
+        )
+}
+// </ability:shrapnel>
+
+// <ability:headshot>
+fn headshot() -> AbilityDefinition {
+    const DESCRIPTION: &str = "Grants Sniper a chance to deal extra damage and briefly knock back the attacked enemy unit";
+    AbilityDefinition::new(AbilityId::Headshot)
+        .description(DESCRIPTION)
+        .behavior(AbilityBehavior::Passive)
+        .targeting(TargetType::NoTarget, RankValue::ZERO, RankValue::ZERO)
+        .team(TargetTeam::Enemy)
+        .costs(RankValue::ZERO, RankValue::ZERO)
+        .timing(0.0, 0.25)
+        .on(
+            AbilityTrigger::OnAttackHit,
+            EffectTarget::Caster,
+            AbilityEffect::Proc {
+                chance: RankValue::fixed(0.4),
+                then: AbilityTrigger::Custom("on_headshot"),
+                pseudo: true,
+            },
+        )
+        .on(
+            AbilityTrigger::Custom("on_headshot"),
+            EffectTarget::TriggerUnit,
+            AbilityEffect::Damage {
+                amount: RankValue::from_level_1(20.0, 30.0),
+                damage_type: DamageType::Physical,
+                scaling: EffectScaling::None,
+            },
+        )
+        .on(
+            AbilityTrigger::Custom("on_headshot"),
+            EffectTarget::TriggerUnit,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Slow {
+                    id: "headshot_slow",
+                    percent: RankValue::fixed(100.0),
+                },
+                duration: RankValue::from_level_1(0.2, 0.1),
+            },
+        )
+        .on(
+            AbilityTrigger::Custom("on_headshot"),
+            EffectTarget::TriggerUnit,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Modifier {
+                    id: "headshot_attack_speed_flat",
+                    kind: StatusKind::Debuff,
+                    armor: RankValue::ZERO,
+                    magic_resist: RankValue::ZERO,
+                    move_speed: RankValue::ZERO,
+                    attack_damage: RankValue::ZERO,
+                    attack_speed_flat: RankValue::fixed(-100.0),
+                    attack_speed_mult: RankValue::ZERO,
+                    attack_range: RankValue::ZERO,
+                    attack_damage_pct: RankValue::ZERO,
+                    cleave: RankValue::ZERO,
+                    cleave_radius: RankValue::ZERO,
+                    cleave_end_radius: RankValue::ZERO,
+                    cleave_distance: RankValue::ZERO,
+                },
+                duration: RankValue::from_level_1(0.2, 0.1),
+            },
+        )
+        .on(
+            AbilityTrigger::Custom("on_headshot"),
+            EffectTarget::TriggerUnit,
+            AbilityEffect::Displace {
+                kind: DisplacementKind::Knockback,
+                distance: Some(RankValue::fixed(50.0)),
+                duration: RankValue::fixed(0.05),
+                speed: None,
+                contact_radius: None,
+                forward_offset: None,
+                bound_stun: None,
+            },
+        )
+}
+// </ability:headshot>
+
+// <ability:take_aim>
+fn take_aim() -> AbilityDefinition {
+    const DESCRIPTION: &str = "Grants Sniper additional attack range";
+    AbilityDefinition::new(AbilityId::TakeAim)
+        .description(DESCRIPTION)
+        .behavior(AbilityBehavior::Passive)
+        .targeting(TargetType::NoTarget, RankValue::ZERO, RankValue::ZERO)
+        .team(TargetTeam::SelfOnly)
+        .costs(RankValue::ZERO, RankValue::ZERO)
+        .timing(0.0, 0.25)
+        .on(
+            AbilityTrigger::Passive,
+            EffectTarget::Caster,
+            AbilityEffect::PassiveStat {
+                stat: PassiveStat::AttackRange,
+                amount: RankValue::from_level_1(235.0, 155.0),
+            },
+        )
+}
+// </ability:take_aim>
+
+// <ability:assassinate>
+fn assassinate() -> AbilityDefinition {
+    const DESCRIPTION: &str = "Locks onto an enemy unit; after a 2s aim, fires a devastating long-range shot that deals magical damage and mini-stuns the target. Cancelled if the target moves 600 beyond cast range";
+    AbilityDefinition::new(AbilityId::Assassinate)
+        .description(DESCRIPTION)
+        .targeting(TargetType::Unit, RankValue::fixed(3000.0), RankValue::ZERO)
+        .team(TargetTeam::Enemy)
+        .cast_range_buffer(RankValue::fixed(600.0))
+        .costs(RankValue::from_level_1(20.0, -5.0), RankValue::fixed(175.0))
+        .timing(2.0, 1.6)
+        .mechanic(AbilityMechanic::Projectile {
+            splash_radius: AreaRadius::Ability,
+            speed: Some(1500.0),
+            skillshot: false,
+            first_hit: false,
+            end_radius: None,
+            origin_offset: None,
+        })
+        .on(
+            AbilityTrigger::OnProjectileHit,
+            EffectTarget::TriggerUnit,
+            AbilityEffect::Damage {
+                amount: RankValue::from_level_1(300.0, 100.0),
+                damage_type: DamageType::Magical,
+                scaling: EffectScaling::None,
+            },
+        )
+        .on(
+            AbilityTrigger::OnProjectileHit,
+            EffectTarget::TriggerUnit,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::OwnedStun {
+                    id: "assassinate_stun",
+                },
+                duration: RankValue::fixed(0.1),
+            },
+        )
+}
+// </ability:assassinate>

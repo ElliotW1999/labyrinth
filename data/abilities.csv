@@ -13,3 +13,7 @@ magnus_shockwave,Shockwave,Q,active,point,enemy,1200,200,0.3,,13|12|11|10|9|8|7,
 empower,Empower,W,active,unit,ally,800,,0.3,,8,45|55|65|75|85|95|105,,,none,,"Grants an allied hero or Magnus bonus attack damage and a cone cleave that melee heroes can use",1.07,,,,,
 skewer,Skewer,E,active,point,enemy,global,,0.3,,22|20|18|16|14|12|10,80,,,none,,"Rushes forward, goring enemies and dragging them, stunned, to the destination, where they take magical damage and are slowed",0.3,,,,,
 reverse_polarity,Reverse Polarity,R,active,no_target,enemy,,430,0.3,,115,150|225|300|375,,,none,,"Pulls nearby enemies to a point in front of Magnus, dealing magical damage and stunning them",1.3,,,,,
+shrapnel,Shrapnel,Q,active,point,enemy,1800,400|425|450|475|500|525|550,0.3,,10,75,,,none,,"Launches a ball of shrapnel that showers the target area in explosive pellets after 1.2s, dealing magical damage every second for 10s and slowing enemies it hits",0,,,,,
+headshot,Headshot,W,passive,no_target,enemy,,,,,,,,,none,,"Grants Sniper a chance to deal extra damage and briefly knock back the attacked enemy unit",,,,,,
+take_aim,Take Aim,E,passive,no_target,self,,,,,,,,,none,,"Grants Sniper additional attack range",,,,,,
+assassinate,Assassinate,R,active,unit,enemy,3000,,2,,20|15|10|5,175,,,targeted,1500,"Locks onto an enemy unit; after a 2s aim, fires a devastating long-range shot that deals magical damage and mini-stuns the target. Cancelled if the target moves 600 beyond cast range",1.6,,,,,600

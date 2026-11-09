@@ -26,3 +26,7 @@ shadow_strike,Shadow Strike,Q,active,unit,enemy,450|500|550|600|650|700|750,,0.3
 queen_of_pain_blink,QoP Blink,W,active,point,enemy,global,,0.33,,12|10|8|6|4|2|1,65,,,none,,"Teleports toward the target point, at least 200 and at most the maximum blink distance away",0.07,,,,
 scream_of_pain,Scream of Pain,E,active,no_target,enemy,,600,0,,7.5|7|6.5|6|5.5|5|4.5,120,,,targeted_each,900,"Sends a projectile at every nearby enemy, each dealing magical damage",0.63,,,,
 sonic_wave,Sonic Wave,R,active,point,enemy,900,100,0.452,,110|95|80|65,250|400|550|700,,,skillshot,642.857143,"Sends out a widening wave; each enemy struck takes pure damage 14 times over 1.4s and is knocked back",0.9,,,450,
+shrapnel,Shrapnel,Q,active,point,enemy,1800,400|425|450|475|500|525|550,0.3,,10,75,,,none,,"Launches a ball of shrapnel that showers the target area in explosive pellets after 1.2s, dealing magical damage every second for 10s and slowing enemies it hits",0,,,,,
+headshot,Headshot,W,passive,no_target,enemy,,,,,,,,,none,,"Grants Sniper a chance to deal extra damage and briefly knock back the attacked enemy unit",,,,,,
+take_aim,Take Aim,E,passive,no_target,self,,,,,,,,,none,,"Grants Sniper additional attack range",,,,,,
+assassinate,Assassinate,R,active,unit,enemy,3000,,2,,20|15|10|5,175,,,targeted,1500,"Locks onto an enemy unit; after a 2s aim, fires a devastating long-range shot that deals magical damage and mini-stuns the target. Cancelled if the target moves 600 beyond cast range",1.6,,,,,600

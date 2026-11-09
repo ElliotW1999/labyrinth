@@ -8301,4 +8301,445 @@ mod tests {
         assert_eq!(health(&ability_app, ability_enemy), 970.0);
         assert_eq!(health(&item_app, item_enemy), 970.0);
     }
+
+    // ---- Sniper ----
+
+    const SNIPER: [AbilityId; 4] = [
+        AbilityId::Shrapnel,
+        AbilityId::Headshot,
+        AbilityId::TakeAim,
+        AbilityId::Assassinate,
+    ];
+
+    fn sniper_app() -> App {
+        let mut app = qop_app();
+        app.world_mut().resource_mut::<CombatRng>().seed(7);
+        app
+    }
+
+    use crate::combat::CombatRng;
+
+    /// The `on_shrapnel_tick` contexts written in the last update.
+    fn shrapnel_ticks(app: &App) -> Vec<TriggerContext> {
+        app.world()
+            .resource::<Messages<AbilityTriggerEvent>>()
+            .iter_current_update_messages()
+            .filter(|event| event.0.trigger == AbilityTrigger::Custom("on_shrapnel_tick"))
+            .map(|event| event.0.clone())
+            .collect()
+    }
+
+    /// Casts Shrapnel (slot 0) on `point` and steps until `seconds` after the cast request,
+    /// returning the elapsed time of every tick.
+    fn cast_shrapnel(app: &mut App, caster: Entity, point: Vec3, seconds: f32) -> Vec<f32> {
+        request(app, caster, 0, CastTarget::Point(point));
+        let mut ticks = Vec::new();
+        for index in 1..=(seconds / 0.05).round() as usize {
+            step(app);
+            ticks.extend(shrapnel_ticks(app).iter().map(|_| index as f32 * 0.05));
+        }
+        ticks
+    }
+
+    #[test]
+    fn shrapnel_zone_waits_then_ticks_ten_times() {
+        let mut app = sniper_app();
+        let caster = spawn_caster(&mut app, SNIPER);
+        let inside = spawn_unit(&mut app, Team::Dire, Vec3::new(1000.0, 0.0, 200.0));
+        let outside = spawn_unit(&mut app, Team::Dire, Vec3::new(1000.0, 0.0, 700.0));
+        let ticks = cast_shrapnel(&mut app, caster, Vec3::new(1000.0, 0.0, 0.0), 14.0);
+
+        assert_eq!(ticks.len(), 10, "{ticks:?}");
+        // 0.3 s cast point plus the 1.2 s delay (plus the frames spent turning).
+        assert!(
+            ticks[0] >= 1.5,
+            "nothing lands before the delay: {}",
+            ticks[0]
+        );
+        assert!(ticks[0] < 2.2, "{}", ticks[0]);
+        for pair in ticks.windows(2) {
+            assert!((pair[1] - pair[0] - 1.0).abs() < 0.11, "{ticks:?}");
+        }
+        assert_eq!(
+            health(&app, inside),
+            1000.0 - 10.0 * 30.0,
+            "10 x rank-1 DPS"
+        );
+        assert_eq!(health(&app, outside), 1000.0, "400 radius at rank 1");
+        assert_eq!(zone_count(&mut app), 0);
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 925.0);
+    }
+
+    #[test]
+    fn shrapnel_ticks_scale_with_rank() {
+        let mut app = sniper_app();
+        let caster = spawn_caster(&mut app, SNIPER);
+        app.world_mut()
+            .get_mut::<AbilityLoadout>(caster)
+            .unwrap()
+            .slots[0]
+            .rank = 7;
+        let near = spawn_unit(&mut app, Team::Dire, Vec3::new(1000.0, 0.0, 500.0));
+        *app.world_mut().get_mut::<Health>(near).unwrap() = Health::new(5000.0);
+        cast_shrapnel(&mut app, caster, Vec3::new(1000.0, 0.0, 0.0), 14.0);
+        assert_eq!(
+            health(&app, near),
+            5000.0 - 10.0 * 120.0,
+            "rank 7: 120 per tick, 550 radius reaches 500 away"
+        );
+    }
+
+    #[test]
+    fn shrapnel_zone_slows_units_inside_and_releases_after_leaving() {
+        let mut app = sniper_app();
+        let caster = spawn_caster(&mut app, SNIPER);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(1000.0, 0.0, 0.0));
+        request(
+            &mut app,
+            caster,
+            0,
+            CastTarget::Point(Vec3::new(1000.0, 0.0, 0.0)),
+        );
+        for _ in 0..60 {
+            step(&mut app);
+            if status_of(&app, enemy, "shrapnel_slow").is_some() {
+                break;
+            }
+        }
+        let slow = status_of(&app, enemy, "shrapnel_slow").expect("slowed by a tick");
+        assert!(
+            (slow.move_speed + 36.0).abs() < 1e-3,
+            "12% of 300: {}",
+            slow.move_speed
+        );
+        assert!(
+            slow.remaining <= 1.1 && slow.remaining > 1.0,
+            "{}",
+            slow.remaining
+        );
+        assert_eq!(
+            app.world().get::<CombatStats>(enemy).unwrap().move_speed,
+            264.0
+        );
+
+        // Leave the zone: the slow runs out 1.1 s after the last tick and nothing refreshes it.
+        app.world_mut()
+            .get_mut::<Transform>(enemy)
+            .unwrap()
+            .translation = Vec3::new(1000.0, 0.0, 900.0);
+        for _ in 0..30 {
+            step(&mut app);
+        }
+        assert!(status_of(&app, enemy, "shrapnel_slow").is_none());
+        assert_eq!(
+            app.world().get::<CombatStats>(enemy).unwrap().move_speed,
+            300.0,
+            "back to base speed exactly"
+        );
+    }
+
+    #[test]
+    fn shrapnel_slow_is_refreshed_not_compounded_while_inside() {
+        let mut app = sniper_app();
+        let caster = spawn_caster(&mut app, SNIPER);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(1000.0, 0.0, 0.0));
+        let ticks = cast_shrapnel(&mut app, caster, Vec3::new(1000.0, 0.0, 0.0), 8.0);
+        assert!(ticks.len() >= 5);
+        assert_eq!(
+            app.world().get::<CombatStats>(enemy).unwrap().move_speed,
+            264.0,
+            "five refreshes later it is still 12% of base"
+        );
+    }
+
+    /// Writes attack hits until the Headshot proc lands (a pseudo-random 40%), returning
+    /// the number of hits it took.
+    fn hit_until_headshot(app: &mut App, attacker: Entity, target: Entity) -> usize {
+        for hits in 1..=40 {
+            write_attack_hit(app, attacker, target);
+            step(app);
+            if status_of(app, target, "headshot_slow").is_some() {
+                return hits;
+            }
+        }
+        panic!("Headshot never proc'd in 40 hits");
+    }
+
+    #[test]
+    fn headshot_proc_damages_slows_and_knocks_back() {
+        let mut app = sniper_app();
+        let caster = spawn_caster(&mut app, SNIPER);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(400.0, 0.0, 0.0));
+        let hits = hit_until_headshot(&mut app, caster, enemy);
+        assert!(
+            hits <= 8,
+            "a pseudo-random 40% proc cannot streak long: {hits}"
+        );
+
+        assert_eq!(
+            health(&app, enemy),
+            1000.0 - 20.0,
+            "rank-1 physical damage, no armor"
+        );
+        let slow = status_of(&app, enemy, "headshot_slow").unwrap();
+        assert!((slow.move_speed + 300.0).abs() < 1e-3, "a 100% slow");
+        assert!(slow.remaining <= 0.2);
+        let aps = status_of(&app, enemy, "headshot_attack_speed_flat").expect("attack speed cut");
+        assert_eq!(aps.attack_speed_flat, -100.0);
+        assert_eq!(
+            app.world()
+                .get::<CombatStats>(enemy)
+                .unwrap()
+                .effective_move_speed(app.world().get::<StatusEffects>(enemy)),
+            scale::MIN_MOVE_SPEED,
+            "floored, not stopped"
+        );
+
+        // Knocked 50 away from Sniper over 0.05 s.
+        for _ in 0..3 {
+            step(&mut app);
+        }
+        let x = position(&app, enemy).x;
+        assert!(
+            (x - 450.0).abs() < 1.0,
+            "pushed away from the attacker: {x}"
+        );
+
+        // Everything but the knockback runs out with the 0.2 s window.
+        for _ in 0..6 {
+            step(&mut app);
+        }
+        assert!(status_of(&app, enemy, "headshot_slow").is_none());
+        assert!(status_of(&app, enemy, "headshot_attack_speed_flat").is_none());
+        let stats = app.world().get::<CombatStats>(enemy).unwrap();
+        assert_eq!(stats.move_speed, 300.0);
+        assert_eq!(stats.attack_speed_flat, 0.0);
+    }
+
+    #[test]
+    fn headshot_and_shrapnel_slows_coexist() {
+        let mut app = sniper_app();
+        let caster = spawn_caster(&mut app, SNIPER);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(500.0, 0.0, 0.0));
+        request(
+            &mut app,
+            caster,
+            0,
+            CastTarget::Point(Vec3::new(500.0, 0.0, 0.0)),
+        );
+        for _ in 0..60 {
+            step(&mut app);
+            if status_of(&app, enemy, "shrapnel_slow").is_some() {
+                break;
+            }
+        }
+        assert!(status_of(&app, enemy, "shrapnel_slow").is_some());
+        hit_until_headshot(&mut app, caster, enemy);
+
+        let ids: Vec<_> = app
+            .world()
+            .get::<StatusEffects>(enemy)
+            .unwrap()
+            .effects
+            .iter()
+            .map(|e| e.id)
+            .collect();
+        assert!(
+            ids.contains(&"shrapnel_slow") && ids.contains(&"headshot_slow"),
+            "{ids:?}"
+        );
+        assert_eq!(
+            app.world().get::<CombatStats>(enemy).unwrap().move_speed,
+            300.0 - 36.0 - 300.0,
+            "the slows add; the walking speed floors at the minimum"
+        );
+
+        for _ in 0..8 {
+            step(&mut app);
+        }
+        assert!(status_of(&app, enemy, "headshot_slow").is_none());
+        assert!(
+            status_of(&app, enemy, "shrapnel_slow").is_some(),
+            "the 100% slow ending leaves Shrapnel's slow in place"
+        );
+        assert_eq!(
+            app.world().get::<CombatStats>(enemy).unwrap().move_speed,
+            264.0
+        );
+    }
+
+    #[test]
+    fn take_aim_adds_attack_range_per_rank_and_keeps_projectile_speed() {
+        use crate::abilities::catalog::builtin;
+        use crate::heroes::HeroId;
+        use crate::items::apply_passives;
+
+        let def = builtin(AbilityId::TakeAim);
+        for (rank, total) in [(1, 785.0), (4, 1250.0), (7, 1715.0)] {
+            let (mut health, mut mana, mut stats, mut attrs) = HeroId::Sniper.def().vitals();
+            let before = crate::basic_attack::projectile_speed_for(stats.base_attack_range())
+                + stats.attack_projectile_speed_bonus;
+            let passives = passive::passives_at_rank(&def, rank);
+            assert_eq!(passives.attack_range, total - 550.0, "rank {rank}");
+            apply_passives(passives, &mut health, &mut mana, &mut stats, &mut attrs);
+            assert_eq!(stats.attack_range, total, "rank {rank}");
+            assert_eq!(stats.base_attack_range(), 550.0);
+            assert!(!stats.is_melee());
+            let after = crate::basic_attack::projectile_speed_for(stats.base_attack_range())
+                + stats.attack_projectile_speed_bonus;
+            assert!((before - 3000.0).abs() < 1e-3 && (after - before).abs() < 1e-3);
+        }
+        let none = passive::passives_at_rank(&def, 0);
+        assert_eq!(none.attack_range, 0.0, "unlearned adds nothing");
+    }
+
+    /// Requests Assassinate on `target` and steps until it has fired (or `max_frames`),
+    /// returning the number of frames it took and the projectiles spawned that frame.
+    fn cast_assassinate(
+        app: &mut App,
+        caster: Entity,
+        target: Entity,
+        max_frames: usize,
+    ) -> (Option<usize>, Vec<SpawnProjectileEvent>) {
+        request(app, caster, 3, CastTarget::Unit(target));
+        let mut fired_at = None;
+        let mut spawned = Vec::new();
+        for frame in 1..=max_frames {
+            step(app);
+            if fired_at.is_none() && !fired_events(app).is_empty() {
+                fired_at = Some(frame);
+            }
+            spawned.extend(
+                app.world()
+                    .resource::<Messages<SpawnProjectileEvent>>()
+                    .iter_current_update_messages()
+                    .copied(),
+            );
+            if fired_at.is_some() {
+                break;
+            }
+        }
+        (fired_at, spawned)
+    }
+
+    #[test]
+    fn assassinate_fires_after_two_second_aim_and_mini_stuns() {
+        let mut app = sniper_app();
+        let caster = spawn_caster(&mut app, SNIPER);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(2000.0, 0.0, 0.0));
+        // Someone else's long stun is already on the target (it outlasts the 2 s aim).
+        app.world_mut()
+            .get_mut::<StatusEffects>(target)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::stunned(10.0));
+
+        let (fired_at, spawned) = cast_assassinate(&mut app, caster, target, 60);
+        let fired_at = fired_at.expect("the shot fires");
+        let seconds = fired_at as f32 * 0.05;
+        assert!(
+            seconds >= 1.95,
+            "not before the 2 s aim: fired at {seconds}"
+        );
+        assert!(seconds <= 2.15, "and not long after: fired at {seconds}");
+        assert_eq!(
+            app.world().get::<Mana>(caster).unwrap().current,
+            1000.0 - 175.0,
+            "mana is paid when it fires"
+        );
+        let slot = &app.world().get::<AbilityLoadout>(caster).unwrap().slots[3];
+        assert!(slot.cooldown.remaining > 0.0);
+        assert_eq!(spawned.len(), 1);
+        assert_eq!(spawned[0].speed, Some(1500.0));
+        assert_eq!(spawned[0].target, Some(target), "a homing shot");
+
+        // The shot lands: magical damage and the 0.1 s mini stun under its own id.
+        app.world_mut().write_message(hit(
+            spawned[0].payload,
+            Vec3::new(2000.0, 0.0, 0.0),
+            Some(target),
+            vec![],
+        ));
+        step(&mut app);
+        assert_eq!(
+            health(&app, target),
+            1000.0 - 300.0,
+            "rank-1 magical damage"
+        );
+        let mini = status_of(&app, target, "assassinate_stun").expect("mini stun");
+        assert!(mini.stunned && mini.remaining <= 0.1);
+        let foreign = status_of(&app, target, "stun").expect("the foreign stun survives");
+        assert!(
+            foreign.remaining > 7.5,
+            "10 s minus the 2.1 s that passed, never replaced by the 0.1 s stun: {}",
+            foreign.remaining
+        );
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        assert!(status_of(&app, target, "assassinate_stun").is_none());
+        assert!(
+            status_of(&app, target, "stun").is_some(),
+            "the long stun was never shortened"
+        );
+    }
+
+    #[test]
+    fn assassinate_does_not_fire_before_the_aim_completes() {
+        let mut app = sniper_app();
+        let caster = spawn_caster(&mut app, SNIPER);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(2000.0, 0.0, 0.0));
+        request(&mut app, caster, 3, CastTarget::Unit(target));
+        for _ in 0..38 {
+            step(&mut app);
+            assert!(fired_events(&app).is_empty());
+        }
+        assert!(
+            app.world().get::<Activation>(caster).is_some(),
+            "still aiming at 1.9 s"
+        );
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 1000.0);
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        assert!(
+            app.world().get::<Activation>(caster).is_some(),
+            "in backswing after the shot"
+        );
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 825.0);
+    }
+
+    #[test]
+    fn assassinate_cancels_free_when_target_leaves_buffer() {
+        // 3000 cast range + 600 buffer: 3700 breaks the lock, 3300 does not.
+        for (distance, fires) in [(3700.0, false), (3300.0, true)] {
+            let mut app = sniper_app();
+            let caster = spawn_caster(&mut app, SNIPER);
+            let target = spawn_unit(&mut app, Team::Dire, Vec3::new(2800.0, 0.0, 0.0));
+            request(&mut app, caster, 3, CastTarget::Unit(target));
+            for _ in 0..10 {
+                step(&mut app);
+            }
+            assert!(app.world().get::<Activation>(caster).is_some());
+            app.world_mut()
+                .get_mut::<Transform>(target)
+                .unwrap()
+                .translation = Vec3::new(distance, 0.0, 0.0);
+            let mut fired = false;
+            for _ in 0..60 {
+                step(&mut app);
+                fired |= !fired_events(&app).is_empty();
+            }
+            assert_eq!(fired, fires, "target at {distance}");
+            let mana = app.world().get::<Mana>(caster).unwrap().current;
+            let slot = &app.world().get::<AbilityLoadout>(caster).unwrap().slots[3];
+            if fires {
+                assert_eq!(mana, 825.0);
+                assert!(slot.cooldown.remaining > 0.0);
+            } else {
+                assert_eq!(mana, 1000.0, "a broken lock is free");
+                assert_eq!(slot.cooldown.remaining, 0.0);
+            }
+        }
+    }
 }
