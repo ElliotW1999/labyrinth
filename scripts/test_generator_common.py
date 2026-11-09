@@ -745,6 +745,47 @@ class HealStatusTests(unittest.TestCase):
         self.assertEqual(report.errors[0].field, "effect_type")
 
 
+class MiniStunTests(unittest.TestCase):
+    def _stun(self, **cells: str):
+        report = Report()
+        effect, ctx = _effect("apply_status", "mini_stun", **cells)
+        return effect_to_rust(effect, ctx, report), report
+
+    def test_mini_stun_binds_a_per_owner_stun_id(self) -> None:
+        result, report = self._stun(duration="0.1")
+        self.assertFalse(report.errors)
+        self.assertIn('StatusSpec::OwnedStun { id: "tester_stun" }', result[2])
+
+    def test_mini_stun_needs_a_duration(self) -> None:
+        result, report = self._stun()
+        self.assertIsNone(result)
+        self.assertEqual(report.errors[0].field, "duration")
+
+    def test_mini_stun_below_one_tick_warns(self) -> None:
+        result, report = self._stun(duration="0.01")
+        self.assertIsNotNone(result)
+        self.assertTrue(any(w.field == "duration" for w in report.warnings))
+
+    def test_plain_stun_keeps_the_shared_id(self) -> None:
+        report = Report()
+        effect, ctx = _effect("apply_status", "stun", duration="1")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertIn("StatusSpec::Stun", result[2])
+        self.assertNotIn("OwnedStun", result[2])
+
+    def test_ids_resolve_for_held_conditions_and_triggers(self) -> None:
+        effect, _ = _effect("apply_status", "mini_stun", duration="0.1")
+        self.assertEqual(held_status_id(effect), "tester_stun")
+        self.assertEqual(runtime_status_id("tester_stun"), "tester_stun")
+        self.assertIsNone(runtime_status_id("mini_stun"))
+
+    def test_remove_status_mini_stun_is_rejected_with_a_hint(self) -> None:
+        report = Report()
+        effect, ctx = _effect("remove_status", "mini_stun")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertIn("<owner>_stun", report.errors[0].message)
+
+
 class SlowStatusTests(unittest.TestCase):
     def test_generated_slow_carries_a_per_owner_id(self) -> None:
         report = Report()

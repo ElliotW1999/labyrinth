@@ -171,6 +171,9 @@ DAMAGE_TYPES = {"physical": "Physical", "magical": "Magical", "pure": "Pure"}
 # effect_id → (StatusSpec expression, runtime status id, is_buff)
 STATUSES = {
     "stun": ("StatusSpec::Stun", "stun", False),
+    # A stun with the per-owner id `<owner>_stun`: refreshes only itself, so a short stun never
+    # shortens a longer one from another source.
+    "mini_stun": (None, "stun", False),
     "root": ("StatusSpec::Root", "root", False),
     "silence": ("StatusSpec::Silence", "silence", False),
     "disarm": ("StatusSpec::Disarm", "disarm", False),
@@ -1185,12 +1188,14 @@ def runtime_status_id(text: str) -> str | None:
 
     Accepts CSV status ids (`stun`), runtime ids (`spell_immunity`) and the per-owner ids that
     timed `stat_modifier` rows create (`<owner>_<stat>`) and the ones burns and slows create
-    (`<owner>_burn`, `<owner>_slow`)."""
+    (`<owner>_burn`, `<owner>_slow`) and the ones `mini_stun` creates (`<owner>_stun`)."""
+    if text == "mini_stun":
+        return None  # the id depends on the owner: name `<owner>_stun`
     if text in STATUSES:
         return STATUSES[text][1]
     if text in {runtime for _, runtime, _ in STATUSES.values()}:
         return text
-    for stat in (*TIMED_STATS, *RESOURCE_STATS, "burn", "slow"):
+    for stat in (*TIMED_STATS, *RESOURCE_STATS, "burn", "slow", "stun"):
         suffix = "_" + stat
         if text.endswith(suffix) and ID_PATTERN.match(text[: -len(suffix)]):
             return text
@@ -1300,6 +1305,8 @@ def held_status_id(e: EffectRow) -> str | None:
     effect_id = e.row.get("effect_id").lower()
     if e.effect_type == "apply_status" and effect_id in ("burn", "slow"):
         return f"{e.owner}_{effect_id}"
+    if e.effect_type == "apply_status" and effect_id == "mini_stun":
+        return f"{e.owner}_stun"
     if e.effect_type == "apply_status" and effect_id in STATUSES:
         return STATUSES[effect_id][1]
     if e.effect_type == "stat_modifier" and effect_id:
@@ -1576,6 +1583,11 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             spec = f'StatusSpec::Slow {{ id: "{ctx.owner_id}_slow", percent: {rank_value(percent)} }}'
             if amount:
                 _unused(e, report, "value")
+        elif effect_id == "mini_stun":
+            _unused(e, report, "value", "amount")
+            if any(d < 0.05 for d in duration if d > 0):
+                report.warn(row.file, row.line, "duration", row.get("duration"), "a stun shorter than 0.05s may not interrupt anything")
+            spec = f'StatusSpec::OwnedStun {{ id: "{ctx.owner_id}_stun" }}'
         elif effect_id == "shield":
             pool = amount or value
             if not pool:
@@ -1718,6 +1730,9 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             )
         elif effect_id == "slow":
             report.error(row.file, row.line, "effect_id", row.get("effect_id"), "generated slows carry the per-owner id <owner>_slow; name that id to remove one")
+            return None
+        elif effect_id == "mini_stun":
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), "a mini_stun carries the per-owner id <owner>_stun; name that id to remove it")
             return None
         elif ID_PATTERN.match(effect_id):
             status_id = STATUSES[effect_id][1] if effect_id in STATUSES else effect_id

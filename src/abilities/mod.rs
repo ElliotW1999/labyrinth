@@ -7800,4 +7800,97 @@ mod tests {
         assert_eq!(fired.len(), 1);
         assert!(matches!(fired[0].0, CastTarget::Point(_)));
     }
+
+    fn short_owned_stun_ability(duration: f32) -> AbilityDefinition {
+        AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::Unit, RankValue::fixed(500.0), RankValue::ZERO)
+            .costs(RankValue::ZERO, RankValue::ZERO)
+            .timing(0.0, 0.0)
+            .on(
+                AbilityTrigger::OnCast,
+                EffectTarget::CastTarget,
+                AbilityEffect::ApplyStatus {
+                    status: StatusSpec::OwnedStun { id: "test_stun" },
+                    duration: RankValue::fixed(duration),
+                },
+            )
+    }
+
+    #[test]
+    fn mini_stun_spares_a_longer_foreign_stun() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(short_owned_stun_ability(0.1));
+        let caster = spawn_caster(&mut app, KIT);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        app.world_mut()
+            .get_mut::<StatusEffects>(target)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::stunned(3.0));
+        request(&mut app, caster, 3, CastTarget::Unit(target));
+        for _ in 0..3 {
+            step(&mut app);
+        }
+        let mini = status_of(&app, target, "test_stun").expect("mini stun applied");
+        assert!(mini.stunned && mini.remaining <= 0.1);
+        let foreign = status_of(&app, target, "stun").expect("foreign stun kept");
+        assert!(foreign.remaining > 2.5, "{}", foreign.remaining);
+        // Distinct ids: when the mini stun ends the foreign one is still in force.
+        app.world_mut()
+            .get_mut::<StatusEffects>(target)
+            .unwrap()
+            .effects
+            .retain(|e| e.id != "test_stun");
+        assert!(status_of(&app, target, "stun").is_some());
+        assert!(
+            app.world()
+                .get::<StatusEffects>(target)
+                .unwrap()
+                .is_stunned()
+        );
+    }
+
+    #[test]
+    fn mini_stun_interrupts_a_channelling_target() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(channelled_heal());
+        let channeller = spawn_caster(&mut app, KIT);
+        request(&mut app, channeller, 3, CastTarget::None);
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        let mini = StatusSpec::OwnedStun { id: "test_stun" }.build(
+            1,
+            0.1,
+            definition::StatusBuildContext {
+                move_speed: 0.0,
+                agility: 0.0,
+                fear_source: None,
+                source: None,
+                point: Vec3::ZERO,
+                base_attack_damage: 0.0,
+            },
+        );
+        app.world_mut()
+            .get_mut::<StatusEffects>(channeller)
+            .unwrap()
+            .effects
+            .push(mini);
+        step(&mut app);
+        let ends: Vec<_> = app
+            .world()
+            .resource::<Messages<ActionChannelEndEvent>>()
+            .iter_current_update_messages()
+            .map(|e| e.completed)
+            .collect();
+        assert_eq!(
+            ends,
+            vec![false],
+            "the channel was interrupted, not completed"
+        );
+    }
 }

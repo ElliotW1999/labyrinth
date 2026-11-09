@@ -353,6 +353,11 @@ pub enum EffectScaling {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum StatusSpec {
     Stun,
+    /// A stun with its own status id (generated `<owner>_stun`). Same-id refresh means it never
+    /// replaces, shortens or removes a stun from another source.
+    OwnedStun {
+        id: &'static str,
+    },
     Root,
     Silence,
     Disarm,
@@ -526,6 +531,10 @@ impl StatusSpec {
         let ias = (100.0 + ctx.agility).clamp(20.0, 700.0);
         match self {
             StatusSpec::Stun => StatusEffect::stunned(duration),
+            StatusSpec::OwnedStun { id } => StatusEffect {
+                id,
+                ..StatusEffect::stunned(duration)
+            },
             StatusSpec::Root => StatusEffect::rooted(duration),
             StatusSpec::Silence => StatusEffect::silenced(duration),
             StatusSpec::Disarm => StatusEffect::disarmed(duration),

@@ -610,7 +610,7 @@ fn damage_name(damage_type: DamageType) -> &'static str {
 
 fn status_name(status: StatusSpec) -> &'static str {
     match status {
-        StatusSpec::Stun => "Stun",
+        StatusSpec::Stun | StatusSpec::OwnedStun { .. } => "Stun",
         StatusSpec::Root => "Root",
         StatusSpec::Silence => "Silence",
         StatusSpec::Disarm => "Disarm",
