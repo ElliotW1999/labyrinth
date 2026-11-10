@@ -1430,6 +1430,122 @@ mod tests {
         );
     }
 
+    /// Shadow Dance is targeting-only: a projectile already in flight at the holder still lands.
+    #[test]
+    fn in_flight_projectile_at_targeting_only_untargetable_unit_still_hits() {
+        let mut world = World::new();
+        world.init_resource::<Messages<ProjectileHitEvent>>();
+        let target = world
+            .spawn((
+                Transform::from_xyz(0.0, 0.0, 0.0),
+                Team::Dire,
+                Health::new(500.0),
+                StatusEffects {
+                    effects: vec![crate::status::StatusEffect::untargetable(4.0)],
+                },
+            ))
+            .id();
+        let caster = world
+            .spawn((
+                Transform::from_xyz(-500.0, 0.0, 0.0),
+                Team::Radiant,
+                Health::new(500.0),
+            ))
+            .id();
+        let payload = ProjectilePayload {
+            caster,
+            source: EffectSource::Ability(AbilityId::Bolt),
+            rank: 1,
+            cast_target: Some(target),
+            aim: Vec3::ZERO,
+            reflected: false,
+        };
+        world.spawn((
+            Transform::from_xyz(0.0, scale::body(1.0), 0.0),
+            Projectile {
+                speed: 1.0,
+                team: Team::Radiant,
+                radius: scale::body(0.85),
+                lifetime: 1.0,
+                splash_radius: 0.0,
+            },
+            payload,
+            ProjectileHome {
+                target,
+                last_pos: Vec3::ZERO,
+            },
+        ));
+        world.run_system_once(apply_projectile_hits).unwrap();
+        let hits: Vec<_> = world
+            .resource::<Messages<ProjectileHitEvent>>()
+            .iter_current_update_messages()
+            .cloned()
+            .collect();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(
+            hits[0].primary,
+            Some(target),
+            "a homing projectile in flight still strikes a targeting-only untargetable unit"
+        );
+    }
+
+    /// A skillshot wave passing through a targeting-only untargetable unit still hits it.
+    #[test]
+    fn skillshot_still_hits_targeting_only_untargetable_unit() {
+        let mut world = World::new();
+        world.init_resource::<Messages<ProjectileHitEvent>>();
+        let caster = world
+            .spawn((
+                Transform::from_xyz(-500.0, 0.0, 0.0),
+                Team::Radiant,
+                Health::new(1.0),
+            ))
+            .id();
+        let target = world
+            .spawn((
+                Transform::from_xyz(50.0, 0.0, 0.0),
+                Team::Dire,
+                Health::new(500.0),
+                StatusEffects {
+                    effects: vec![crate::status::StatusEffect::untargetable(4.0)],
+                },
+            ))
+            .id();
+        world.spawn((
+            Transform::from_xyz(50.0, scale::body(1.0), 0.0),
+            Projectile {
+                speed: 1.0,
+                team: Team::Radiant,
+                radius: scale::body(0.85),
+                lifetime: 1.0,
+                splash_radius: 0.0,
+            },
+            ProjectilePayload {
+                caster,
+                source: EffectSource::Ability(AbilityId::Bolt),
+                rank: 1,
+                cast_target: None,
+                aim: Vec3::ZERO,
+                reflected: false,
+            },
+            Skillshot {
+                width: 100.0,
+                start: Vec3::ZERO,
+                range: 900.0,
+                end_width: 100.0,
+                hit: Vec::new(),
+                max_hits: None,
+            },
+        ));
+        world.run_system_once(skillshot_contacts).unwrap();
+        let primaries: Vec<_> = world
+            .resource::<Messages<ProjectileHitEvent>>()
+            .iter_current_update_messages()
+            .map(|h| h.primary)
+            .collect();
+        assert_eq!(primaries, vec![Some(target)]);
+    }
+
     #[test]
     fn first_hit_skillshot_stops_on_first_enemy() {
         let payload = |caster| ProjectilePayload {

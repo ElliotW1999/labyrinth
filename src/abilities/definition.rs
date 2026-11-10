@@ -382,6 +382,10 @@ pub enum StatusSpec {
     SpellImmunity,
     /// Basic attacks cannot target the holder.
     AttackImmunity,
+    /// Targeting only: attacks and hostile unit-target spells cannot pick the holder, but area
+    /// effects, dash contact and in-flight projectiles still reach it. Not cyclone's full
+    /// untargetable.
+    Untargetable,
     /// Disarmed; immune to physical damage and to being attacked; takes `magic_amp_percent`
     /// (0-90) extra magic damage. Buff or debuff by hostility.
     Ethereal {
@@ -464,6 +468,13 @@ pub enum StatusSpec {
     TurnRateSlow {
         percent: RankValue,
     },
+    /// Raises the holder's move speed by `percent` (0..400) of its base speed, a buff. `id` is
+    /// the status id (`<owner>_move_speed_bonus` when generated), so bonuses from different
+    /// sources coexist and add (and add to slows) while the same source refreshes.
+    MoveSpeedBonus {
+        id: &'static str,
+        percent: RankValue,
+    },
     /// `percent` added to base turn rate (a buff; bonuses add up).
     TurnRateBonus {
         percent: RankValue,
@@ -508,6 +519,8 @@ pub enum StatusSpec {
         kind: StatusKind,
         stat: ResourceStat,
         amount: RankValue,
+        /// Independent instances: see [`StatusSpec::Modifier::independent`].
+        independent: bool,
     },
     Modifier {
         id: &'static str,
@@ -536,6 +549,9 @@ pub enum StatusSpec {
         /// Whole basic attacks (released, hit or miss) the status lasts for; ZERO = not
         /// charge-limited. It still ends on its duration.
         attack_charges: RankValue,
+        /// Every application becomes its own instance with its own timer instead of
+        /// refreshing the same-id one (`stat_modifier` effect ids with `:independent`).
+        independent: bool,
     },
 }
 
@@ -587,6 +603,7 @@ impl StatusSpec {
             cleave_end_radius: RankValue::ZERO,
             cleave_distance: RankValue::ZERO,
             attack_charges: RankValue::ZERO,
+            independent: false,
         }
     }
 
@@ -624,6 +641,7 @@ impl StatusSpec {
             StatusSpec::DebuffImmunity => StatusEffect::debuff_immunity(duration),
             StatusSpec::SpellImmunity => StatusEffect::spell_immunity(duration),
             StatusSpec::AttackImmunity => StatusEffect::attack_immunity(duration),
+            StatusSpec::Untargetable => StatusEffect::untargetable(duration),
             // A hostile cast is a debuff; the runner re-sets the kind from the real relation.
             StatusSpec::Ethereal { magic_amp_percent } => {
                 StatusEffect::ethereal(duration, magic_amp_percent.at(rank), true)
@@ -694,6 +712,15 @@ impl StatusSpec {
                     ..StatusEffect::debuff(id, duration)
                 }
             }
+            StatusSpec::MoveSpeedBonus { id, percent } => {
+                let p = (percent.at(rank) / 100.0).clamp(0.0, 4.0);
+                StatusEffect {
+                    move_speed: ctx.move_speed * p,
+                    move_bonus_fraction: p,
+                    dispel_type: DispelType::Basic,
+                    ..StatusEffect::buff(id, duration)
+                }
+            }
             StatusSpec::AttackSpeedSlow { percent } => {
                 let p = (percent.at(rank) / 100.0).clamp(0.0, 1.0);
                 StatusEffect {
@@ -745,7 +772,11 @@ impl StatusSpec {
                 kind,
                 stat,
                 amount,
-            } => StatusEffect::resource_modifier(id, kind, stat, amount.at(rank), duration),
+                independent,
+            } => StatusEffect {
+                independent,
+                ..StatusEffect::resource_modifier(id, kind, stat, amount.at(rank), duration)
+            },
             StatusSpec::Modifier {
                 id,
                 kind,
@@ -762,6 +793,7 @@ impl StatusSpec {
                 cleave_end_radius,
                 cleave_distance,
                 attack_charges,
+                independent,
             } => {
                 let base = match kind {
                     StatusKind::Buff => StatusEffect::buff(id, duration),
@@ -781,6 +813,7 @@ impl StatusSpec {
                     cleave_end_radius: cleave_end_radius.at(rank),
                     cleave_distance: cleave_distance.at(rank),
                     attack_charges: attack_charges.at(rank).round().max(0.0) as u32,
+                    independent,
                     ..base
                 }
             }
@@ -987,6 +1020,10 @@ pub enum AbilityEffect {
     /// with the units of `team` inside `radius` as the affected units (the caster is never
     /// one). The re-fired context has no trigger unit, no affected units from the spawn and
     /// no attack. Emits no gameplay messages itself and runs once per execution.
+    ///
+    /// With `follow_caster` the zone is re-centred on the caster before every tick (the
+    /// re-fired context's point and origin move with it) and ends as soon as the caster dies;
+    /// otherwise it stays where it was spawned.
     Zone {
         radius: AreaRadius,
         team: TargetTeam,
@@ -994,6 +1031,7 @@ pub enum AbilityEffect {
         duration: RankValue,
         interval: RankValue,
         then: AbilityTrigger,
+        follow_caster: bool,
     },
     /// Gate: sums `TriggerContext::amount` over executions (damage taken, distance walked, or
     /// 1 per occurrence) and, whenever the sum reaches `threshold`, re-fires this trigger's

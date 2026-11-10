@@ -196,6 +196,10 @@ pub struct StatusEffect {
     /// [`apply_status`] recomputes `move_speed` as `-fraction x base`, where base is the move
     /// speed without any status deltas, so a refreshed slow never compounds on itself.
     pub move_slow_fraction: f32,
+    /// Percent move-speed bonus as a fraction (0..4) of the holder's base move speed; the mirror
+    /// of [`Self::move_slow_fraction`]. [`apply_status`] measures `move_speed` as
+    /// `(bonus - slow) x base`, so a refreshed bonus never compounds on itself.
+    pub move_bonus_fraction: f32,
     /// Flat IAS change from this effect (negative values slow attack speed).
     pub attack_speed_flat: f32,
     /// Multiplicative AS modifier × (1 + `attack_speed_mult`) — negative slows.
@@ -263,6 +267,15 @@ pub struct StatusEffect {
     pub immune_damage: DamageTypeMask,
     /// Nobody else may pick the holder as a unit target and area effects skip it.
     pub untargetable: bool,
+    /// Applications of this id never replace each other: every one keeps its own instance and
+    /// timer ([`apply_status`] skips the same-id refresh). Removal by id, dispel and debuff
+    /// immunity still remove every matching instance.
+    pub independent: bool,
+    /// Targeting only: basic attacks and hostile unit-target spells cannot pick the holder
+    /// ([`TargetIntent::Attack`], [`TargetIntent::HostileSpell`]), but area effects, dash contact
+    /// and projectiles already in flight still reach it. Unlike [`Self::untargetable`] it
+    /// removes the holder from nothing but unit picks. Read only by [`StatusEffects::rejects`].
+    pub targeting_blocked: bool,
     /// Basic attacks cannot target the holder ([`TargetIntent::Attack`]).
     pub attack_immune: bool,
     /// Hostile unit-target spells cannot target the holder ([`TargetIntent::HostileSpell`]).
@@ -379,6 +392,7 @@ impl StatusEffect {
             magic_resist: 0.0,
             move_speed: 0.0,
             move_slow_fraction: 0.0,
+            move_bonus_fraction: 0.0,
             attack_speed_flat: 0.0,
             attack_speed_mult: 0.0,
             turn_rate_slow_percent: 0.0,
@@ -411,6 +425,8 @@ impl StatusEffect {
             shield_amount: 0.0,
             immune_damage: DamageTypeMask::NONE,
             untargetable: false,
+            independent: false,
+            targeting_blocked: false,
             attack_immune: false,
             spell_immune: false,
             hidden: false,
@@ -652,6 +668,15 @@ impl StatusEffect {
             spell_immune: true,
             immune_damage: DamageTypeMask::MAGICAL,
             ..Self::debuff_immunity(duration)
+        }
+    }
+
+    /// Cannot be picked by attacks or hostile unit-target spells. Area effects, dash contact and
+    /// in-flight projectiles still reach the holder (see [`StatusEffect::targeting_blocked`]).
+    pub fn untargetable(duration: f32) -> Self {
+        Self {
+            targeting_blocked: true,
+            ..Self::buff("untargetable", duration)
         }
     }
 
@@ -1059,6 +1084,14 @@ impl StatusEffects {
             .any(|e| e.spell_reflect && e.remaining > 0.0)
     }
 
+    /// Whether a live effect blocks attacks and hostile spells from picking the holder, while
+    /// leaving area effects alone (see [`StatusEffect::targeting_blocked`]).
+    fn is_targeting_blocked(&self) -> bool {
+        self.effects
+            .iter()
+            .any(|e| e.targeting_blocked && e.remaining > 0.0)
+    }
+
     /// Whether a unit pick made with `intent` must skip this holder.
     pub fn rejects(&self, intent: TargetIntent) -> bool {
         self.is_untargetable()
@@ -1068,12 +1101,14 @@ impl StatusEffects {
                     self.effects
                         .iter()
                         .any(|e| e.attack_immune && e.remaining > 0.0)
+                        || self.is_targeting_blocked()
                         || self.is_concealed()
                 }
                 TargetIntent::HostileSpell => {
                     self.effects
                         .iter()
                         .any(|e| e.spell_immune && e.remaining > 0.0)
+                        || self.is_targeting_blocked()
                         || self.is_concealed()
                 }
             }
@@ -1401,8 +1436,10 @@ pub fn apply_status(
     if effect.kind == StatusKind::Debuff && statuses.has_debuff_immunity() {
         return false;
     }
-    // Refresh same-id effects by replacing.
-    if let Some(existing) = statuses.effects.iter().position(|e| e.id == effect.id) {
+    // Refresh same-id effects by replacing, unless each application is its own instance.
+    if !effect.independent
+        && let Some(existing) = statuses.effects.iter().position(|e| e.id == effect.id)
+    {
         let old = statuses.effects.remove(existing);
         subtract_status_stat_delta(&old, stats, agility);
         if effect.stacks > 0 {
@@ -1410,12 +1447,12 @@ pub fn apply_status(
             effect.stacks += old.stacks;
         }
     }
-    if effect.move_slow_fraction > 0.0 {
-        // Measure the slow against the speed without status deltas, after the refreshed
-        // status is gone, so refreshing never shrinks or removes the slow.
+    if effect.move_slow_fraction > 0.0 || effect.move_bonus_fraction > 0.0 {
+        // Measure the slow or bonus against the speed without status deltas, after the
+        // refreshed status is gone, so refreshing never shrinks, removes or compounds it.
         let status_speed: f32 = statuses.effects.iter().map(|e| e.move_speed).sum();
         let base = (stats.move_speed - status_speed).max(0.0);
-        effect.move_speed = -effect.move_slow_fraction * base;
+        effect.move_speed = (effect.move_bonus_fraction - effect.move_slow_fraction) * base;
     }
     add_status_stat_delta(&effect, stats, agility);
     statuses.effects.push(effect);
@@ -1802,6 +1839,33 @@ mod tests {
     }
 
     #[test]
+    fn targeting_only_untargetable_rejects_attacks_and_enemy_spells() {
+        let dance = live(StatusEffect::untargetable(2.0));
+        assert!(dance.effects[0].targeting_blocked);
+        assert!(dance.rejects(TargetIntent::Attack));
+        assert!(dance.rejects(TargetIntent::HostileSpell));
+        assert!(!dance.rejects(TargetIntent::Any), "areas still hit it");
+        // It is not the full flag, which dash contact and homing projectiles read.
+        assert!(!dance.is_untargetable());
+        assert!(!dance.effects[0].untargetable);
+        // It ends with the status.
+        let mut expired = StatusEffect::untargetable(2.0);
+        expired.remaining = 0.0;
+        assert!(!live(expired).rejects(TargetIntent::Attack));
+    }
+
+    #[test]
+    fn cyclone_still_fully_untargetable() {
+        let cyclone = live(StatusEffect::cyclone(2.0, true));
+        assert!(cyclone.is_untargetable());
+        assert!(!cyclone.effects[0].targeting_blocked);
+        assert!(cyclone.rejects(TargetIntent::Any));
+        let banish = live(StatusEffect::banish(2.0, true));
+        assert!(banish.is_untargetable());
+        assert!(banish.rejects(TargetIntent::Any));
+    }
+
+    #[test]
     fn target_intent_rejects_by_immunity() {
         let attack = live(StatusEffect::attack_immunity(2.0));
         assert!(attack.rejects(TargetIntent::Attack));
@@ -2097,6 +2161,79 @@ mod tests {
             },
         );
         StatusEffect { id, ..built }
+    }
+
+    fn percent_bonus(id: &'static str, percent: f32, duration: f32, speed: f32) -> StatusEffect {
+        let built = StatusSpec::MoveSpeedBonus {
+            id,
+            percent: RankValue::fixed(percent),
+        }
+        .build(
+            1,
+            duration,
+            StatusBuildContext {
+                move_speed: speed,
+                agility: 0.0,
+                source: None,
+                point: Vec3::ZERO,
+                base_attack_damage: 0.0,
+            },
+        );
+        assert_eq!(built.id, id);
+        built
+    }
+
+    #[test]
+    fn move_speed_bonus_is_percent_of_base_and_reverts() {
+        let mut statuses = StatusEffects::default();
+        let mut stats = CombatStats::simple(10.0, 8.0, 1.0, 2.0, 1.0, 300.0);
+        let bonus = percent_bonus("dance_move_speed_bonus", 50.0, 4.0, stats.move_speed);
+        assert_eq!(bonus.kind, StatusKind::Buff);
+        assert!((bonus.move_speed - 150.0).abs() < 1e-4);
+        apply_status(&mut statuses, &mut stats, bonus, 0.0);
+        assert!((stats.move_speed - 450.0).abs() < 1e-4);
+        assert!((stats.effective_move_speed(Some(&statuses)) - 450.0).abs() < 1e-4);
+        let expired = statuses.effects.remove(0);
+        subtract_status_stat_delta(&expired, &mut stats, 0.0);
+        assert!((stats.move_speed - 300.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn refreshed_bonus_does_not_compound() {
+        let mut statuses = StatusEffects::default();
+        let mut stats = CombatStats::simple(10.0, 8.0, 1.0, 2.0, 1.0, 300.0);
+        for _ in 0..10 {
+            // Built against the already-hasted speed, as build_status_effect does.
+            let bonus = percent_bonus("dance_move_speed_bonus", 20.0, 4.0, stats.move_speed);
+            apply_status(&mut statuses, &mut stats, bonus, 0.0);
+        }
+        assert!((stats.move_speed - 360.0).abs() < 1e-3);
+        assert_eq!(statuses.effects.len(), 1);
+    }
+
+    #[test]
+    fn bonus_and_slow_from_two_ids_add() {
+        let mut statuses = StatusEffects::default();
+        let mut stats = CombatStats::simple(10.0, 8.0, 1.0, 2.0, 1.0, 300.0);
+        let slow = percent_slow("slow", 30.0, 5.0, stats.move_speed);
+        apply_status(&mut statuses, &mut stats, slow, 0.0);
+        let bonus = percent_bonus("dance_move_speed_bonus", 50.0, 5.0, stats.move_speed);
+        apply_status(&mut statuses, &mut stats, bonus, 0.0);
+        // +50% and -30% of the 300 base: 300 + 150 - 90.
+        assert!(
+            (stats.move_speed - 360.0).abs() < 1e-3,
+            "{}",
+            stats.move_speed
+        );
+        assert_eq!(statuses.effects.len(), 2);
+        // Refreshing the slow keeps both measured against base.
+        let slow = percent_slow("slow", 30.0, 5.0, stats.move_speed);
+        apply_status(&mut statuses, &mut stats, slow, 0.0);
+        assert!(
+            (stats.move_speed - 360.0).abs() < 1e-3,
+            "{}",
+            stats.move_speed
+        );
     }
 
     #[test]
@@ -2899,6 +3036,503 @@ mod tests {
             );
             step(&mut app, 0.0);
             assert_eq!(hp(&app, u), (0.0, 1500.0));
+        }
+    }
+
+    mod independent_instances {
+        use super::*;
+        use std::time::Duration;
+
+        fn app() -> App {
+            let mut app = App::new();
+            app.init_resource::<Time>()
+                .add_message::<StatusEffectEvent>()
+                .add_message::<StatusLifecycleEvent>()
+                .add_message::<DamageEvent>()
+                .add_message::<crate::combat::DamageAppliedEvent>()
+                .add_systems(
+                    Update,
+                    (apply_status_effect_events, tick_status_effects).chain(),
+                );
+            app
+        }
+
+        fn unit(app: &mut App) -> Entity {
+            app.world_mut()
+                .spawn((
+                    StatusEffects::default(),
+                    CombatStats::simple(50.0, 0.0, 1.0, 0.0, 0.0, 300.0),
+                    Health {
+                        current: 100.0,
+                        max: 100.0,
+                        regen_per_sec: 0.0,
+                    },
+                ))
+                .id()
+        }
+
+        fn drain(independent: bool, secs: f32) -> StatusEffect {
+            StatusEffect {
+                attack_damage: -1.0,
+                independent,
+                ..StatusEffect::debuff("shift_attack_damage", secs)
+            }
+        }
+
+        fn send(app: &mut App, target: Entity, change: StatusChange) {
+            app.world_mut().write_message(StatusEffectEvent {
+                reactive: false,
+                source: None,
+                target,
+                change,
+            });
+        }
+
+        fn step(app: &mut App, secs: f32) {
+            app.world_mut()
+                .resource_mut::<Time>()
+                .advance_by(Duration::from_secs_f32(secs));
+            app.update();
+        }
+
+        fn damage(app: &App, e: Entity) -> f32 {
+            app.world().get::<CombatStats>(e).unwrap().attack_damage
+        }
+
+        fn instances(app: &App, e: Entity) -> usize {
+            app.world()
+                .get::<StatusEffects>(e)
+                .unwrap()
+                .effects
+                .iter()
+                .filter(|s| s.id == "shift_attack_damage")
+                .count()
+        }
+
+        #[test]
+        fn independent_instances_coexist_and_expire_separately() {
+            let mut app = app();
+            let u = unit(&mut app);
+            send(&mut app, u, StatusChange::Apply(drain(true, 10.0)));
+            step(&mut app, 0.0);
+            step(&mut app, 5.0);
+            send(&mut app, u, StatusChange::Apply(drain(true, 10.0)));
+            step(&mut app, 0.0);
+            assert_eq!(instances(&app, u), 2);
+            // The first one ends at t = 10, the second at t = 15.
+            step(&mut app, 5.05);
+            assert_eq!(instances(&app, u), 1);
+            assert!((damage(&app, u) - 49.0).abs() < 1e-4);
+            step(&mut app, 5.0);
+            assert_eq!(instances(&app, u), 0);
+            assert!((damage(&app, u) - 50.0).abs() < 1e-4);
+        }
+
+        #[test]
+        fn independent_attack_damage_sums_and_reverts_exactly() {
+            let mut app = app();
+            let u = unit(&mut app);
+            for _ in 0..7 {
+                send(&mut app, u, StatusChange::Apply(drain(true, 4.0)));
+            }
+            step(&mut app, 0.0);
+            assert_eq!(instances(&app, u), 7);
+            assert!((damage(&app, u) - 43.0).abs() < 1e-4);
+            step(&mut app, 4.5);
+            assert_eq!(instances(&app, u), 0);
+            assert_eq!(damage(&app, u), 50.0);
+        }
+
+        #[test]
+        fn remove_by_id_and_dispel_remove_every_instance() {
+            let mut app = app();
+            let u = unit(&mut app);
+            for _ in 0..3 {
+                send(&mut app, u, StatusChange::Apply(drain(true, 30.0)));
+            }
+            step(&mut app, 0.0);
+            assert_eq!(instances(&app, u), 3);
+            send(&mut app, u, StatusChange::Remove("shift_attack_damage"));
+            step(&mut app, 0.0);
+            assert_eq!(instances(&app, u), 0);
+            assert_eq!(damage(&app, u), 50.0);
+
+            for _ in 0..3 {
+                send(&mut app, u, StatusChange::Apply(drain(true, 30.0)));
+            }
+            step(&mut app, 0.0);
+            assert_eq!(instances(&app, u), 3);
+            send(
+                &mut app,
+                u,
+                StatusChange::Dispel {
+                    kind: StatusKind::Debuff,
+                    strength: DispelStrength::Basic,
+                },
+            );
+            step(&mut app, 0.0);
+            assert_eq!(instances(&app, u), 0);
+            assert_eq!(damage(&app, u), 50.0);
+        }
+
+        #[test]
+        fn non_independent_modifier_still_refreshes() {
+            let mut app = app();
+            let u = unit(&mut app);
+            for _ in 0..3 {
+                send(&mut app, u, StatusChange::Apply(drain(false, 30.0)));
+            }
+            step(&mut app, 0.0);
+            assert_eq!(instances(&app, u), 1);
+            assert!((damage(&app, u) - 49.0).abs() < 1e-4);
+        }
+    }
+
+    mod attributes {
+        use super::*;
+        use crate::components::Mana;
+        use crate::vitals::{
+            AppliedStatusAttributes, ResourceStat, sync_status_attributes,
+            sync_status_resource_caps,
+        };
+        use std::time::Duration;
+
+        fn app() -> App {
+            let mut app = App::new();
+            app.init_resource::<Time>()
+                .add_message::<StatusEffectEvent>()
+                .add_message::<StatusLifecycleEvent>()
+                .add_message::<DamageEvent>()
+                .add_message::<crate::combat::DamageAppliedEvent>()
+                .add_systems(
+                    Update,
+                    (
+                        apply_status_effect_events,
+                        tick_status_effects,
+                        sync_status_resource_caps,
+                        sync_status_attributes,
+                    )
+                        .chain(),
+                );
+            app
+        }
+
+        /// A hero with starter attributes folded into its vitals the way `HeroDef::vitals` does.
+        fn hero(app: &mut App) -> Entity {
+            let attrs = HeroAttributes::starter();
+            let mut health = Health {
+                current: 500.0,
+                max: 500.0,
+                regen_per_sec: 0.0,
+            };
+            let mut mana = Mana::new(100.0, 0.0);
+            let mut stats = CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 300.0);
+            attrs.apply_to(&mut health, &mut mana, &mut stats);
+            app.world_mut()
+                .spawn((StatusEffects::default(), attrs, health, mana, stats))
+                .id()
+        }
+
+        fn modifier(id: &'static str, stat: ResourceStat, amount: f32, secs: f32) -> StatusEffect {
+            let kind = if amount >= 0.0 {
+                StatusKind::Buff
+            } else {
+                StatusKind::Debuff
+            };
+            StatusEffect::resource_modifier(id, kind, stat, amount, secs)
+        }
+
+        fn send(app: &mut App, target: Entity, change: StatusChange) {
+            app.world_mut().write_message(StatusEffectEvent {
+                reactive: false,
+                source: None,
+                target,
+                change,
+            });
+        }
+
+        fn step(app: &mut App, secs: f32) {
+            app.world_mut()
+                .resource_mut::<Time>()
+                .advance_by(Duration::from_secs_f32(secs));
+            app.update();
+        }
+
+        fn snapshot(app: &App, e: Entity) -> (HeroAttributes, f32, f32, f32, f32, f32) {
+            let w = app.world();
+            let attrs = *w.get::<HeroAttributes>(e).unwrap();
+            let health = w.get::<Health>(e).unwrap();
+            let mana = w.get::<Mana>(e).unwrap();
+            let stats = w.get::<CombatStats>(e).unwrap();
+            (
+                attrs,
+                health.max,
+                mana.max,
+                stats.armor,
+                stats.magic_resist,
+                stats.attack_speed,
+            )
+        }
+
+        #[test]
+        fn timed_agility_raises_attributes_armor_and_attack_speed_then_reverts() {
+            let mut app = app();
+            let hero = hero(&mut app);
+            let base = snapshot(&app, hero);
+            send(
+                &mut app,
+                hero,
+                StatusChange::Apply(modifier("t_agility", ResourceStat::Agility, 9.0, 2.0)),
+            );
+            step(&mut app, 0.0);
+            step(&mut app, 0.0);
+            let up = snapshot(&app, hero);
+            assert_eq!(up.0.agility, base.0.agility + 9.0);
+            assert!((up.3 - (base.3 + 9.0 * HeroAttributes::ARMOR_PER_AGI)).abs() < 1e-4);
+            assert!(up.5 > base.5, "attack speed {} -> {}", base.5, up.5);
+            assert_eq!(up.1, base.1, "strength-fed health is untouched");
+            // Expiry puts everything back.
+            step(&mut app, 2.5);
+            step(&mut app, 0.0);
+            let down = snapshot(&app, hero);
+            assert_eq!(down.0.agility, base.0.agility);
+            assert!((down.3 - base.3).abs() < 1e-4);
+            assert!((down.5 - base.5).abs() < 1e-5);
+        }
+
+        #[test]
+        fn timed_strength_changes_max_health_like_items() {
+            let mut app = app();
+            let hero = hero(&mut app);
+            let base = snapshot(&app, hero);
+            send(
+                &mut app,
+                hero,
+                StatusChange::Apply(modifier("t_strength", ResourceStat::Strength, 10.0, 30.0)),
+            );
+            step(&mut app, 0.0);
+            let up = snapshot(&app, hero);
+            assert!((up.1 - (base.1 + 10.0 * HeroAttributes::HP_PER_STR)).abs() < 1e-3);
+            // A steal (negative) is a debuff and lowers it.
+            send(
+                &mut app,
+                hero,
+                StatusChange::Apply(modifier("t_int", ResourceStat::Intelligence, -5.0, 30.0)),
+            );
+            step(&mut app, 0.0);
+            let down = snapshot(&app, hero);
+            assert!((down.2 - (base.2 - 5.0 * HeroAttributes::MANA_PER_INT)).abs() < 1e-3);
+            assert!((down.4 - (base.4 - 5.0 * HeroAttributes::MR_PER_INT)).abs() < 1e-4);
+        }
+
+        #[test]
+        fn dispelled_attribute_status_reverts() {
+            let mut app = app();
+            let hero = hero(&mut app);
+            let base = snapshot(&app, hero);
+            send(
+                &mut app,
+                hero,
+                StatusChange::Apply(modifier("t_strength", ResourceStat::Strength, 10.0, 30.0)),
+            );
+            step(&mut app, 0.0);
+            assert_ne!(snapshot(&app, hero).1, base.1);
+            send(
+                &mut app,
+                hero,
+                StatusChange::Dispel {
+                    kind: StatusKind::Buff,
+                    strength: DispelStrength::Basic,
+                },
+            );
+            step(&mut app, 0.0);
+            let after = snapshot(&app, hero);
+            assert_eq!(after.0.strength, base.0.strength);
+            assert!((after.1 - base.1).abs() < 1e-3);
+            assert_eq!(
+                *app.world().get::<AppliedStatusAttributes>(hero).unwrap(),
+                AppliedStatusAttributes::default()
+            );
+        }
+
+        #[test]
+        fn attribute_status_on_unit_without_attributes_is_ignored() {
+            let mut app = app();
+            let unit = app
+                .world_mut()
+                .spawn((
+                    StatusEffects::default(),
+                    CombatStats::simple(0.0, 0.0, 1.0, 5.0, 0.0, 300.0),
+                    Health {
+                        current: 100.0,
+                        max: 100.0,
+                        regen_per_sec: 0.0,
+                    },
+                    Mana::new(50.0, 0.0),
+                ))
+                .id();
+            send(
+                &mut app,
+                unit,
+                StatusChange::Apply(modifier("t_agility", ResourceStat::Agility, 9.0, 5.0)),
+            );
+            step(&mut app, 0.0);
+            step(&mut app, 0.0);
+            let w = app.world();
+            assert_eq!(w.get::<CombatStats>(unit).unwrap().armor, 5.0);
+            assert_eq!(w.get::<Health>(unit).unwrap().max, 100.0);
+            assert!(w.get::<AppliedStatusAttributes>(unit).is_none());
+        }
+
+        fn independent_agility(secs: f32) -> StatusEffect {
+            StatusEffect {
+                independent: true,
+                ..modifier("es_agility", ResourceStat::Agility, 3.0, secs)
+            }
+        }
+
+        #[test]
+        fn independent_same_id_agility_stacks_expire_one_by_one_without_drift() {
+            let mut app = app();
+            let hero = hero(&mut app);
+            let base = snapshot(&app, hero);
+            send(
+                &mut app,
+                hero,
+                StatusChange::Apply(independent_agility(4.0)),
+            );
+            step(&mut app, 0.0);
+            step(&mut app, 2.0);
+            send(
+                &mut app,
+                hero,
+                StatusChange::Apply(independent_agility(4.0)),
+            );
+            send(
+                &mut app,
+                hero,
+                StatusChange::Apply(independent_agility(4.0)),
+            );
+            step(&mut app, 0.0);
+            step(&mut app, 0.0);
+            assert_eq!(snapshot(&app, hero).0.agility, base.0.agility + 9.0);
+            // The first stack ends at t = 4, the other two at t = 6.
+            step(&mut app, 2.1);
+            step(&mut app, 0.0);
+            let mid = snapshot(&app, hero);
+            assert_eq!(mid.0.agility, base.0.agility + 6.0);
+            assert!((mid.3 - (base.3 + 6.0 * HeroAttributes::ARMOR_PER_AGI)).abs() < 1e-4);
+            step(&mut app, 2.0);
+            step(&mut app, 0.0);
+            let down = snapshot(&app, hero);
+            assert_eq!(down.0.agility, base.0.agility);
+            assert!((down.3 - base.3).abs() < 1e-4);
+            assert!((down.5 - base.5).abs() < 1e-5);
+        }
+
+        #[test]
+        fn many_stack_churn_leaves_no_attribute_drift() {
+            let mut app = app();
+            let hero = hero(&mut app);
+            let base = snapshot(&app, hero);
+            for _ in 0..40 {
+                send(
+                    &mut app,
+                    hero,
+                    StatusChange::Apply(independent_agility(1.1)),
+                );
+                step(&mut app, 0.3);
+            }
+            step(&mut app, 2.0);
+            step(&mut app, 0.0);
+            let down = snapshot(&app, hero);
+            assert!((down.0.agility - base.0.agility).abs() < 1e-3);
+            assert!((down.3 - base.3).abs() < 1e-3);
+            assert!((down.5 - base.5).abs() < 1e-3);
+        }
+
+        #[test]
+        fn level_up_during_a_timed_attribute_keeps_both_parts_on_expiry() {
+            let mut app = app();
+            let hero = hero(&mut app);
+            let base = snapshot(&app, hero);
+            send(
+                &mut app,
+                hero,
+                StatusChange::Apply(modifier("t_agility", ResourceStat::Agility, 5.0, 2.0)),
+            );
+            step(&mut app, 0.0);
+            step(&mut app, 0.0);
+            // A level-up folds its own gain through `apply_delta`, as progression does.
+            {
+                let w = app.world_mut();
+                let mut attrs = *w.get::<HeroAttributes>(hero).unwrap();
+                let before = attrs;
+                attrs.level_up();
+                let mut health = *w.get::<Health>(hero).unwrap();
+                let mut mana = *w.get::<Mana>(hero).unwrap();
+                let mut stats = *w.get::<CombatStats>(hero).unwrap();
+                HeroAttributes::apply_delta(&before, &attrs, &mut health, &mut mana, &mut stats);
+                *w.get_mut::<HeroAttributes>(hero).unwrap() = attrs;
+                *w.get_mut::<Health>(hero).unwrap() = health;
+                *w.get_mut::<Mana>(hero).unwrap() = mana;
+                *w.get_mut::<CombatStats>(hero).unwrap() = stats;
+            }
+            let leveled = *app.world().get::<HeroAttributes>(hero).unwrap();
+            step(&mut app, 2.5);
+            step(&mut app, 0.0);
+            let after = snapshot(&app, hero);
+            assert!(
+                (after.0.agility - leveled.agility + 5.0).abs() < 1e-4,
+                "only the status part is removed"
+            );
+            assert!(after.0.agility > base.0.agility);
+        }
+
+        #[test]
+        fn dead_holder_attribute_status_still_reverts() {
+            let mut app = app();
+            let hero = hero(&mut app);
+            let base = snapshot(&app, hero);
+            send(
+                &mut app,
+                hero,
+                StatusChange::Apply(modifier("t_strength", ResourceStat::Strength, 10.0, 2.0)),
+            );
+            step(&mut app, 0.0);
+            step(&mut app, 0.0);
+            app.world_mut().get_mut::<Health>(hero).unwrap().current = 0.0;
+            step(&mut app, 2.5);
+            step(&mut app, 0.0);
+            let down = snapshot(&app, hero);
+            assert_eq!(down.0.strength, base.0.strength);
+            assert!((down.1 - base.1).abs() < 1e-3);
+        }
+
+        #[test]
+        fn two_instances_add() {
+            let mut app = app();
+            let hero = hero(&mut app);
+            let base = snapshot(&app, hero);
+            send(
+                &mut app,
+                hero,
+                StatusChange::Apply(modifier("a_agility", ResourceStat::Agility, 3.0, 2.0)),
+            );
+            send(
+                &mut app,
+                hero,
+                StatusChange::Apply(modifier("b_agility", ResourceStat::Agility, 3.0, 6.0)),
+            );
+            step(&mut app, 0.0);
+            assert_eq!(snapshot(&app, hero).0.agility, base.0.agility + 6.0);
+            // Only the shorter one expires.
+            step(&mut app, 2.5);
+            step(&mut app, 0.0);
+            assert_eq!(snapshot(&app, hero).0.agility, base.0.agility + 3.0);
+            step(&mut app, 4.0);
+            step(&mut app, 0.0);
+            assert_eq!(snapshot(&app, hero).0.agility, base.0.agility);
         }
     }
 

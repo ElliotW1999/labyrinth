@@ -139,6 +139,7 @@ impl Plugin for AbilitiesPlugin {
                         apply_displacement_events,
                         apply_status_effect_events,
                         crate::vitals::sync_status_resource_caps,
+                        crate::vitals::sync_status_attributes,
                         // Before the AI and navigation stages, so the orders it drops
                         // are gone before they are replanned or re-issued.
                         apply_teleport_events.before(crate::movement::SimSet::Ai),
@@ -798,6 +799,7 @@ mod tests {
                     (
                         apply_status_effect_events,
                         crate::vitals::sync_status_resource_caps,
+                        crate::vitals::sync_status_attributes,
                     )
                         .chain(),
                     apply_teleport_events,
@@ -3038,6 +3040,7 @@ mod tests {
             cleave_end_radius: RankValue::ZERO,
             cleave_distance: RankValue::ZERO,
             attack_charges: RankValue::ZERO,
+            independent: false,
         };
         let mut app = test_app();
         let toggle = AbilityDefinition::new(AbilityId::Overcharge)
@@ -6547,6 +6550,7 @@ mod tests {
                     cleave_end_radius: RankValue::ZERO,
                     cleave_distance: RankValue::ZERO,
                     attack_charges: RankValue::ZERO,
+                    independent: false,
                 },
                 duration: RankValue::ZERO,
             },
@@ -7325,6 +7329,7 @@ mod tests {
             cleave_end_radius: RankValue::ZERO,
             cleave_distance: RankValue::ZERO,
             attack_charges: RankValue::ZERO,
+            independent: false,
         }
     }
 
@@ -8180,6 +8185,60 @@ mod tests {
     }
 
     #[test]
+    fn targeting_only_untargetable_still_hit_by_areas() {
+        let mut app = test_app();
+        let caster = spawn_caster(&mut app, KIT);
+        let dancer = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        app.world_mut()
+            .get_mut::<StatusEffects>(dancer)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::untargetable(30.0));
+        request(&mut app, caster, 0, CastTarget::None);
+        for _ in 0..10 {
+            step(&mut app);
+        }
+        assert!(
+            app.world().get::<Health>(dancer).unwrap().current < 1000.0,
+            "an area still damages a targeting-only untargetable unit"
+        );
+
+        // A unit-target spell cannot pick it.
+        let before = app.world().get::<Mana>(caster).unwrap().current;
+        for _ in 0..60 {
+            step(&mut app);
+        }
+        request(&mut app, caster, 1, CastTarget::Unit(dancer));
+        for _ in 0..12 {
+            step(&mut app);
+        }
+        assert!(app.world().get::<Activation>(caster).is_none());
+        assert!(app.world().get::<Mana>(caster).unwrap().current >= before);
+    }
+
+    #[test]
+    fn holder_still_runs_own_caster_effects() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(apply_status_ability(StatusSpec::Untargetable, 5.0));
+        let caster = spawn_caster(&mut app, KIT);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        // Cast on itself: the status lands on the caster.
+        request(&mut app, caster, 3, CastTarget::Unit(caster));
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        assert!(status_of(&app, caster, "untargetable").is_some());
+        // The holder still casts its own area ability and damages enemies.
+        request(&mut app, caster, 0, CastTarget::None);
+        for _ in 0..10 {
+            step(&mut app);
+        }
+        assert!(app.world().get::<Health>(enemy).unwrap().current < 1000.0);
+    }
+
+    #[test]
     fn area_damage_hits_invisible_unit() {
         let mut app = test_app();
         let caster = spawn_caster(&mut app, KIT);
@@ -8698,6 +8757,16 @@ mod tests {
     const ZONE_TICK: AbilityTrigger = AbilityTrigger::Custom("on_zone_tick");
 
     fn zone_effect(team: TargetTeam, delay: f32, duration: f32, interval: f32) -> AbilityEffect {
+        follow_zone_effect(team, delay, duration, interval, false)
+    }
+
+    fn follow_zone_effect(
+        team: TargetTeam,
+        delay: f32,
+        duration: f32,
+        interval: f32,
+        follow_caster: bool,
+    ) -> AbilityEffect {
         AbilityEffect::Zone {
             radius: AreaRadius::Fixed(RankValue::fixed(300.0)),
             team,
@@ -8705,6 +8774,7 @@ mod tests {
             duration: RankValue::fixed(duration),
             interval: RankValue::fixed(interval),
             then: ZONE_TICK,
+            follow_caster,
         }
     }
 
@@ -8933,6 +9003,173 @@ mod tests {
         assert_eq!(zone_count(&mut app), 1);
     }
 
+    fn move_unit(app: &mut App, unit: Entity, to: Vec3) {
+        app.world_mut()
+            .get_mut::<Transform>(unit)
+            .unwrap()
+            .translation = to;
+    }
+
+    /// Steps until a tick is written and returns it.
+    fn next_zone_tick(app: &mut App) -> TriggerContext {
+        for _ in 0..60 {
+            step(app);
+            if let Some(tick) = zone_ticks(app).into_iter().next() {
+                return tick;
+            }
+        }
+        panic!("the zone never ticked");
+    }
+
+    #[test]
+    fn attached_zone_recentres_on_caster_each_tick() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(zone_ability(follow_zone_effect(
+                TargetTeam::Enemy,
+                0.0,
+                3.0,
+                1.0,
+                true,
+            )));
+        let caster = spawn_caster(&mut app, KIT);
+        // 700 away from where the caster starts: outside the 300 radius.
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(700.0, 0.0, 0.0));
+        request(&mut app, caster, 3, CastTarget::None);
+        let first = next_zone_tick(&mut app);
+        assert!(first.affected_units.is_empty());
+        assert_eq!(health(&app, enemy), 1000.0);
+
+        // The caster walks next to the enemy; the next tick is centred on its new position.
+        move_unit(&mut app, caster, Vec3::new(600.0, 0.0, 0.0));
+        let second = next_zone_tick(&mut app);
+        assert_eq!(second.affected_units, vec![enemy]);
+        assert_eq!(health(&app, enemy), 990.0);
+        let center = app
+            .world_mut()
+            .query::<&zones::AbilityZone>()
+            .single(app.world())
+            .unwrap()
+            .center;
+        assert_eq!(center, Vec3::new(600.0, 0.0, 0.0));
+
+        // And back out of reach again.
+        move_unit(&mut app, caster, Vec3::new(-400.0, 0.0, 0.0));
+        let third = next_zone_tick(&mut app);
+        assert!(third.affected_units.is_empty());
+        assert_eq!(health(&app, enemy), 990.0);
+    }
+
+    #[test]
+    fn attached_zone_stops_when_caster_dies() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(zone_ability(follow_zone_effect(
+                TargetTeam::Enemy,
+                0.0,
+                5.0,
+                1.0,
+                true,
+            )));
+        let caster = spawn_caster(&mut app, KIT);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        request(&mut app, caster, 3, CastTarget::None);
+        next_zone_tick(&mut app);
+        assert_eq!(health(&app, enemy), 990.0);
+        assert_eq!(zone_count(&mut app), 1);
+
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 0.0;
+        let mut ticks = 0;
+        for _ in 0..120 {
+            step(&mut app);
+            ticks += zone_ticks(&app).len();
+        }
+        assert_eq!(ticks, 0, "no tick fires once the caster is dead");
+        assert_eq!(zone_count(&mut app), 0, "the zone is despawned, not paused");
+        assert_eq!(health(&app, enemy), 990.0);
+    }
+
+    #[test]
+    fn attached_zone_tick_point_is_caster_position() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(zone_ability(follow_zone_effect(
+                TargetTeam::Enemy,
+                0.0,
+                3.0,
+                1.0,
+                true,
+            )));
+        let caster = spawn_caster(&mut app, KIT);
+        request(&mut app, caster, 3, CastTarget::None);
+        next_zone_tick(&mut app);
+        let to = Vec3::new(250.0, 0.0, -80.0);
+        move_unit(&mut app, caster, to);
+        let tick = next_zone_tick(&mut app);
+        assert_eq!(tick.point, to);
+        assert_eq!(tick.origin, to);
+        let zone_at = app
+            .world_mut()
+            .query::<(&zones::AbilityZone, &Transform)>()
+            .single(app.world())
+            .unwrap()
+            .1
+            .translation;
+        assert_eq!(zone_at, to);
+    }
+
+    #[test]
+    fn static_zone_unchanged() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(zone_ability(zone_effect(TargetTeam::Enemy, 0.0, 5.0, 1.0)));
+        let caster = spawn_caster(&mut app, KIT);
+        let near_spawn = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        let near_walker = spawn_unit(&mut app, Team::Dire, Vec3::new(1000.0, 0.0, 0.0));
+        request(&mut app, caster, 3, CastTarget::None);
+        next_zone_tick(&mut app);
+        move_unit(&mut app, caster, Vec3::new(900.0, 0.0, 0.0));
+        let tick = next_zone_tick(&mut app);
+        assert_eq!(tick.affected_units, vec![near_spawn], "it stayed put");
+        assert_eq!(health(&app, near_walker), 1000.0);
+
+        // A static zone outlives its caster's death.
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 0.0;
+        let tick = next_zone_tick(&mut app);
+        assert_eq!(tick.affected_units, vec![near_spawn]);
+        assert_eq!(zone_count(&mut app), 1);
+    }
+
+    #[test]
+    fn ability_attached_zone_requests_a_following_zone() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(zone_ability(follow_zone_effect(
+                TargetTeam::Enemy,
+                0.0,
+                2.0,
+                1.0,
+                true,
+            )));
+        let caster = spawn_caster(&mut app, KIT);
+        request(&mut app, caster, 3, CastTarget::None);
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        let zone = app
+            .world_mut()
+            .query::<&zones::AbilityZone>()
+            .single(app.world())
+            .unwrap()
+            .clone();
+        assert!(zone.follow_caster);
+    }
+
     #[test]
     fn zone_ignores_a_zero_interval_duration_or_radius() {
         for effect in [
@@ -8946,6 +9183,7 @@ mod tests {
                 duration: RankValue::fixed(2.0),
                 interval: RankValue::fixed(1.0),
                 then: ZONE_TICK,
+                follow_caster: false,
             },
         ] {
             let mut app = test_app();
@@ -10405,5 +10643,540 @@ mod tests {
         step(&mut app);
         assert!(has_status(&app, unit, "berserk"), "item bonus still held");
         assert_eq!(health(&app, target), 900.0, "item proc still fires");
+    }
+
+    // ---- Slark ----
+
+    const SLARK: [AbilityId; 4] = [
+        AbilityId::DarkPact,
+        AbilityId::Pounce,
+        AbilityId::EssenceShift,
+        AbilityId::ShadowDance,
+    ];
+
+    /// The Ursa test app plus the leash clamp, which the pounce tests need.
+    fn slark_app() -> App {
+        let mut app = qop_app();
+        app.add_systems(Update, crate::movement::enforce_leashes);
+        app
+    }
+
+    /// A Slark with hero attributes, so timed attribute modifiers have something to fold into.
+    fn spawn_slark(app: &mut App) -> Entity {
+        let caster = spawn_caster(app, SLARK);
+        app.world_mut()
+            .entity_mut(caster)
+            .insert(crate::components::HeroAttributes::starter());
+        caster
+    }
+
+    fn run_seconds(app: &mut App, seconds: f32) {
+        for _ in 0..(seconds / 0.05).round() as usize {
+            step(app);
+        }
+    }
+
+    /// Damage events dealt to `unit` while running `seconds`.
+    fn damage_to(app: &mut App, unit: Entity, seconds: f32) -> Vec<DamageEvent> {
+        let mut hits = Vec::new();
+        for _ in 0..(seconds / 0.05).round() as usize {
+            step(app);
+            hits.extend(
+                current_messages::<DamageEvent>(app)
+                    .into_iter()
+                    .filter(|d| d.target == unit),
+            );
+        }
+        hits
+    }
+
+    fn instances(app: &App, unit: Entity, id: &str) -> usize {
+        app.world()
+            .get::<StatusEffects>(unit)
+            .unwrap()
+            .effects
+            .iter()
+            .filter(|e| e.id == id)
+            .count()
+    }
+
+    #[test]
+    fn dark_pact_waits_then_pulses_ten_times_around_slark() {
+        let mut app = slark_app();
+        let caster = spawn_caster(&mut app, SLARK);
+        let near = spawn_unit(&mut app, Team::Dire, Vec3::new(200.0, 0.0, 0.0));
+        let far = spawn_unit(&mut app, Team::Dire, Vec3::new(400.0, 0.0, 0.0));
+        request(&mut app, caster, 0, CastTarget::None);
+        // Nothing lands during the 1.5 s delay.
+        let early = damage_to(&mut app, near, 1.4);
+        assert!(early.is_empty(), "no pulse before the delay: {early:?}");
+        assert_eq!(health(&app, near), 1000.0);
+        let pulses = damage_to(&mut app, near, 1.6);
+        assert_eq!(pulses.len(), 10, "ten pulses");
+        assert!(
+            pulses.iter().all(|d| d.amount == 7.5),
+            "7.5 each: {pulses:?}"
+        );
+        assert_eq!(health(&app, near), 1000.0 - 75.0);
+        assert_eq!(health(&app, far), 1000.0, "400 is outside the 325 radius");
+        assert_eq!(zone_count(&mut app), 0, "the zone is gone after 2.5 s");
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 935.0);
+    }
+
+    #[test]
+    fn dark_pact_dispels_debuffs_each_pulse() {
+        let mut app = slark_app();
+        let caster = spawn_caster(&mut app, SLARK);
+        run_seconds(&mut app, 0.0);
+        request(&mut app, caster, 0, CastTarget::None);
+        run_seconds(&mut app, 1.55);
+        {
+            let mut statuses = app.world_mut().get_mut::<StatusEffects>(caster).unwrap();
+            statuses
+                .effects
+                .push(crate::status::StatusEffect::debuff("test_slow", 30.0));
+            statuses
+                .effects
+                .push(crate::status::StatusEffect::buff("test_buff", 30.0));
+        }
+        assert!(status_of(&app, caster, "test_slow").is_some());
+        run_seconds(&mut app, 0.2);
+        assert!(
+            status_of(&app, caster, "test_slow").is_none(),
+            "the next pulse sheds it"
+        );
+        assert!(status_of(&app, caster, "test_buff").is_some());
+
+        // A debuff gained later in the window is shed by a later pulse too.
+        app.world_mut()
+            .get_mut::<StatusEffects>(caster)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::debuff("late_slow", 30.0));
+        run_seconds(&mut app, 0.2);
+        assert!(status_of(&app, caster, "late_slow").is_none());
+
+        // After the zone ends nothing sheds debuffs any more.
+        run_seconds(&mut app, 1.0);
+        app.world_mut()
+            .get_mut::<StatusEffects>(caster)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::debuff("after", 30.0));
+        run_seconds(&mut app, 0.5);
+        assert!(status_of(&app, caster, "after").is_some());
+    }
+
+    #[test]
+    fn dark_pact_heals_fifteen_percent_of_damage_dealt() {
+        let mut app = slark_app();
+        let caster = spawn_caster(&mut app, SLARK);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(200.0, 0.0, 0.0));
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 500.0;
+        request(&mut app, caster, 0, CastTarget::None);
+        run_seconds(&mut app, 3.0);
+        assert_eq!(health(&app, enemy), 925.0);
+        let healed = health(&app, caster) - 500.0;
+        assert!(
+            (healed - 0.15 * 75.0).abs() < 1e-3,
+            "15% of the 75 dealt: {healed}"
+        );
+
+        // No overkill: a nearly dead enemy only pays out what it lost.
+        let mut app = slark_app();
+        let caster = spawn_caster(&mut app, SLARK);
+        let weak = spawn_unit(&mut app, Team::Dire, Vec3::new(200.0, 0.0, 0.0));
+        app.world_mut().get_mut::<Health>(weak).unwrap().current = 5.0;
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 500.0;
+        request(&mut app, caster, 0, CastTarget::None);
+        run_seconds(&mut app, 3.0);
+        let healed = health(&app, caster) - 500.0;
+        assert!(
+            (healed - 0.15 * 5.0).abs() < 1e-3,
+            "only the 5 health actually removed: {healed}"
+        );
+    }
+
+    #[test]
+    fn dark_pact_follows_slark_after_pounce() {
+        let mut app = slark_app();
+        let caster = spawn_caster(&mut app, SLARK);
+        // Slark faces -Z and lands 700 away. This enemy is 900 from the cast point, so only
+        // a zone that moved with him reaches it; the dash never touches it.
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, -900.0));
+        request(&mut app, caster, 0, CastTarget::None);
+        run_seconds(&mut app, 0.1);
+        request(&mut app, caster, 1, CastTarget::None);
+        run_seconds(&mut app, 3.5);
+        let landed = position(&app, caster);
+        assert!(
+            landed.distance(Vec3::new(0.0, 0.0, -700.0)) < 1.0,
+            "leapt 700: {landed:?}"
+        );
+        assert_eq!(
+            health(&app, enemy),
+            1000.0 - 75.0,
+            "all ten pulses were centred on the landing point"
+        );
+    }
+
+    /// A Dire Slark standing at `pos`, which has cast Shadow Dance and is now untargetable.
+    fn dancing_dire_slark(app: &mut App, pos: Vec3) -> Entity {
+        let dancer = spawn_caster(app, SLARK);
+        app.world_mut()
+            .entity_mut(dancer)
+            .insert((Team::Dire, Transform::from_translation(pos)));
+        request(app, dancer, 3, CastTarget::None);
+        run_seconds(app, 0.3);
+        assert!(
+            status_of(app, dancer, "untargetable").is_some(),
+            "the dancer is untargetable"
+        );
+        dancer
+    }
+
+    #[test]
+    fn pounce_contact_still_hits_a_shadow_dancing_enemy() {
+        let mut app = slark_app();
+        let caster = spawn_caster(&mut app, SLARK);
+        // On the leap's path (he faces -Z); the dancer is not the full untargetable kind.
+        let dancer = dancing_dire_slark(&mut app, Vec3::new(0.0, 0.0, -300.0));
+        let plain = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, -400.0));
+        let before = health(&app, dancer);
+        request(&mut app, caster, 1, CastTarget::None);
+        run_seconds(&mut app, 1.3);
+        assert_eq!(
+            health(&app, dancer),
+            before - 100.0,
+            "dash contact counts a targeting-only untargetable unit"
+        );
+        assert_eq!(health(&app, plain), 900.0, "and a plain unit as before");
+    }
+
+    #[test]
+    fn pounce_leash_still_grabs_a_shadow_dancing_enemy_at_the_landing_point() {
+        let mut app = slark_app();
+        let caster = spawn_caster(&mut app, SLARK);
+        let dancer = dancing_dire_slark(&mut app, Vec3::new(0.0, 0.0, -650.0));
+        request(&mut app, caster, 1, CastTarget::None);
+        run_seconds(&mut app, 1.3);
+        assert!(
+            status_of(&app, dancer, "leash").is_some(),
+            "the landing area reaches the dancer"
+        );
+    }
+
+    #[test]
+    fn dark_pact_pulses_still_drain_a_shadow_dancing_enemy() {
+        let mut app = slark_app();
+        let caster = spawn_caster(&mut app, SLARK);
+        let dancer = dancing_dire_slark(&mut app, Vec3::new(200.0, 0.0, 0.0));
+        let before = health(&app, dancer);
+        request(&mut app, caster, 0, CastTarget::None);
+        run_seconds(&mut app, 3.0);
+        assert!(
+            health(&app, dancer) < before,
+            "areas still hit a targeting-only untargetable unit"
+        );
+    }
+
+    #[test]
+    fn dark_pact_dispel_leaves_shadow_dance_and_agility_buffs() {
+        let mut app = slark_app();
+        let caster = spawn_slark(&mut app);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        request(&mut app, caster, 3, CastTarget::None);
+        run_seconds(&mut app, 0.2);
+        write_attack_hit(&mut app, caster, enemy);
+        run_seconds(&mut app, 0.1);
+        request(&mut app, caster, 0, CastTarget::None);
+        run_seconds(&mut app, 2.0);
+        assert!(status_of(&app, caster, "untargetable").is_some());
+        assert!(status_of(&app, caster, "shadow_dance_move_speed_bonus").is_some());
+        assert_eq!(instances(&app, caster, "essence_shift_agility"), 1);
+    }
+
+    #[test]
+    fn dark_pact_never_damages_slark() {
+        let mut app = slark_app();
+        let caster = spawn_caster(&mut app, SLARK);
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(100.0, 0.0, 0.0));
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(200.0, 0.0, 0.0));
+        request(&mut app, caster, 0, CastTarget::None);
+        let own = damage_to(&mut app, caster, 3.0);
+        assert!(own.is_empty(), "no self-damage: {own:?}");
+        assert_eq!(health(&app, caster), 1000.0);
+        assert_eq!(health(&app, ally), 1000.0, "allies are not hit");
+        assert!(health(&app, enemy) < 1000.0);
+    }
+
+    #[test]
+    fn dark_pact_stops_when_slark_dies() {
+        let mut app = slark_app();
+        let caster = spawn_caster(&mut app, SLARK);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(200.0, 0.0, 0.0));
+        request(&mut app, caster, 0, CastTarget::None);
+        run_seconds(&mut app, 1.8);
+        let hurt = health(&app, enemy);
+        assert!(hurt < 1000.0 && hurt > 1000.0 - 75.0, "mid-window: {hurt}");
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 0.0;
+        run_seconds(&mut app, 2.0);
+        assert_eq!(health(&app, enemy), hurt, "no pulse after he died");
+        assert_eq!(zone_count(&mut app), 0);
+    }
+
+    #[test]
+    fn pounce_leaps_forward_damages_passed_enemies_and_leashes_those_at_landing() {
+        let mut app = slark_app();
+        let caster = spawn_caster(&mut app, SLARK);
+        // He faces -Z and lands at z = -700.
+        let passed = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, -300.0));
+        let at_landing = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, -650.0));
+        let beside = spawn_unit(&mut app, Team::Dire, Vec3::new(400.0, 0.0, -300.0));
+        let behind = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, 200.0));
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(0.0, 0.0, -400.0));
+        request(&mut app, caster, 1, CastTarget::None);
+        run_seconds(&mut app, 1.3);
+        let landed = position(&app, caster);
+        assert!(
+            landed.distance(Vec3::new(0.0, 0.0, -700.0)) < 1.0,
+            "leapt 700 forward: {landed:?}"
+        );
+        assert_eq!(health(&app, passed), 900.0, "damaged once on the way");
+        assert!(
+            status_of(&app, passed, "leash").is_none(),
+            "passed early: damaged but not leashed"
+        );
+        assert_eq!(health(&app, at_landing), 900.0, "damaged and leashed");
+        let leash = status_of(&app, at_landing, "leash").expect("leashed");
+        assert!(leash.remaining > 1.0 && leash.remaining <= 2.5);
+        for untouched in [beside, behind, ally] {
+            assert_eq!(health(&app, untouched), 1000.0);
+            assert!(status_of(&app, untouched, "leash").is_none());
+        }
+        assert_eq!(health(&app, caster), 1000.0);
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 925.0);
+    }
+
+    #[test]
+    fn pounce_leash_holds_target_within_radius_of_landing_point() {
+        let mut app = slark_app();
+        let caster = spawn_caster(&mut app, SLARK);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, -650.0));
+        request(&mut app, caster, 1, CastTarget::None);
+        run_seconds(&mut app, 1.3);
+        let statuses = app.world().get::<StatusEffects>(target).unwrap();
+        let leash = statuses.leashes().next().expect("leashed");
+        assert_eq!(leash.radius, 325.0);
+        match leash.anchor {
+            crate::status::LeashAnchor::Point(p) => {
+                assert!(
+                    p.distance(Vec2::new(0.0, -700.0)) < 1.0,
+                    "landing point {p}"
+                );
+            }
+            other => panic!("anchored at the landing point, not {other:?}"),
+        }
+        // Pushed far out, it is clamped back to the circle around the landing point.
+        app.world_mut()
+            .get_mut::<Transform>(target)
+            .unwrap()
+            .translation = Vec3::new(1500.0, 0.0, -700.0);
+        step(&mut app);
+        let p = position(&app, target);
+        let from_landing = Vec2::new(p.x, p.z).distance(Vec2::new(0.0, -700.0));
+        assert!(
+            (from_landing - 325.0).abs() < 1.0,
+            "held at the edge: {from_landing}"
+        );
+        // Once the leash ends it is free again.
+        run_seconds(&mut app, 3.0);
+        assert!(status_of(&app, target, "leash").is_none());
+        app.world_mut()
+            .get_mut::<Transform>(target)
+            .unwrap()
+            .translation = Vec3::new(1500.0, 0.0, -700.0);
+        step(&mut app);
+        assert_eq!(position(&app, target).x, 1500.0);
+    }
+
+    #[test]
+    fn essence_shift_stacks_expire_independently() {
+        let mut app = slark_app();
+        let caster = spawn_slark(&mut app);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        app.world_mut()
+            .get_mut::<CombatStats>(enemy)
+            .unwrap()
+            .attack_damage = 50.0;
+        let base_agility = app
+            .world()
+            .get::<crate::components::HeroAttributes>(caster)
+            .unwrap()
+            .agility;
+        let agility = |app: &App| {
+            app.world()
+                .get::<crate::components::HeroAttributes>(caster)
+                .unwrap()
+                .agility
+        };
+        let damage = |app: &App| app.world().get::<CombatStats>(enemy).unwrap().attack_damage;
+
+        write_attack_hit(&mut app, caster, enemy);
+        run_seconds(&mut app, 5.0);
+        write_attack_hit(&mut app, caster, enemy);
+        run_seconds(&mut app, 0.2);
+        assert_eq!(instances(&app, enemy, "essence_shift_attack_damage"), 2);
+        assert_eq!(instances(&app, caster, "essence_shift_agility"), 2);
+        assert_eq!(agility(&app), base_agility + 6.0);
+        assert_eq!(damage(&app), 48.0);
+
+        // The first stack ends at about t = 10; the second keeps going until about t = 15.
+        run_seconds(&mut app, 5.1);
+        assert_eq!(instances(&app, enemy, "essence_shift_attack_damage"), 1);
+        assert_eq!(instances(&app, caster, "essence_shift_agility"), 1);
+        assert_eq!(agility(&app), base_agility + 3.0);
+        assert_eq!(damage(&app), 49.0);
+
+        run_seconds(&mut app, 5.0);
+        assert_eq!(instances(&app, enemy, "essence_shift_attack_damage"), 0);
+        assert_eq!(instances(&app, caster, "essence_shift_agility"), 0);
+        assert_eq!(agility(&app), base_agility);
+        assert_eq!(damage(&app), 50.0);
+    }
+
+    #[test]
+    fn essence_shift_agility_raises_attack_speed_and_armor() {
+        let mut app = slark_app();
+        let caster = spawn_slark(&mut app);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        let stats = |app: &App| *app.world().get::<CombatStats>(caster).unwrap();
+        let before = stats(&app);
+        for _ in 0..7 {
+            write_attack_hit(&mut app, caster, enemy);
+            run_seconds(&mut app, 0.1);
+        }
+        assert_eq!(instances(&app, caster, "essence_shift_agility"), 7);
+        let during = stats(&app);
+        assert!(
+            (during.armor - before.armor - 7.0 * 3.0 * 0.14).abs() < 1e-3,
+            "armor {} -> {}",
+            before.armor,
+            during.armor
+        );
+        assert!(
+            during.attack_speed > before.attack_speed,
+            "attack speed {} -> {}",
+            before.attack_speed,
+            during.attack_speed
+        );
+        run_seconds(&mut app, 11.0);
+        let after = stats(&app);
+        assert!((after.armor - before.armor).abs() < 1e-3);
+        assert_eq!(instances(&app, caster, "essence_shift_agility"), 0);
+    }
+
+    #[test]
+    fn essence_shift_does_nothing_on_miss() {
+        let mut app = slark_app();
+        let caster = spawn_slark(&mut app);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        // A swing that was released but never landed.
+        write_attack_release(&mut app, caster, enemy);
+        run_seconds(&mut app, 0.5);
+        assert_eq!(instances(&app, enemy, "essence_shift_attack_damage"), 0);
+        assert_eq!(instances(&app, caster, "essence_shift_agility"), 0);
+    }
+
+    #[test]
+    fn shadow_dance_makes_slark_untargetable_hasted_and_regenerating() {
+        use crate::status::TargetIntent;
+        let mut app = slark_app();
+        let caster = spawn_caster(&mut app, SLARK);
+        let base_speed = app.world().get::<CombatStats>(caster).unwrap().move_speed;
+        request(&mut app, caster, 3, CastTarget::None);
+        run_seconds(&mut app, 0.3);
+        let statuses = app.world().get::<StatusEffects>(caster).unwrap();
+        assert!(statuses.rejects(TargetIntent::Attack));
+        assert!(statuses.rejects(TargetIntent::HostileSpell));
+        assert!(!statuses.rejects(TargetIntent::Any), "areas still hit");
+        assert!(!statuses.is_untargetable(), "not cyclone's full flag");
+        assert_eq!(
+            statuses.resource_sum(crate::vitals::ResourceStat::HealthRegen),
+            70.0
+        );
+        let hasted = app.world().get::<CombatStats>(caster).unwrap().move_speed;
+        assert!(
+            (hasted - base_speed * 1.2).abs() < 1e-3,
+            "+20% of base: {hasted}"
+        );
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 900.0);
+
+        // Back to base once it ends (4 s at rank 1).
+        run_seconds(&mut app, 4.0);
+        let statuses = app.world().get::<StatusEffects>(caster).unwrap();
+        assert!(statuses.effects.is_empty(), "{:?}", statuses.effects);
+        assert!(!statuses.rejects(TargetIntent::Attack));
+        assert_eq!(
+            statuses.resource_sum(crate::vitals::ResourceStat::HealthRegen),
+            0.0
+        );
+        let after = app.world().get::<CombatStats>(caster).unwrap().move_speed;
+        assert!((after - base_speed).abs() < 1e-3, "{after}");
+    }
+
+    #[test]
+    fn shadow_dance_ranks_scale() {
+        for (rank, duration, speed, regen, cooldown) in [
+            (1, 4.0, 360.0, 70.0, 50.0),
+            (2, 4.25, 390.0, 100.0, 40.0),
+            (3, 4.5, 420.0, 130.0, 30.0),
+            (4, 4.75, 450.0, 160.0, 20.0),
+        ] {
+            let mut app = slark_app();
+            let caster = spawn_caster(&mut app, SLARK);
+            set_rank(&mut app, caster, 3, rank);
+            request(&mut app, caster, 3, CastTarget::None);
+            run_seconds(&mut app, 0.2);
+            let dance = status_of(&app, caster, "untargetable").expect("untargetable");
+            assert!(
+                (duration - dance.remaining).abs() < 0.3,
+                "rank {rank}: {}",
+                dance.remaining
+            );
+            let speed_status = status_of(&app, caster, "shadow_dance_move_speed_bonus").unwrap();
+            assert!((speed_status.move_speed - (speed - 300.0)).abs() < 1e-3);
+            let regen_now = app
+                .world()
+                .get::<StatusEffects>(caster)
+                .unwrap()
+                .resource_sum(crate::vitals::ResourceStat::HealthRegen);
+            assert_eq!(regen_now, regen, "rank {rank}");
+            let remaining = app.world().get::<AbilityLoadout>(caster).unwrap().slots[3]
+                .cooldown
+                .remaining;
+            assert!(
+                remaining > cooldown - 1.0 && remaining <= cooldown,
+                "rank {rank} cooldown {remaining}"
+            );
+        }
+    }
+
+    #[test]
+    fn shadow_dance_with_dark_pact_still_pulses() {
+        let mut app = slark_app();
+        let caster = spawn_caster(&mut app, SLARK);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(200.0, 0.0, 0.0));
+        request(&mut app, caster, 0, CastTarget::None);
+        run_seconds(&mut app, 0.1);
+        request(&mut app, caster, 3, CastTarget::None);
+        run_seconds(&mut app, 0.5);
+        assert!(status_of(&app, caster, "untargetable").is_some());
+        run_seconds(&mut app, 2.5);
+        assert_eq!(
+            health(&app, enemy),
+            1000.0 - 75.0,
+            "all ten pulses landed while untargetable"
+        );
     }
 }

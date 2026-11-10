@@ -12,8 +12,8 @@ Optional hero columns: base_health, base_health_regen, base_mana, base_mana_rege
 attack_damage, attack_range (`is_melee` must match it: base ranges up to 250 are melee),
 base_attack_time, attack_point, attack_backswing (0..1.0), armor, magic_resist, move_speed and attack_projectile_speed (ranged heroes only, > 0: the
 absolute projectile speed of the hero's basic attack; blank keeps the speed derived from
-the attack range) and turn_rate (> 0, blank keeps facing::HERO_TURN_RATE). Blank cells take
-the defaults.
+the attack range), turn_rate (> 0, blank keeps facing::HERO_TURN_RATE) and
+base_attack_speed (20..700, blank keeps the shared 100). Blank cells take the defaults.
 
 Usage:
   python3 scripts/HeroGenerator.py data/heroes.csv
@@ -91,6 +91,8 @@ class HeroRow:
     attack_projectile_speed: float | None = None
     # Optional per-hero turn rate (None = facing::HERO_TURN_RATE).
     turn_rate: float | None = None
+    # Optional per-hero base attack speed (None = the shared 100).
+    base_attack_speed: float | None = None
 
 
 def to_pascal_case(name: str) -> str:
@@ -176,6 +178,18 @@ def parse_turn_rate(row: dict[str, str], line: int) -> float | None:
     value = parse_float(row, "turn_rate")
     if value <= 0:
         raise SystemExit(f"Row {line}: turn_rate must be above 0, got {value}")
+    return value
+
+
+def parse_base_attack_speed(row: dict[str, str], line: int) -> float | None:
+    """Optional `base_attack_speed` (20..700). Blank keeps the shared default of 100."""
+    if not (row.get("base_attack_speed") or "").strip():
+        return None
+    value = parse_float(row, "base_attack_speed")
+    if not 20.0 <= value <= 700.0:
+        raise SystemExit(
+            f"Row {line}: base_attack_speed must be within 20..700, got {value}"
+        )
     return value
 
 
@@ -300,6 +314,7 @@ def load_csv(path: Path) -> list[HeroRow]:
                     move_speed=parse_float(row, "move_speed", 300.0),
                     attack_projectile_speed=parse_projectile_speed(row, is_melee, i),
                     turn_rate=parse_turn_rate(row, i),
+                    base_attack_speed=parse_base_attack_speed(row, i),
                 )
             )
         return rows
@@ -372,6 +387,29 @@ def rust_turn_rate(value: float | None) -> str:
     return "crate::facing::HERO_TURN_RATE" if value is None else f32(value)
 
 
+def rust_hero_combat(hero: HeroRow) -> str:
+    call = f"""hero_combat(
+                    {f32(hero.attack_damage)},
+                    {f32(hero.attack_range)},
+                    {f32(hero.base_attack_time)},
+                    {f32(hero.attack_point)},
+                    {f32(hero.attack_backswing)},
+                    {rust_turn_rate(hero.turn_rate)},
+                    {f32(hero.armor)},
+                    {f32(hero.magic_resist)},
+                    {f32(hero.move_speed)},
+                    {rust_option_f32(hero.attack_projectile_speed)},
+                )"""
+    if hero.base_attack_speed is None:
+        return call
+    return (
+        "CombatStats {\n"
+        f"                    base_attack_speed: {f32(hero.base_attack_speed)},\n"
+        f"                    ..{call}\n"
+        "                }"
+    )
+
+
 def hero_def_arm(hero: HeroRow) -> str:
     return f"""            HeroId::{hero.rust_id} => HeroDef {{
                 id: self,
@@ -387,18 +425,7 @@ def hero_def_arm(hero: HeroRow) -> str:
                 base_health_regen: {f32(hero.base_health_regen)},
                 base_mana: {f32(hero.base_mana)},
                 base_mana_regen: {f32(hero.base_mana_regen)},
-                combat: hero_combat(
-                    {f32(hero.attack_damage)},
-                    {f32(hero.attack_range)},
-                    {f32(hero.base_attack_time)},
-                    {f32(hero.attack_point)},
-                    {f32(hero.attack_backswing)},
-                    {rust_turn_rate(hero.turn_rate)},
-                    {f32(hero.armor)},
-                    {f32(hero.magic_resist)},
-                    {f32(hero.move_speed)},
-                    {rust_option_f32(hero.attack_projectile_speed)},
-                ),
+                combat: {rust_hero_combat(hero)},
                 abilities: [
                     AbilityId::{hero.ability_q_id},
                     AbilityId::{hero.ability_w_id},

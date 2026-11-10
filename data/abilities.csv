@@ -21,3 +21,7 @@ earthshock,Earthshock,Q,active,no_target,enemy,,385,0,,15|13|11|9|7|5|3,95,,,non
 overpower,Overpower,W,active,no_target,self,,,0.3,,12|11|10|9|8|7|6,45|50|55|60|65|70|75,,,none,,"Greatly increases Ursa's attack speed for her next several attacks",0,,,,,
 fury_swipes,Fury Swipes,E,passive,no_target,self,,,,,,,,,none,,"Each attack on a target deepens its wounds: consecutive attacks on the same target deal increasing bonus physical damage. The stacks are lost if the target is not attacked again before the debuff expires",,,,,,
 enrage,Enrage,R,active,no_target,self,,,0,,60|45|30|15,0,,,none,,"Ursa removes all debuffs from herself, then takes greatly reduced damage and resists debuffs for a few seconds",0,,,,,
+dark_pact,Dark Pact,Q,active,no_target,enemy,,325,0,,9|8|7|6|5|4|3,65,,,none,,"After a short delay, Slark sheds most debuffs and damages nearby enemies in quick pulses, healing for part of the damage dealt",0,,,,,
+pounce,Pounce,W,active,no_target,enemy,,,0,,24|20|16|12|8|4|2,75,,,none,,"Slark leaps forward, damaging every enemy he passes; enemies near his landing point are leashed",0.53,,,,,
+essence_shift,Essence Shift,E,passive,no_target,self,,,,,,,,,none,,"Each successful attack drains the target's attack damage and grants Slark agility; every stack wears off on its own",,,,,,
+shadow_dance,Shadow Dance,R,active,no_target,self,,,0,,50|40|30|20,100,,,none,,"Slark hides in a cloud of shadows, becoming untargetable and gaining bonus move speed and health regeneration",0,,,,,

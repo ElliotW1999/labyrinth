@@ -1117,6 +1117,37 @@ mod tests {
     }
 
     #[test]
+    fn attackers_drop_an_untargetable_target() {
+        let (mut world, mut schedule) = world_with_pipeline();
+        let target_pos = Vec3::new(100.0, 0.0, 0.0);
+        let target = spawn_unit(&mut world, Team::Dire, target_pos, passive_stats());
+        world.entity_mut(target).insert(StatusEffects {
+            effects: vec![crate::status::StatusEffect::untargetable(30.0)],
+        });
+        let ordered = spawn_attacker(&mut world, scale::MELEE_ATTACK_RANGE, target, target_pos);
+        let seeker = spawn_unit(
+            &mut world,
+            Team::Radiant,
+            Vec3::new(0.0, 0.0, 40.0),
+            CombatStats::simple(50.0, scale::MELEE_ATTACK_RANGE, 1.0, 0.0, 0.0, 300.0),
+        );
+        run_frames(&mut world, &mut schedule, 20);
+        assert_eq!(hp(&world, target), 1000.0, "attacks cannot target it");
+        assert!(world.get::<AttackSwing>(ordered).is_none());
+        assert!(world.get::<AttackSwing>(seeker).is_none());
+
+        // Once it ends the same attacker connects again.
+        world
+            .get_mut::<StatusEffects>(target)
+            .unwrap()
+            .effects
+            .clear();
+        world.entity_mut(ordered).insert(AttackTarget(target));
+        run_frames(&mut world, &mut schedule, 20);
+        assert!(hp(&world, target) < 1000.0);
+    }
+
+    #[test]
     fn attack_immune_target_not_acquired_and_swing_cancelled() {
         let (mut world, mut schedule) = world_with_pipeline();
         let target_pos = Vec3::new(100.0, 0.0, 0.0);

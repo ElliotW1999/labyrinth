@@ -3189,6 +3189,60 @@ mod tests {
         );
     }
 
+    /// An item and an ability reach the same zone path: an item's attached zone asks for a
+    /// following zone exactly as an ability's does.
+    #[test]
+    fn item_and_ability_attached_zone_alike() {
+        let zone = |follow_caster: bool| -> &'static [AbilityEffectEntry] {
+            Box::leak(Box::new([AbilityEffectEntry {
+                trigger: AbilityTrigger::OnUse,
+                target: EffectTarget::Caster,
+                effect: AbilityEffect::Zone {
+                    radius: AreaRadius::Fixed(RankValue::fixed(300.0)),
+                    team: TargetTeam::Enemy,
+                    delay: RankValue::ZERO,
+                    duration: RankValue::fixed(2.0),
+                    interval: RankValue::fixed(0.5),
+                    then: AbilityTrigger::Custom("on_item_zone_tick"),
+                    follow_caster,
+                },
+            }]))
+        };
+        for follow in [true, false] {
+            let _defs = DefinitionOverride::install([ItemDefinition {
+                effects: zone(follow),
+                ..test_item(
+                    ItemId::AegisCharm,
+                    aimed(
+                        TargetType::NoTarget,
+                        TargetTeam::SelfOnly,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                    ),
+                )
+            }]);
+            let mut app = item_app();
+            let caster = spawn_caster(&mut app, 200.0);
+            give(&mut app, caster, ItemId::AegisCharm);
+            request(&mut app, caster, 0, CastTarget::None);
+            let mut requested = Vec::new();
+            for _ in 0..4 {
+                step(&mut app);
+                requested.extend(
+                    app.world()
+                        .resource::<Messages<crate::abilities::zones::SpawnZoneEvent>>()
+                        .iter_current_update_messages()
+                        .cloned(),
+                );
+            }
+            assert_eq!(requested.len(), 1, "follow = {follow}");
+            assert_eq!(requested[0].follow_caster, follow);
+            assert_eq!(requested[0].ticks, 4);
+        }
+    }
+
     fn heal_fx_count(app: &mut App) -> usize {
         let mut query = app.world_mut().query::<&Name>();
         query

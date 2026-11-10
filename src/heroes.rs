@@ -56,6 +56,8 @@ pub enum HeroId {
     Sniper,
     /// Generated hero — abilities are stubs until implemented.
     Ursa,
+    /// Generated hero — abilities are stubs until implemented.
+    Slark,
     // </hero_generator:hero_enum>
 }
 
@@ -72,6 +74,7 @@ impl HeroId {
             HeroId::Magnus,
             HeroId::Sniper,
             HeroId::Ursa,
+            HeroId::Slark,
             // </hero_generator:hero_all>
         ]
     }
@@ -113,6 +116,7 @@ impl HeroId {
             HeroId::Magnus => "Magnus",
             HeroId::Sniper => "Sniper",
             HeroId::Ursa => "Ursa",
+            HeroId::Slark => "Slark",
             // </hero_generator:hero_name>
         }
     }
@@ -132,6 +136,7 @@ impl HeroId {
             HeroId::Magnus => "Str initiator — Shockwave, Empower, Skewer, Reverse Polarity",
             HeroId::Sniper => "Agi marksman — Shrapnel, Headshot, Take Aim, Assassinate",
             HeroId::Ursa => "Agi brawler — Earthshock, Overpower, Fury Swipes, Enrage",
+            HeroId::Slark => "Agi assassin — Dark Pact, Pounce, Essence Shift, Shadow Dance",
             // </hero_generator:hero_blurb>
         }
     }
@@ -149,6 +154,7 @@ impl HeroId {
             HeroId::Magnus => "STR",
             HeroId::Sniper => "AGI",
             HeroId::Ursa => "AGI",
+            HeroId::Slark => "AGI",
             // </hero_generator:hero_primary>
         }
     }
@@ -442,6 +448,34 @@ impl HeroId {
                     AbilityId::Overpower,
                     AbilityId::FurySwipes,
                     AbilityId::Enrage,
+                ],
+                dimensions: UnitDimensions::HERO,
+            },
+            HeroId::Slark => HeroDef {
+                id: self,
+                attributes: HeroAttributes {
+                    strength: 20.0,
+                    agility: 21.0,
+                    intelligence: 16.0,
+                    str_per_level: 2.1,
+                    agi_per_level: 1.5,
+                    int_per_level: 1.9,
+                },
+                base_health: 200.0,
+                base_health_regen: -0.15,
+                base_mana: 75.0,
+                base_mana_regen: 0.0,
+                combat: CombatStats {
+                    base_attack_speed: 120.0,
+                    ..hero_combat(
+                        61.0, 150.0, 1.7, 0.5, 0.3, 0.7, -2.94, 4.401839, 300.0, None,
+                    )
+                },
+                abilities: [
+                    AbilityId::DarkPact,
+                    AbilityId::Pounce,
+                    AbilityId::EssenceShift,
+                    AbilityId::ShadowDance,
                 ],
                 dimensions: UnitDimensions::HERO,
             },
@@ -901,6 +935,21 @@ mod tests {
     }
 
     #[test]
+    fn hero_base_attack_speed_override_feeds_attack_speed() {
+        let plain = hero_combat(61.0, 150.0, 1.7, 0.5, 0.3, 0.7, 0.0, 0.0, 300.0, None);
+        assert_eq!(plain.base_attack_speed, 100.0);
+        let fast = CombatStats {
+            base_attack_speed: 120.0,
+            ..hero_combat(61.0, 150.0, 1.7, 0.5, 0.3, 0.7, 0.0, 0.0, 300.0, None)
+        };
+        assert_eq!(fast.base_attack_speed, 120.0);
+        assert_eq!(fast.base_attack_time, 1.7);
+        let mut stats = fast;
+        stats.recompute_attack_speed(21.0);
+        assert!((stats.attack_speed - 141.0 / 100.0 / 1.7).abs() < 1e-5);
+    }
+
+    #[test]
     fn hero_combat_attack_projectile_speed_override() {
         let c = hero_combat(
             50.0,
@@ -1151,5 +1200,65 @@ mod tests {
             stats.attack_speed
         );
         assert!((stats.attack_speed - 0.694118).abs() < 1e-5);
+    }
+
+    #[test]
+    fn slark_matches_spec() {
+        use crate::combat::apply_damage;
+        use crate::components::DamageType;
+
+        assert_eq!(HeroId::from_cli("slark"), Some(HeroId::Slark));
+        assert_eq!(HeroId::Slark.name(), "Slark");
+        assert_eq!(HeroId::Slark.primary_label(), "AGI");
+        let def = HeroId::Slark.def();
+        assert_eq!(
+            def.abilities,
+            [
+                AbilityId::DarkPact,
+                AbilityId::Pounce,
+                AbilityId::EssenceShift,
+                AbilityId::ShadowDance,
+            ]
+        );
+
+        let (health, mana, stats, attrs) = def.vitals();
+        assert!((health.max - 560.0).abs() < 1e-3, "health {}", health.max);
+        assert!((health.regen_per_sec - 2.25).abs() < 1e-4);
+        assert!((mana.max - 267.0).abs() < 1e-3, "mana {}", mana.max);
+        assert!((mana.regen_per_sec - 0.8).abs() < 1e-4);
+        assert!(stats.armor.abs() < 1e-3, "armor {}", stats.armor);
+        let taken = apply_damage(100.0, DamageType::Magical, &stats);
+        assert!(
+            (taken - 72.5).abs() < 0.01,
+            "27.5% magic resist: took {taken}"
+        );
+        assert_eq!(
+            (attrs.strength, attrs.agility, attrs.intelligence),
+            (20.0, 21.0, 16.0)
+        );
+        assert_eq!(
+            (
+                attrs.str_per_level,
+                attrs.agi_per_level,
+                attrs.int_per_level
+            ),
+            (2.1, 1.5, 1.9)
+        );
+
+        assert_eq!(stats.attack_damage, 61.0);
+        assert_eq!(stats.attack_range, 150.0);
+        assert!(stats.is_melee());
+        assert_eq!(stats.base_attack_time, 1.7);
+        assert_eq!(stats.attack_point, 0.5);
+        assert_eq!(stats.attack_backswing, 0.3);
+        assert_eq!(stats.turn_rate, 0.7);
+        assert_eq!(stats.move_speed, 300.0);
+        assert_eq!(stats.base_attack_speed, 120.0);
+        assert!(
+            (stats.attack_speed - 141.0 / 100.0 / 1.7).abs() < 1e-4,
+            "APS {}",
+            stats.attack_speed
+        );
+        assert!((stats.attack_speed - 0.829412).abs() < 1e-5);
     }
 }

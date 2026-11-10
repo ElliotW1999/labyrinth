@@ -857,6 +857,7 @@ mod tests {
                 duration,
                 interval,
                 then: AbilityTrigger::Custom("on_shrapnel_tick"),
+                follow_caster: false,
             } if delay.at(1) == 1.2 && duration.at(1) == 10.0 && interval.at(1) == 1.0
         ));
         let tick = AbilityTrigger::Custom("on_shrapnel_tick");
@@ -1104,6 +1105,192 @@ mod tests {
                 .iter()
                 .all(|x| matches!(x.target, EffectTarget::Caster))
         );
+    }
+
+    #[test]
+    fn slark_abilities_generate_expected_definitions() {
+        use crate::abilities::definition::{
+            AreaCenter, AreaRadius, DisplacementKind, LeashAnchorKind, StatusSpec,
+        };
+        use crate::actions::TargetType;
+        use crate::status::DispelStrength;
+        use crate::vitals::ResourceStat;
+
+        assert_eq!(AbilityId::DarkPact.display_name(), "Dark Pact");
+        assert_eq!(AbilityId::Pounce.display_name(), "Pounce");
+        assert_eq!(AbilityId::EssenceShift.display_name(), "Essence Shift");
+        assert_eq!(AbilityId::ShadowDance.display_name(), "Shadow Dance");
+        assert!(AbilityId::ShadowDance.is_ultimate());
+        assert!(!AbilityId::DarkPact.is_ultimate());
+
+        // Q: a delayed zone that follows Slark, dispelling him and draining enemies each pulse.
+        let q = builtin(AbilityId::DarkPact);
+        assert_eq!(q.max_rank, 7);
+        assert_eq!(q.target_type, TargetType::NoTarget);
+        assert_eq!(q.aoe_radius.at(1), 325.0);
+        assert_eq!(q.mana_cost.at(1), 65.0);
+        assert_eq!(q.cooldown.at(1), 9.0);
+        assert_eq!(q.cooldown.at(7), 3.0);
+        assert!(q.effects_for(AbilityTrigger::OnCast).any(|e| matches!(
+            e.effect,
+            AbilityEffect::Zone {
+                radius: AreaRadius::Ability,
+                team: TargetTeam::Enemy,
+                delay,
+                duration,
+                interval,
+                then: AbilityTrigger::Custom("on_dark_pact_pulse"),
+                follow_caster: true,
+            } if delay.at(1) == 1.5 && duration.at(1) == 1.0 && interval.at(1) == 0.1
+        )));
+        let pulse = AbilityTrigger::Custom("on_dark_pact_pulse");
+        assert!(q.effects_for(pulse).any(|e| matches!(
+            (e.target, e.effect),
+            (
+                EffectTarget::Caster,
+                AbilityEffect::Dispel {
+                    kind: crate::status::StatusKind::Debuff,
+                    strength: DispelStrength::Basic,
+                }
+            )
+        )));
+        assert!(q.effects_for(pulse).any(|e| matches!(
+            (e.target, e.effect),
+            (
+                EffectTarget::AffectedUnits,
+                AbilityEffect::DrainHealth {
+                    amount,
+                    damage_type: DamageType::Magical,
+                    transfer_ratio,
+                    ..
+                }
+            ) if amount.at(1) == 7.5 && amount.at(7) == 52.5 && transfer_ratio == 0.15
+        )));
+
+        // W: a 700 dash with a 120 contact radius, then a leash of 325 at the landing point.
+        let w = builtin(AbilityId::Pounce);
+        assert_eq!(w.max_rank, 7);
+        assert_eq!(w.target_type, TargetType::NoTarget);
+        assert_eq!(w.cast_time, 0.0);
+        assert_eq!(w.backswing, 0.53);
+        assert_eq!(w.mana_cost.at(1), 75.0);
+        assert_eq!(w.cooldown.at(1), 24.0);
+        assert_eq!(w.cooldown.at(7), 2.0);
+        assert!(w.effects_for(AbilityTrigger::OnCast).any(|e| matches!(
+            e.effect,
+            AbilityEffect::Displace {
+                kind: DisplacementKind::Dash,
+                distance: Some(distance),
+                duration,
+                contact_radius: Some(contact),
+                ..
+            } if distance.at(1) == 700.0 && duration.at(1) == 0.75 && contact.at(1) == 120.0
+        )));
+        assert!(
+            w.effects_for(AbilityTrigger::OnUnitContact)
+                .any(|e| matches!(
+                    (e.target, e.effect),
+                    (
+                        EffectTarget::TriggerUnit,
+                        AbilityEffect::Damage { amount, damage_type: DamageType::Magical, .. }
+                    ) if amount.at(1) == 100.0 && amount.at(7) == 460.0
+                ))
+        );
+        assert!(w.effects_for(AbilityTrigger::OnMovementEnd).any(|e| matches!(
+            (e.target, e.effect),
+            (
+                EffectTarget::UnitsInRadius {
+                    center: AreaCenter::TriggerPoint,
+                    radius: AreaRadius::Fixed(area),
+                    team: TargetTeam::Enemy,
+                },
+                AbilityEffect::ApplyStatus {
+                    status: StatusSpec::Leash { radius, anchor: LeashAnchorKind::TriggerPoint },
+                    duration,
+                }
+            ) if area.at(1) == 120.0
+                && radius.at(1) == 325.0
+                && duration.at(1) == 2.5
+                && duration.at(7) == 4.0
+        )));
+
+        // E: a passive with two independent statuses.
+        let e = builtin(AbilityId::EssenceShift);
+        assert_eq!(e.behavior, AbilityBehavior::Passive);
+        let hit: Vec<_> = e.effects_for(AbilityTrigger::OnAttackHit).collect();
+        assert_eq!(hit.len(), 2);
+        assert!(matches!(
+            (hit[0].target, hit[0].effect),
+            (
+                EffectTarget::TriggerUnit,
+                AbilityEffect::ApplyStatus {
+                    status: StatusSpec::Modifier {
+                        id: "essence_shift_attack_damage",
+                        kind: crate::status::StatusKind::Debuff,
+                        attack_damage,
+                        independent: true,
+                        ..
+                    },
+                    duration,
+                }
+            ) if attack_damage.at(1) == -1.0 && duration.at(1) == 10.0
+        ));
+        assert!(matches!(
+            (hit[1].target, hit[1].effect),
+            (
+                EffectTarget::Caster,
+                AbilityEffect::ApplyStatus {
+                    status: StatusSpec::ResourceModifier {
+                        id: "essence_shift_agility",
+                        kind: crate::status::StatusKind::Buff,
+                        stat: ResourceStat::Agility,
+                        amount,
+                        independent: true,
+                    },
+                    duration,
+                }
+            ) if amount.at(1) == 3.0 && duration.at(1) == 10.0
+        ));
+
+        // R: untargetable, move speed bonus and health regeneration.
+        let r = builtin(AbilityId::ShadowDance);
+        assert_eq!(r.max_rank, 4);
+        assert_eq!(r.target_type, TargetType::NoTarget);
+        assert_eq!(r.mana_cost.at(1), 100.0);
+        assert_eq!(r.cooldown.at(1), 50.0);
+        assert_eq!(r.cooldown.at(4), 20.0);
+        let on_cast: Vec<_> = r.effects_for(AbilityTrigger::OnCast).collect();
+        assert_eq!(on_cast.len(), 3);
+        assert!(
+            on_cast
+                .iter()
+                .all(|x| matches!(x.target, EffectTarget::Caster))
+        );
+        assert!(matches!(
+            on_cast[0].effect,
+            AbilityEffect::ApplyStatus { status: StatusSpec::Untargetable, duration }
+                if duration.at(1) == 4.0 && duration.at(4) == 4.75
+        ));
+        assert!(matches!(
+            on_cast[1].effect,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::MoveSpeedBonus { id: "shadow_dance_move_speed_bonus", percent },
+                ..
+            } if percent.at(1) == 20.0 && percent.at(4) == 50.0
+        ));
+        assert!(matches!(
+            on_cast[2].effect,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::ResourceModifier {
+                    id: "shadow_dance_health_regen",
+                    stat: ResourceStat::HealthRegen,
+                    amount,
+                    independent: false,
+                    ..
+                },
+                ..
+            } if amount.at(1) == 70.0 && amount.at(4) == 160.0
+        ));
     }
 
     #[test]

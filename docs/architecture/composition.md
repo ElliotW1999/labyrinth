@@ -87,10 +87,10 @@ All systems below run in `Update`. The two plugin chains interleave: the abiliti
    3. `emit_ability_casts`, then `resolve_item_uses` (OnUse) followed by `execute_item_mechanics`, then `execute_ability_casts` (mechanics and OnCast)
    4. `action_channel_end_triggers`, `projectile_hit_triggers`, `attack_triggers`, `consume_attack_charges`, `break_invisibility` (reads non-extra `BasicAttackReleaseEvent` and `ActionFiredEvent`; writes `StatusChange::Remove` for invisibility that breaks on action)
    5. `tick_forced_movement`, `settle_grounded_units` (contact and movement-end triggers)
-   6. reactive dispatchers, chained in this order: `track_travel`, `proximity_triggers`, `interval_triggers`, `tick_zones` (fires the zone ticks that came due), `cooldown_triggers` (reads `CooldownReadyEvent`), `cast_triggers` (reads `AbilityCastEvent`, `SpellHitEvent`), `damage_triggers` (reads `DamageAppliedEvent`), `status_triggers` (reads `StatusLifecycleEvent`, `.after(tick_status_effects)`), `sync_conditional_statuses` (`While` rows)
+   6. reactive dispatchers, chained in this order: `track_travel`, `proximity_triggers`, `interval_triggers`, `tick_zones` (fires the zone ticks that came due; a `follow_caster` zone is first re-centred on its caster, or despawned when the caster is dead), `cooldown_triggers` (reads `CooldownReadyEvent`), `cast_triggers` (reads `AbilityCastEvent`, `SpellHitEvent`), `damage_triggers` (reads `DamageAppliedEvent`), `status_triggers` (reads `StatusLifecycleEvent`, `.after(tick_status_effects)`), `sync_conditional_statuses` (`While` rows)
    7. **`resolve_ability_triggers`** (effects, including gates and their derived contexts; writes `SpellHitEvent`)
    8. `spawn_requested_zones` (reads `SpawnZoneEvent`; the zone starts counting next frame), `spawn_requested_projectiles`
-   9. appliers in order: heals, mana restore, resource drains, displacement, status events (write `StatusLifecycleEvent`), resource-cap sync, teleport (`before(SimSet::Ai)`; writes `TeleportCompletedEvent` / `TeleportRejectedEvent`)
+   9. appliers in order: heals, mana restore, resource drains, displacement, status events (write `StatusLifecycleEvent`), resource-cap sync, attribute sync (`sync_status_attributes`, so it runs after `apply_status_effect_events` and `tick_status_effects`), teleport (`before(SimSet::Ai)`; writes `TeleportCompletedEvent` / `TeleportRejectedEvent`)
 3. `tick_status_effects` runs `.before(apply_damage_events)` so DoT damage lands in the same damage pass, and `.after(tick_activations).after(tick_attack_swings)` so interrupt checks see a stun before it expires (a stun shorter than one frame still cancels a channel, cast point or swing).
 4. `SimSet::Commands` then `Ai` then `Movement` order the unit orders and locomotion. Inside `Ai` the chain is `follow_lane_waypoints`, `acquire_targets`, `player_attack_move`, **`enforce_compulsions`**, `assign_attack_positions`: `enforce_compulsions` is the single order writer for feared, taunted and hypnotized units (it clears their queue and attack-move, writes the forced `MoveTarget` / `AttackTarget`, and ends taunt / hypnosis when the source is gone), so it must run after everything that could write an order and before attack positions are assigned. `process_issued_commands` drops commands for units whose `ActionBlocks` contain `ORDERS`.
 
@@ -121,7 +121,10 @@ Four storage styles coexist on purpose. Pick by the kind of change and keep a st
 | **Mutate on apply** | `CombatStats` fields changed by `add_status_stat_delta` / `subtract_status_stat_delta` (statuses) and `items::apply_passives` / `remove_passives` (items, passive abilities) | Flat combat stats: armor, move speed, attack damage, attack speed, range | Reverted with the exact delta when the status ends or the item leaves |
 | **Sum on read** | `vitals::resource_stat`: permanent `CombatStats` value plus `StatusEffects::resource_sum` | Fractions and resource modifiers: lifesteal, heal amp, mana cost amp, regen, max health / mana | Always correct without revert bookkeeping |
 | **Snapshot at build** | `StatusSpec::build` reads `StatusBuildContext.move_speed` / `agility` | Percentage slows relative to the target's speed when applied. `apply_status` then re-measures a slow (`move_slow_fraction`) against the speed without status deltas, so a refreshed slow never compounds. Generated slows carry the id `<owner>_slow`, so slows from different sources coexist and add (floored at `scale::MIN_MOVE_SPEED`) | Fixed at application |
+| **Reconcile from statuses** | `vitals::sync_status_resource_caps` (`AppliedStatusCaps`: timed max health / mana) and `vitals::sync_status_attributes` (`AppliedStatusAttributes`: timed strength / agility / intelligence, folded into `HeroAttributes` through `HeroAttributes::apply_delta`, the level-up path) | Values other systems derive from or clamp against, where a per-frame diff is simpler than revert bookkeeping | Every removal path (expiry, dispel, purge, remove) is correct without extra code; attack speed lags a changed agility by up to one frame |
 | **Counter on the status** | `StatusEffect.stacks` (stacking debuffs, merged in `status::apply_status`) and `StatusEffect.attack_charges` (decremented by `StatusChange::ConsumeAttackCharge` in `apply_status_effect_events`) | Per-holder counts that belong to one status: Fury Swipes stacks, Overpower charges | Lost with the status (expiry, dispel, removal); a refresh adds stacks, or resets the charges |
+
+**Counter / refresh and independent instances.** `status::apply_status` is the only place that decides what a same-id application does: it replaces the old instance (a refresh), merges stacks, or, when `StatusEffect.independent` is set (the `:independent` suffix on a timed `stat_modifier`), skips the replacement so every application keeps its own instance and timer. Removal by id, dispel and debuff-immunity purge remove every matching instance (`remove_statuses` retains by predicate), and each instance reports its own `Applied` / `Expired` lifecycle event, so the status vector grows by one entry per application (Essence Shift: roughly 15 to 20 per target in a long fight; the HUD groups them).
 
 **Caps.** `StatusEffect.move_speed_cap` (0 = none) is applied by `CombatStats::effective_move_speed` as `.min(lowest live cap)` after the `scale::MIN_MOVE_SPEED` floor and the slow sum. Hex uses `scale::HEX_MOVE_SPEED`; the cap is not a stat delta, so nothing is reverted when it ends.
 
@@ -163,9 +166,11 @@ How each protection treats each kind of effect. "Skipped" means the unit is neve
 
 | Intent | Rejects | Used by |
 |---|---|---|
-| `Any` | `untargetable` (cyclone, banish) | area membership (`unit_in_area`, `UnitsInRadius`), `valid_target` |
-| `Attack` | untargetable, `attack_immune`, concealed | basic attack start / swing / acquisition, AI target selection, `UnitCommand::Attack`, taunt targets |
-| `HostileSpell` | untargetable, `spell_immune`, concealed | `UnitInfo.rejects_hostile_spell` in `actions/targeting.rs::resolve_target` for enemy unit targets (allies and self are never rejected) |
+| `Any` | `untargetable` (cyclone, banish) only | area membership (`unit_in_area`, `UnitsInRadius`), `valid_target` |
+| `Attack` | untargetable, `attack_immune`, `targeting_blocked`, concealed | basic attack start / swing / acquisition, AI target selection, `UnitCommand::Attack`, taunt targets |
+| `HostileSpell` | untargetable, `spell_immune`, `targeting_blocked`, concealed | `UnitInfo.rejects_hostile_spell` in `actions/targeting.rs::resolve_target` for enemy unit targets (allies and self are never rejected) |
+
+**Targeting-only untargetable (`apply_status,untargetable`, Shadow Dance).** `StatusEffect.targeting_blocked` is read only by `StatusEffects::rejects`, in the `Attack` and `HostileSpell` arms. It is deliberately not the full `untargetable` flag: area effects (`Any`, so enemy and ally areas), dash contact (`displacement.rs`) and homing projectiles already in flight (`combat.rs`) still reach the holder, because those read `is_untargetable()`. Attackers drop the holder (the swing and acquisition checks read `rejects(Attack)`), enemies cannot start a unit-target cast on it (allies and self are never rejected), and its own caster-targeted effects keep working. Cyclone and banish keep the full flag.
 
 **Damage-type immunity.** `StatusEffect.immune_damage` is a `DamageTypeMask`; `combat.rs` asks `is_immune_to(damage_type)` for the event's type. Spell immunity immunises to magical damage only, ethereal to physical only, invulnerable to everything (dropped earlier).
 
@@ -589,6 +594,38 @@ fury_swipes,1,on_attack_hit,trigger_unit,damage,,12|20|28|36|44|52|60,physical,,
 **Enrage**: strong self dispel first (`dispel,debuff` with `amount` 1; rows run in `effect_index` order and status events apply in that order), then 80% damage reduction (G4) and 50% status resistance (G5) for 4 to 5.5 s.
 
 Tests: `ursa_matches_spec`, `ursa_abilities_generate_expected_definitions`, `earthshock_leaps_forward_then_shocks_at_landing`, `earthshock_stops_at_terrain_and_shocks_there`, `rooted_earthshock_shocks_in_place`, `overpower_lasts_exactly_rank_attacks`, `fury_swipes_bonus_grows_per_hit_and_resets_after_expiry`, `fury_swipes_stacks_are_per_target`, `enrage_strong_dispels_then_reduces_damage_and_debuff_durations`, plus one set per gap.
+
+### 6.15 Slark
+
+All four abilities are data rows (`dark_pact`, `pounce`, `essence_shift`, `shadow_dance`; status ids `essence_shift_attack_damage`, `essence_shift_agility`, `untargetable`, `shadow_dance_move_speed_bonus`, `shadow_dance_health_regen`, leash id `leash`; trigger `on_dark_pact_pulse`). Plan and decisions: `docs/plans/2026-11-10-slark-hero.md`.
+
+New surface (G1 to G7; nothing else was added):
+
+| Gap | Surface | Where it lives |
+|---|---|---|
+| G1 | `attached_zone` effect type: `AbilityEffect::Zone.follow_caster`, re-centred on the caster before every tick, despawned when the caster dies | `zones.rs` (`tick_zones`), `definition.rs`, `effects.rs`, `generator_common.py` |
+| G2 | `:independent` suffix on a timed `stat_modifier` id: `StatusEffect.independent`, `StatusSpec::Modifier` / `ResourceModifier.independent`; no same-id replacement | `status.rs` (`apply_status`), `definition.rs`, `generator_common.py` |
+| G3 | Timed `strength` / `agility` / `intelligence` (`ResourceStat::Strength / Agility / Intelligence`), reconciled into `HeroAttributes` | `vitals.rs` (`sync_status_attributes`, `AppliedStatusAttributes`) |
+| G4 | `apply_status,move_speed_bonus` (`StatusSpec::MoveSpeedBonus`, `StatusEffect.move_bonus_fraction`), measured against base speed like slow | `status.rs` (`apply_status`), `definition.rs` |
+| G5 | `apply_status,untargetable` (`StatusSpec::Untargetable`): targeting only, via `StatusEffect.targeting_blocked` (amended: not cyclone's full flag) | `status.rs` (`rejects`), `definition.rs` |
+| G6 | Optional `base_attack_speed` hero column (`CombatStats { base_attack_speed, ..hero_combat(..) }`) | `HeroGenerator.py` |
+| G7 | HUD groups same-id statuses (`+id xN <longest>s`) | `ui.rs` (`buffs_summary`) |
+
+**Dark Pact** (no target, radius 325): `attached_zone` with a 1.5 s delay, a 0.1 s interval and a 1 s duration gives ten pulses at 1.5 to 2.4 s, centred on Slark's current position each time. Per pulse, rows run in `effect_index` order: `dispel,debuff` on the caster (Basic, so stuns go too), then `resource,health_drain` on `affected_units` with a 0.15 transfer ratio (healing for a share of what was actually removed). The caster is never an affected unit, so there is no self-damage. The zone fires even with nobody inside, so the dispel always happens.
+
+```csv
+dark_pact,0,on_cast,caster,attached_zone,on_dark_pact_pulse,0.1,,1,,1.5,,
+dark_pact,1,on_dark_pact_pulse,caster,dispel,debuff,,,,,,,
+dark_pact,2,on_dark_pact_pulse,affected_units,resource,health_drain,7.5|15|22.5|30|37.5|45|52.5,magical,,,0.15,,
+```
+
+**Pounce**: `movement,dash` 700 over 0.75 s along the facing (Ursa G1) with a 120 contact radius (damage once per enemy on `on_unit_contact`), then `apply_status,leash` (radius 325, anchored at the landing point) on enemies within 120 of the landing point at `on_movement_end`. A refused dash reports its end in place (Ursa G7).
+
+**Essence Shift** (passive): two `on_attack_hit` rows with independent instances (G2): a Debuff `attack_damage:independent` of -1 on the target and a Buff `agility:independent` of +3 (G3) on Slark, 10 s each, so every stack expires on its own. Agility feeds armor and attack speed only, because the engine has no primary-attribute damage.
+
+**Shadow Dance**: three `on_cast` caster rows: `untargetable` (G5), `move_speed_bonus` 20 to 50% (G4) and `health_regen` 70 to 160, for 4 to 4.75 s. He cannot be attacked or picked by enemy unit-target spells, but area effects, dash contact and projectiles already in flight still hit him, and his own Dark Pact keeps pulsing.
+
+Tests: `slark_matches_spec`, `slark_abilities_generate_expected_definitions`, the `dark_pact_*`, `pounce_*`, `essence_shift_*` and `shadow_dance_*` integration tests in `abilities/mod.rs`, plus one set per gap.
 
 ## 7. Checklist: adding a mechanic, effect or trigger
 

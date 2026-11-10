@@ -736,6 +736,11 @@ pub enum AbilityId {
     Overpower,
     FurySwipes,
     Enrage,
+    // Slark (generated stubs)
+    DarkPact,
+    Pounce,
+    EssenceShift,
+    ShadowDance,
     // </hero_generator:ability_enum>
 }
 
@@ -785,6 +790,10 @@ impl AbilityId {
             AbilityId::Overpower => "Overpower",
             AbilityId::FurySwipes => "Fury Swipes",
             AbilityId::Enrage => "Enrage",
+            AbilityId::DarkPact => "Dark Pact",
+            AbilityId::Pounce => "Pounce",
+            AbilityId::EssenceShift => "Essence Shift",
+            AbilityId::ShadowDance => "Shadow Dance",
             // </hero_generator:ability_display_name>
         }
     }
@@ -802,7 +811,8 @@ impl AbilityId {
                 | AbilityId::SonicWave
                 | AbilityId::ReversePolarity
                 | AbilityId::Assassinate
-                | AbilityId::Enrage // </hero_generator:ability_ultimates>
+                | AbilityId::Enrage
+                | AbilityId::ShadowDance // </hero_generator:ability_ultimates>
         )
     }
 
@@ -831,6 +841,10 @@ impl AbilityId {
             AbilityId::Overpower => 7,
             AbilityId::FurySwipes => 7,
             AbilityId::Enrage => 4,
+            AbilityId::DarkPact => 7,
+            AbilityId::Pounce => 7,
+            AbilityId::EssenceShift => 7,
+            AbilityId::ShadowDance => 4,
             // </ability_generator:max_rank>
             _ if self.is_ultimate() => 4,
             _ => 7,

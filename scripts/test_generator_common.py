@@ -820,6 +820,70 @@ class ZoneTests(unittest.TestCase):
         self.assertIn("zone", report.errors[0].message)
 
 
+class AttachedZoneTests(unittest.TestCase):
+    GOOD = {"value": "0.1", "duration": "1", "amount": "1.5"}
+
+    def _zone(self, effect_type="attached_zone", effect_id="on_pulse", target="caster", kind="ability", **cells):
+        report = Report()
+        effect, ctx = _effect(effect_type, effect_id, target=target, kind=kind, **{**self.GOOD, **cells})
+        ctx.has_aoe = kind == "ability"
+        return effect_to_rust(effect, ctx, report), report
+
+    def test_attached_zone_emits_a_following_zone(self) -> None:
+        result, report = self._zone()
+        self.assertFalse(report.errors)
+        code = result[2]
+        self.assertIn("AbilityEffect::Zone { radius: AreaRadius::Ability, team: TargetTeam::Enemy", code)
+        self.assertIn("delay: RankValue::fixed(1.5)", code)
+        self.assertIn("duration: RankValue::fixed(1.0)", code)
+        self.assertIn("interval: RankValue::fixed(0.1)", code)
+        self.assertIn('then: AbilityTrigger::Custom("on_pulse")', code)
+        self.assertTrue(code.endswith("follow_caster: true }"), code)
+        self.assertEqual(result[1], "EffectTarget::Caster")
+
+    def test_plain_zone_is_not_following(self) -> None:
+        result, report = self._zone(effect_type="zone")
+        self.assertFalse(report.errors)
+        self.assertTrue(result[2].endswith("follow_caster: false }"), result[2])
+
+    def test_attached_zone_has_the_same_errors_as_a_zone(self) -> None:
+        cases = (
+            {"value": "0"},
+            {"value": "2"},
+            {"amount": "-1"},
+            {"duration": ""},
+            {"radius": "0"},
+            {"effect_id": "on_cast"},
+            {"target": "units_in_radius", "radius": "300"},
+        )
+        for cells in cases:
+            plain, plain_report = self._zone(effect_type="zone", **cells)
+            attached, attached_report = self._zone(**cells)
+            self.assertIsNone(plain, cells)
+            self.assertIsNone(attached, cells)
+            self.assertEqual(plain_report.errors[0].field, attached_report.errors[0].field, cells)
+
+    def test_attached_zone_cannot_target_affected_units(self) -> None:
+        result, report = self._zone(target="affected_units")
+        self.assertIsNone(result)
+        self.assertEqual(report.errors[0].field, "effect_target")
+
+    def test_attached_zone_feeds_its_trigger(self) -> None:
+        effect, _ = _effect("attached_zone", "on_pulse", **self.GOOD)
+        other, _ = _effect("damage", "", trigger="on_pulse", target="affected_units")
+        self.assertEqual(chain_fed_triggers([effect]), {"on_pulse"})
+        report = Report()
+        warn_unreachable_custom_triggers([effect, other], set(), report)
+        self.assertFalse(report.warnings)
+
+    def test_attached_zone_does_not_warn_about_its_radius_column(self) -> None:
+        report = Report()
+        effect, ctx = _effect("attached_zone", "on_pulse", target="caster", radius="300", **self.GOOD)
+        ctx.has_aoe = True
+        self.assertIsNotNone(effect_to_rust(effect, ctx, report))
+        self.assertFalse(report.warnings)
+
+
 class MiniStunTests(unittest.TestCase):
     def _stun(self, **cells: str):
         report = Report()
@@ -881,12 +945,120 @@ class SlowStatusTests(unittest.TestCase):
         self.assertIn("<owner>_slow", report.errors[0].message)
 
 
+class IndependentModifierTests(unittest.TestCase):
+    def test_suffix_marks_flat_and_resource_modifiers_independent(self) -> None:
+        for stat, spec in (("attack_damage", "StatusSpec::Modifier"), ("agility", "StatusSpec::ResourceModifier")):
+            report = Report()
+            effect, ctx = _effect("stat_modifier", f"{stat}:independent", value="3", duration="10")
+            result = effect_to_rust(effect, ctx, report)
+            self.assertFalse(report.errors, stat)
+            self.assertIn(spec, result[2])
+            self.assertIn(f'id: "tester_{stat}"', result[2])
+            self.assertIn("independent: true", result[2])
+            self.assertEqual(held_status_id(effect), f"tester_{stat}")
+
+    def test_plain_modifiers_are_not_independent(self) -> None:
+        for stat in ("attack_damage", "agility"):
+            report = Report()
+            effect, ctx = _effect("stat_modifier", stat, value="3", duration="10")
+            result = effect_to_rust(effect, ctx, report)
+            self.assertFalse(report.errors)
+            self.assertIn("independent: false", result[2])
+            self.assertNotIn("independent: true", result[2])
+
+    def test_suffix_is_rejected_on_passive_and_while_rows(self) -> None:
+        for trigger, kind in (("passive", "item"), ("while:moving", "item"), ("while_toggled", "ability")):
+            report = Report()
+            effect, ctx = _effect("stat_modifier", "armor:independent", target="caster", trigger=trigger, kind=kind, value="5")
+            self.assertIsNone(effect_to_rust(effect, ctx, report), trigger)
+            self.assertTrue(any(":independent only applies" in err.message for err in report.errors), trigger)
+
+    def test_unknown_suffix_is_rejected(self) -> None:
+        report = Report()
+        effect, ctx = _effect("stat_modifier", "armor:forever", value="3", duration="10")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertTrue(any("unknown stat_modifier suffix" in err.message for err in report.errors))
+
+
+class AttributeStatModifierTests(unittest.TestCase):
+    def test_timed_attributes_map_to_resource_modifiers(self) -> None:
+        for stat, variant in (
+            ("strength", "Strength"),
+            ("agility", "Agility"),
+            ("intelligence", "Intelligence"),
+        ):
+            report = Report()
+            effect, ctx = _effect("stat_modifier", stat, value="3", duration="10")
+            result = effect_to_rust(effect, ctx, report)
+            self.assertFalse(report.errors, stat)
+            self.assertIn(f"stat: ResourceStat::{variant}", result[2])
+            self.assertIn("kind: StatusKind::Buff", result[2])
+            self.assertIn(f'id: "tester_{stat}"', result[2])
+            self.assertEqual(held_status_id(effect), f"tester_{stat}")
+
+    def test_negative_attribute_is_a_debuff_steal(self) -> None:
+        report = Report()
+        effect, ctx = _effect("stat_modifier", "agility", value="-3", duration="10")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors)
+        self.assertIn("kind: StatusKind::Debuff", result[2])
+
+    def test_timed_attribute_needs_a_duration(self) -> None:
+        report = Report()
+        effect, ctx = _effect("stat_modifier", "agility", value="3")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertTrue(report.errors)
+
+
+class MoveSpeedBonusTests(unittest.TestCase):
+    def test_bonus_uses_amount_or_value_and_the_owner_id(self) -> None:
+        for column in ("amount", "value"):
+            report = Report()
+            effect, ctx = _effect("apply_status", "move_speed_bonus", duration="4", **{column: "20"})
+            result = effect_to_rust(effect, ctx, report)
+            self.assertFalse(report.errors, column)
+            self.assertIn(
+                'StatusSpec::MoveSpeedBonus { id: "tester_move_speed_bonus", percent:', result[2]
+            )
+        self.assertEqual(held_status_id(effect), "tester_move_speed_bonus")
+        self.assertEqual(runtime_status_id("tester_move_speed_bonus"), "tester_move_speed_bonus")
+
+    def test_percent_must_be_above_zero_and_at_most_400(self) -> None:
+        for bad in ("0", "500", "-5"):
+            report = Report()
+            effect, ctx = _effect("apply_status", "move_speed_bonus", duration="4", amount=bad)
+            self.assertIsNone(effect_to_rust(effect, ctx, report))
+            self.assertTrue(any("move_speed_bonus percentage" in e.message for e in report.errors), bad)
+        report = Report()
+        effect, ctx = _effect("apply_status", "move_speed_bonus", duration="4")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertTrue(any("required" in e.message for e in report.errors))
+
+    def test_remove_status_is_rejected_with_a_hint(self) -> None:
+        report = Report()
+        effect, ctx = _effect("remove_status", "move_speed_bonus")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertIn("<owner>_move_speed_bonus", report.errors[0].message)
+
+
+class UntargetableStatusTests(unittest.TestCase):
+    def test_untargetable_keyword_is_a_self_buff_status(self) -> None:
+        report = Report()
+        effect, ctx = _effect("apply_status", "untargetable", duration="4")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors)
+        self.assertIn("status: StatusSpec::Untargetable,", result[2])
+        self.assertEqual(runtime_status_id("untargetable"), "untargetable")
+        self.assertEqual(held_status_id(effect), "untargetable")
+
+
 class ImmunityStatusTests(unittest.TestCase):
     def test_composite_immunity_keywords_map_to_their_specs(self) -> None:
         for keyword, spec in (
             ("debuff_immunity", "StatusSpec::DebuffImmunity"),
             ("spell_immunity", "StatusSpec::SpellImmunity"),
             ("attack_immunity", "StatusSpec::AttackImmunity"),
+            ("untargetable", "StatusSpec::Untargetable"),
             ("banish", "StatusSpec::Banish"),
             ("break", "StatusSpec::Break"),
             ("taunt", "StatusSpec::Taunt"),
@@ -1783,8 +1955,8 @@ class ReactiveTriggerTests(unittest.TestCase):
         self.assertIn(f'id: "{ctx.owner_id}_armor"', result[2])
         self.assertEqual(held_status_id(effect), f"{effect.owner}_armor")
 
-        # A passive-only stat still cannot be held.
-        effect, ctx = _effect("stat_modifier", "strength", target="owner", trigger="while:moving", kind="item", value="5")
+        # A passive-only stat still cannot be held (strength is timed-capable since G3).
+        effect, ctx = _effect("stat_modifier", "health", target="owner", trigger="while:moving", kind="item", value="5")
         report = Report()
         self.assertIsNone(effect_to_rust(effect, ctx, report))
 
@@ -2188,6 +2360,25 @@ class HeroGeneratorTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as ctx:
                 self._load("true", "150", ",turn_rate", "," + bad)
             self.assertIn("turn_rate must be above 0", str(ctx.exception))
+
+    def test_base_attack_speed_is_optional_and_bounded(self) -> None:
+        import HeroGenerator
+
+        blank = self._load("true", "150", ",base_attack_speed", ",")[0]
+        self.assertIsNone(blank.base_attack_speed)
+        arm = HeroGenerator.hero_def_arm(blank)
+        self.assertIn("combat: hero_combat(", arm)
+        self.assertNotIn("base_attack_speed", arm)
+        hero = self._load("true", "150", ",base_attack_speed", ",120")[0]
+        self.assertEqual(hero.base_attack_speed, 120.0)
+        arm = HeroGenerator.hero_def_arm(hero)
+        self.assertIn("combat: CombatStats {", arm)
+        self.assertIn("base_attack_speed: 120.0,", arm)
+        self.assertIn("..hero_combat(", arm)
+        for bad in ("0", "10", "701", "-5"):
+            with self.assertRaises(SystemExit) as ctx:
+                self._load("true", "150", ",base_attack_speed", "," + bad)
+            self.assertIn("base_attack_speed must be within 20..700", str(ctx.exception))
 
     def test_is_melee_must_match_attack_range(self) -> None:
         with self.assertRaises(SystemExit) as ctx:

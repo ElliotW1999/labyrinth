@@ -1528,18 +1528,42 @@ fn refresh_buffs_text(
         *text = Text::new("Buffs: none");
         return;
     }
-    let parts: Vec<String> = statuses
-        .effects
+    *text = Text::new(format!("Buffs: {}", buffs_summary(&statuses.effects)));
+}
+
+/// One HUD entry per status id and kind, in first-seen order. Instances of the same id (an
+/// independent stat modifier applied many times) collapse into `+id xN <longest>s` instead of
+/// N entries; a single instance reads `+id <remaining>s`.
+fn buffs_summary(effects: &[crate::status::StatusEffect]) -> String {
+    let mut groups: Vec<(StatusKind, &'static str, usize, f32)> = Vec::new();
+    for effect in effects {
+        match groups
+            .iter_mut()
+            .find(|(kind, id, ..)| *kind == effect.kind && *id == effect.id)
+        {
+            Some((_, _, count, remaining)) => {
+                *count += 1;
+                *remaining = remaining.max(effect.remaining);
+            }
+            None => groups.push((effect.kind, effect.id, 1, effect.remaining)),
+        }
+    }
+    groups
         .iter()
-        .map(|e| {
-            let tag = match e.kind {
+        .map(|(kind, id, count, remaining)| {
+            let tag = match kind {
                 StatusKind::Buff => "+",
                 StatusKind::Debuff => "-",
             };
-            format!("{tag}{} {:.0}s", e.id, e.remaining.ceil())
+            let secs = remaining.ceil();
+            if *count > 1 {
+                format!("{tag}{id} x{count} {secs:.0}s")
+            } else {
+                format!("{tag}{id} {secs:.0}s")
+            }
         })
-        .collect();
-    *text = Text::new(format!("Buffs: {}", parts.join(", ")));
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn refresh_spell_bar(
@@ -2540,6 +2564,30 @@ fn world_to_minimap(pos: Vec3, half_extent: f32) -> (f32, f32) {
 
 #[cfg(test)]
 mod tests {
+    use crate::status::StatusEffect;
+
+    #[test]
+    fn buffs_summary_groups_same_id_instances() {
+        let agility = |secs| StatusEffect::buff("essence_shift_agility", secs);
+        let mut effects: Vec<StatusEffect> = (0..7).map(|i| agility(10.0 - i as f32)).collect();
+        effects.insert(2, StatusEffect::debuff("slow", 2.5));
+        assert_eq!(
+            buffs_summary(&effects),
+            "+essence_shift_agility x7 10s, -slow 3s"
+        );
+    }
+
+    #[test]
+    fn buffs_summary_keeps_single_and_distinct_entries() {
+        assert_eq!(buffs_summary(&[]), "");
+        let effects = [
+            StatusEffect::buff("a", 4.2),
+            StatusEffect::debuff("a", 1.0),
+            StatusEffect::buff("b", 2.0),
+        ];
+        assert_eq!(buffs_summary(&effects), "+a 5s, -a 1s, +b 2s");
+    }
+
     use super::*;
 
     /// Regression: shop detail panel Visibility/Text queries must be disjoint (Bevy B0001).
