@@ -11343,8 +11343,9 @@ mod tests {
         assert_eq!(agility(&app), base_agility + 6.0);
         assert_eq!(damage(&app), 48.0);
 
-        // The first stack ends at about t = 10; the second keeps going until about t = 15.
-        run_seconds(&mut app, 5.1);
+        // Rank 1 lasts 30s (10 + 20 per level): the first stack ends at about t = 30; the
+        // second keeps going until about t = 35.
+        run_seconds(&mut app, 25.1);
         assert_eq!(instances(&app, enemy, "essence_shift_attack_damage"), 1);
         assert_eq!(instances(&app, caster, "essence_shift_agility"), 1);
         assert_eq!(agility(&app), base_agility + 3.0);
@@ -11382,7 +11383,8 @@ mod tests {
             before.attack_speed,
             during.attack_speed
         );
-        run_seconds(&mut app, 11.0);
+        // Rank 1 stacks last 30s.
+        run_seconds(&mut app, 31.0);
         let after = stats(&app);
         assert!((after.armor - before.armor).abs() < 1e-3);
         assert_eq!(instances(&app, caster, "essence_shift_agility"), 0);

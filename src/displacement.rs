@@ -734,7 +734,7 @@ pub fn tick_forced_movement(
                 // Self-propelled movers face where they are going.
                 let moved = flat3(next - here3);
                 if forced.priority == MotionPriority::Own && moved.length_squared() > 1e-6 {
-                    transform.rotation = Quat::from_rotation_y(moved.x.atan2(moved.z));
+                    transform.rotation = Quat::from_rotation_y(crate::facing::yaw_toward(moved));
                 }
             }
 
