@@ -453,6 +453,14 @@ pub enum StatusSpec {
     Fear,
     /// Forced to basic attack `source` (the caster) only; no casting, items or orders.
     Taunt,
+    /// Forced to basic attack the cast's unit target (not the caster) only, even when it is
+    /// the holder's ally; no casting, items or orders. While taunted the holder also gains
+    /// `attack_speed` bonus attack speed, which rides on this status (id `taunt`), so a dispel,
+    /// expiry or the target's death ends both. Without a cast target (a passive or held row)
+    /// this is a no-op status. Valid only on a unit-target source.
+    TauntCastTarget {
+        attack_speed: RankValue,
+    },
     /// Forced to walk to `source` (the caster) and stop at contact; no attacking, casting,
     /// items or orders.
     Hypnosis,
@@ -586,6 +594,9 @@ pub struct StatusBuildContext {
     pub source: Option<Entity>,
     /// Where the trigger happened.
     pub point: Vec3,
+    /// The unit the cast was aimed at, when the trigger carries one (`on_cast`,
+    /// `on_projectile_hit` of a unit-target ability).
+    pub cast_target: Option<Entity>,
     /// The target's base attack damage, excluding item bonuses and other statuses: the hero
     /// definition's damage for heroes, the unit's current damage otherwise. Percentage attack
     /// damage modifiers are a snapshot of this at build time.
@@ -712,6 +723,13 @@ impl StatusSpec {
             // Without a caster to look at or walk to there is nothing to force: a no-op status.
             StatusSpec::Taunt => match ctx.source {
                 Some(source) => StatusEffect::taunted(duration, source),
+                None => StatusEffect::debuff("taunt", duration),
+            },
+            StatusSpec::TauntCastTarget { attack_speed } => match ctx.cast_target {
+                Some(target) => StatusEffect {
+                    attack_speed_flat: attack_speed.at(rank).max(0.0),
+                    ..StatusEffect::taunted(duration, target)
+                },
                 None => StatusEffect::debuff("taunt", duration),
             },
             StatusSpec::Hypnosis => match ctx.source {

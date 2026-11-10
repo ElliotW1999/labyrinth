@@ -421,6 +421,10 @@ fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
                 seconds_row("Move speed bonus duration", duration),
             ]
         }
+        StatusSpec::TauntCastTarget { attack_speed } => vec![
+            row("Attack speed while taunted", attack_speed),
+            seconds_row("Taunt duration", duration),
+        ],
         StatusSpec::AttackPoint { seconds, .. } => {
             vec![
                 seconds_row("Attack point", seconds),
@@ -720,7 +724,7 @@ fn status_name(status: StatusSpec) -> &'static str {
         StatusSpec::Accuracy { .. } => "Accuracy",
         StatusSpec::TrueStrike => "True strike",
         StatusSpec::Fear => "Fear",
-        StatusSpec::Taunt => "Taunt",
+        StatusSpec::Taunt | StatusSpec::TauntCastTarget { .. } => "Taunt",
         StatusSpec::Hypnosis => "Hypnosis",
         StatusSpec::Slow { .. } => "Slow",
         StatusSpec::MoveSpeedBonus { .. } => "Move speed bonus",

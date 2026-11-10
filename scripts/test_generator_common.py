@@ -1077,6 +1077,50 @@ class MoveSpeedBonusTests(unittest.TestCase):
         self.assertIn("<owner>_move_speed_bonus", report.errors[0].message)
 
 
+class TauntTargetTests(unittest.TestCase):
+    @staticmethod
+    def _taunt(trigger: str = "on_cast", target_type: str = "unit", **cells: str):
+        cells.setdefault("duration", "4")
+        effect, ctx = _effect("apply_status", "taunt_target", target="units_in_radius", trigger=trigger, **cells)
+        ctx.target_type = target_type
+        ctx.has_aoe = True
+        report = Report()
+        return effect_to_rust(effect, ctx, report), report
+
+    def test_value_is_the_attack_speed_bonus_and_the_status_id_is_taunt(self) -> None:
+        result, report = self._taunt(value="50")
+        self.assertEqual(report.errors, [])
+        self.assertIn("StatusSpec::TauntCastTarget { attack_speed: RankValue::fixed(50.0) }", result[2])
+        result, report = self._taunt()
+        self.assertEqual(report.errors, [])
+        self.assertIn("attack_speed: RankValue::ZERO", result[2])
+        effect, _ = _effect("apply_status", "taunt_target", target="units_in_radius")
+        self.assertEqual(held_status_id(effect), "taunt")
+        self.assertEqual(runtime_status_id("taunt_target"), "taunt")
+
+    def test_projectile_hit_also_carries_the_cast_target(self) -> None:
+        result, report = self._taunt(trigger="on_projectile_hit")
+        self.assertEqual(report.errors, [])
+        self.assertIsNotNone(result)
+
+    def test_no_target_ability_is_rejected(self) -> None:
+        for target_type in ("no_target", "point"):
+            result, report = self._taunt(target_type=target_type)
+            self.assertIsNone(result, target_type)
+            self.assertTrue(any("target_type unit" in e.message for e in report.errors), target_type)
+
+    def test_rows_without_a_cast_target_are_rejected(self) -> None:
+        for trigger in ("while", "passive", "on_attack_hit"):
+            result, report = self._taunt(trigger=trigger, duration="")
+            self.assertIsNone(result, trigger)
+            self.assertTrue(report.errors, trigger)
+
+    def test_negative_attack_speed_is_rejected(self) -> None:
+        result, report = self._taunt(value="-10")
+        self.assertIsNone(result)
+        self.assertTrue(any("cannot be negative" in e.message for e in report.errors))
+
+
 class FrozenStatusTests(unittest.TestCase):
     def test_frozen_is_a_plain_buff_status_keyword(self) -> None:
         report = Report()

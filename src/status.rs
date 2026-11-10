@@ -2194,6 +2194,7 @@ mod tests {
                 agility: 0.0,
                 source: None,
                 point: Vec3::ZERO,
+                cast_target: None,
                 base_attack_damage: 0.0,
             },
         );
@@ -2213,6 +2214,7 @@ mod tests {
                 agility: 0.0,
                 source: None,
                 point: Vec3::ZERO,
+                cast_target: None,
                 base_attack_damage: 0.0,
             },
         );
@@ -2577,6 +2579,7 @@ mod tests {
                 agility: 0.0,
                 source: None,
                 point: Vec3::ZERO,
+                cast_target: None,
                 base_attack_damage: 0.0,
             },
         );

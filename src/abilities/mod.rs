@@ -3866,6 +3866,103 @@ mod tests {
         );
     }
 
+    /// A unit-target enemy ability that taunts every enemy around the cast target onto it.
+    fn curse_ability() -> AbilityDefinition {
+        AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(
+                TargetType::Unit,
+                RankValue::fixed(1000.0),
+                RankValue::fixed(500.0),
+            )
+            .costs(RankValue::ZERO, RankValue::ZERO)
+            .timing(0.0, 0.0)
+            .team(definition::TargetTeam::Enemy)
+            .on(
+                AbilityTrigger::OnCast,
+                EffectTarget::enemies_around(definition::AreaCenter::Aim),
+                AbilityEffect::ApplyStatus {
+                    status: StatusSpec::TauntCastTarget {
+                        attack_speed: RankValue::fixed(50.0),
+                    },
+                    duration: RankValue::fixed(4.0),
+                },
+            )
+    }
+
+    fn taunt_of(app: &App, unit: Entity) -> Option<crate::status::StatusEffect> {
+        app.world()
+            .get::<StatusEffects>(unit)
+            .unwrap()
+            .effects
+            .iter()
+            .find(|e| e.id == "taunt")
+            .cloned()
+    }
+
+    #[test]
+    fn taunt_target_skips_cast_target() {
+        let mut app = test_app();
+        with_definitions(&mut app, [curse_ability()]);
+        let caster = spawn_caster(&mut app, KIT);
+        let cursed = spawn_unit(&mut app, Team::Dire, Vec3::new(200.0, 0.0, 0.0));
+        let near = spawn_unit(&mut app, Team::Dire, Vec3::new(300.0, 0.0, 0.0));
+        let far = spawn_unit(&mut app, Team::Dire, Vec3::new(3000.0, 0.0, 0.0));
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(250.0, 0.0, 0.0));
+        request(&mut app, caster, 3, CastTarget::Unit(cursed));
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        let taunt = taunt_of(&app, near).expect("nearby enemy is taunted");
+        assert_eq!(
+            taunt.compulsion,
+            Some(crate::status::Compulsion::Attack { target: cursed }),
+            "forced onto the cast target, not the caster"
+        );
+        assert!(taunt_of(&app, cursed).is_none(), "never onto itself");
+        assert!(taunt_of(&app, far).is_none(), "out of the radius");
+        assert!(taunt_of(&app, ally).is_none(), "allies are not taunted");
+        assert!(taunt_of(&app, caster).is_none());
+    }
+
+    #[test]
+    fn taunt_target_attack_speed_reverts_on_dispel() {
+        let mut app = test_app();
+        with_definitions(&mut app, [curse_ability()]);
+        let caster = spawn_caster(&mut app, KIT);
+        let cursed = spawn_unit(&mut app, Team::Dire, Vec3::new(200.0, 0.0, 0.0));
+        let near = spawn_unit(&mut app, Team::Dire, Vec3::new(300.0, 0.0, 0.0));
+        let speed = |app: &App| {
+            app.world()
+                .get::<CombatStats>(near)
+                .unwrap()
+                .attack_speed_flat
+        };
+        let before = speed(&app);
+        request(&mut app, caster, 3, CastTarget::Unit(cursed));
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        assert_eq!(
+            speed(&app),
+            before + 50.0,
+            "bonus attack speed while taunted"
+        );
+        app.world_mut().write_message(StatusEffectEvent::new(
+            None,
+            near,
+            crate::status::StatusChange::Dispel {
+                kind: crate::status::StatusKind::Debuff,
+                strength: crate::status::DispelStrength::Basic,
+            },
+        ));
+        step(&mut app);
+        assert!(
+            taunt_of(&app, near).is_none(),
+            "the dispel removed the taunt"
+        );
+        assert_eq!(speed(&app), before, "and the attack speed with it");
+    }
+
     #[test]
     fn ability_and_item_status_effects_share_the_same_executor() {
         let status = AbilityEffect::ApplyStatus {
@@ -8901,6 +8998,7 @@ mod tests {
                 agility: 0.0,
                 source: None,
                 point: Vec3::ZERO,
+                cast_target: None,
                 base_attack_damage: 0.0,
             },
         );

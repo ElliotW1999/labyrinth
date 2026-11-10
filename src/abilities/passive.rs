@@ -217,6 +217,7 @@ pub fn tick_toggle_upkeep(
                     base_attack_damage(kind, Some(stats)),
                     healer_amp,
                     EffectSource::Ability(slot.id),
+                    None,
                 );
                 reconcile_held_status(&mut status_events, entity, statuses, built, slot.toggled);
             }

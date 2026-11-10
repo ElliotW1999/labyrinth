@@ -204,6 +204,9 @@ STATUSES = {
     # Taunt and hypnosis force the target towards the caster (see `Compulsion`).
     "taunt": ("StatusSpec::Taunt", "taunt", False),
     "hypnosis": ("StatusSpec::Hypnosis", "hypnosis", False),
+    # Like taunt, but the target attacks the cast's unit target instead of the caster (even an
+    # ally of the holder); optional `value` = attack speed bonus while taunted. Runtime id `taunt`.
+    "taunt_target": (None, "taunt", False),
     "slow": (None, "slow", False),
     # Percent of base move speed (amount or value, 0..400); the id is `<owner>_move_speed_bonus`.
     "move_speed_bonus": (None, "move_speed_bonus", True),
@@ -256,6 +259,9 @@ INDEPENDENT_SUFFIX = "independent"
 
 # Statuses whose runtime id is `<owner>_<name>` (the keyword alone is not a status id).
 OWNER_ID_STATUSES = ("damage_reduction", "status_resistance", "stacks", "move_speed_bonus", "attack_point")
+
+# Triggers whose context carries the cast's unit target (see TriggerContext::cast_target).
+CAST_TARGET_TRIGGERS = ("on_cast", "on_projectile_hit")
 
 # Mirrors basic_attack::MAX_ATTACK_SWING: the longest attack point or backswing, in seconds.
 MAX_ATTACK_SWING = 1.0
@@ -1683,6 +1689,18 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             spec = f'StatusSpec::Slow {{ id: "{ctx.owner_id}_slow", percent: {rank_value(percent)} }}'
             if amount:
                 _unused(e, report, "value")
+        elif effect_id == "taunt_target":
+            if e.trigger not in CAST_TARGET_TRIGGERS:
+                report.error(row.file, row.line, "trigger", e.trigger, f"taunt_target forces attacks on the cast's unit target, so it needs a trigger that carries one ({', '.join(CAST_TARGET_TRIGGERS)}); not passive, while or while_toggled")
+                return None
+            if ctx.target_type is not None and ctx.target_type != "unit":
+                report.error(row.file, row.line, "effect_id", row.get("effect_id"), f"taunt_target needs a source with target_type unit (got {ctx.target_type})")
+                return None
+            if value and any(v < 0 for v in value):
+                report.error(row.file, row.line, "value", row.get("value"), "taunt_target attack speed bonus cannot be negative")
+                return None
+            spec = f"StatusSpec::TauntCastTarget {{ attack_speed: {rank_value(value) if value else 'RankValue::ZERO'} }}"
+            _unused(e, report, "amount")
         elif effect_id == "mini_stun":
             _unused(e, report, "value", "amount")
             if any(d < 0.05 for d in duration if d > 0):

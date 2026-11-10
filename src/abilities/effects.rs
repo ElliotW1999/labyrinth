@@ -810,6 +810,14 @@ impl EffectRunner<'_, '_> {
                     source.and_then(|s| self.statuses_of.get(s).ok()),
                 );
                 for target in targets {
+                    // The cursed unit itself is never taunted onto itself.
+                    if matches!(
+                        status,
+                        super::definition::StatusSpec::TauntCastTarget { .. }
+                    ) && ctx.cast_target == Some(target)
+                    {
+                        continue;
+                    }
                     let mut built = build_status_effect(
                         status,
                         rank,
@@ -824,6 +832,7 @@ impl EffectRunner<'_, '_> {
                         ),
                         healer_amp,
                         ctx.source,
+                        ctx.cast_target,
                     );
                     built.reactive = ctx.reaction;
                     if status.kind_follows_hostility() {
@@ -1151,6 +1160,7 @@ pub(crate) fn build_status_effect(
     target_base_attack_damage: f32,
     healer_amp: f32,
     origin: EffectSource,
+    cast_target: Option<Entity>,
 ) -> StatusEffect {
     let mut built = spec.build(
         rank,
@@ -1160,6 +1170,7 @@ pub(crate) fn build_status_effect(
             agility: target_attrs.map_or(0.0, |a| a.agility),
             source: caster,
             point,
+            cast_target,
             base_attack_damage: target_base_attack_damage,
         },
     );
