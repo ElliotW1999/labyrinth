@@ -980,6 +980,18 @@ impl EffectRunner<'_, '_> {
                     self.derived.push(ctx.derived(then));
                 }
             }
+            AbilityEffect::RequireStatus { id, then } => {
+                if !self.gate_open(ctx) {
+                    return;
+                }
+                if self
+                    .statuses_of
+                    .get(ctx.caster)
+                    .is_ok_and(|statuses| statuses.has_status(id))
+                {
+                    self.derived.push(ctx.derived(then));
+                }
+            }
             AbilityEffect::Counter { every, then } => {
                 if !self.gate_open(ctx) {
                     return;

@@ -1658,6 +1658,74 @@ def _gate_row(effect_type: str, effect_id: str, trigger: str, value: str, owner_
     return effect, ctx
 
 
+class RequireStatusTests(unittest.TestCase):
+    @staticmethod
+    def _gate(effect_id: str, target: str = "caster", trigger: str = "on_attack_hit", consumers=("on_buffed",)):
+        effect, ctx = _effect("require_status", effect_id, target=target, trigger=trigger, kind="ability")
+        ctx.owner_triggers = set(consumers)
+        report = Report()
+        return effect_to_rust(effect, ctx, report), report
+
+    def test_gate_emits_the_runtime_status_id_and_trigger(self) -> None:
+        result, report = self._gate("on_buffed:tester_attack_range")
+        self.assertEqual(report.errors, [])
+        self.assertIn(
+            'AbilityEffect::RequireStatus { id: "tester_attack_range", then: AbilityTrigger::Custom("on_buffed") }',
+            result[2],
+        )
+        # A status keyword resolves to its runtime id.
+        result, report = self._gate("on_buffed:phased")
+        self.assertEqual(report.errors, [])
+        self.assertIn('id: "phased"', result[2])
+        for target in ("owner", "attacker"):
+            result, report = self._gate("on_buffed:phased", target=target)
+            self.assertEqual(report.errors, [], target)
+
+    def test_gate_feeds_its_custom_trigger(self) -> None:
+        def make(trigger: str, effect_type: str, effect_id: str) -> EffectRow:
+            cells = {"ability_id": "t", "effect_index": "0", "trigger": trigger, "effect_target": "caster", "effect_type": effect_type, "effect_id": effect_id}
+            return EffectRow(row(cells), "t", 0, trigger, "caster", effect_type)
+
+        report = Report()
+        warn_unreachable_custom_triggers(
+            [make("on_attack_hit", "require_status", "on_buffed:phased"), make("on_buffed", "heal", "")],
+            set(),
+            report,
+        )
+        self.assertFalse(report.warnings)
+
+    def test_unknown_status_is_rejected(self) -> None:
+        for bad in ("on_buffed:not-a-status", "on_buffed:no_such_thing"):
+            result, report = self._gate(bad)
+            self.assertIsNone(result, bad)
+            self.assertTrue(any("unknown status" in e.message for e in report.errors), bad)
+
+    def test_missing_status_trigger_target_and_consumer_are_rejected(self) -> None:
+        result, report = self._gate("on_buffed")
+        self.assertIsNone(result)
+        self.assertTrue(any("<on_trigger>:<status_id>" in e.message for e in report.errors))
+        result, report = self._gate("on_buffed:phased", target="trigger_unit")
+        self.assertIsNone(result)
+        self.assertTrue(any("acts on the unit using it" in e.message for e in report.errors))
+        result, report = self._gate("on_buffed:phased", consumers=())
+        self.assertIsNone(result)
+        self.assertTrue(any("would do nothing" in e.message for e in report.errors))
+        result, report = self._gate("on_attack_hit:phased", trigger="on_attack_hit")
+        self.assertIsNone(result)
+        result, report = self._gate("on_buffed:phased", trigger="on_buffed")
+        self.assertIsNone(result)
+        self.assertTrue(any("own trigger" in e.message for e in report.errors))
+
+    def test_ability_and_item_generators_share_the_gate(self) -> None:
+        for kind, target in (("ability", "caster"), ("item", "owner")):
+            effect, ctx = _effect("require_status", "on_buffed:phased", target=target, trigger="on_attack_hit", kind=kind)
+            ctx.owner_triggers = {"on_buffed"}
+            report = Report()
+            result = effect_to_rust(effect, ctx, report)
+            self.assertEqual(report.errors, [], kind)
+            self.assertIn("AbilityEffect::RequireStatus", result[2], kind)
+
+
 class ReactiveTriggerTests(unittest.TestCase):
     @staticmethod
     def _render(trigger: str, kind: str = "item", **cells: str):

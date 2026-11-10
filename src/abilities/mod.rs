@@ -5488,6 +5488,142 @@ mod tests {
         }
     }
 
+    // --- Gates: require_status ---
+
+    fn require_status_entry(status: &'static str, then: &'static str) -> AbilityEffectEntry {
+        entry(
+            AbilityTrigger::OnAttackHit,
+            EffectTarget::Caster,
+            AbilityEffect::RequireStatus {
+                id: status,
+                then: AbilityTrigger::Custom(then),
+            },
+        )
+    }
+
+    fn hold_status(app: &mut App, unit: Entity, id: &'static str, remaining: f32) {
+        app.world_mut()
+            .get_mut::<StatusEffects>(unit)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::buff(id, remaining));
+    }
+
+    #[test]
+    fn require_status_fires_only_while_status_held() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            require_status_entry("gate_status", "on_gated"),
+            heal_entry(AbilityTrigger::Custom("on_gated"), 10.0),
+        ])]);
+        let (caster, target) = attack_duel(&mut app);
+
+        land_hits(&mut app, caster, target, 2);
+        assert_eq!(
+            health(&app, caster),
+            100.0,
+            "no status: the gate stays shut"
+        );
+
+        hold_status(&mut app, caster, "gate_status", 0.3);
+        land_hits(&mut app, caster, target, 1);
+        assert_eq!(health(&app, caster), 110.0, "status held: the gate opens");
+        // Held again on the next hit: one firing per hit, no stacking or counters.
+        land_hits(&mut app, caster, target, 1);
+        assert_eq!(health(&app, caster), 120.0);
+
+        // The status runs out (the test app has no status ticker, so expire it by hand): the
+        // gate closes again.
+        for status in &mut app
+            .world_mut()
+            .get_mut::<StatusEffects>(caster)
+            .unwrap()
+            .effects
+        {
+            status.remaining = 0.0;
+        }
+        let before = health(&app, caster);
+        land_hits(&mut app, caster, target, 2);
+        assert_eq!(health(&app, caster), before);
+    }
+
+    #[test]
+    fn require_status_gate_respects_depth_cap() {
+        // The gate re-fires its own custom trigger. Depth 1 and 2 run their entries; the gate
+        // at depth 2 stops the chain, exactly like the other gate kinds.
+        let mut app = test_app();
+        let looping = AbilityEffect::RequireStatus {
+            id: "gate_status",
+            then: AbilityTrigger::Custom("on_loop"),
+        };
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            entry(AbilityTrigger::OnAttackHit, EffectTarget::Caster, looping),
+            entry(
+                AbilityTrigger::Custom("on_loop"),
+                EffectTarget::Caster,
+                looping,
+            ),
+            heal_entry(AbilityTrigger::Custom("on_loop"), 10.0),
+        ])]);
+        let (caster, target) = attack_duel(&mut app);
+        hold_status(&mut app, caster, "gate_status", 10.0);
+        land_hits(&mut app, caster, target, 1);
+        assert_eq!(health(&app, caster), 100.0 + 2.0 * 10.0);
+    }
+
+    #[test]
+    fn item_and_ability_require_status_alike() {
+        // Item: the gate under an attack hit.
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            require_status_entry("gate_status", "on_gated"),
+            heal_entry(AbilityTrigger::Custom("on_gated"), 10.0),
+        ])]);
+        let (caster, target) = attack_duel(&mut app);
+        hold_status(&mut app, caster, "gate_status", 10.0);
+        land_hits(&mut app, caster, target, 1);
+        assert_eq!(health(&app, caster), 110.0, "item");
+
+        // Ability: the same gate under its cast.
+        let mut app = test_app();
+        with_definitions(
+            &mut app,
+            [AbilityDefinition::new(AbilityId::Bulwark)
+                .targeting(TargetType::NoTarget, RankValue::ZERO, RankValue::ZERO)
+                .costs(RankValue::ZERO, RankValue::ZERO)
+                .timing(0.0, 0.0)
+                .on(
+                    AbilityTrigger::OnCast,
+                    EffectTarget::Caster,
+                    AbilityEffect::RequireStatus {
+                        id: "gate_status",
+                        then: AbilityTrigger::Custom("on_gated"),
+                    },
+                )
+                .on(
+                    AbilityTrigger::Custom("on_gated"),
+                    EffectTarget::Caster,
+                    AbilityEffect::Heal {
+                        amount: RankValue::fixed(10.0),
+                        scaling: EffectScaling::None,
+                    },
+                )],
+        );
+        let caster = spawn_caster(&mut app, KIT);
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 100.0;
+        request(&mut app, caster, 3, CastTarget::None);
+        for _ in 0..6 {
+            step(&mut app);
+        }
+        assert_eq!(health(&app, caster), 100.0, "ability without the status");
+        hold_status(&mut app, caster, "gate_status", 10.0);
+        request(&mut app, caster, 3, CastTarget::None);
+        for _ in 0..6 {
+            step(&mut app);
+        }
+        assert_eq!(health(&app, caster), 110.0, "ability with the status");
+    }
+
     // --- Cast triggers ---
 
     /// An instant no-target ability whose `OnCast` entries hit enemies within 500.
@@ -7188,6 +7324,7 @@ mod tests {
                 pseudo: true,
             },
             AbilityEffect::Counter { every: 3, then },
+            AbilityEffect::RequireStatus { id: "held", then },
             AbilityEffect::Accumulate {
                 threshold: RankValue::fixed(10.0),
                 then,

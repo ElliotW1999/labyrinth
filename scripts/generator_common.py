@@ -87,7 +87,7 @@ REACTION_TRIGGERS = {
     "on_status_removed",
 }
 # Effect types that re-fire the row's context under a custom `on_<name>` trigger.
-GATE_TYPES = ("proc", "pseudo_proc", "counter", "accumulate")
+GATE_TYPES = ("proc", "pseudo_proc", "counter", "accumulate", "require_status")
 # Every effect type that fires a custom trigger: the gates plus the Chain mechanic gate (one
 # derived context per hop) and the Zone mechanic gate (one per tick). Used for reachability and
 # reaction propagation.
@@ -158,9 +158,13 @@ EFFECT_TYPES = {
     # Gates: re-fire the row's context under a custom trigger (see AbilityEffect::Proc / Counter /
     # Accumulate). `pseudo_proc` is a proc with a pseudo-random distribution.
     "proc",
+    # Fires its custom trigger only while the caster holds a status: `on_<name>:<status_id>`.
+    "require_status",
     "pseudo_proc",
     "counter",
     "accumulate",
+    # Gate: fires its trigger only while the caster holds a status (`on_<name>:<status_id>`).
+    "require_status",
     # Mechanic gate: jump from the start unit to nearby units, re-firing a custom trigger per hop.
     "chain",
     # Mechanic gate: a delayed, persistent area that re-fires a custom trigger on every tick with the
@@ -853,6 +857,11 @@ def ability_rust_target_type(target_type: str, projectile: str, aoe_radius: list
     return "NoTarget"
 
 
+def fed_trigger(e: "EffectRow") -> str:
+    """The custom trigger a feeder row fires: its effect_id without a `:<argument>` suffix."""
+    return e.row.get("effect_id").lower().partition(":")[0]
+
+
 def find_emitted_custom_triggers(repo_root: Path) -> set[str]:
     """Custom `on_*` trigger names that hand-written Rust (mechanics) may emit."""
     names: set[str] = set()
@@ -865,7 +874,7 @@ def find_emitted_custom_triggers(repo_root: Path) -> set[str]:
 
 def warn_unreachable_custom_triggers(effects: list["EffectRow"], emitted: set[str] | None, report: Report) -> None:
     """A custom trigger only fires when a proc / counter row names it or Rust emits it."""
-    fed = {e.row.get("effect_id").lower() for e in effects if e.effect_type in CUSTOM_TRIGGER_FEEDERS}
+    fed = {fed_trigger(e) for e in effects if e.effect_type in CUSTOM_TRIGGER_FEEDERS}
     for e in effects:
         if e.trigger in ABILITY_TRIGGERS or e.trigger in ITEM_TRIGGERS:
             continue
@@ -1388,7 +1397,7 @@ def reaction_triggers(effects: list[EffectRow]) -> set[str]:
     while changed:
         changed = False
         for e in effects:
-            fed = e.row.get("effect_id").lower()
+            fed = fed_trigger(e)
             if e.effect_type in CUSTOM_TRIGGER_FEEDERS and e.trigger in reaction and fed not in reaction:
                 reaction.add(fed)
                 changed = True
@@ -1407,7 +1416,7 @@ def chain_fed_triggers(effects: list[EffectRow]) -> set[str]:
     while changed:
         changed = False
         for e in effects:
-            fed = e.row.get("effect_id").lower()
+            fed = fed_trigger(e)
             if e.effect_type not in CUSTOM_TRIGGER_FEEDERS or fed in fed_triggers:
                 continue
             if e.effect_type in ("chain", "zone", "attached_zone") or e.trigger in fed_triggers:
@@ -2008,6 +2017,12 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
         if effect is None:
             return None
     elif t in GATE_TYPES:
+        gate_status = None
+        if t == "require_status":
+            effect_id, _, gate_status = effect_id.partition(":")
+            if not effect_id or not gate_status:
+                report.error(row.file, row.line, "effect_id", row.get("effect_id"), "require_status needs effect_id <on_trigger>:<status_id>, e.g. on_burn_hit:my_ability_attack_range")
+                return None
         if not _require(e, "effect_id", report, "the custom trigger to fire (on_<name>)"):
             return None
         if not CUSTOM_TRIGGER_PATTERN.match(effect_id) or effect_id in ABILITY_TRIGGERS or effect_id in ITEM_TRIGGERS:
@@ -2025,7 +2040,14 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
         if not no_scaling():
             return None
         _unused(e, report, "damage_type", "duration", "amount", "radius")
-        if t in ("proc", "pseudo_proc"):
+        if t == "require_status":
+            status_id = runtime_status_id(gate_status)
+            if status_id is None:
+                report.error(row.file, row.line, "effect_id", row.get("effect_id"), f"unknown status {gate_status!r}: name a status keyword, a runtime status id or an <owner>_<stat> id of a timed row")
+                return None
+            _unused(e, report, "value")
+            effect = f'AbilityEffect::RequireStatus {{ id: "{status_id}", then: AbilityTrigger::Custom("{effect_id}") }}'
+        elif t in ("proc", "pseudo_proc"):
             if not _require(e, "value", report, "proc chance percent (above 0, at most 100)"):
                 return None
             if any(not 0 < p <= 100 for p in value):

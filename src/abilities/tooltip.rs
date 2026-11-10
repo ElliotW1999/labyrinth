@@ -398,6 +398,7 @@ fn effect_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
         | AbilityEffect::Teleport { .. }
         | AbilityEffect::RemoveStatus { .. }
         | AbilityEffect::Proc { .. }
+        | AbilityEffect::RequireStatus { .. }
         | AbilityEffect::Counter { .. }
         | AbilityEffect::Chain { .. }
         | AbilityEffect::Zone { .. }
@@ -572,6 +573,9 @@ fn effect_text_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
                 "{hits} for {}% damage",
                 fmt_num(damage_ratio.at(1) * 100.0)
             ))]
+        }
+        AbilityEffect::RequireStatus { .. } => {
+            vec![text_row("While the effect is active".to_string())]
         }
         AbilityEffect::Counter { every, .. } => {
             vec![text_row(format!("Every {every} attacks"))]

@@ -1016,6 +1016,13 @@ pub enum AbilityEffect {
         then: AbilityTrigger,
         pseudo: bool,
     },
+    /// Gate: while the caster holds a live status with this `id` (see
+    /// `StatusEffects::has_status`), re-fires this trigger's context under `then`. No RNG and
+    /// no counters: it fires once per execution, so a refreshing status never stacks.
+    RequireStatus {
+        id: &'static str,
+        then: AbilityTrigger,
+    },
     /// Gate: every `every`th execution (counted per source and `then`) re-fires this
     /// trigger's context under the trigger `then`.
     Counter {
@@ -1090,6 +1097,7 @@ impl AbilityEffect {
         !matches!(
             self,
             Self::Proc { .. }
+                | Self::RequireStatus { .. }
                 | Self::Counter { .. }
                 | Self::Accumulate { .. }
                 | Self::Chain { .. }
