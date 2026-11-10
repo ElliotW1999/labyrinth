@@ -1020,6 +1020,10 @@ pub enum AbilityEffect {
     /// with the units of `team` inside `radius` as the affected units (the caster is never
     /// one). The re-fired context has no trigger unit, no affected units from the spawn and
     /// no attack. Emits no gameplay messages itself and runs once per execution.
+    ///
+    /// With `follow_caster` the zone is re-centred on the caster before every tick (the
+    /// re-fired context's point and origin move with it) and ends as soon as the caster dies;
+    /// otherwise it stays where it was spawned.
     Zone {
         radius: AreaRadius,
         team: TargetTeam,
@@ -1027,6 +1031,7 @@ pub enum AbilityEffect {
         duration: RankValue,
         interval: RankValue,
         then: AbilityTrigger,
+        follow_caster: bool,
     },
     /// Gate: sums `TriggerContext::amount` over executions (damage taken, distance walked, or
     /// 1 per occurrence) and, whenever the sum reaches `threshold`, re-fires this trigger's

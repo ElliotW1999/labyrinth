@@ -8757,6 +8757,16 @@ mod tests {
     const ZONE_TICK: AbilityTrigger = AbilityTrigger::Custom("on_zone_tick");
 
     fn zone_effect(team: TargetTeam, delay: f32, duration: f32, interval: f32) -> AbilityEffect {
+        follow_zone_effect(team, delay, duration, interval, false)
+    }
+
+    fn follow_zone_effect(
+        team: TargetTeam,
+        delay: f32,
+        duration: f32,
+        interval: f32,
+        follow_caster: bool,
+    ) -> AbilityEffect {
         AbilityEffect::Zone {
             radius: AreaRadius::Fixed(RankValue::fixed(300.0)),
             team,
@@ -8764,6 +8774,7 @@ mod tests {
             duration: RankValue::fixed(duration),
             interval: RankValue::fixed(interval),
             then: ZONE_TICK,
+            follow_caster,
         }
     }
 
@@ -8992,6 +9003,173 @@ mod tests {
         assert_eq!(zone_count(&mut app), 1);
     }
 
+    fn move_unit(app: &mut App, unit: Entity, to: Vec3) {
+        app.world_mut()
+            .get_mut::<Transform>(unit)
+            .unwrap()
+            .translation = to;
+    }
+
+    /// Steps until a tick is written and returns it.
+    fn next_zone_tick(app: &mut App) -> TriggerContext {
+        for _ in 0..60 {
+            step(app);
+            if let Some(tick) = zone_ticks(app).into_iter().next() {
+                return tick;
+            }
+        }
+        panic!("the zone never ticked");
+    }
+
+    #[test]
+    fn attached_zone_recentres_on_caster_each_tick() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(zone_ability(follow_zone_effect(
+                TargetTeam::Enemy,
+                0.0,
+                3.0,
+                1.0,
+                true,
+            )));
+        let caster = spawn_caster(&mut app, KIT);
+        // 700 away from where the caster starts: outside the 300 radius.
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(700.0, 0.0, 0.0));
+        request(&mut app, caster, 3, CastTarget::None);
+        let first = next_zone_tick(&mut app);
+        assert!(first.affected_units.is_empty());
+        assert_eq!(health(&app, enemy), 1000.0);
+
+        // The caster walks next to the enemy; the next tick is centred on its new position.
+        move_unit(&mut app, caster, Vec3::new(600.0, 0.0, 0.0));
+        let second = next_zone_tick(&mut app);
+        assert_eq!(second.affected_units, vec![enemy]);
+        assert_eq!(health(&app, enemy), 990.0);
+        let center = app
+            .world_mut()
+            .query::<&zones::AbilityZone>()
+            .single(app.world())
+            .unwrap()
+            .center;
+        assert_eq!(center, Vec3::new(600.0, 0.0, 0.0));
+
+        // And back out of reach again.
+        move_unit(&mut app, caster, Vec3::new(-400.0, 0.0, 0.0));
+        let third = next_zone_tick(&mut app);
+        assert!(third.affected_units.is_empty());
+        assert_eq!(health(&app, enemy), 990.0);
+    }
+
+    #[test]
+    fn attached_zone_stops_when_caster_dies() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(zone_ability(follow_zone_effect(
+                TargetTeam::Enemy,
+                0.0,
+                5.0,
+                1.0,
+                true,
+            )));
+        let caster = spawn_caster(&mut app, KIT);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        request(&mut app, caster, 3, CastTarget::None);
+        next_zone_tick(&mut app);
+        assert_eq!(health(&app, enemy), 990.0);
+        assert_eq!(zone_count(&mut app), 1);
+
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 0.0;
+        let mut ticks = 0;
+        for _ in 0..120 {
+            step(&mut app);
+            ticks += zone_ticks(&app).len();
+        }
+        assert_eq!(ticks, 0, "no tick fires once the caster is dead");
+        assert_eq!(zone_count(&mut app), 0, "the zone is despawned, not paused");
+        assert_eq!(health(&app, enemy), 990.0);
+    }
+
+    #[test]
+    fn attached_zone_tick_point_is_caster_position() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(zone_ability(follow_zone_effect(
+                TargetTeam::Enemy,
+                0.0,
+                3.0,
+                1.0,
+                true,
+            )));
+        let caster = spawn_caster(&mut app, KIT);
+        request(&mut app, caster, 3, CastTarget::None);
+        next_zone_tick(&mut app);
+        let to = Vec3::new(250.0, 0.0, -80.0);
+        move_unit(&mut app, caster, to);
+        let tick = next_zone_tick(&mut app);
+        assert_eq!(tick.point, to);
+        assert_eq!(tick.origin, to);
+        let zone_at = app
+            .world_mut()
+            .query::<(&zones::AbilityZone, &Transform)>()
+            .single(app.world())
+            .unwrap()
+            .1
+            .translation;
+        assert_eq!(zone_at, to);
+    }
+
+    #[test]
+    fn static_zone_unchanged() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(zone_ability(zone_effect(TargetTeam::Enemy, 0.0, 5.0, 1.0)));
+        let caster = spawn_caster(&mut app, KIT);
+        let near_spawn = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        let near_walker = spawn_unit(&mut app, Team::Dire, Vec3::new(1000.0, 0.0, 0.0));
+        request(&mut app, caster, 3, CastTarget::None);
+        next_zone_tick(&mut app);
+        move_unit(&mut app, caster, Vec3::new(900.0, 0.0, 0.0));
+        let tick = next_zone_tick(&mut app);
+        assert_eq!(tick.affected_units, vec![near_spawn], "it stayed put");
+        assert_eq!(health(&app, near_walker), 1000.0);
+
+        // A static zone outlives its caster's death.
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 0.0;
+        let tick = next_zone_tick(&mut app);
+        assert_eq!(tick.affected_units, vec![near_spawn]);
+        assert_eq!(zone_count(&mut app), 1);
+    }
+
+    #[test]
+    fn ability_attached_zone_requests_a_following_zone() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(zone_ability(follow_zone_effect(
+                TargetTeam::Enemy,
+                0.0,
+                2.0,
+                1.0,
+                true,
+            )));
+        let caster = spawn_caster(&mut app, KIT);
+        request(&mut app, caster, 3, CastTarget::None);
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        let zone = app
+            .world_mut()
+            .query::<&zones::AbilityZone>()
+            .single(app.world())
+            .unwrap()
+            .clone();
+        assert!(zone.follow_caster);
+    }
+
     #[test]
     fn zone_ignores_a_zero_interval_duration_or_radius() {
         for effect in [
@@ -9005,6 +9183,7 @@ mod tests {
                 duration: RankValue::fixed(2.0),
                 interval: RankValue::fixed(1.0),
                 then: ZONE_TICK,
+                follow_caster: false,
             },
         ] {
             let mut app = test_app();

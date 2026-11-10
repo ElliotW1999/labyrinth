@@ -815,6 +815,7 @@ fn shrapnel() -> AbilityDefinition {
                 duration: RankValue::fixed(10.0),
                 interval: RankValue::fixed(1.0),
                 then: AbilityTrigger::Custom("on_shrapnel_tick"),
+                follow_caster: false,
             },
         )
         .on(

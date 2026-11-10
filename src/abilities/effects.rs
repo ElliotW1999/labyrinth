@@ -1047,6 +1047,7 @@ impl EffectRunner<'_, '_> {
                 duration,
                 interval,
                 then,
+                follow_caster,
             } => {
                 if !self.gate_open(ctx) {
                     return;
@@ -1076,6 +1077,7 @@ impl EffectRunner<'_, '_> {
                     duration,
                     interval,
                     ticks,
+                    follow_caster,
                 });
             }
             AbilityEffect::Accumulate { threshold, then } => {

@@ -91,7 +91,7 @@ GATE_TYPES = ("proc", "pseudo_proc", "counter", "accumulate")
 # Every effect type that fires a custom trigger: the gates plus the Chain mechanic gate (one
 # derived context per hop) and the Zone mechanic gate (one per tick). Used for reachability and
 # reaction propagation.
-CUSTOM_TRIGGER_FEEDERS = (*GATE_TYPES, "chain", "zone")
+CUSTOM_TRIGGER_FEEDERS = (*GATE_TYPES, "chain", "zone", "attached_zone")
 # Triggers whose resolved target is the unit that caused them (the `attacker` target).
 ATTACKER_TRIGGERS = ("on_damage_taken", "on_death")
 
@@ -166,6 +166,8 @@ EFFECT_TYPES = {
     # Mechanic gate: a delayed, persistent area that re-fires a custom trigger on every tick with the
     # units inside as the affected units.
     "zone",
+    # A zone that is re-centred on its caster before every tick and ends when the caster dies.
+    "attached_zone",
     # Extra basic attacks (instant / double / multi-target attack).
     "perform_attack",
 }
@@ -1400,7 +1402,7 @@ def chain_fed_triggers(effects: list[EffectRow]) -> set[str]:
             fed = e.row.get("effect_id").lower()
             if e.effect_type not in CUSTOM_TRIGGER_FEEDERS or fed in fed_triggers:
                 continue
-            if e.effect_type in ("chain", "zone") or e.trigger in fed_triggers:
+            if e.effect_type in ("chain", "zone", "attached_zone") or e.trigger in fed_triggers:
                 fed_triggers.add(fed)
                 changed = True
     return fed_triggers
@@ -2068,7 +2070,8 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             f"falloff: {f32(amount[0] / 100)}, team: TargetTeam::{chain_team}, "
             f'then: AbilityTrigger::Custom("{effect_id}") }}'
         )
-    elif t == "zone":
+    elif t in ("zone", "attached_zone"):
+        # `attached_zone` is a `zone` that is re-centred on its caster before every tick.
         if not _require(e, "effect_id", report, "the custom trigger to fire per tick (on_<name>)"):
             return None
         if not CUSTOM_TRIGGER_PATTERN.match(effect_id) or effect_id in ABILITY_TRIGGERS or effect_id in ITEM_TRIGGERS:
@@ -2121,7 +2124,8 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             f"AbilityEffect::Zone {{ radius: {zone_radius}, team: TargetTeam::{zone_team}, "
             f"delay: {rank_value(amount or [0.0])}, duration: {rank_value(duration)}, "
             f"interval: {rank_value(value)}, "
-            f'then: AbilityTrigger::Custom("{effect_id}") }}'
+            f'then: AbilityTrigger::Custom("{effect_id}"), '
+            f"follow_caster: {'true' if t == 'attached_zone' else 'false'} }}"
         )
     elif t == "perform_attack":
         if effect_id not in ("", "exclude_trigger_unit"):
@@ -2168,7 +2172,7 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
     else:  # pragma: no cover - parse_enum already rejected it
         return None
 
-    if t not in ("movement", "chain", "zone") and e.target != "units_in_radius" and row.get("radius"):
+    if t not in ("movement", "chain", "zone", "attached_zone") and e.target != "units_in_radius" and row.get("radius"):
         report.warn(row.file, row.line, "radius", row.get("radius"), "only used by units_in_radius targets")
 
     # --- target

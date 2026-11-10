@@ -857,6 +857,7 @@ mod tests {
                 duration,
                 interval,
                 then: AbilityTrigger::Custom("on_shrapnel_tick"),
+                follow_caster: false,
             } if delay.at(1) == 1.2 && duration.at(1) == 10.0 && interval.at(1) == 1.0
         ));
         let tick = AbilityTrigger::Custom("on_shrapnel_tick");

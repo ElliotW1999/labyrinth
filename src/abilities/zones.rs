@@ -10,7 +10,9 @@
 //!
 //! A zone only reports who stands inside it; damage, slows and the rest are ordinary effect
 //! entries on the custom trigger it fires, so abilities and items share one path. A zone
-//! outlives the death of its caster and is dropped only when the caster entity is gone.
+//! outlives the death of its caster and is dropped only when the caster entity is gone. A zone
+//! that follows its caster (`follow_caster`) is re-centred on the caster before every tick and
+//! ends when the caster dies.
 
 use bevy::prelude::*;
 
@@ -45,6 +47,8 @@ pub struct SpawnZoneEvent {
     pub interval: f32,
     /// How many ticks the zone fires in total.
     pub ticks: u32,
+    /// Re-centre on the caster before every tick and end when the caster dies.
+    pub follow_caster: bool,
 }
 
 /// A live zone. `elapsed` counts game time since the frame after it was spawned.
@@ -58,6 +62,8 @@ pub struct AbilityZone {
     pub duration: f32,
     pub interval: f32,
     pub ticks: u32,
+    /// See [`SpawnZoneEvent::follow_caster`].
+    pub follow_caster: bool,
     pub elapsed: f32,
     /// Ticks fired so far; tick `k` (0-based) is due at `delay + k * interval`.
     pub fired: u32,
@@ -74,6 +80,7 @@ impl AbilityZone {
             duration: event.duration,
             interval: event.interval,
             ticks: event.ticks,
+            follow_caster: event.follow_caster,
             elapsed: 0.0,
             fired: 0,
         }
@@ -112,6 +119,24 @@ pub fn tick_zones(
         if existing.get(caster).is_err() {
             commands.entity(zone_entity).despawn();
             continue;
+        }
+        if zone.follow_caster {
+            // Re-centre on the caster; a dead caster ends the zone (it is not paused).
+            let Some(position) = units
+                .get(caster)
+                .ok()
+                .filter(|(_, _, _, health, _)| health.is_alive())
+                .map(|(_, tf, ..)| tf.translation)
+            else {
+                commands.entity(zone_entity).despawn();
+                continue;
+            };
+            zone.center = position;
+            zone.template.point = position;
+            zone.template.origin = position;
+            commands
+                .entity(zone_entity)
+                .insert(Transform::from_translation(position));
         }
         zone.elapsed += dt;
         while zone.fired < zone.ticks && zone.elapsed + SLACK >= zone.next_tick_due() {

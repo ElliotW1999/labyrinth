@@ -820,6 +820,70 @@ class ZoneTests(unittest.TestCase):
         self.assertIn("zone", report.errors[0].message)
 
 
+class AttachedZoneTests(unittest.TestCase):
+    GOOD = {"value": "0.1", "duration": "1", "amount": "1.5"}
+
+    def _zone(self, effect_type="attached_zone", effect_id="on_pulse", target="caster", kind="ability", **cells):
+        report = Report()
+        effect, ctx = _effect(effect_type, effect_id, target=target, kind=kind, **{**self.GOOD, **cells})
+        ctx.has_aoe = kind == "ability"
+        return effect_to_rust(effect, ctx, report), report
+
+    def test_attached_zone_emits_a_following_zone(self) -> None:
+        result, report = self._zone()
+        self.assertFalse(report.errors)
+        code = result[2]
+        self.assertIn("AbilityEffect::Zone { radius: AreaRadius::Ability, team: TargetTeam::Enemy", code)
+        self.assertIn("delay: RankValue::fixed(1.5)", code)
+        self.assertIn("duration: RankValue::fixed(1.0)", code)
+        self.assertIn("interval: RankValue::fixed(0.1)", code)
+        self.assertIn('then: AbilityTrigger::Custom("on_pulse")', code)
+        self.assertTrue(code.endswith("follow_caster: true }"), code)
+        self.assertEqual(result[1], "EffectTarget::Caster")
+
+    def test_plain_zone_is_not_following(self) -> None:
+        result, report = self._zone(effect_type="zone")
+        self.assertFalse(report.errors)
+        self.assertTrue(result[2].endswith("follow_caster: false }"), result[2])
+
+    def test_attached_zone_has_the_same_errors_as_a_zone(self) -> None:
+        cases = (
+            {"value": "0"},
+            {"value": "2"},
+            {"amount": "-1"},
+            {"duration": ""},
+            {"radius": "0"},
+            {"effect_id": "on_cast"},
+            {"target": "units_in_radius", "radius": "300"},
+        )
+        for cells in cases:
+            plain, plain_report = self._zone(effect_type="zone", **cells)
+            attached, attached_report = self._zone(**cells)
+            self.assertIsNone(plain, cells)
+            self.assertIsNone(attached, cells)
+            self.assertEqual(plain_report.errors[0].field, attached_report.errors[0].field, cells)
+
+    def test_attached_zone_cannot_target_affected_units(self) -> None:
+        result, report = self._zone(target="affected_units")
+        self.assertIsNone(result)
+        self.assertEqual(report.errors[0].field, "effect_target")
+
+    def test_attached_zone_feeds_its_trigger(self) -> None:
+        effect, _ = _effect("attached_zone", "on_pulse", **self.GOOD)
+        other, _ = _effect("damage", "", trigger="on_pulse", target="affected_units")
+        self.assertEqual(chain_fed_triggers([effect]), {"on_pulse"})
+        report = Report()
+        warn_unreachable_custom_triggers([effect, other], set(), report)
+        self.assertFalse(report.warnings)
+
+    def test_attached_zone_does_not_warn_about_its_radius_column(self) -> None:
+        report = Report()
+        effect, ctx = _effect("attached_zone", "on_pulse", target="caster", radius="300", **self.GOOD)
+        ctx.has_aoe = True
+        self.assertIsNotNone(effect_to_rust(effect, ctx, report))
+        self.assertFalse(report.warnings)
+
+
 class MiniStunTests(unittest.TestCase):
     def _stun(self, **cells: str):
         report = Report()

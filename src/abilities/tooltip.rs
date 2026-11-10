@@ -575,8 +575,14 @@ fn effect_text_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
             delay,
             duration,
             interval,
+            follow_caster,
             ..
         } => {
+            let label = if follow_caster {
+                "Zone (follows the caster)"
+            } else {
+                "Zone"
+            };
             let radius = match radius {
                 AreaRadius::Ability => "the ability radius".to_string(),
                 AreaRadius::Fixed(value) => fmt_num(value.at(1)),
@@ -586,7 +592,7 @@ fn effect_text_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
                 _ => String::new(),
             };
             vec![text_row(format!(
-                "Zone: radius {radius}, {delay}every {}s for {}s",
+                "{label}: radius {radius}, {delay}every {}s for {}s",
                 fmt_num(interval.at(1)),
                 fmt_num(duration.at(1))
             ))]
