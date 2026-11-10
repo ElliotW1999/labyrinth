@@ -2271,7 +2271,7 @@ mod tests {
         app.world_mut()
             .entity_mut(cycloned)
             .insert(crate::status::StatusEffects {
-                effects: vec![crate::status::StatusEffect::buff("cyclone", 5.0)],
+                effects: vec![crate::status::StatusEffect::cyclone(5.0, true)],
             });
 
         let spawned = cast_scream(&mut app, caster);
@@ -7991,6 +7991,153 @@ mod tests {
                     duration: RankValue::fixed(duration),
                 },
             )
+    }
+
+    fn apply_status_ability(spec: StatusSpec, duration: f32) -> AbilityDefinition {
+        AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::Unit, RankValue::fixed(500.0), RankValue::ZERO)
+            .team(TargetTeam::Any)
+            .costs(RankValue::ZERO, RankValue::ZERO)
+            .timing(0.0, 0.0)
+            .on(
+                AbilityTrigger::OnCast,
+                EffectTarget::CastTarget,
+                AbilityEffect::ApplyStatus {
+                    status: spec,
+                    duration: RankValue::fixed(duration),
+                },
+            )
+    }
+
+    /// Casts `spec` from the Radiant caster on a unit of `team` and returns the status it left.
+    fn cast_status_on(spec: StatusSpec, team: Team) -> crate::status::StatusEffect {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(apply_status_ability(spec, 5.0));
+        let caster = spawn_caster(&mut app, KIT);
+        let target = spawn_unit(&mut app, team, Vec3::new(80.0, 0.0, 0.0));
+        request(&mut app, caster, 3, CastTarget::Unit(target));
+        for _ in 0..3 {
+            step(&mut app);
+        }
+        let id = match spec {
+            StatusSpec::Ethereal { .. } => "ethereal",
+            _ => "banish",
+        };
+        status_of(&app, target, id)
+            .unwrap_or_else(|| panic!("{id} applied to a {team:?} unit"))
+            .clone()
+    }
+
+    #[test]
+    fn ethereal_kind_follows_hostility() {
+        let ethereal = StatusSpec::Ethereal {
+            magic_amp_percent: RankValue::fixed(40.0),
+        };
+        assert!(ethereal.kind_follows_hostility() && StatusSpec::Banish.kind_follows_hostility());
+        assert!(!StatusSpec::Stun.kind_follows_hostility());
+        assert_eq!(
+            cast_status_on(ethereal, Team::Dire).kind,
+            crate::status::StatusKind::Debuff,
+            "on an enemy"
+        );
+        assert_eq!(
+            cast_status_on(ethereal, Team::Radiant).kind,
+            crate::status::StatusKind::Buff,
+            "on an ally"
+        );
+        assert_eq!(
+            cast_status_on(StatusSpec::Banish, Team::Dire).kind,
+            crate::status::StatusKind::Debuff
+        );
+        assert_eq!(
+            cast_status_on(StatusSpec::Banish, Team::Radiant).kind,
+            crate::status::StatusKind::Buff
+        );
+    }
+
+    #[test]
+    fn hostile_ethereal_is_blocked_by_debuff_immunity() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(apply_status_ability(
+                StatusSpec::Ethereal {
+                    magic_amp_percent: RankValue::fixed(40.0),
+                },
+                5.0,
+            ));
+        let caster = spawn_caster(&mut app, KIT);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        app.world_mut()
+            .get_mut::<StatusEffects>(target)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::debuff_immunity(10.0));
+        request(&mut app, caster, 3, CastTarget::Unit(target));
+        for _ in 0..3 {
+            step(&mut app);
+        }
+        assert!(status_of(&app, target, "ethereal").is_none());
+    }
+
+    #[test]
+    fn area_spell_still_hits_spell_immune_but_deals_no_magic() {
+        let mut app = test_app();
+        let caster = spawn_caster(&mut app, KIT);
+        let immune = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        let plain = spawn_unit(&mut app, Team::Dire, Vec3::new(-100.0, 0.0, 0.0));
+        app.world_mut()
+            .get_mut::<StatusEffects>(immune)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::spell_immunity(30.0));
+        request(&mut app, caster, 0, CastTarget::None);
+        let mut hits = Vec::new();
+        for _ in 0..10 {
+            step(&mut app);
+            hits.extend(current_messages::<DamageEvent>(&app));
+        }
+        assert!(
+            hits.iter().any(|e| e.target == immune),
+            "the area still reaches the spell immune unit"
+        );
+        let world = app.world();
+        assert_eq!(world.get::<Health>(immune).unwrap().current, 1000.0);
+        assert!(world.get::<Health>(plain).unwrap().current < 1000.0);
+    }
+
+    #[test]
+    fn unit_target_spell_cannot_pick_a_spell_immune_enemy() {
+        let mut app = test_app();
+        let caster = spawn_caster(&mut app, KIT);
+        let immune = spawn_unit(&mut app, Team::Dire, Vec3::new(50.0, 0.0, 0.0));
+        app.world_mut()
+            .get_mut::<StatusEffects>(immune)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::spell_immunity(30.0));
+        request(&mut app, caster, 1, CastTarget::Unit(immune));
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        let world = app.world();
+        assert!(world.get::<Activation>(caster).is_none());
+        assert!(world.get::<QueuedActivation>(caster).is_none());
+        assert_eq!(world.get::<Mana>(caster).unwrap().current, 1000.0);
+
+        // Without the immunity the same cast starts and is paid for.
+        app.world_mut()
+            .get_mut::<StatusEffects>(immune)
+            .unwrap()
+            .effects
+            .clear();
+        request(&mut app, caster, 1, CastTarget::Unit(immune));
+        for _ in 0..12 {
+            step(&mut app);
+        }
+        assert!(app.world().get::<Mana>(caster).unwrap().current < 1000.0);
     }
 
     #[test]

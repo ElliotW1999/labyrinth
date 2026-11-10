@@ -881,6 +881,45 @@ class SlowStatusTests(unittest.TestCase):
         self.assertIn("<owner>_slow", report.errors[0].message)
 
 
+class ImmunityStatusTests(unittest.TestCase):
+    def test_composite_immunity_keywords_map_to_their_specs(self) -> None:
+        for keyword, spec in (
+            ("debuff_immunity", "StatusSpec::DebuffImmunity"),
+            ("spell_immunity", "StatusSpec::SpellImmunity"),
+            ("attack_immunity", "StatusSpec::AttackImmunity"),
+            ("banish", "StatusSpec::Banish"),
+        ):
+            report = Report()
+            effect, ctx = _effect("apply_status", keyword, duration="2")
+            result = effect_to_rust(effect, ctx, report)
+            self.assertFalse(report.errors, keyword)
+            self.assertIn(f"status: {spec},", result[2])
+
+    def test_runtime_ids_distinguish_debuff_and_spell_immunity(self) -> None:
+        self.assertEqual(runtime_status_id("debuff_immunity"), "debuff_immunity")
+        self.assertEqual(runtime_status_id("spell_immunity"), "spell_immunity")
+        self.assertEqual(runtime_status_id("attack_immunity"), "attack_immunity")
+        self.assertEqual(runtime_status_id("banish"), "banish")
+        self.assertEqual(runtime_status_id("ethereal"), "ethereal")
+
+    def test_ethereal_needs_a_bounded_magic_amp(self) -> None:
+        report = Report()
+        effect, ctx = _effect("apply_status", "ethereal", amount="40", duration="4")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors)
+        self.assertIn("StatusSpec::Ethereal { magic_amp_percent:", result[2])
+
+        report = Report()
+        effect, ctx = _effect("apply_status", "ethereal", duration="4")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertIn("magic damage amp", report.errors[0].message)
+
+        report = Report()
+        effect, ctx = _effect("apply_status", "ethereal", amount="95", duration="4")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertIn("0..90", report.errors[0].message)
+
+
 class DamageReductionStatusTests(unittest.TestCase):
     def test_generated_damage_reduction_carries_a_per_owner_id(self) -> None:
         report = Report()
@@ -1414,7 +1453,7 @@ class ReactiveTriggerTests(unittest.TestCase):
             "on_status_applied:debuff": "AbilityTrigger::OnStatusApplied(StatusFilter::Debuff)",
             "on_status_removed:buff": "AbilityTrigger::OnStatusRemoved(StatusFilter::Buff)",
             "on_status_applied:stun": 'AbilityTrigger::OnStatusApplied(StatusFilter::Id("stun"))',
-            "on_status_removed:debuff_immunity": 'AbilityTrigger::OnStatusRemoved(StatusFilter::Id("spell_immunity"))',
+            "on_status_removed:debuff_immunity": 'AbilityTrigger::OnStatusRemoved(StatusFilter::Id("debuff_immunity"))',
             "on_status_applied:frost_hammer_armor": 'AbilityTrigger::OnStatusApplied(StatusFilter::Id("frost_hammer_armor"))',
         }
         for trigger, rust in expected.items():

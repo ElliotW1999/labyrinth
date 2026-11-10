@@ -261,6 +261,7 @@ mod tests {
                     team,
                     alive,
                     untargetable: false,
+                    rejects_hostile_spell: false,
                     bounds: 10.0,
                 })
             }

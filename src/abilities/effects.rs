@@ -752,6 +752,18 @@ impl EffectRunner<'_, '_> {
                         ctx.source,
                     );
                     built.reactive = ctx.reaction;
+                    if status.kind_follows_hostility() {
+                        built.kind = if crate::status::hostile(
+                            ctx.caster,
+                            target,
+                            Some(ctx.team),
+                            self.units.get(target).ok().map(|u| *u.2),
+                        ) {
+                            StatusKind::Debuff
+                        } else {
+                            StatusKind::Buff
+                        };
+                    }
                     self.statuses.write(
                         StatusEffectEvent::new(source, target, StatusChange::Apply(built))
                             .reactive(ctx.reaction),

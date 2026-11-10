@@ -9,6 +9,7 @@ use crate::dimensions::{bounds_of, center_distance as flat_distance};
 use crate::net::NetworkedHero;
 use crate::resources::MatchConfig;
 use crate::scale;
+use crate::status::StatusEffects;
 
 pub struct FogPlugin;
 
@@ -216,13 +217,14 @@ fn update_unit_fog_visibility(
             Has<PlayerHero>,
             Has<NetworkedHero>,
             Has<Creep>,
+            Option<&StatusEffects>,
         ),
         Or<(With<PlayerHero>, With<NetworkedHero>, With<Creep>)>,
     >,
 ) {
     let Ok(local_team) = local.single() else {
-        for (_, _, _, mut vis, _, _, _) in &mut units {
-            *vis = Visibility::Visible;
+        for (_, _, _, mut vis, _, _, _, statuses) in &mut units {
+            *vis = unit_visibility(statuses.is_some_and(|s| s.is_hidden()), true, true);
         }
         return;
     };
@@ -233,20 +235,27 @@ fn update_unit_fog_visibility(
         .collect();
     let vision = collect_vision(*local_team, &sources);
 
-    for (_entity, tf, team, mut vis, is_player, is_net, is_creep) in &mut units {
+    for (_entity, tf, team, mut vis, is_player, is_net, is_creep, statuses) in &mut units {
         if !is_player && !is_net && !is_creep {
             continue;
         }
+        let hidden = statuses.is_some_and(|s| s.is_hidden());
         if *team == *local_team {
-            *vis = Visibility::Visible;
+            *vis = unit_visibility(hidden, true, true);
             continue;
         }
         let revealed = point_revealed(tf.translation, &vision, &fog_free, &tree_snaps);
-        *vis = if revealed {
-            Visibility::Visible
-        } else {
-            Visibility::Hidden
-        };
+        *vis = unit_visibility(hidden, false, revealed);
+    }
+}
+
+/// Whether a unit is drawn. A hidden unit (banished) is drawn for nobody, its own team
+/// included; otherwise allies are always drawn and enemies only inside vision.
+fn unit_visibility(hidden: bool, ally: bool, in_vision: bool) -> Visibility {
+    if !hidden && (ally || in_vision) {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
     }
 }
 
@@ -364,6 +373,56 @@ mod tests {
         let to = scale::ground(10.0, 0.0);
         let trees = [(scale::ground(5.0, 0.0), scale::TREE_COLLISION_HALF)];
         assert!(line_blocked_by_trees(from, to, &trees));
+    }
+
+    #[test]
+    fn hidden_status_hides_units_from_everyone() {
+        assert_eq!(unit_visibility(false, true, true), Visibility::Visible);
+        assert_eq!(unit_visibility(false, false, true), Visibility::Visible);
+        assert_eq!(unit_visibility(false, false, false), Visibility::Hidden);
+        // A banished unit is hidden for its own team and inside vision.
+        assert_eq!(unit_visibility(true, true, true), Visibility::Hidden);
+        assert_eq!(unit_visibility(true, false, true), Visibility::Hidden);
+    }
+
+    #[test]
+    fn banished_unit_is_hidden_by_the_fog_system() {
+        use crate::components::PlayerHero;
+        let mut app = App::new();
+        app.init_resource::<FogFreeZones>()
+            .add_systems(Update, update_unit_fog_visibility);
+        app.world_mut()
+            .spawn((PlayerHero, Team::Radiant, Transform::default()));
+        let ally = app
+            .world_mut()
+            .spawn((
+                NetworkedHero,
+                Team::Radiant,
+                Transform::default(),
+                Visibility::Visible,
+                StatusEffects {
+                    effects: vec![crate::status::StatusEffect::banish(5.0, false)],
+                },
+            ))
+            .id();
+        let plain = app
+            .world_mut()
+            .spawn((
+                NetworkedHero,
+                Team::Radiant,
+                Transform::default(),
+                Visibility::Hidden,
+            ))
+            .id();
+        app.update();
+        assert_eq!(
+            app.world().get::<Visibility>(ally),
+            Some(&Visibility::Hidden)
+        );
+        assert_eq!(
+            app.world().get::<Visibility>(plain),
+            Some(&Visibility::Visible)
+        );
     }
 
     #[test]

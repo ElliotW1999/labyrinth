@@ -88,6 +88,9 @@ pub struct UnitInfo {
     pub alive: bool,
     /// Held out of play (cyclone): nobody else may pick this unit.
     pub untargetable: bool,
+    /// Spell immune: hostile unit-target spells cannot pick this unit (allies and the unit
+    /// itself still can).
+    pub rejects_hostile_spell: bool,
     pub bounds: f32,
 }
 
@@ -119,6 +122,9 @@ pub fn resolve_target(
             .filter(|info| {
                 info.alive
                     && (!info.untargetable || entity == caster.entity)
+                    && (!info.rejects_hostile_spell
+                        || entity == caster.entity
+                        || info.team == caster.team)
                     && target_allowed(
                         spec.target_team,
                         caster.entity,
@@ -235,6 +241,7 @@ mod tests {
                 team,
                 alive: true,
                 untargetable: false,
+                rejects_hostile_spell: false,
                 bounds: 10.0,
             })
         }
@@ -323,6 +330,7 @@ mod tests {
                 team: Team::Dire,
                 alive: true,
                 untargetable: false,
+                rejects_hostile_spell: false,
                 bounds: 10.0,
             })
         };
@@ -386,6 +394,36 @@ mod tests {
     }
 
     #[test]
+    fn hostile_spell_rejected_on_spell_immune_but_ally_cast_allowed() {
+        let c = caster();
+        let immune = |team| {
+            move |_: Entity| {
+                Some(UnitInfo {
+                    position: Vec3::new(500.0, 0.0, 0.0),
+                    team,
+                    alive: true,
+                    untargetable: false,
+                    rejects_hostile_spell: true,
+                    bounds: 10.0,
+                })
+            }
+        };
+        let other = CastTarget::Unit(Entity::from_raw_u32(9).unwrap());
+        let hostile = spec(TargetType::Unit, TargetTeam::Enemy, 600.0);
+        assert_eq!(
+            resolve_target(&hostile, &c, other, immune(Team::Dire)),
+            Err(ActionError::InvalidTarget)
+        );
+        // Allies and the caster itself may still be targeted by a spell.
+        let friendly = spec(TargetType::Unit, TargetTeam::Ally, 600.0);
+        assert!(resolve_target(&friendly, &c, other, immune(Team::Radiant)).is_ok());
+        let own = spec(TargetType::Unit, TargetTeam::Any, 600.0);
+        assert!(resolve_target(&own, &c, CastTarget::Unit(c.entity), immune(Team::Dire)).is_ok());
+        // An enemy that is not spell immune is still a valid target.
+        assert!(resolve_target(&hostile, &c, other, unit(Team::Dire)).is_ok());
+    }
+
+    #[test]
     fn untargetable_units_cannot_be_picked_except_by_themselves() {
         let c = caster();
         let hidden = |_: Entity| {
@@ -394,6 +432,7 @@ mod tests {
                 team: Team::Dire,
                 alive: true,
                 untargetable: true,
+                rejects_hostile_spell: false,
                 bounds: 10.0,
             })
         };

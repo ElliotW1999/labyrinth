@@ -182,6 +182,8 @@ fn unit_info(units: &UnitQuery, entity: Entity) -> Option<UnitInfo> {
             team: *team,
             alive: health.is_alive(),
             untargetable: statuses.is_some_and(|s| s.is_untargetable()),
+            rejects_hostile_spell: statuses
+                .is_some_and(|s| s.rejects(crate::status::TargetIntent::HostileSpell)),
             bounds: bounds_of(bound),
         })
 }

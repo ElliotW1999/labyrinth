@@ -199,8 +199,17 @@ STATUSES = {
     "true_strike": ("StatusSpec::TrueStrike", "true_strike", True),
     "phased": ("StatusSpec::Phased", "phased", True),
     "forceful": ("StatusSpec::Forceful", "forceful", True),
-    "debuff_immunity": ("StatusSpec::DebuffImmunity", "spell_immunity", True),
-    "spell_immunity": ("StatusSpec::DebuffImmunity", "spell_immunity", True),
+    # Blocks new debuffs and purges existing ones; magic damage and spells still land.
+    "debuff_immunity": ("StatusSpec::DebuffImmunity", "debuff_immunity", True),
+    # Debuff immunity + hostile unit-target spells cannot pick the holder + no magic damage.
+    "spell_immunity": ("StatusSpec::SpellImmunity", "spell_immunity", True),
+    # Basic attacks cannot target the holder.
+    "attack_immunity": ("StatusSpec::AttackImmunity", "attack_immunity", True),
+    # Ethereal and banish are debuffs on enemies and buffs on allies / the caster (the kind
+    # follows hostility), so they default to an enemy target like other debuffs.
+    # ethereal: amount (or value) = extra magic damage taken, percent 0..90.
+    "ethereal": (None, "ethereal", False),
+    "banish": ("StatusSpec::Banish", "banish", False),
     "shield": (None, "shield", True),
     "burn": (None, "burn", False),
     "heal_over_time": (None, "heal_over_time", True),
@@ -1749,6 +1758,17 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
                 return None
             variant = effect_id.capitalize()
             spec = f"StatusSpec::{variant} {{ percent: {rank_value(percent)} }}"
+            if amount:
+                _unused(e, report, "value")
+        elif effect_id == "ethereal":
+            percent = amount or value
+            if not percent:
+                report.error(row.file, row.line, "amount", "", "required: ethereal magic damage amp percent (e.g. 40)")
+                return None
+            if any(not 0 <= p <= 90 for p in percent):
+                report.error(row.file, row.line, "amount" if amount else "value", row.get("amount") or row.get("value"), "ethereal magic amp percent must be within 0..90")
+                return None
+            spec = f"StatusSpec::Ethereal {{ magic_amp_percent: {rank_value(percent)} }}"
             if amount:
                 _unused(e, report, "value")
         elif effect_id == "blind":

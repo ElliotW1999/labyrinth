@@ -65,6 +65,53 @@ impl ActionBlocks {
     }
 }
 
+/// Which damage types a status makes its holder immune to, as a small bit set.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DamageTypeMask(u8);
+
+#[allow(dead_code)]
+impl DamageTypeMask {
+    pub const NONE: Self = Self(0);
+    pub const PHYSICAL: Self = Self(1);
+    pub const MAGICAL: Self = Self(1 << 1);
+    pub const PURE: Self = Self(1 << 2);
+    pub const ALL: Self = Self(0b111);
+
+    /// Whether every bit of `other` is set.
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// The single-bit mask of one damage type.
+    pub const fn of(damage_type: DamageType) -> Self {
+        match damage_type {
+            DamageType::Physical => Self::PHYSICAL,
+            DamageType::Magical => Self::MAGICAL,
+            DamageType::Pure => Self::PURE,
+        }
+    }
+}
+
+/// Why a unit is being picked as a target; each intent rejects a different set of statuses
+/// (see [`StatusEffects::rejects`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetIntent {
+    /// Any unit pick or area membership test: only `untargetable` units are skipped.
+    Any,
+    /// A basic attack (including auto-acquisition): also skips attack-immune units.
+    Attack,
+    /// A hostile unit-target spell: also skips spell-immune units.
+    HostileSpell,
+}
+
 /// Generic buff / debuff container on heroes (and potentially other units later).
 #[derive(Component, Debug, Clone, Default)]
 pub struct StatusEffects {
@@ -196,7 +243,16 @@ pub struct StatusEffect {
     pub dot_source: Option<Entity>,
     /// Added to [`ShieldPool`] on apply; removed on expire.
     pub shield_amount: f32,
-    pub damage_immune: bool,
+    /// Damage types the holder takes no damage from while active.
+    pub immune_damage: DamageTypeMask,
+    /// Nobody else may pick the holder as a unit target and area effects skip it.
+    pub untargetable: bool,
+    /// Basic attacks cannot target the holder ([`TargetIntent::Attack`]).
+    pub attack_immune: bool,
+    /// Hostile unit-target spells cannot target the holder ([`TargetIntent::HostileSpell`]).
+    pub spell_immune: bool,
+    /// Drawn for nobody (banished out of the world), whatever the vision.
+    pub hidden: bool,
     /// When true, skip collision with creeps and heroes (buildings/trees still block).
     pub ignore_unit_collision: bool,
     /// When true, this unit claims more separation against overlapping creeps/heroes.
@@ -303,7 +359,11 @@ impl StatusEffect {
             dot_damage_type: DamageType::Magical,
             dot_source: None,
             shield_amount: 0.0,
-            damage_immune: false,
+            immune_damage: DamageTypeMask::NONE,
+            untargetable: false,
+            attack_immune: false,
+            spell_immune: false,
+            hidden: false,
             ignore_unit_collision: false,
             force_unit_push: false,
             silenced: false,
@@ -516,12 +576,77 @@ impl StatusEffect {
         }
     }
 
+    /// Blocks new debuffs and purges existing ones on application. Not a spell immunity:
+    /// magic damage and hostile spells still land (see [`Self::spell_immunity`]).
     pub fn debuff_immunity(duration: f32) -> Self {
         Self {
             debuff_immune: true,
             dispel_type: DispelType::None,
             undispellable: true,
-            ..Self::buff("spell_immunity", duration)
+            ..Self::buff("debuff_immunity", duration)
+        }
+    }
+
+    /// Debuff immunity plus: hostile unit-target spells cannot pick the holder and magical
+    /// damage is ignored. Area spells still reach it but deal no magic damage.
+    pub fn spell_immunity(duration: f32) -> Self {
+        Self {
+            id: "spell_immunity",
+            spell_immune: true,
+            immune_damage: DamageTypeMask::MAGICAL,
+            ..Self::debuff_immunity(duration)
+        }
+    }
+
+    /// Basic attacks cannot target the holder.
+    pub fn attack_immunity(duration: f32) -> Self {
+        Self {
+            attack_immune: true,
+            ..Self::buff("attack_immunity", duration)
+        }
+    }
+
+    /// Disarmed, immune to physical damage and to being attacked, and more vulnerable to
+    /// magic: `magic_amp_percent` (0..90) is the extra magic damage taken against a target with
+    /// no magic resistance, applied as a magic resistance reduction. `hostile` picks the
+    /// debuff kind (blocked by debuff immunity) over the buff kind (self / ally cast).
+    pub fn ethereal(duration: f32, magic_amp_percent: f32, hostile: bool) -> Self {
+        let amp = (magic_amp_percent / 100.0).clamp(0.0, 0.9);
+        // `mitigate` gives factor 1 - 0.06r / (1 + 0.06|r|); r = -amp / (0.06 (1 - amp)) makes
+        // that 1 + amp at zero base resistance.
+        let resist_points = amp / (0.06 * (1.0 - amp));
+        Self {
+            disarmed: true,
+            attack_immune: true,
+            immune_damage: DamageTypeMask::PHYSICAL,
+            magic_resist: -resist_points,
+            kind: Self::kind_for_hostility(hostile),
+            ..Self::buff("ethereal", duration)
+        }
+    }
+
+    /// Removed from the world: stunned, invulnerable, untargetable, hidden and phased. Not
+    /// dispellable; only expiry or an explicit `remove_status banish` ends it. `hostile`
+    /// picks the debuff kind over the buff kind, as for [`Self::cyclone`].
+    pub fn banish(duration: f32, hostile: bool) -> Self {
+        Self {
+            stunned: true,
+            invulnerable: true,
+            untargetable: true,
+            hidden: true,
+            ignore_unit_collision: true,
+            kind: Self::kind_for_hostility(hostile),
+            dispel_type: DispelType::None,
+            undispellable: true,
+            ..Self::buff("banish", duration)
+        }
+    }
+
+    fn kind_for_hostility(hostile: bool) -> StatusKind {
+        if hostile {
+            StatusKind::Debuff
+        } else {
+            StatusKind::Buff
         }
     }
 
@@ -555,11 +680,8 @@ impl StatusEffect {
         Self {
             stunned: true,
             invulnerable: true,
-            kind: if hostile {
-                StatusKind::Debuff
-            } else {
-                StatusKind::Buff
-            },
+            untargetable: true,
+            kind: Self::kind_for_hostility(hostile),
             dispel_type: DispelType::None,
             undispellable: true,
             ..Self::buff("cyclone", duration)
@@ -685,10 +807,7 @@ impl StatusEffects {
             .any(|e| e.force_unit_push && e.remaining > 0.0)
     }
 
-    pub fn is_silenced(&self) -> bool {
-        self.effects.iter().any(|e| e.silenced && e.remaining > 0.0)
-    }
-
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn is_stunned(&self) -> bool {
         self.effects.iter().any(|e| e.stunned && e.remaining > 0.0)
     }
@@ -718,10 +837,6 @@ impl StatusEffects {
     /// Cannot use items (mute, stun, sleep).
     pub fn blocks_items(&self) -> bool {
         self.blocks().contains(ActionBlocks::ITEMS)
-    }
-
-    pub fn is_muted(&self) -> bool {
-        self.effects.iter().any(|e| e.muted && e.remaining > 0.0)
     }
 
     pub fn is_feared(&self) -> bool {
@@ -772,10 +887,12 @@ impl StatusEffects {
         self.has_debuff_immunity()
     }
 
-    pub fn has_damage_immunity(&self) -> bool {
+    /// Whether a live status makes the holder immune to `damage_type`.
+    pub fn is_immune_to(&self, damage_type: DamageType) -> bool {
+        let wanted = DamageTypeMask::of(damage_type);
         self.effects
             .iter()
-            .any(|e| e.damage_immune && e.remaining > 0.0)
+            .any(|e| e.remaining > 0.0 && e.immune_damage.contains(wanted))
     }
 
     pub fn is_invulnerable(&self) -> bool {
@@ -789,10 +906,33 @@ impl StatusEffects {
         self.effects.iter().any(|e| e.id == id && e.remaining > 0.0)
     }
 
-    /// In a cyclone: no other unit can pick it as a unit target (basic attacks, unit
-    /// casts, auto-acquire, homing projectiles) and area effects skip it.
+    /// Held out of play (cyclone, banish): no other unit can pick it as a unit target (basic
+    /// attacks, unit casts, auto-acquire, homing projectiles) and area effects skip it.
     pub fn is_untargetable(&self) -> bool {
-        self.has_status("cyclone")
+        self.effects
+            .iter()
+            .any(|e| e.untargetable && e.remaining > 0.0)
+    }
+
+    /// Whether a unit pick made with `intent` must skip this holder.
+    pub fn rejects(&self, intent: TargetIntent) -> bool {
+        self.is_untargetable()
+            || match intent {
+                TargetIntent::Any => false,
+                TargetIntent::Attack => self
+                    .effects
+                    .iter()
+                    .any(|e| e.attack_immune && e.remaining > 0.0),
+                TargetIntent::HostileSpell => self
+                    .effects
+                    .iter()
+                    .any(|e| e.spell_immune && e.remaining > 0.0),
+            }
+    }
+
+    /// Drawn for nobody (banish).
+    pub fn is_hidden(&self) -> bool {
+        self.effects.iter().any(|e| e.hidden && e.remaining > 0.0)
     }
 
     pub fn can_move(&self) -> bool {
@@ -808,12 +948,24 @@ impl StatusEffects {
     }
 }
 
-/// Whether `entity` is held out of play (cyclone) and so cannot be picked as a target.
-/// The one check behind every "can this unit be targeted" filter.
+/// Whether `entity` is held out of play (cyclone, banish) and so cannot be picked as a target.
+/// The `Any` form of [`is_targetable`], used by area filters.
 pub fn is_untargetable(statuses: &Query<&StatusEffects>, entity: Entity) -> bool {
     statuses
         .get(entity)
         .is_ok_and(|statuses| statuses.is_untargetable())
+}
+
+/// Whether `entity` may be picked as a unit target for `intent`. The one check behind every
+/// "can this unit be targeted" filter that is not an area test.
+pub fn is_targetable(
+    statuses: &Query<&StatusEffects>,
+    entity: Entity,
+    intent: TargetIntent,
+) -> bool {
+    !statuses
+        .get(entity)
+        .is_ok_and(|statuses| statuses.rejects(intent))
 }
 
 /// Whether `effect` is removed by a dispel of `strength` on `kind`.
@@ -1423,6 +1575,126 @@ mod tests {
     use crate::components::CleaveSource;
     use bevy::ecs::system::RunSystemOnce;
 
+    fn live(effect: StatusEffect) -> StatusEffects {
+        StatusEffects {
+            effects: vec![effect],
+        }
+    }
+
+    #[test]
+    fn cyclone_untargetable_via_field() {
+        let cyclone = live(StatusEffect::cyclone(2.0, true));
+        assert!(cyclone.effects[0].untargetable);
+        assert!(cyclone.is_untargetable());
+        for intent in [
+            TargetIntent::Any,
+            TargetIntent::Attack,
+            TargetIntent::HostileSpell,
+        ] {
+            assert!(cyclone.rejects(intent), "{intent:?}");
+        }
+        // The check reads the field, not the status id.
+        let by_field = live(StatusEffect {
+            untargetable: true,
+            ..StatusEffect::buff("anything", 2.0)
+        });
+        assert!(by_field.is_untargetable());
+        let by_id = live(StatusEffect {
+            untargetable: false,
+            ..StatusEffect::cyclone(2.0, true)
+        });
+        assert!(!by_id.is_untargetable());
+        let mut expired = StatusEffect::cyclone(2.0, true);
+        expired.remaining = 0.0;
+        assert!(!live(expired).is_untargetable());
+    }
+
+    #[test]
+    fn target_intent_rejects_by_immunity() {
+        let attack = live(StatusEffect::attack_immunity(2.0));
+        assert!(attack.rejects(TargetIntent::Attack));
+        assert!(!attack.rejects(TargetIntent::Any));
+        assert!(!attack.rejects(TargetIntent::HostileSpell));
+        let spell = live(StatusEffect::spell_immunity(2.0));
+        assert!(spell.rejects(TargetIntent::HostileSpell));
+        assert!(!spell.rejects(TargetIntent::Any));
+        assert!(!spell.rejects(TargetIntent::Attack));
+        // Ethereal is attack immune, not spell immune.
+        let ethereal = live(StatusEffect::ethereal(2.0, 40.0, true));
+        assert!(ethereal.rejects(TargetIntent::Attack));
+        assert!(!ethereal.rejects(TargetIntent::HostileSpell));
+    }
+
+    #[test]
+    fn damage_mask_contains() {
+        use DamageTypeMask as M;
+        assert!(M::ALL.contains(M::PHYSICAL) && M::ALL.contains(M::MAGICAL));
+        assert!(M::ALL.contains(M::PURE));
+        assert!(!M::PHYSICAL.contains(M::MAGICAL));
+        assert!(M::NONE.is_empty() && !M::NONE.contains(M::PHYSICAL));
+        assert!(M::PHYSICAL.union(M::MAGICAL).contains(M::MAGICAL));
+        assert_eq!(M::of(DamageType::Pure), M::PURE);
+        let ethereal = live(StatusEffect::ethereal(2.0, 40.0, true));
+        assert!(ethereal.is_immune_to(DamageType::Physical));
+        assert!(!ethereal.is_immune_to(DamageType::Magical));
+        assert!(!ethereal.is_immune_to(DamageType::Pure));
+    }
+
+    #[test]
+    fn spell_immunity_rejects_debuffs_and_magic_only() {
+        let mut stats = CombatStats::simple(10.0, 100.0, 1.0, 0.0, 0.0, 300.0);
+        let mut statuses = StatusEffects::default();
+        assert!(apply_status(
+            &mut statuses,
+            &mut stats,
+            StatusEffect::spell_immunity(5.0),
+            0.0
+        ));
+        let immunity = &statuses.effects[0];
+        assert_eq!(immunity.id, "spell_immunity");
+        assert!(immunity.undispellable && immunity.kind == StatusKind::Buff);
+        assert!(!apply_status(
+            &mut statuses,
+            &mut stats,
+            StatusEffect::stunned(2.0),
+            0.0
+        ));
+        assert!(statuses.is_immune_to(DamageType::Magical));
+        assert!(!statuses.is_immune_to(DamageType::Physical));
+        assert!(!statuses.is_immune_to(DamageType::Pure));
+        // Debuff immunity is a different status: no spell or damage immunity.
+        let plain = live(StatusEffect::debuff_immunity(5.0));
+        assert_eq!(plain.effects[0].id, "debuff_immunity");
+        assert!(plain.has_debuff_immunity());
+        assert!(!plain.rejects(TargetIntent::HostileSpell));
+        assert!(!plain.is_immune_to(DamageType::Magical));
+    }
+
+    #[test]
+    fn banished_unit_is_untargetable_invulnerable_and_phased() {
+        let banished = live(StatusEffect::banish(3.0, true));
+        assert!(banished.is_untargetable() && banished.is_invulnerable());
+        assert!(banished.is_phased() && banished.is_hidden());
+        assert!(banished.is_stunned());
+        assert!(
+            banished.blocks().contains(
+                ActionBlocks::MOVE
+                    .union(ActionBlocks::ATTACK)
+                    .union(ActionBlocks::CAST)
+                    .union(ActionBlocks::ITEMS)
+            )
+        );
+        let effect = &banished.effects[0];
+        assert!(effect.undispellable && effect.dispel_type == DispelType::None);
+        assert!(!status_dispel_matches(
+            effect,
+            StatusKind::Debuff,
+            DispelStrength::Strong
+        ));
+        assert_eq!(effect.kind, StatusKind::Debuff);
+        assert_eq!(StatusEffect::banish(3.0, false).kind, StatusKind::Buff);
+    }
+
     #[test]
     fn blocks_matrix_matches_documented_table() {
         use ActionBlocks as B;
@@ -1962,7 +2234,7 @@ mod tests {
             false,
         );
         let events = lifecycle_frame(&mut app, 0.01);
-        assert_eq!(events, [("stun", Dispelled), ("spell_immunity", Applied)]);
+        assert_eq!(events, [("stun", Dispelled), ("debuff_immunity", Applied)]);
 
         // Sleep breaks on damage.
         let sleeper = lifecycle_unit(&mut app);

@@ -458,7 +458,9 @@ pub fn apply_damage_events(
             );
         }
 
-        let damage_immune = statuses.as_ref().is_some_and(|s| s.has_damage_immunity());
+        let damage_immune = statuses
+            .as_ref()
+            .is_some_and(|s| s.is_immune_to(event.damage_type));
         let damage_reflect = target_stats.damage_reflect;
         let outgoing = resolve_outgoing_amount(event.amount, event, source_stats_snapshot.as_ref());
         let mut resolved = resolve_incoming_damage(
@@ -1295,6 +1297,49 @@ mod tests {
         world.run_system_once(apply_damage_events).unwrap();
         let expected = 500.0 - apply_damage(125.0, DamageType::Magical, &defender);
         assert!((world.get::<Health>(target).unwrap().current - expected).abs() < 1e-3);
+    }
+
+    /// Damage of `damage_type` dealt to a 500-health unit with `status`, at zero resistances.
+    fn damage_taken_with(status: crate::status::StatusEffect, damage_type: DamageType) -> f32 {
+        let mut world = World::new();
+        world.init_resource::<Messages<DamageEvent>>();
+        world.init_resource::<Messages<crate::combat::DamageAppliedEvent>>();
+        world.init_resource::<Messages<crate::status::StatusLifecycleEvent>>();
+        world.init_resource::<CombatRng>();
+        let defender = CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 0.0);
+        let mut target_stats = defender;
+        let mut statuses = StatusEffects::default();
+        crate::status::apply_status(&mut statuses, &mut target_stats, status, 0.0);
+        let caster = world.spawn((Health::new(500.0), defender)).id();
+        let target = world
+            .spawn((Health::new(500.0), target_stats, statuses))
+            .id();
+        world.write_message(DamageEvent::spell(caster, target, 100.0, damage_type));
+        world.run_system_once(apply_damage_events).unwrap();
+        500.0 - world.get::<Health>(target).unwrap().current
+    }
+
+    #[test]
+    fn ethereal_takes_no_physical_and_amplified_magic() {
+        let ethereal = || crate::status::StatusEffect::ethereal(5.0, 40.0, true);
+        assert_eq!(damage_taken_with(ethereal(), DamageType::Physical), 0.0);
+        let magic = damage_taken_with(ethereal(), DamageType::Magical);
+        assert!(
+            (magic - 140.0).abs() < 0.5,
+            "40% amp at zero resist: {magic}"
+        );
+        assert!((damage_taken_with(ethereal(), DamageType::Pure) - 100.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn spell_immune_takes_physical_not_magical() {
+        let immune = || crate::status::StatusEffect::spell_immunity(5.0);
+        assert_eq!(damage_taken_with(immune(), DamageType::Magical), 0.0);
+        assert!((damage_taken_with(immune(), DamageType::Physical) - 100.0).abs() < 1e-3);
+        assert!((damage_taken_with(immune(), DamageType::Pure) - 100.0).abs() < 1e-3);
+        // Debuff immunity alone takes magic damage.
+        let debuff = crate::status::StatusEffect::debuff_immunity(5.0);
+        assert!((damage_taken_with(debuff, DamageType::Magical) - 100.0).abs() < 1e-3);
     }
 
     #[test]

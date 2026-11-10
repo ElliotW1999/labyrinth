@@ -33,6 +33,7 @@ use crate::movement::{
     SimSet, order_attack_move, order_attack_unit, order_hero_move, order_hero_stop,
 };
 use crate::navigation::{NavGrid, flat, ground};
+use crate::status::TargetIntent;
 
 /// Frames a started command may go without any visible effect before it counts as failed.
 const EFFECT_GRACE_FRAMES: u32 = 4;
@@ -147,11 +148,12 @@ pub struct CommandContext<'w, 's> {
 }
 
 impl CommandContext<'_, '_> {
-    fn target_alive(&self, target: Entity) -> bool {
-        // A cycloned unit cannot be picked as a target.
-        self.health.get(target).is_ok_and(|(h, statuses)| {
-            h.is_alive() && !statuses.is_some_and(|s| s.is_untargetable())
-        })
+    /// Alive and pickable for `intent`: an untargetable unit (cyclone, banish) can be neither
+    /// attacked nor cast on, and an attack-immune one cannot be attacked.
+    fn target_alive(&self, target: Entity, intent: TargetIntent) -> bool {
+        self.health
+            .get(target)
+            .is_ok_and(|(h, statuses)| h.is_alive() && !statuses.is_some_and(|s| s.rejects(intent)))
     }
 
     /// Non-navigable destinations resolve to the closest point the unit fits.
@@ -177,14 +179,17 @@ impl CommandContext<'_, '_> {
                 Some(UnitCommand::AttackMove { destination })
             }
             UnitCommand::Attack { target } => {
-                if target == unit || !self.target_alive(target) {
+                if target == unit || !self.target_alive(target, TargetIntent::Attack) {
                     return None;
                 }
                 order_attack_unit(&mut self.commands, unit, target);
                 Some(command)
             }
             UnitCommand::Activate { source, target } => {
-                if target.unit().is_some_and(|t| !self.target_alive(t)) {
+                if target
+                    .unit()
+                    .is_some_and(|t| !self.target_alive(t, TargetIntent::Any))
+                {
                     return None;
                 }
                 self.commands
@@ -257,14 +262,14 @@ fn command_finished(
         Option<&Activation>,
         bool,
     ),
-    target_alive: impl Fn(Entity) -> bool,
+    target_alive: impl Fn(Entity, TargetIntent) -> bool,
 ) -> bool {
     active.frames += 1;
     let in_effect = match active.command {
         UnitCommand::Move { .. } => moving,
         UnitCommand::AttackMove { .. } => attack_moving,
         UnitCommand::Attack { target } => {
-            if !target_alive(target) {
+            if !target_alive(target, TargetIntent::Attack) {
                 return true;
             }
             attack.is_some_and(|a| a.0 == target)
@@ -275,7 +280,11 @@ fn command_finished(
             if casting.is_some_and(|c| c.released()) {
                 return true;
             }
-            if target.unit().is_some_and(|t| !target_alive(t)) && casting.is_none() {
+            if target
+                .unit()
+                .is_some_and(|t| !target_alive(t, TargetIntent::Any))
+                && casting.is_none()
+            {
                 return true;
             }
             casting.is_some() || queued_cast
@@ -297,7 +306,7 @@ pub fn advance_command_queues(
         let Some(active) = queue.current.as_mut() else {
             continue;
         };
-        if command_finished(active, state, |t| ctx.target_alive(t)) {
+        if command_finished(active, state, |t, intent| ctx.target_alive(t, intent)) {
             ctx.start_next(unit, &mut queue);
         }
     }
@@ -336,12 +345,12 @@ mod tests {
         assert!(!command_finished(
             &mut a,
             (true, false, None, None, false),
-            |_| true
+            |_, _| true
         ));
         assert!(command_finished(
             &mut a,
             (false, false, None, None, false),
-            |_| true
+            |_, _| true
         ));
     }
 
@@ -353,24 +362,24 @@ mod tests {
         assert!(!command_finished(
             &mut a,
             (true, false, Some(&attacking), None, false),
-            |_| true
+            |_, _| true
         ));
         assert!(command_finished(
             &mut a,
             (false, false, Some(&attacking), None, false),
-            |_| false
+            |_, _| false
         ));
         let mut b = ActiveCommand::new(UnitCommand::Attack { target });
         assert!(!command_finished(
             &mut b,
             (false, false, Some(&attacking), None, false),
-            |_| true
+            |_, _| true
         ));
         let other = AttackTarget(e(4));
         assert!(command_finished(
             &mut b,
             (false, false, Some(&other), None, false),
-            |_| true
+            |_, _| true
         ));
     }
 
@@ -383,12 +392,12 @@ mod tests {
         assert!(!command_finished(
             &mut a,
             (false, false, None, Some(&casting(1, false)), false),
-            |_| true
+            |_, _| true
         ));
         assert!(command_finished(
             &mut a,
             (false, false, None, Some(&casting(1, true)), false),
-            |_| true
+            |_, _| true
         ));
 
         // Never takes effect (cooldown / mana): fails after the grace period.
@@ -398,7 +407,7 @@ mod tests {
         });
         let mut finished = false;
         for _ in 0..=EFFECT_GRACE_FRAMES {
-            finished = command_finished(&mut b, (false, false, None, None, false), |_| true);
+            finished = command_finished(&mut b, (false, false, None, None, false), |_, _| true);
         }
         assert!(finished);
 
@@ -410,12 +419,12 @@ mod tests {
         assert!(!command_finished(
             &mut c,
             (true, false, None, None, true),
-            |_| true
+            |_, _| true
         ));
         assert!(command_finished(
             &mut c,
             (true, false, None, None, true),
-            |_| false
+            |_, _| false
         ));
 
         // A channelled cast keeps the command until the channel ends.
@@ -430,12 +439,12 @@ mod tests {
         assert!(!command_finished(
             &mut d,
             (false, false, None, Some(&channelling), false),
-            |_| true
+            |_, _| true
         ));
         assert!(command_finished(
             &mut d,
             (false, false, None, Some(&casting(1, true)), false),
-            |_| true
+            |_, _| true
         ));
     }
 }

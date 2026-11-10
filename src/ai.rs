@@ -12,7 +12,7 @@ use crate::components::{
 use crate::dimensions::{bounds_of, center_distance as flat_distance, edge_distance, within_range};
 use crate::movement::SimSet;
 use crate::navigation::attack_position::assign_attack_positions;
-use crate::status::{StatusEffects, is_untargetable};
+use crate::status::{StatusEffects, TargetIntent, is_targetable};
 
 /// A lane waypoint counts as passed within this distance, so a wave crowding the
 /// same point doesn't stall on it.
@@ -88,7 +88,9 @@ fn acquire_targets(
 ) {
     let snaps: Vec<_> = candidates
         .iter()
-        .filter(|(e, _, _, hp, _)| hp.is_alive() && !is_untargetable(&statuses_of, *e))
+        .filter(|(e, _, _, hp, _)| {
+            hp.is_alive() && is_targetable(&statuses_of, *e, TargetIntent::Attack)
+        })
         .map(|(e, t, team, _, radius)| (e, t.translation, *team, bounds_of(radius)))
         .collect();
 
@@ -184,7 +186,7 @@ fn player_attack_move(
             **team == hero_team.enemy()
                 && hp.is_alive()
                 && !matches!(*vis, Visibility::Hidden)
-                && !is_untargetable(&statuses_of, *e)
+                && is_targetable(&statuses_of, *e, TargetIntent::Attack)
         })
         .filter(|(_, tf, _, _, radius, _)| {
             within_range(

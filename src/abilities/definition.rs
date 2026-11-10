@@ -374,8 +374,22 @@ pub enum StatusSpec {
         radius: RankValue,
         anchor: LeashAnchorKind,
     },
-    /// Purges existing debuffs on application.
+    /// Blocks new debuffs and purges existing ones on application. Magic damage and hostile
+    /// spells still land.
     DebuffImmunity,
+    /// Debuff immunity, plus: hostile unit-target spells cannot pick the holder and magical
+    /// damage is ignored (area spells still reach it).
+    SpellImmunity,
+    /// Basic attacks cannot target the holder.
+    AttackImmunity,
+    /// Disarmed; immune to physical damage and to being attacked; takes `magic_amp_percent`
+    /// (0-90) extra magic damage. Buff or debuff by hostility.
+    Ethereal {
+        magic_amp_percent: RankValue,
+    },
+    /// Out of the world: stunned, invulnerable, untargetable, hidden and phased. Not
+    /// dispellable. Buff or debuff by hostility.
+    Banish,
     /// Absorbing shield pool (`amount` at rank).
     Shield {
         amount: RankValue,
@@ -530,6 +544,12 @@ pub struct StatusBuildContext {
 }
 
 impl StatusSpec {
+    /// Whether the status is a debuff on a hostile target and a buff on an ally or the caster
+    /// (the runner sets the kind from the target's relation to the source).
+    pub const fn kind_follows_hostility(self) -> bool {
+        matches!(self, StatusSpec::Ethereal { .. } | StatusSpec::Banish)
+    }
+
     pub const fn armor_buff(id: &'static str, armor: RankValue) -> Self {
         Self::Modifier {
             id,
@@ -582,6 +602,13 @@ impl StatusSpec {
                 )
             }
             StatusSpec::DebuffImmunity => StatusEffect::debuff_immunity(duration),
+            StatusSpec::SpellImmunity => StatusEffect::spell_immunity(duration),
+            StatusSpec::AttackImmunity => StatusEffect::attack_immunity(duration),
+            // A hostile cast is a debuff; the runner re-sets the kind from the real relation.
+            StatusSpec::Ethereal { magic_amp_percent } => {
+                StatusEffect::ethereal(duration, magic_amp_percent.at(rank), true)
+            }
+            StatusSpec::Banish => StatusEffect::banish(duration, true),
             StatusSpec::Shield { amount } => StatusEffect::shield(amount.at(rank), duration),
             StatusSpec::Burn {
                 id,
