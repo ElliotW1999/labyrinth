@@ -4481,4 +4481,161 @@ mod tests {
             assert_eq!(stacks(&app, target), 1);
         }
     }
+    mod new_status_gaps {
+        use super::*;
+
+        fn app() -> App {
+            let mut app = App::new();
+            app.add_message::<StatusEffectEvent>()
+                .add_message::<StatusLifecycleEvent>()
+                .add_systems(Update, apply_status_effect_events);
+            app
+        }
+
+        fn unit(app: &mut App) -> Entity {
+            app.world_mut()
+                .spawn((
+                    StatusEffects::default(),
+                    CombatStats::simple(10.0, 8.0, 1.0, 0.0, 0.0, 10.0),
+                    HeroAttributes::starter(),
+                ))
+                .id()
+        }
+
+        fn send(app: &mut App, source: Option<Entity>, target: Entity, change: StatusChange) {
+            app.world_mut()
+                .write_message(StatusEffectEvent::new(source, target, change));
+            app.update();
+        }
+
+        fn has(app: &App, unit: Entity, id: &str) -> bool {
+            app.world()
+                .get::<StatusEffects>(unit)
+                .unwrap()
+                .effects
+                .iter()
+                .any(|e| e.id == id)
+        }
+
+        fn remaining(app: &App, unit: Entity, id: &str) -> Option<f32> {
+            app.world()
+                .get::<StatusEffects>(unit)
+                .unwrap()
+                .effects
+                .iter()
+                .find(|e| e.id == id)
+                .map(|e| e.remaining)
+        }
+
+        #[test]
+        fn basic_dispel_removes_reveal_taunt_and_fear() {
+            let mut app = app();
+            let source = unit(&mut app);
+            let victim = unit(&mut app);
+            for effect in [
+                StatusEffect::reveal(5.0),
+                StatusEffect::taunted(5.0, source),
+                StatusEffect::fear(5.0, Some(source)),
+            ] {
+                send(&mut app, Some(source), victim, StatusChange::Apply(effect));
+            }
+            assert!(has(&app, victim, "reveal") && has(&app, victim, "taunt"));
+            assert!(has(&app, victim, "fear"));
+            send(
+                &mut app,
+                None,
+                victim,
+                StatusChange::Dispel {
+                    kind: StatusKind::Debuff,
+                    strength: DispelStrength::Basic,
+                },
+            );
+            for id in ["reveal", "taunt", "fear"] {
+                assert!(!has(&app, victim, id), "{id} survived a basic dispel");
+            }
+            assert!(
+                !app.world()
+                    .get::<StatusEffects>(victim)
+                    .unwrap()
+                    .is_asleep(),
+                "sanity"
+            );
+        }
+
+        #[test]
+        fn banish_and_spell_immunity_survive_strong_dispels() {
+            let mut app = app();
+            let source = unit(&mut app);
+            let banished = unit(&mut app);
+            let immune = unit(&mut app);
+            send(
+                &mut app,
+                Some(source),
+                banished,
+                StatusChange::Apply(StatusEffect::banish(5.0, true)),
+            );
+            send(
+                &mut app,
+                Some(immune),
+                immune,
+                StatusChange::Apply(StatusEffect::spell_immunity(5.0)),
+            );
+            for (target, kind) in [(banished, StatusKind::Debuff), (immune, StatusKind::Buff)] {
+                for strength in [DispelStrength::Basic, DispelStrength::Strong] {
+                    send(
+                        &mut app,
+                        None,
+                        target,
+                        StatusChange::Dispel { kind, strength },
+                    );
+                }
+            }
+            assert!(has(&app, banished, "banish"));
+            assert!(has(&app, immune, "spell_immunity"));
+        }
+
+        #[test]
+        fn status_resistance_shortens_taunt_fear_hypnosis_and_reveal() {
+            let mut app = app();
+            let enemy = unit(&mut app);
+            let holder = unit(&mut app);
+            send(
+                &mut app,
+                Some(holder),
+                holder,
+                StatusChange::Apply(StatusEffect::status_resistance("res", 0.5, 20.0)),
+            );
+            for effect in [
+                StatusEffect::taunted(4.0, enemy),
+                StatusEffect::fear(4.0, Some(enemy)),
+                StatusEffect::hypnotized(4.0, enemy),
+                StatusEffect::reveal(4.0),
+            ] {
+                let id = effect.id;
+                send(&mut app, Some(enemy), holder, StatusChange::Apply(effect));
+                assert_eq!(remaining(&app, holder, id), Some(2.0), "{id}");
+            }
+        }
+
+        #[test]
+        fn stun_overlapping_sleep_survives_damage_wake() {
+            let mut statuses = StatusEffects {
+                effects: vec![StatusEffect::sleep(5.0), StatusEffect::stunned(5.0)],
+            };
+            let mut stats = CombatStats::simple(10.0, 8.0, 1.0, 0.0, 0.0, 10.0);
+            let removed = wake_from_sleep(&mut statuses, &mut stats, 0.0, None);
+            assert_eq!(removed.len(), 1);
+            assert!(!statuses.is_asleep());
+            assert!(statuses.is_stunned(), "the stun outlives the sleep");
+            let blocks = statuses.blocks();
+            for flag in [
+                ActionBlocks::MOVE,
+                ActionBlocks::ATTACK,
+                ActionBlocks::CAST,
+                ActionBlocks::ITEMS,
+            ] {
+                assert!(blocks.contains(flag));
+            }
+        }
+    }
 }

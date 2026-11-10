@@ -8540,6 +8540,40 @@ mod tests {
     }
 
     #[test]
+    fn reflected_item_spell_hits_original_caster_once_with_no_cooldown() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([parity_damage_item(100.0)]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        give_status(
+            &mut app,
+            target,
+            crate::status::StatusEffect::spell_reflect(30.0),
+        );
+        // A reflector on both sides: the recast must not bounce back.
+        give_status(
+            &mut app,
+            caster,
+            crate::status::StatusEffect::spell_reflect(30.0),
+        );
+        let before = health(&app, caster);
+        let mut reflects = 0;
+        request_item(&mut app, caster, 0, CastTarget::Unit(target));
+        for _ in 0..12 {
+            step(&mut app);
+            reflects +=
+                current_messages::<crate::abilities::effects::SpellReflectEvent>(&app).len();
+        }
+        assert_eq!(reflects, 1, "reflected once, never ping-pongs");
+        assert!(health(&app, target) < 1000.0, "the original still lands");
+        assert!(
+            health(&app, caster) < before,
+            "the reflected item spell hits the original caster"
+        );
+    }
+
+    #[test]
     fn mini_stun_spares_a_longer_foreign_stun() {
         let mut app = test_app();
         app.world_mut()

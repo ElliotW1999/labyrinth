@@ -365,6 +365,29 @@ mod compulsions {
     }
 
     #[test]
+    fn unit_stops_running_when_fear_ends() {
+        let mut app = sim_app();
+        let source = spawn_hero_at(&mut app, Team::Dire, Vec3::new(-300.0, 0.0, 0.0), true);
+        let unit = spawn_hero_at(&mut app, Team::Radiant, Vec3::ZERO, false);
+        app.update();
+        give(&mut app, unit, StatusEffect::fear(0.5, Some(source)));
+        run(&mut app, 60);
+        assert!(
+            !app.world()
+                .get::<StatusEffects>(unit)
+                .unwrap()
+                .has_status("fear")
+        );
+        let at_end = pos(&app, unit);
+        run(&mut app, 60);
+        assert!(
+            flat_dist(at_end, pos(&app, unit)) < 5.0,
+            "the unit keeps running after the fear ended: {at_end:?} -> {:?}",
+            pos(&app, unit)
+        );
+    }
+
+    #[test]
     fn rooted_feared_unit_does_not_move() {
         let mut app = sim_app();
         let source = spawn_hero_at(&mut app, Team::Dire, Vec3::new(-300.0, 0.0, 0.0), true);
