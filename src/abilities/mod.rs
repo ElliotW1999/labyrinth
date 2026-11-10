@@ -139,6 +139,7 @@ impl Plugin for AbilitiesPlugin {
                         apply_displacement_events,
                         apply_status_effect_events,
                         crate::vitals::sync_status_resource_caps,
+                        crate::vitals::sync_status_attributes,
                         // Before the AI and navigation stages, so the orders it drops
                         // are gone before they are replanned or re-issued.
                         apply_teleport_events.before(crate::movement::SimSet::Ai),
@@ -798,6 +799,7 @@ mod tests {
                     (
                         apply_status_effect_events,
                         crate::vitals::sync_status_resource_caps,
+                        crate::vitals::sync_status_attributes,
                     )
                         .chain(),
                     apply_teleport_events,

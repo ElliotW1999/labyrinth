@@ -348,6 +348,11 @@ RESOURCE_STATS = {
     "mana_regen": "ResourceStat::ManaRegen",
     "max_health": "ResourceStat::MaxHealth",
     "max_mana": "ResourceStat::MaxMana",
+    # Timed attribute modifiers: folded into HeroAttributes (health, mana, armor, attack speed ...)
+    # and reverted exactly. A negative value is a Debuff (an attribute steal).
+    "strength": "ResourceStat::Strength",
+    "agility": "ResourceStat::Agility",
+    "intelligence": "ResourceStat::Intelligence",
 }
 # Fractions (0.25 = 25%) share one range check; mana_cost_amp only has a floor (-1 = free).
 FRACTION_STATS = (

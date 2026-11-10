@@ -7,7 +7,7 @@
 use bevy::prelude::*;
 
 use crate::combat::DamageEvent;
-use crate::components::{CombatStats, DamageType, Health, Mana};
+use crate::components::{CombatStats, DamageType, Health, HeroAttributes, Mana};
 use crate::status::StatusEffects;
 
 /// Variants are constructed by generated definitions, so an unused one is not dead code.
@@ -33,6 +33,10 @@ pub enum ResourceStat {
     MaxMana,
     /// -0.25 means 25% cheaper.
     ManaCostAmp,
+    /// Primary attributes, folded into [`HeroAttributes`] by [`sync_status_attributes`].
+    Strength,
+    Agility,
+    Intelligence,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -84,7 +88,11 @@ pub fn resource_stat(
             ResourceStat::HealthRegen
             | ResourceStat::ManaRegen
             | ResourceStat::MaxHealth
-            | ResourceStat::MaxMana => 0.0,
+            | ResourceStat::MaxMana
+            // Attributes live on `HeroAttributes`.
+            | ResourceStat::Strength
+            | ResourceStat::Agility
+            | ResourceStat::Intelligence => 0.0,
         })
         .unwrap_or(0.0);
     permanent + statuses.map(|s| s.resource_sum(stat)).unwrap_or(0.0)
@@ -111,6 +119,9 @@ pub fn stat_label(stat: ResourceStat) -> &'static str {
         ResourceStat::MaxHealth => "Max health",
         ResourceStat::MaxMana => "Max mana",
         ResourceStat::ManaCostAmp => "Mana cost",
+        ResourceStat::Strength => "Strength",
+        ResourceStat::Agility => "Agility",
+        ResourceStat::Intelligence => "Intelligence",
     }
 }
 
@@ -324,6 +335,97 @@ fn fold_caps(
             applied.mana = want_mana;
         }
     }
+}
+
+/// Timed attribute modifiers already folded into [`HeroAttributes`] (and so into health, mana,
+/// armor, magic resist and attack speed). Inserted lazily by [`sync_status_attributes`].
+#[derive(Component, Debug, Clone, Copy, Default, PartialEq)]
+pub struct AppliedStatusAttributes {
+    pub strength: f32,
+    pub agility: f32,
+    pub intelligence: f32,
+}
+
+/// Reconcile [`HeroAttributes`] with the timed strength / agility / intelligence modifiers every
+/// frame. Folds the difference from what was last applied through
+/// [`HeroAttributes::apply_delta`], the same path level-ups use, so no removal path (expiry,
+/// dispel, purge, remove, charges) can leak or lose attributes. Units without attributes, mana
+/// or combat stats are skipped.
+///
+/// Must run after `apply_status_effect_events` and `tick_status_effects`; scheduling it right
+/// after [`sync_status_resource_caps`] guarantees both. Attack speed lags a changed agility by
+/// up to one frame.
+pub fn sync_status_attributes(
+    mut commands: Commands,
+    mut units: Query<(
+        Entity,
+        &StatusEffects,
+        &mut HeroAttributes,
+        &mut Health,
+        &mut Mana,
+        &mut CombatStats,
+        Option<&mut AppliedStatusAttributes>,
+    )>,
+) {
+    for (entity, statuses, mut attrs, mut health, mut mana, mut stats, applied) in &mut units {
+        let want = AppliedStatusAttributes {
+            strength: statuses.resource_sum(ResourceStat::Strength),
+            agility: statuses.resource_sum(ResourceStat::Agility),
+            intelligence: statuses.resource_sum(ResourceStat::Intelligence),
+        };
+        let Some(mut applied) = applied else {
+            if want == AppliedStatusAttributes::default() {
+                continue;
+            }
+            let mut folded = AppliedStatusAttributes::default();
+            fold_attributes(
+                &mut folded,
+                want,
+                &mut attrs,
+                &mut health,
+                &mut mana,
+                &mut stats,
+            );
+            commands.entity(entity).insert(folded);
+            continue;
+        };
+        fold_attributes(
+            &mut applied,
+            want,
+            &mut attrs,
+            &mut health,
+            &mut mana,
+            &mut stats,
+        );
+    }
+}
+
+fn fold_attributes(
+    applied: &mut AppliedStatusAttributes,
+    want: AppliedStatusAttributes,
+    attrs: &mut HeroAttributes,
+    health: &mut Health,
+    mana: &mut Mana,
+    stats: &mut CombatStats,
+) {
+    const EPSILON: f32 = 1e-4;
+    let delta = AppliedStatusAttributes {
+        strength: want.strength - applied.strength,
+        agility: want.agility - applied.agility,
+        intelligence: want.intelligence - applied.intelligence,
+    };
+    if delta.strength.abs() < EPSILON
+        && delta.agility.abs() < EPSILON
+        && delta.intelligence.abs() < EPSILON
+    {
+        return;
+    }
+    let before = *attrs;
+    attrs.strength += delta.strength;
+    attrs.agility += delta.agility;
+    attrs.intelligence += delta.intelligence;
+    HeroAttributes::apply_delta(&before, attrs, health, mana, stats);
+    *applied = want;
 }
 
 #[cfg(test)]

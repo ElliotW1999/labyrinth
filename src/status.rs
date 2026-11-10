@@ -3032,6 +3032,229 @@ mod tests {
         }
     }
 
+    mod attributes {
+        use super::*;
+        use crate::components::Mana;
+        use crate::vitals::{
+            AppliedStatusAttributes, ResourceStat, sync_status_attributes,
+            sync_status_resource_caps,
+        };
+        use std::time::Duration;
+
+        fn app() -> App {
+            let mut app = App::new();
+            app.init_resource::<Time>()
+                .add_message::<StatusEffectEvent>()
+                .add_message::<StatusLifecycleEvent>()
+                .add_message::<DamageEvent>()
+                .add_message::<crate::combat::DamageAppliedEvent>()
+                .add_systems(
+                    Update,
+                    (
+                        apply_status_effect_events,
+                        tick_status_effects,
+                        sync_status_resource_caps,
+                        sync_status_attributes,
+                    )
+                        .chain(),
+                );
+            app
+        }
+
+        /// A hero with starter attributes folded into its vitals the way `HeroDef::vitals` does.
+        fn hero(app: &mut App) -> Entity {
+            let attrs = HeroAttributes::starter();
+            let mut health = Health {
+                current: 500.0,
+                max: 500.0,
+                regen_per_sec: 0.0,
+            };
+            let mut mana = Mana::new(100.0, 0.0);
+            let mut stats = CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 300.0);
+            attrs.apply_to(&mut health, &mut mana, &mut stats);
+            app.world_mut()
+                .spawn((StatusEffects::default(), attrs, health, mana, stats))
+                .id()
+        }
+
+        fn modifier(id: &'static str, stat: ResourceStat, amount: f32, secs: f32) -> StatusEffect {
+            let kind = if amount >= 0.0 {
+                StatusKind::Buff
+            } else {
+                StatusKind::Debuff
+            };
+            StatusEffect::resource_modifier(id, kind, stat, amount, secs)
+        }
+
+        fn send(app: &mut App, target: Entity, change: StatusChange) {
+            app.world_mut().write_message(StatusEffectEvent {
+                reactive: false,
+                source: None,
+                target,
+                change,
+            });
+        }
+
+        fn step(app: &mut App, secs: f32) {
+            app.world_mut()
+                .resource_mut::<Time>()
+                .advance_by(Duration::from_secs_f32(secs));
+            app.update();
+        }
+
+        fn snapshot(app: &App, e: Entity) -> (HeroAttributes, f32, f32, f32, f32, f32) {
+            let w = app.world();
+            let attrs = *w.get::<HeroAttributes>(e).unwrap();
+            let health = w.get::<Health>(e).unwrap();
+            let mana = w.get::<Mana>(e).unwrap();
+            let stats = w.get::<CombatStats>(e).unwrap();
+            (
+                attrs,
+                health.max,
+                mana.max,
+                stats.armor,
+                stats.magic_resist,
+                stats.attack_speed,
+            )
+        }
+
+        #[test]
+        fn timed_agility_raises_attributes_armor_and_attack_speed_then_reverts() {
+            let mut app = app();
+            let hero = hero(&mut app);
+            let base = snapshot(&app, hero);
+            send(
+                &mut app,
+                hero,
+                StatusChange::Apply(modifier("t_agility", ResourceStat::Agility, 9.0, 2.0)),
+            );
+            step(&mut app, 0.0);
+            step(&mut app, 0.0);
+            let up = snapshot(&app, hero);
+            assert_eq!(up.0.agility, base.0.agility + 9.0);
+            assert!((up.3 - (base.3 + 9.0 * HeroAttributes::ARMOR_PER_AGI)).abs() < 1e-4);
+            assert!(up.5 > base.5, "attack speed {} -> {}", base.5, up.5);
+            assert_eq!(up.1, base.1, "strength-fed health is untouched");
+            // Expiry puts everything back.
+            step(&mut app, 2.5);
+            step(&mut app, 0.0);
+            let down = snapshot(&app, hero);
+            assert_eq!(down.0.agility, base.0.agility);
+            assert!((down.3 - base.3).abs() < 1e-4);
+            assert!((down.5 - base.5).abs() < 1e-5);
+        }
+
+        #[test]
+        fn timed_strength_changes_max_health_like_items() {
+            let mut app = app();
+            let hero = hero(&mut app);
+            let base = snapshot(&app, hero);
+            send(
+                &mut app,
+                hero,
+                StatusChange::Apply(modifier("t_strength", ResourceStat::Strength, 10.0, 30.0)),
+            );
+            step(&mut app, 0.0);
+            let up = snapshot(&app, hero);
+            assert!((up.1 - (base.1 + 10.0 * HeroAttributes::HP_PER_STR)).abs() < 1e-3);
+            // A steal (negative) is a debuff and lowers it.
+            send(
+                &mut app,
+                hero,
+                StatusChange::Apply(modifier("t_int", ResourceStat::Intelligence, -5.0, 30.0)),
+            );
+            step(&mut app, 0.0);
+            let down = snapshot(&app, hero);
+            assert!((down.2 - (base.2 - 5.0 * HeroAttributes::MANA_PER_INT)).abs() < 1e-3);
+            assert!((down.4 - (base.4 - 5.0 * HeroAttributes::MR_PER_INT)).abs() < 1e-4);
+        }
+
+        #[test]
+        fn dispelled_attribute_status_reverts() {
+            let mut app = app();
+            let hero = hero(&mut app);
+            let base = snapshot(&app, hero);
+            send(
+                &mut app,
+                hero,
+                StatusChange::Apply(modifier("t_strength", ResourceStat::Strength, 10.0, 30.0)),
+            );
+            step(&mut app, 0.0);
+            assert_ne!(snapshot(&app, hero).1, base.1);
+            send(
+                &mut app,
+                hero,
+                StatusChange::Dispel {
+                    kind: StatusKind::Buff,
+                    strength: DispelStrength::Basic,
+                },
+            );
+            step(&mut app, 0.0);
+            let after = snapshot(&app, hero);
+            assert_eq!(after.0.strength, base.0.strength);
+            assert!((after.1 - base.1).abs() < 1e-3);
+            assert_eq!(
+                *app.world().get::<AppliedStatusAttributes>(hero).unwrap(),
+                AppliedStatusAttributes::default()
+            );
+        }
+
+        #[test]
+        fn attribute_status_on_unit_without_attributes_is_ignored() {
+            let mut app = app();
+            let unit = app
+                .world_mut()
+                .spawn((
+                    StatusEffects::default(),
+                    CombatStats::simple(0.0, 0.0, 1.0, 5.0, 0.0, 300.0),
+                    Health {
+                        current: 100.0,
+                        max: 100.0,
+                        regen_per_sec: 0.0,
+                    },
+                    Mana::new(50.0, 0.0),
+                ))
+                .id();
+            send(
+                &mut app,
+                unit,
+                StatusChange::Apply(modifier("t_agility", ResourceStat::Agility, 9.0, 5.0)),
+            );
+            step(&mut app, 0.0);
+            step(&mut app, 0.0);
+            let w = app.world();
+            assert_eq!(w.get::<CombatStats>(unit).unwrap().armor, 5.0);
+            assert_eq!(w.get::<Health>(unit).unwrap().max, 100.0);
+            assert!(w.get::<AppliedStatusAttributes>(unit).is_none());
+        }
+
+        #[test]
+        fn two_instances_add() {
+            let mut app = app();
+            let hero = hero(&mut app);
+            let base = snapshot(&app, hero);
+            send(
+                &mut app,
+                hero,
+                StatusChange::Apply(modifier("a_agility", ResourceStat::Agility, 3.0, 2.0)),
+            );
+            send(
+                &mut app,
+                hero,
+                StatusChange::Apply(modifier("b_agility", ResourceStat::Agility, 3.0, 6.0)),
+            );
+            step(&mut app, 0.0);
+            assert_eq!(snapshot(&app, hero).0.agility, base.0.agility + 6.0);
+            // Only the shorter one expires.
+            step(&mut app, 2.5);
+            step(&mut app, 0.0);
+            assert_eq!(snapshot(&app, hero).0.agility, base.0.agility + 3.0);
+            step(&mut app, 4.0);
+            step(&mut app, 0.0);
+            assert_eq!(snapshot(&app, hero).0.agility, base.0.agility);
+        }
+    }
+
     mod heal_statuses {
         use super::*;
         use crate::vitals::{HealKind, apply_heal, heal_factor};

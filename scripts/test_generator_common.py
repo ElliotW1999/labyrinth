@@ -881,6 +881,36 @@ class SlowStatusTests(unittest.TestCase):
         self.assertIn("<owner>_slow", report.errors[0].message)
 
 
+class AttributeStatModifierTests(unittest.TestCase):
+    def test_timed_attributes_map_to_resource_modifiers(self) -> None:
+        for stat, variant in (
+            ("strength", "Strength"),
+            ("agility", "Agility"),
+            ("intelligence", "Intelligence"),
+        ):
+            report = Report()
+            effect, ctx = _effect("stat_modifier", stat, value="3", duration="10")
+            result = effect_to_rust(effect, ctx, report)
+            self.assertFalse(report.errors, stat)
+            self.assertIn(f"stat: ResourceStat::{variant}", result[2])
+            self.assertIn("kind: StatusKind::Buff", result[2])
+            self.assertIn(f'id: "tester_{stat}"', result[2])
+            self.assertEqual(held_status_id(effect), f"tester_{stat}")
+
+    def test_negative_attribute_is_a_debuff_steal(self) -> None:
+        report = Report()
+        effect, ctx = _effect("stat_modifier", "agility", value="-3", duration="10")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors)
+        self.assertIn("kind: StatusKind::Debuff", result[2])
+
+    def test_timed_attribute_needs_a_duration(self) -> None:
+        report = Report()
+        effect, ctx = _effect("stat_modifier", "agility", value="3")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertTrue(report.errors)
+
+
 class MoveSpeedBonusTests(unittest.TestCase):
     def test_bonus_uses_amount_or_value_and_the_owner_id(self) -> None:
         for column in ("amount", "value"):
@@ -1826,8 +1856,8 @@ class ReactiveTriggerTests(unittest.TestCase):
         self.assertIn(f'id: "{ctx.owner_id}_armor"', result[2])
         self.assertEqual(held_status_id(effect), f"{effect.owner}_armor")
 
-        # A passive-only stat still cannot be held.
-        effect, ctx = _effect("stat_modifier", "strength", target="owner", trigger="while:moving", kind="item", value="5")
+        # A passive-only stat still cannot be held (strength is timed-capable since G3).
+        effect, ctx = _effect("stat_modifier", "health", target="owner", trigger="while:moving", kind="item", value="5")
         report = Report()
         self.assertIsNone(effect_to_rust(effect, ctx, report))
 
