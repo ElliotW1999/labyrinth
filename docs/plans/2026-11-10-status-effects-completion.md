@@ -267,3 +267,30 @@ cargo test status::
 cargo clippy --all-targets
 python3 scripts/test_generator_common.py
 ```
+
+## 9. Implementation notes (deviations and limitations)
+
+Steps 1-6 are implemented; step 7 is deferred (D1-D5 as resolved above, D3 = Lotus-style reflection: the original spell still lands unless blocked).
+
+Deviations from the plan, with reasons:
+
+- **Ethereal amp** is stored as magic-resistance points (converted from the percent) and clamped at 90, instead of a raw percent field, so it composes with the existing resistance maths; the generator bounds the percent to 0..90.
+- **Ethereal and Banish generator default team** is Enemy (they are debuffs on enemies; the kind follows hostility at apply time).
+- **Flee fallback** keeps the unit's heading when the source position is unknown instead of choosing a new direction.
+- **Taunt and hypnosis are removed when the source dies** or despawns (`enforce_compulsions`), rather than lingering until expiry.
+- **`Activation` is not removed by `enforce_compulsions`.** The compulsion system only writes orders; it never cancels a cast in progress.
+- **A taunt or hypnosis built without a caster** (`ctx.source` is `None`) is a no-op debuff.
+- **`follow_lane_waypoints` skips compelled units** (in addition to `acquire_targets` and `player_attack_move`) so the lane AI cannot overwrite a forced order.
+- **Concealment term added in step 5.** `TargetIntent::rejects` gained `is_concealed()` for `Attack` and `HostileSpell` when invisibility landed; steps 2-4 only had the immunity terms. An invisible taunter simply drops the `AttackTarget` because `enforce_compulsions` checks attack-targetability.
+- **Invisibility amount keyword:** the generator's `invisibility` takes `amount=0` to keep invisibility on action (default: breaks), as planned; any non-zero amount means breaks.
+- **`landing_target` also accepts `OnUse`** (not only `OnCast`), since item actives fire `OnUse`; items and abilities are blockable through the same path.
+- **Block / reflect priority:** spell immunity, then block, then reflect are an if / else-if chain: a blocked spell is not reflected.
+- **Reflected item spells** run the item's mechanics and an `OnUse` context (items have no `OnCast`); no use event or cooldown is produced.
+- **Reflect consumers run one frame late** (the event is written in `resolve_ability_triggers` and read by the cast systems next frame), as anticipated in the risks.
+
+Known limitations:
+
+- `StatusEffects` is not network-replicated (`src/net/`). Concealment, hidden and every other status-driven rule is only correct on the simulation authority; remote clients do not see invisibility or banish applied by the host.
+- Reflection recasts effects with the reflector as caster, so `OnCast` entries aimed at the caster apply to the reflector.
+- True sight (`reveal`) has no built-in source; it is content (trigger plus `apply_status,reveal`).
+- Step 7 (per-row dispel override, per-owner attack-speed-slow id) is not implemented.

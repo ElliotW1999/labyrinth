@@ -13,7 +13,7 @@ Plan and decisions: `docs/plans/2026-11-08-mechanic-composition-layers.md`. Reac
 | **Triggers** | **When** effects run: `AbilityTrigger` plus the systems that emit it | `definition.rs` (`AbilityTrigger`, `StatusFilter`, `Condition`), `mechanics.rs` (`OnCast`, `projectile_hit_triggers`), `items.rs` (`OnUse`), `casting.rs` (channel end), `attack_triggers.rs`, `displacement.rs` (contact, movement end), `passive.rs` (`WhileToggled`), `reactive_triggers.rs` (dispatchers `track_travel`, `proximity_triggers`, `interval_triggers`, `cooldown_triggers`, `cast_triggers`, `damage_triggers`, `status_triggers`; state `TriggerTracking`; shared fan-out `owner_sources` / `source_triggers` / `fan_out`) | `AbilityTriggerEvent(TriggerContext)`. The dispatchers read only fact messages (I11) | The fired action; fact messages from the Effects and Gameplay-rules layers |
 | **Effects** | **What** happens: `AbilityEffect` rows executed by the single executor. This is also the only place the reaction flag is stamped (I1, I10) | `abilities/effects.rs` (`EffectRunner::execute`, `resolve_ability_triggers`, `build_status_effect`) | `DamageEvent`, `HealEvent`, `ManaRestoreEvent`, `ResourceDrainEvent`, `StatusEffectEvent` (all stamped `.reactive(ctx.reaction)`), `DisplacementEvent`, `TeleportEvent`, `ExtraAttackEvent`, derived contexts from gates; the fact `SpellHitEvent` (ability source, depth 0, cast phase only) | Context, target stats and statuses (for scaling) |
 | **Modifiers** | Persistent numeric changes | `PassiveStat` / `ItemPassives` (`items.rs`, `abilities/passive.rs`), `StatusSpec` modifier variants and `StatusEffect` stat fields (`status.rs`), `vitals::resource_stat` | Stat changes through `CombatStats` | Owned items, ranks, active statuses |
-| **Gameplay rules** | How effects interact with the game: mitigation, immunity, untargetability, dispel, healing factors | `combat.rs` (`apply_damage_events`), `status.rs` (`apply_status`, `wake_from_sleep`, `purge_strong_dispellable_debuffs`, `hostile`, `blocks_hostile_relocation`), `vitals.rs`, `displacement.rs`, `teleport.rs` | Health / status / position changes (the only writers); the facts `DamageAppliedEvent` (only `apply_damage_events` writes it), `StatusLifecycleEvent` (only the status appliers, `tick_status_effects` and the sleep wake write it) and `TeleportCompletedEvent` / `TeleportRejectedEvent` | Statuses, stats, teams |
+| **Gameplay rules** | How effects interact with the game: mitigation, immunity, untargetability, concealment, spell landing (block / reflect), the disable matrix (`ActionBlocks`), dispel, healing factors | `combat.rs` (`apply_damage_events`), `status.rs` (`apply_status`, `wake_from_sleep`, `purge_strong_dispellable_debuffs`, `hostile`, `blocks_hostile_relocation`), `vitals.rs`, `displacement.rs`, `teleport.rs` | Health / status / position changes (the only writers); the facts `DamageAppliedEvent` (only `apply_damage_events` writes it), `StatusLifecycleEvent` (only the status appliers, `tick_status_effects` and the sleep wake write it) and `TeleportCompletedEvent` / `TeleportRejectedEvent` | Statuses, stats, teams |
 
 Invariants (I1 to I9 from the composition plan, with I1, I4 and I6 amended and I10 to I12 added by the merge plan):
 
@@ -85,14 +85,14 @@ All systems below run in `Update`. The two plugin chains interleave: the abiliti
    1. cooldown, mana regen, `tick_toggle_upkeep`, `sync_ability_passives`
    2. activation: `resolve_queued_activations`, `validate_activation_requests`, `refresh_activation_aims`, `tick_activations` (emits `ActionFiredEvent`)
    3. `emit_ability_casts`, then `resolve_item_uses` (OnUse) followed by `execute_item_mechanics`, then `execute_ability_casts` (mechanics and OnCast)
-   4. `action_channel_end_triggers`, `projectile_hit_triggers`, `attack_triggers`
+   4. `action_channel_end_triggers`, `projectile_hit_triggers`, `attack_triggers`, `consume_attack_charges`, `break_invisibility` (reads non-extra `BasicAttackReleaseEvent` and `ActionFiredEvent`; writes `StatusChange::Remove` for invisibility that breaks on action)
    5. `tick_forced_movement`, `settle_grounded_units` (contact and movement-end triggers)
    6. reactive dispatchers, chained in this order: `track_travel`, `proximity_triggers`, `interval_triggers`, `tick_zones` (fires the zone ticks that came due), `cooldown_triggers` (reads `CooldownReadyEvent`), `cast_triggers` (reads `AbilityCastEvent`, `SpellHitEvent`), `damage_triggers` (reads `DamageAppliedEvent`), `status_triggers` (reads `StatusLifecycleEvent`, `.after(tick_status_effects)`), `sync_conditional_statuses` (`While` rows)
    7. **`resolve_ability_triggers`** (effects, including gates and their derived contexts; writes `SpellHitEvent`)
    8. `spawn_requested_zones` (reads `SpawnZoneEvent`; the zone starts counting next frame), `spawn_requested_projectiles`
    9. appliers in order: heals, mana restore, resource drains, displacement, status events (write `StatusLifecycleEvent`), resource-cap sync, teleport (`before(SimSet::Ai)`; writes `TeleportCompletedEvent` / `TeleportRejectedEvent`)
-3. `tick_status_effects` runs `.before(apply_damage_events)`, so DoT damage lands in the same damage pass.
-4. `SimSet::Commands` then `Ai` then `Movement` order the unit orders and locomotion.
+3. `tick_status_effects` runs `.before(apply_damage_events)` so DoT damage lands in the same damage pass, and `.after(tick_activations).after(tick_attack_swings)` so interrupt checks see a stun before it expires (a stun shorter than one frame still cancels a channel, cast point or swing).
+4. `SimSet::Commands` then `Ai` then `Movement` order the unit orders and locomotion. Inside `Ai` the chain is `follow_lane_waypoints`, `acquire_targets`, `player_attack_move`, **`enforce_compulsions`**, `assign_attack_positions`: `enforce_compulsions` is the single order writer for feared, taunted and hypnotized units (it clears their queue and attack-move, writes the forced `MoveTarget` / `AttackTarget`, and ends taunt / hypnosis when the source is gone), so it must run after everything that could write an order and before attack positions are assigned. `process_issued_commands` drops commands for units whose `ActionBlocks` contain `ORDERS`.
 
 A chain hop therefore resolves in the same frame as the trigger that started it (derived contexts resolve in the same call), and its damage lands in `apply_damage_events` that frame. Hops are picked before this frame's damage applies (risk R1 in the plan).
 
@@ -123,6 +123,8 @@ Four storage styles coexist on purpose. Pick by the kind of change and keep a st
 | **Snapshot at build** | `StatusSpec::build` reads `StatusBuildContext.move_speed` / `agility` | Percentage slows relative to the target's speed when applied. `apply_status` then re-measures a slow (`move_slow_fraction`) against the speed without status deltas, so a refreshed slow never compounds. Generated slows carry the id `<owner>_slow`, so slows from different sources coexist and add (floored at `scale::MIN_MOVE_SPEED`) | Fixed at application |
 | **Counter on the status** | `StatusEffect.stacks` (stacking debuffs, merged in `status::apply_status`) and `StatusEffect.attack_charges` (decremented by `StatusChange::ConsumeAttackCharge` in `apply_status_effect_events`) | Per-holder counts that belong to one status: Fury Swipes stacks, Overpower charges | Lost with the status (expiry, dispel, removal); a refresh adds stacks, or resets the charges |
 
+**Caps.** `StatusEffect.move_speed_cap` (0 = none) is applied by `CombatStats::effective_move_speed` as `.min(lowest live cap)` after the `scale::MIN_MOVE_SPEED` floor and the slow sum. Hex uses `scale::HEX_MOVE_SPEED`; the cap is not a stat delta, so nothing is reverted when it ends.
+
 `build_status_effect` is the single constructor for statuses (timed, toggled and held `While` statuses). Held statuses get `dot_source = owner` and the owner's outgoing heal amp, exactly like toggle statuses.
 
 ## 5. Gameplay-rule matrix
@@ -138,6 +140,44 @@ How each protection treats each kind of effect. "Skipped" means the unit is neve
 | **Teleport** (`TeleportEvent`) | No effect | Hostile teleport rejected with `TeleportError::Immune` (`teleport.rs`); self and ally teleports ignore it | `TeleportError::Suspended` while the cyclone motion runs; not selected as an effect target | No effect | No; completed teleports only reset travel tracking (not counted for `on_move`) |
 | **Damage reduction** (`StatusSpec::DamageReduction`) | Not reached (the event is dropped first) | No effect (a buff) | Not selected | Not reached (damage immunity resolves to 0 first) | Not an event: `StatusEffects::damage_taken_factor()` multiplies the post-mitigation damage in `combat::resolve_incoming_damage` for every damage type; shields soak the pre-armor amount first |
 | **Status resistance** (`StatusSpec::StatusResistance`) | No effect | No effect (a buff); a debuff-immune unit still rejects the debuff | Not selected | No effect | Not an event: `apply_status_effect_events` scales the duration of a finite hostile debuff (another unit as source, not reactive) by `status_resistance_factor()` before applying it |
+
+### Disable matrix, targeting and spell landing
+
+**`ActionBlocks`** (`status.rs`) is the one disable matrix: a `u8` bit set derived from status flags by `StatusEffect::blocks()` and unioned by `StatusEffects::blocks()`. `can_move`, `can_attack`, `can_cast`, `is_rooted`, `is_disarmed` and `DisableRule::blocks` (item use) are all expressed on top of it.
+
+| Flag / field | MOVE | ATTACK | CAST | ITEMS | ORDERS | PASSIVES |
+|---|---|---|---|---|---|---|
+| `stunned` | x | x | x | x | | |
+| `asleep` | x | x | x | x | | |
+| `rooted` | x | | | | | |
+| `silenced` | | | x | | | |
+| `muted` | | | | x | | |
+| `disarmed` | | x | | | | |
+| `breaks_passives` (break, hex) | | | | | | x |
+| `compulsion` Flee (fear) / Approach (hypnosis) | | x | x | x | x | |
+| `compulsion` Attack (taunt) | | | x | x | x | |
+
+`ORDERS` drops player and AI orders. `PASSIVES` suppresses ability passives only (stats, triggers, conditional statuses; `passive_suppressed`); item passives keep working.
+
+**Targeting intent.** Every "may this unit be picked" test other than an area test goes through `status::is_targetable(statuses, entity, TargetIntent)` / `StatusEffects::rejects(intent)`:
+
+| Intent | Rejects | Used by |
+|---|---|---|
+| `Any` | `untargetable` (cyclone, banish) | area membership (`unit_in_area`, `UnitsInRadius`), `valid_target` |
+| `Attack` | untargetable, `attack_immune`, concealed | basic attack start / swing / acquisition, AI target selection, `UnitCommand::Attack`, taunt targets |
+| `HostileSpell` | untargetable, `spell_immune`, concealed | `UnitInfo.rejects_hostile_spell` in `actions/targeting.rs::resolve_target` for enemy unit targets (allies and self are never rejected) |
+
+**Damage-type immunity.** `StatusEffect.immune_damage` is a `DamageTypeMask`; `combat.rs` asks `is_immune_to(damage_type)` for the event's type. Spell immunity immunises to magical damage only, ethereal to physical only, invulnerable to everything (dropped earlier).
+
+**Concealment.** A unit is concealed when any live status has `invisible` and none has `revealed` (`StatusEffects::is_concealed`). Concealed units are rejected by `Attack` and `HostileSpell` picks, so creeps and towers do not acquire them and unit-target spells cannot be cast at them; area effects, `Any` picks and ally picks still reach them. `fog.rs` keeps a concealed enemy hidden even inside vision, and a `hidden` unit (banish) is drawn for nobody. True sight is content: a proximity / interval trigger applying `reveal`. Invisibility with `invis_breaks_on_action` ends via `break_invisibility` (a non-extra attack release or a fired activation).
+
+**Spell landing.** Only the landing of a hostile unit-target spell is blockable or reflectable. `effects::landing_target(ctx, defs)` returns the unit when the context is at depth 0, not a reaction, the source is cast on a unit, and either `OnProjectileHit` struck the cast target or `OnCast` / `OnUse` fired with no homing projectile mechanic (launching a projectile is not a landing). Skillshots, areas, `ProjectileToEach` fan-outs, gate-derived contexts and ally casts never qualify. In `resolve_ability_triggers`, for an enemy landing target:
+
+1. `spell_immune`: the target is removed from every entry's targets of this context (shielded).
+2. else an unspent live `spell_block`: shielded, and the status is removed with `StatusChange::Remove`. Because the removal is applied after the call, a per-call list of spent blocks stops a second spell resolved in the same call from reusing it.
+3. else a live `spell_reflect` and `!ctx.reflected`: a `SpellReflectEvent` is written and the original still lands (Lotus style).
+
+A shielded target produces no `SpellHitEvent`. `SpellReflectEvent` is consumed next frame by `execute_ability_casts` / `execute_item_mechanics`: the reflector recasts the spell on the original caster (`CastContext { caster: reflector, unit_target: original, reflected: true }`), running the mechanics and the `OnCast` / `OnUse` trigger only. It is not a cast: no `AbilityCastEvent`, no cooldown, no custom behavior, no cast reactions. `reflected` is carried by `TriggerContext` (inherited by derived contexts), `CastContext` and `ProjectilePayload`, so a reflected spell, including its projectile hit, is never reflected again and two reflectors cannot ping-pong.
 
 ### Reaction rule per event
 
