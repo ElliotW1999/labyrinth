@@ -889,6 +889,8 @@ class ImmunityStatusTests(unittest.TestCase):
             ("attack_immunity", "StatusSpec::AttackImmunity"),
             ("banish", "StatusSpec::Banish"),
             ("break", "StatusSpec::Break"),
+            ("taunt", "StatusSpec::Taunt"),
+            ("hypnosis", "StatusSpec::Hypnosis"),
         ):
             report = Report()
             effect, ctx = _effect("apply_status", keyword, duration="2")
@@ -902,6 +904,8 @@ class ImmunityStatusTests(unittest.TestCase):
         self.assertEqual(runtime_status_id("attack_immunity"), "attack_immunity")
         self.assertEqual(runtime_status_id("banish"), "banish")
         self.assertEqual(runtime_status_id("break"), "break")
+        self.assertEqual(runtime_status_id("taunt"), "taunt")
+        self.assertEqual(runtime_status_id("hypnosis"), "hypnosis")
         self.assertEqual(runtime_status_id("ethereal"), "ethereal")
 
     def test_ethereal_needs_a_bounded_magic_amp(self) -> None:

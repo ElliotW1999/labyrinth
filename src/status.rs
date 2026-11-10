@@ -31,17 +31,18 @@ impl Plugin for StatusPlugin {
 /// by [`StatusEffect::blocks`] / [`StatusEffects::blocks`]; every "can this unit act" check
 /// reads it, so the disable matrix lives in one place.
 ///
-/// | flag | MOVE | ATTACK | CAST | ITEMS |
-/// |---|---|---|---|---|
-/// | stunned, asleep | x | x | x | x |
-/// | rooted | x | | | |
-/// | silenced | | | x | |
-/// | muted | | | | x |
-/// | disarmed | | x | | |
+/// | flag | MOVE | ATTACK | CAST | ITEMS | ORDERS | PASSIVES |
+/// |---|---|---|---|---|---|---|
+/// | stunned, asleep | x | x | x | x | | |
+/// | rooted | x | | | | | |
+/// | silenced | | | x | | | |
+/// | muted | | | | x | | |
+/// | disarmed | | x | | | | |
+/// | breaks_passives | | | | | | x |
+/// | compulsion Flee / Approach | | x | x | x | x | |
+/// | compulsion Attack (taunt) | | | x | x | x | |
 ///
-/// | breaks_passives | | | | | | PASSIVES |
-///
-/// `ORDERS` is reserved for compulsions; `PASSIVES` suppresses ability passives.
+/// `ORDERS` drops player and AI orders; `PASSIVES` suppresses ability passives.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ActionBlocks(u8);
 
@@ -165,6 +166,19 @@ pub struct Leash {
     pub radius: f32,
 }
 
+/// What a status forces its holder to do, enforced by `ai::enforce_compulsions` (the only
+/// order writer for compelled units) and `movement::apply_move_targets`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Compulsion {
+    /// Run away from `from` (fear). With no source (or a despawned one) the unit runs straight
+    /// ahead along its facing.
+    Flee { from: Option<Entity> },
+    /// Walk to `toward` and stop at contact (hypnosis).
+    Approach { toward: Entity },
+    /// Basic attack only `target` (taunt).
+    Attack { target: Entity },
+}
+
 #[derive(Debug, Clone)]
 pub struct StatusEffect {
     pub id: &'static str,
@@ -275,8 +289,8 @@ pub struct StatusEffect {
     pub flying: bool,
     /// Confines the unit to a circle (region restriction or tether).
     pub leash: Option<Leash>,
-    /// Forced retreat from this entity while feared (`None` if source despawned).
-    pub fear_source: Option<Entity>,
+    /// Forced behaviour (fear, taunt, hypnosis) enforced by `ai::enforce_compulsions`.
+    pub compulsion: Option<Compulsion>,
     /// Applied by a reaction or held by a condition: expires and is removed silently (it
     /// never fires status triggers).
     pub reactive: bool,
@@ -322,6 +336,22 @@ impl StatusEffect {
         }
         if self.breaks_passives {
             blocks = blocks.union(ActionBlocks::PASSIVES);
+        }
+        match self.compulsion {
+            Some(Compulsion::Flee { .. } | Compulsion::Approach { .. }) => {
+                blocks = blocks
+                    .union(ActionBlocks::ATTACK)
+                    .union(ActionBlocks::CAST)
+                    .union(ActionBlocks::ITEMS)
+                    .union(ActionBlocks::ORDERS);
+            }
+            Some(Compulsion::Attack { .. }) => {
+                blocks = blocks
+                    .union(ActionBlocks::CAST)
+                    .union(ActionBlocks::ITEMS)
+                    .union(ActionBlocks::ORDERS);
+            }
+            None => {}
         }
         blocks
     }
@@ -387,7 +417,7 @@ impl StatusEffect {
             move_speed_cap: 0.0,
             flying: false,
             leash: None,
-            fear_source: None,
+            compulsion: None,
             reactive: false,
         }
     }
@@ -706,11 +736,29 @@ impl StatusEffect {
         }
     }
 
+    /// Runs away from `source`, and cannot attack, cast, use items or take orders.
     pub fn fear(duration: f32, source: Option<Entity>) -> Self {
         Self {
-            fear_source: source,
+            compulsion: Some(Compulsion::Flee { from: source }),
             dispel_type: DispelType::Basic,
             ..Self::debuff("fear", duration)
+        }
+    }
+
+    /// Forced to basic attack `source` only; cannot cast, use items or take orders.
+    pub fn taunted(duration: f32, source: Entity) -> Self {
+        Self {
+            compulsion: Some(Compulsion::Attack { target: source }),
+            ..Self::debuff("taunt", duration)
+        }
+    }
+
+    /// Forced to walk to `source` and stop at contact; cannot attack, cast, use items or take
+    /// orders.
+    pub fn hypnotized(duration: f32, source: Entity) -> Self {
+        Self {
+            compulsion: Some(Compulsion::Approach { toward: source }),
+            ..Self::debuff("hypnosis", duration)
         }
     }
 
@@ -861,17 +909,13 @@ impl StatusEffects {
         self.blocks().contains(ActionBlocks::ITEMS)
     }
 
-    pub fn is_feared(&self) -> bool {
+    /// The forced behaviour in effect: the most recently applied live compulsion wins.
+    pub fn compulsion(&self) -> Option<Compulsion> {
         self.effects
             .iter()
-            .any(|e| e.id == "fear" && e.remaining > 0.0)
-    }
-
-    pub fn fear_flee_source(&self) -> Option<Entity> {
-        self.effects
-            .iter()
-            .filter(|e| e.id == "fear" && e.remaining > 0.0)
-            .find_map(|e| e.fear_source)
+            .rev()
+            .filter(|e| e.remaining > 0.0)
+            .find_map(|e| e.compulsion)
     }
 
     /// Ability passives are suppressed (break, hex).
@@ -1735,7 +1779,9 @@ mod tests {
     fn blocks_matrix_matches_documented_table() {
         use ActionBlocks as B;
         let all = B::MOVE.union(B::ATTACK).union(B::CAST).union(B::ITEMS);
-        let cases: [(StatusEffect, B); 9] = [
+        let src = Entity::PLACEHOLDER;
+        let compelled = B::ATTACK.union(B::CAST).union(B::ITEMS).union(B::ORDERS);
+        let cases: [(StatusEffect, B); 12] = [
             (StatusEffect::stunned(1.0), all),
             (StatusEffect::sleep(1.0), all),
             (StatusEffect::rooted(1.0), B::MOVE),
@@ -1747,6 +1793,12 @@ mod tests {
                 B::CAST.union(B::ITEMS).union(B::ATTACK).union(B::PASSIVES),
             ),
             (StatusEffect::broken(1.0), B::PASSIVES),
+            (StatusEffect::fear(1.0, Some(src)), compelled),
+            (StatusEffect::hypnotized(1.0, src), compelled),
+            (
+                StatusEffect::taunted(1.0, src),
+                B::CAST.union(B::ITEMS).union(B::ORDERS),
+            ),
             (StatusEffect::buff("plain", 1.0), B::NONE),
         ];
         for (effect, expected) in cases {
@@ -1780,7 +1832,8 @@ mod tests {
                 effect.id
             );
         }
-        // Reserved bits stay clear; expired effects block nothing; effects union.
+        // Stun and sleep leave orders and passives alone; expired effects block nothing; effects
+        // union.
         assert!(!all.contains(B::ORDERS) && !all.contains(B::PASSIVES));
         let mut expired = StatusEffect::stunned(1.0);
         expired.remaining = 0.0;
@@ -1788,6 +1841,33 @@ mod tests {
             effects: vec![expired, StatusEffect::rooted(1.0), StatusEffect::mute(1.0)],
         };
         assert_eq!(mixed.blocks(), B::MOVE.union(B::ITEMS));
+    }
+
+    #[test]
+    fn newest_live_compulsion_wins_and_expired_ones_are_ignored() {
+        let (a, b) = (
+            Entity::from_raw_u32(1).unwrap(),
+            Entity::from_raw_u32(2).unwrap(),
+        );
+        assert_eq!(StatusEffects::default().compulsion(), None);
+        let mut expired = StatusEffect::fear(1.0, Some(a));
+        expired.remaining = 0.0;
+        let statuses = StatusEffects {
+            effects: vec![
+                StatusEffect::fear(1.0, Some(a)),
+                StatusEffect::taunted(1.0, b),
+                expired,
+            ],
+        };
+        assert_eq!(
+            statuses.compulsion(),
+            Some(Compulsion::Attack { target: b }),
+            "the later live one wins"
+        );
+        assert_eq!(
+            StatusEffect::hypnotized(1.0, a).compulsion,
+            Some(Compulsion::Approach { toward: a })
+        );
     }
 
     #[test]
@@ -1899,7 +1979,6 @@ mod tests {
             StatusBuildContext {
                 move_speed: current_speed,
                 agility: 0.0,
-                fear_source: None,
                 source: None,
                 point: Vec3::ZERO,
                 base_attack_damage: 0.0,
@@ -2161,7 +2240,6 @@ mod tests {
             StatusBuildContext {
                 move_speed: 0.0,
                 agility: 0.0,
-                fear_source: None,
                 source: None,
                 point: Vec3::ZERO,
                 base_attack_damage: 0.0,

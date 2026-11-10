@@ -8193,7 +8193,6 @@ mod tests {
             definition::StatusBuildContext {
                 move_speed: 0.0,
                 agility: 0.0,
-                fear_source: None,
                 source: None,
                 point: Vec3::ZERO,
                 base_attack_damage: 0.0,

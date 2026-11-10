@@ -188,6 +188,9 @@ STATUSES = {
     # Ability passives (stats and triggers) are suppressed; item passives keep working.
     "break": ("StatusSpec::Break", "break", False),
     "fear": ("StatusSpec::Fear", "fear", False),
+    # Taunt and hypnosis force the target towards the caster (see `Compulsion`).
+    "taunt": ("StatusSpec::Taunt", "taunt", False),
+    "hypnosis": ("StatusSpec::Hypnosis", "hypnosis", False),
     "slow": (None, "slow", False),
     "attack_speed_slow": (None, "attack_speed_slow", False),
     "turn_rate_slow": (None, "turn_rate_slow", False),

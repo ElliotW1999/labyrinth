@@ -678,6 +678,8 @@ fn status_name(status: StatusSpec) -> &'static str {
         StatusSpec::Accuracy { .. } => "Accuracy",
         StatusSpec::TrueStrike => "True strike",
         StatusSpec::Fear => "Fear",
+        StatusSpec::Taunt => "Taunt",
+        StatusSpec::Hypnosis => "Hypnosis",
         StatusSpec::Slow { .. } => "Slow",
         StatusSpec::AttackSpeedSlow { .. } => "Attack speed slow",
         StatusSpec::TurnRateSlow { .. } => "Turn rate slow",

@@ -229,3 +229,332 @@ fn map_is_generated_only_after_a_hero_is_picked_and_resets_on_change_hero() {
     assert_eq!(count::<PlayerHero>(&mut app), 1);
     assert_eq!(count::<Tower>(&mut app), towers);
 }
+
+// --- Compulsions (fear, taunt, hypnosis): whole-sim behaviour ---
+
+mod compulsions {
+    use super::*;
+    use crate::components::{
+        AbilityLoadout, AttackTarget, CollisionRadius, Creep, Mana, MoveTarget,
+    };
+    use crate::status::{StatusEffect, StatusEffects};
+    use crate::unit_commands::{CommandQueue, IssueCommand, UnitCommand};
+
+    fn spawn_creep_at(app: &mut App, team: Team, pos: Vec3) -> Entity {
+        app.world_mut()
+            .resource_scope(|world, assets: Mut<SharedAssets>| {
+                let mut queue = bevy::ecs::world::CommandQueue::default();
+                let mut commands = Commands::new(&mut queue, world);
+                crate::units::spawn_creep(&mut commands, &assets, team, Lane::Mid, pos, false);
+                queue.apply(world);
+            });
+        app.world_mut()
+            .query_filtered::<(Entity, &Transform), With<Creep>>()
+            .iter(app.world())
+            .find(|(_, tf)| flat_dist(tf.translation, pos) < 0.01)
+            .map(|(e, _)| e)
+            .expect("spawned creep")
+    }
+
+    fn spawn_hero_at(app: &mut App, team: Team, pos: Vec3, local: bool) -> Entity {
+        app.world_mut()
+            .resource_scope(|world, assets: Mut<SharedAssets>| {
+                let mut queue = bevy::ecs::world::CommandQueue::default();
+                let mut commands = Commands::new(&mut queue, world);
+                let hero = crate::units::spawn_hero_entity(
+                    &mut commands,
+                    &assets,
+                    team,
+                    local,
+                    if local { 0 } else { 1 },
+                    pos,
+                    HeroId::QueenOfPain,
+                );
+                queue.apply(world);
+                hero
+            })
+    }
+
+    fn give(app: &mut App, unit: Entity, effect: StatusEffect) {
+        app.world_mut()
+            .get_mut::<StatusEffects>(unit)
+            .unwrap()
+            .effects
+            .push(effect);
+    }
+
+    fn pos(app: &App, unit: Entity) -> Vec3 {
+        app.world().get::<Transform>(unit).unwrap().translation
+    }
+
+    fn run(app: &mut App, frames: u32) {
+        for _ in 0..frames {
+            app.update();
+        }
+    }
+
+    fn health(app: &App, unit: Entity) -> f32 {
+        app.world().get::<Health>(unit).unwrap().current
+    }
+
+    fn flat_dist(a: Vec3, b: Vec3) -> f32 {
+        Vec2::new(a.x - b.x, a.z - b.z).length()
+    }
+
+    #[test]
+    fn feared_idle_unit_flees_from_source() {
+        let mut app = sim_app();
+        let source = spawn_hero_at(&mut app, Team::Dire, Vec3::new(-300.0, 0.0, 0.0), true);
+        let unit = spawn_hero_at(&mut app, Team::Radiant, Vec3::ZERO, false);
+        app.update();
+        assert!(app.world().get::<MoveTarget>(unit).is_none(), "idle unit");
+        give(&mut app, unit, StatusEffect::fear(10.0, Some(source)));
+        run(&mut app, 60);
+        let at = pos(&app, unit);
+        assert!(at.x > 100.0, "ran away along +x, at {at:?}");
+        assert!(at.z.abs() < 60.0, "ran straight away, at {at:?}");
+        assert!(flat_dist(at, pos(&app, source)) > 400.0);
+    }
+
+    #[test]
+    fn fear_from_phased_source_flees_away_not_backward() {
+        let mut app = sim_app();
+        let source = spawn_hero_at(&mut app, Team::Dire, Vec3::new(300.0, 0.0, 0.0), true);
+        give(&mut app, source, StatusEffect::phased(30.0));
+        let unit = spawn_hero_at(&mut app, Team::Radiant, Vec3::ZERO, false);
+        app.update();
+        give(&mut app, unit, StatusEffect::fear(10.0, Some(source)));
+        run(&mut app, 60);
+        let at = pos(&app, unit);
+        assert!(
+            at.x < -100.0,
+            "ran away from the source along -x, at {at:?}"
+        );
+        assert!(at.z.abs() < 60.0, "not along its facing, at {at:?}");
+    }
+
+    #[test]
+    fn hypnotized_unit_walks_to_source_and_stops_at_contact() {
+        let mut app = sim_app();
+        let source = spawn_hero_at(&mut app, Team::Dire, Vec3::ZERO, true);
+        let unit = spawn_hero_at(&mut app, Team::Radiant, Vec3::new(-600.0, 0.0, 0.0), false);
+        app.update();
+        give(&mut app, unit, StatusEffect::hypnotized(30.0, source));
+        let reach = app.world().get::<CollisionRadius>(unit).unwrap().0
+            + app.world().get::<CollisionRadius>(source).unwrap().0;
+        run(&mut app, 60 * 4);
+        let gap = flat_dist(pos(&app, unit), pos(&app, source));
+        assert!(
+            gap < reach + 30.0,
+            "reached contact, gap {gap} reach {reach}"
+        );
+        assert!(
+            pos(&app, unit).x < pos(&app, source).x,
+            "did not walk through"
+        );
+        let before = pos(&app, unit);
+        run(&mut app, 30);
+        assert!(
+            flat_dist(before, pos(&app, unit)) < 5.0,
+            "stays put in contact"
+        );
+        assert_eq!(
+            health(&app, source),
+            app.world().get::<Health>(source).unwrap().max
+        );
+    }
+
+    #[test]
+    fn rooted_feared_unit_does_not_move() {
+        let mut app = sim_app();
+        let source = spawn_hero_at(&mut app, Team::Dire, Vec3::new(-300.0, 0.0, 0.0), true);
+        let unit = spawn_hero_at(&mut app, Team::Radiant, Vec3::ZERO, false);
+        app.update();
+        give(&mut app, unit, StatusEffect::rooted(10.0));
+        give(&mut app, unit, StatusEffect::fear(10.0, Some(source)));
+        run(&mut app, 60);
+        assert!(flat_dist(pos(&app, unit), Vec3::ZERO) < 1.0);
+        assert!(app.world().get::<MoveTarget>(unit).is_none());
+    }
+
+    #[test]
+    fn orders_dropped_while_compelled() {
+        let mut app = sim_app();
+        let source = spawn_hero_at(&mut app, Team::Dire, Vec3::new(-300.0, 0.0, 0.0), false);
+        let hero = spawn_hero_at(&mut app, Team::Radiant, Vec3::ZERO, true);
+        app.update();
+        give(&mut app, hero, StatusEffect::fear(0.5, Some(source)));
+        app.world_mut().write_message(IssueCommand {
+            unit: hero,
+            command: UnitCommand::Move {
+                destination: Vec3::new(0.0, 0.0, 3000.0),
+            },
+            queue: false,
+        });
+        run(&mut app, 5);
+        let queue = app.world().get::<CommandQueue>(hero).unwrap();
+        assert!(
+            queue.current.is_none() && queue.queued.is_empty(),
+            "dropped"
+        );
+        assert!(pos(&app, hero).z.abs() < 40.0, "did not head for the order");
+
+        // Once the fear ends, orders work again.
+        run(&mut app, 60);
+        assert!(
+            !app.world()
+                .get::<StatusEffects>(hero)
+                .unwrap()
+                .has_status("fear")
+        );
+        app.world_mut().write_message(IssueCommand {
+            unit: hero,
+            command: UnitCommand::Move {
+                destination: Vec3::new(0.0, 0.0, 3000.0),
+            },
+            queue: false,
+        });
+        run(&mut app, 2);
+        assert!(
+            app.world()
+                .get::<CommandQueue>(hero)
+                .unwrap()
+                .current
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn taunted_creep_attacks_only_source_even_when_others_closer() {
+        let mut app = sim_app();
+        let creep = spawn_creep_at(&mut app, Team::Dire, Vec3::ZERO);
+        let near = spawn_creep_at(&mut app, Team::Radiant, Vec3::new(70.0, 0.0, 0.0));
+        let taunter = spawn_hero_at(&mut app, Team::Radiant, Vec3::new(450.0, 0.0, 0.0), true);
+        app.update();
+        // The near creep would otherwise be the target; keep it alive and in place.
+        give(&mut app, near, StatusEffect::rooted(60.0));
+        give(&mut app, creep, StatusEffect::taunted(60.0, taunter));
+        let near_before = health(&app, near);
+        let taunter_before = health(&app, taunter);
+        // While it walks to the out-of-range taunter, the creep next to it is left alone.
+        run(&mut app, 60);
+        assert_eq!(health(&app, near), near_before, "nobody else was hit");
+        run(&mut app, 60 * 4);
+        assert_eq!(
+            app.world().get::<AttackTarget>(creep).map(|t| t.0),
+            Some(taunter)
+        );
+        assert!(health(&app, taunter) < taunter_before, "taunter was hit");
+        assert_eq!(health(&app, near), near_before, "nobody else was hit");
+    }
+
+    #[test]
+    fn taunted_hero_cannot_cast_or_use_items() {
+        fn mana_after_cast(taunted: bool) -> f32 {
+            let mut app = sim_app();
+            let taunter = spawn_creep_at(&mut app, Team::Dire, Vec3::new(2000.0, 0.0, 0.0));
+            let hero = spawn_hero_at(&mut app, Team::Radiant, Vec3::ZERO, true);
+            app.update();
+            for slot in &mut app
+                .world_mut()
+                .get_mut::<AbilityLoadout>(hero)
+                .unwrap()
+                .slots
+            {
+                slot.rank = 1;
+            }
+            if taunted {
+                give(&mut app, hero, StatusEffect::taunted(60.0, taunter));
+                let statuses = app.world().get::<StatusEffects>(hero).unwrap();
+                assert!(!statuses.can_cast() && statuses.blocks_items());
+                assert!(statuses.can_move() && statuses.can_attack());
+            }
+            let before = app.world().get::<Mana>(hero).unwrap().current;
+            app.world_mut()
+                .write_message(ActivationRequest::ability(hero, 2, CastTarget::None));
+            run(&mut app, 30);
+            before - app.world().get::<Mana>(hero).unwrap().current
+        }
+        assert!(
+            mana_after_cast(false) > 1.0,
+            "control: the cast spends mana"
+        );
+        assert!(mana_after_cast(true) < 1.0, "taunted: no cast");
+    }
+
+    #[test]
+    fn taunt_ends_when_source_dies() {
+        let mut app = sim_app();
+        let creep = spawn_creep_at(&mut app, Team::Dire, Vec3::ZERO);
+        let taunter = spawn_hero_at(&mut app, Team::Radiant, Vec3::new(900.0, 0.0, 0.0), true);
+        app.update();
+        give(&mut app, creep, StatusEffect::taunted(60.0, taunter));
+        run(&mut app, 5);
+        assert!(
+            app.world()
+                .get::<StatusEffects>(creep)
+                .unwrap()
+                .has_status("taunt")
+        );
+        app.world_mut().get_mut::<Health>(taunter).unwrap().current = 0.0;
+        run(&mut app, 10);
+        let statuses = app.world().get::<StatusEffects>(creep).unwrap();
+        assert!(
+            !statuses.has_status("taunt"),
+            "taunt removed with its source"
+        );
+        assert!(statuses.compulsion().is_none());
+        assert!(app.world().get::<AttackTarget>(creep).is_none());
+    }
+
+    #[test]
+    fn feared_unit_cannot_attack_or_cast() {
+        let mut app = sim_app();
+        let source = spawn_hero_at(&mut app, Team::Dire, Vec3::new(-2000.0, 0.0, 0.0), true);
+        let creep = spawn_creep_at(&mut app, Team::Dire, Vec3::ZERO);
+        let victim = spawn_creep_at(&mut app, Team::Radiant, Vec3::new(70.0, 0.0, 0.0));
+        app.update();
+        give(&mut app, victim, StatusEffect::rooted(60.0));
+        give(&mut app, creep, StatusEffect::fear(60.0, Some(source)));
+        let statuses = app.world().get::<StatusEffects>(creep).unwrap();
+        assert!(!statuses.can_attack() && !statuses.can_cast() && statuses.blocks_items());
+        assert!(statuses.can_move());
+        let before = health(&app, victim);
+        run(&mut app, 60 * 2);
+        assert_eq!(
+            health(&app, victim),
+            before,
+            "a feared unit does not attack"
+        );
+        assert!(pos(&app, creep).x > 200.0, "it ran instead");
+    }
+
+    #[test]
+    fn taunted_unit_never_falls_back_to_the_nearest_enemy() {
+        fn near_damage(taunted: bool) -> f32 {
+            let mut app = sim_app();
+            let creep = spawn_creep_at(&mut app, Team::Dire, Vec3::ZERO);
+            let near = spawn_creep_at(&mut app, Team::Radiant, Vec3::new(70.0, 0.0, 0.0));
+            let taunter = spawn_hero_at(&mut app, Team::Radiant, Vec3::new(900.0, 0.0, 0.0), true);
+            app.update();
+            // Rooted, so the taunter stays out of range and only the fallback could hit `near`.
+            give(&mut app, near, StatusEffect::rooted(60.0));
+            give(&mut app, creep, StatusEffect::rooted(60.0));
+            if taunted {
+                give(&mut app, creep, StatusEffect::taunted(60.0, taunter));
+            }
+            let before = health(&app, near);
+            run(&mut app, 120);
+            before - health(&app, near)
+        }
+        assert!(
+            near_damage(false) > 1.0,
+            "control: it hits the creep next to it"
+        );
+        assert_eq!(
+            near_damage(true),
+            0.0,
+            "taunted: only the taunter may be hit"
+        );
+    }
+}

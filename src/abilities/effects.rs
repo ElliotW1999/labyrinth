@@ -1065,17 +1065,12 @@ pub(crate) fn build_status_effect(
     healer_amp: f32,
     origin: EffectSource,
 ) -> StatusEffect {
-    let fear_source = match spec {
-        super::definition::StatusSpec::Fear => caster,
-        _ => None,
-    };
     let mut built = spec.build(
         rank,
         duration,
         StatusBuildContext {
             move_speed: target_stats.map_or(0.0, |s| s.move_speed),
             agility: target_attrs.map_or(0.0, |a| a.agility),
-            fear_source,
             source: caster,
             point,
             base_attack_damage: target_base_attack_damage,

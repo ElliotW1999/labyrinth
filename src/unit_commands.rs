@@ -33,7 +33,7 @@ use crate::movement::{
     SimSet, order_attack_move, order_attack_unit, order_hero_move, order_hero_stop,
 };
 use crate::navigation::{NavGrid, flat, ground};
-use crate::status::TargetIntent;
+use crate::status::{ActionBlocks, TargetIntent};
 
 /// Frames a started command may go without any visible effect before it counts as failed.
 const EFFECT_GRACE_FRAMES: u32 = 4;
@@ -156,6 +156,13 @@ impl CommandContext<'_, '_> {
             .is_ok_and(|(h, statuses)| h.is_alive() && !statuses.is_some_and(|s| s.rejects(intent)))
     }
 
+    /// A compulsion (fear, taunt, hypnosis) holds the unit: it takes no orders.
+    fn orders_blocked(&self, unit: Entity) -> bool {
+        self.health.get(unit).is_ok_and(|(_, statuses)| {
+            statuses.is_some_and(|s| s.blocks().contains(ActionBlocks::ORDERS))
+        })
+    }
+
     /// Non-navigable destinations resolve to the closest point the unit fits.
     fn resolve_destination(&self, unit: Entity, destination: Vec3) -> Vec3 {
         let r = self.radii.get(unit).map_or(0.0, collision_of);
@@ -227,6 +234,10 @@ pub fn process_issued_commands(
     mut ctx: CommandContext,
 ) {
     for issue in issued.read() {
+        // Dropped whole: neither started nor queued (and the current order is kept).
+        if ctx.orders_blocked(issue.unit) {
+            continue;
+        }
         let Ok(mut queue) = queues.get_mut(issue.unit) else {
             // Units without a queue still obey, they just can't stack commands.
             ctx.start(issue.unit, issue.command);

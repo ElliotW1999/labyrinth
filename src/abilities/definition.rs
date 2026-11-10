@@ -429,8 +429,13 @@ pub enum StatusSpec {
     },
     /// The target's attacks never miss: ignores evasion and blind.
     TrueStrike,
-    /// Run away from `source` (typically the caster).
+    /// Run away from `source` (typically the caster); no attacking, casting, items or orders.
     Fear,
+    /// Forced to basic attack `source` (the caster) only; no casting, items or orders.
+    Taunt,
+    /// Forced to walk to `source` (the caster) and stop at contact; no attacking, casting,
+    /// items or orders.
+    Hypnosis,
     /// Reduces the target's move speed by `percent` of its base speed. `id` is the status id:
     /// hand-written slows use `"slow"`, generated ones `<owner>_slow`, so slows from different
     /// sources coexist and add while the same source refreshes.
@@ -535,7 +540,6 @@ pub enum LeashAnchorKind {
 pub struct StatusBuildContext {
     pub move_speed: f32,
     pub agility: f32,
-    pub fear_source: Option<Entity>,
     /// The unit that caused the status (the caster).
     pub source: Option<Entity>,
     /// Where the trigger happened.
@@ -652,7 +656,16 @@ impl StatusSpec {
                 accuracy: 1.0,
                 ..StatusEffect::buff("true_strike", duration)
             },
-            StatusSpec::Fear => StatusEffect::fear(duration, ctx.fear_source),
+            StatusSpec::Fear => StatusEffect::fear(duration, ctx.source),
+            // Without a caster to look at or walk to there is nothing to force: a no-op status.
+            StatusSpec::Taunt => match ctx.source {
+                Some(source) => StatusEffect::taunted(duration, source),
+                None => StatusEffect::debuff("taunt", duration),
+            },
+            StatusSpec::Hypnosis => match ctx.source {
+                Some(source) => StatusEffect::hypnotized(duration, source),
+                None => StatusEffect::debuff("hypnosis", duration),
+            },
             StatusSpec::Slow { id, percent } => {
                 let p = (percent.at(rank) / 100.0).clamp(0.0, 1.0);
                 StatusEffect {

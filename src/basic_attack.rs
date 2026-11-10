@@ -27,7 +27,7 @@ use crate::dimensions::{area_contains, bounds_of, edge_distance, within_range};
 use crate::facing::turn_toward;
 use crate::resources::SharedAssets;
 use crate::scale;
-use crate::status::{StatusEffects, TargetIntent, is_targetable, is_untargetable};
+use crate::status::{Compulsion, StatusEffects, TargetIntent, is_targetable, is_untargetable};
 
 /// Melee hits forgive a target stepping slightly away during the windup.
 /// Upper bound (seconds) for a hero's attack point and attack backswing.
@@ -191,19 +191,25 @@ pub fn request_basic_attacks(
 
         let origin = transform.translation;
         let self_bound = bounds_of(attacker_bound);
-        let chosen = current_target
-            .and_then(|AttackTarget(id)| {
+        // Taunted: the taunter is the only possible target, whatever else is ordered or near.
+        let taunter = match statuses.and_then(|s| s.compulsion()) {
+            Some(Compulsion::Attack { target }) => Some(target),
+            _ => None,
+        };
+        let chosen = taunter
+            .or(current_target.map(|AttackTarget(id)| *id))
+            .and_then(|id| {
                 target_snapshots
                     .iter()
                     .find(|(e, pos, target_team, radius)| {
-                        *e == *id
+                        *e == id
                             && *target_team == team.enemy()
                             && within_range(origin, self_bound, *pos, *radius, stats.attack_range)
                     })
                     .copied()
             })
             .or_else(|| {
-                if is_player {
+                if is_player || taunter.is_some() {
                     return None;
                 }
                 target_snapshots

@@ -5,14 +5,20 @@
 
 use bevy::prelude::*;
 
+use crate::actions::QueuedActivation;
 use crate::components::{
-    AttackMoveOrder, AttackTarget, BoundRadius, CombatStats, Creep, Health, MoveTarget, PlayerHero,
-    Team, Tower, TrainingDummy,
+    AttackMoveOrder, AttackSwing, AttackTarget, BoundRadius, CombatStats, Creep, Health,
+    MoveTarget, PlayerHero, Team, Tower, TrainingDummy,
 };
 use crate::dimensions::{bounds_of, center_distance as flat_distance, edge_distance, within_range};
-use crate::movement::SimSet;
-use crate::navigation::attack_position::assign_attack_positions;
-use crate::status::{StatusEffects, TargetIntent, is_targetable};
+use crate::movement::{FLEE_DISTANCE, SimSet, flee_direction};
+use crate::navigation::attack_position::{AttackPositionGoal, assign_attack_positions};
+use crate::navigation::{flat, ground};
+use crate::status::{
+    ActionBlocks, Compulsion, StatusChange, StatusEffectEvent, StatusEffects, TargetIntent,
+    is_targetable,
+};
+use crate::unit_commands::CommandQueue;
 
 /// A lane waypoint counts as passed within this distance, so a wave crowding the
 /// same point doesn't stall on it.
@@ -28,6 +34,7 @@ impl Plugin for AiPlugin {
                 follow_lane_waypoints,
                 acquire_targets,
                 player_attack_move,
+                enforce_compulsions,
                 assign_attack_positions,
             )
                 .chain()
@@ -43,12 +50,26 @@ pub struct LaneFollower {
     pub index: usize,
 }
 
+/// Whether a status on the unit takes its orders away (a compulsion is in charge instead).
+fn orders_blocked(statuses: Option<&StatusEffects>) -> bool {
+    statuses.is_some_and(|s| s.blocks().contains(ActionBlocks::ORDERS))
+}
+
 fn follow_lane_waypoints(
-    mut creeps: Query<(Entity, &Transform, &mut LaneFollower, Option<&AttackTarget>), With<Creep>>,
+    mut creeps: Query<
+        (
+            Entity,
+            &Transform,
+            &mut LaneFollower,
+            Option<&AttackTarget>,
+            Option<&StatusEffects>,
+        ),
+        With<Creep>,
+    >,
     mut commands: Commands,
 ) {
-    for (entity, transform, mut follower, attack) in &mut creeps {
-        if attack.is_some() {
+    for (entity, transform, mut follower, attack, statuses) in &mut creeps {
+        if attack.is_some() || orders_blocked(statuses) {
             continue;
         }
         if follower.index >= follower.waypoints.len() {
@@ -79,6 +100,7 @@ fn acquire_targets(
             Option<&BoundRadius>,
             Option<&AttackTarget>,
             Has<Tower>,
+            Option<&StatusEffects>,
         ),
         (Without<PlayerHero>, Without<TrainingDummy>),
     >,
@@ -94,8 +116,10 @@ fn acquire_targets(
         .map(|(e, t, team, _, radius)| (e, t.translation, *team, bounds_of(radius)))
         .collect();
 
-    for (entity, transform, team, stats, self_bound, current, is_tower) in &mut seekers {
-        if stats.attack_range <= 0.0 {
+    for (entity, transform, team, stats, self_bound, current, is_tower, own_statuses) in
+        &mut seekers
+    {
+        if stats.attack_range <= 0.0 || orders_blocked(own_statuses) {
             continue;
         }
         let attacker_bound = bounds_of(self_bound);
@@ -178,6 +202,9 @@ fn player_attack_move(
     let Ok((entity, transform, stats, hero_team, self_bound, order, moving)) = hero.single() else {
         return;
     };
+    if orders_blocked(statuses_of.get(entity).ok()) {
+        return;
+    }
     let attacker_bound = bounds_of(self_bound);
 
     let in_range = enemies
@@ -232,6 +259,125 @@ fn player_attack_move(
         commands
             .entity(entity)
             .insert(MoveTarget { position: dest });
+    }
+}
+
+/// How far a flee `MoveTarget` may lag behind the freshly computed one before it is replaced
+/// (replacing it every frame would re-plan the unit's path every frame).
+const FLEE_TARGET_SLACK: f32 = 150.0;
+/// Same for the position of a unit being approached.
+const APPROACH_TARGET_SLACK: f32 = 40.0;
+
+/// Whether `entity` is alive and may be picked as a basic attack target.
+fn is_live_target(
+    entity: Entity,
+    lives: &Query<(&Transform, &Health)>,
+    statuses_of: &Query<&StatusEffects>,
+) -> bool {
+    lives.get(entity).is_ok_and(|(_, hp)| hp.is_alive())
+        && is_targetable(statuses_of, entity, TargetIntent::Attack)
+}
+
+/// The only order writer for units under a compulsion (fear, taunt, hypnosis). Each frame it
+/// throws away what the player or AI ordered (command queue, attack-move, queued cast, swing
+/// target) and writes the forced behaviour instead:
+///
+/// - `Flee` / `Approach`: no attack target, and a `MoveTarget` away from / onto the source (kept
+///   while it is still close to where it should be, so the path is not replanned every frame;
+///   `movement::apply_move_targets` steers by the live source position anyway). An idle unit
+///   gets one too, which is what makes a standing feared unit run.
+/// - `Attack`: the taunter becomes the `AttackTarget`; approach and range are handled by
+///   `assign_attack_positions` as for any attack order.
+///
+/// A taunt or hypnosis whose source died or despawned is removed. Runs after the AI systems
+/// that could write orders and before `assign_attack_positions`.
+pub fn enforce_compulsions(
+    mut units: Query<(
+        Entity,
+        &Transform,
+        &StatusEffects,
+        Option<&MoveTarget>,
+        Option<&mut CommandQueue>,
+    )>,
+    lives: Query<(&Transform, &Health)>,
+    statuses_of: Query<&StatusEffects>,
+    mut status_events: MessageWriter<StatusEffectEvent>,
+    mut commands: Commands,
+) {
+    for (entity, transform, statuses, move_target, queue) in &mut units {
+        let Some(compulsion) = statuses.compulsion() else {
+            continue;
+        };
+        // The source is gone: end the status instead of leaving the unit without orders.
+        if let Compulsion::Attack { target: source } | Compulsion::Approach { toward: source } =
+            compulsion
+        {
+            let source_alive = lives.get(source).is_ok_and(|(_, hp)| hp.is_alive());
+            if !source_alive {
+                for effect in statuses.effects.iter().filter(|e| {
+                    e.remaining > 0.0
+                        && matches!(
+                            e.compulsion,
+                            Some(Compulsion::Attack { target: s } | Compulsion::Approach { toward: s })
+                                if s == source
+                        )
+                }) {
+                    status_events.write(StatusEffectEvent::new(
+                        None,
+                        entity,
+                        StatusChange::Remove(effect.id),
+                    ));
+                }
+                continue;
+            }
+        }
+
+        if let Some(mut queue) = queue {
+            queue.current = None;
+            queue.queued.clear();
+        }
+        let mut unit = commands.entity(entity);
+        // A cast already underway is cancelled by the pipeline itself (CAST is blocked).
+        unit.remove::<(AttackMoveOrder, QueuedActivation)>();
+        let pos = flat(transform.translation);
+
+        match compulsion {
+            Compulsion::Attack { target } => {
+                if is_live_target(target, &lives, &statuses_of) {
+                    unit.insert(AttackTarget(target));
+                } else {
+                    unit.remove::<(AttackTarget, AttackPositionGoal)>();
+                }
+            }
+            Compulsion::Flee { .. } | Compulsion::Approach { .. } => {
+                unit.remove::<(AttackTarget, AttackPositionGoal, AttackSwing)>();
+                if !statuses.can_move() {
+                    continue;
+                }
+                let (wanted, slack) = match compulsion {
+                    Compulsion::Flee { from } => {
+                        let source = from
+                            .and_then(|e| lives.get(e).ok())
+                            .map(|(tf, _)| flat(tf.translation));
+                        let dir = flee_direction(pos, source, flat(*transform.forward()));
+                        (pos + dir * FLEE_DISTANCE, FLEE_TARGET_SLACK)
+                    }
+                    Compulsion::Approach { toward } => {
+                        let Ok((tf, _)) = lives.get(toward) else {
+                            continue;
+                        };
+                        (flat(tf.translation), APPROACH_TARGET_SLACK)
+                    }
+                    Compulsion::Attack { .. } => unreachable!("handled above"),
+                };
+                let stale = move_target.is_none_or(|t| flat(t.position).distance(wanted) > slack);
+                if stale {
+                    unit.insert(MoveTarget {
+                        position: ground(wanted),
+                    });
+                }
+            }
+        }
     }
 }
 
