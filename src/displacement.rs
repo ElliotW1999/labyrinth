@@ -254,6 +254,7 @@ pub fn apply_displacement_events(
     mut commands: Commands,
     mut events: MessageReader<DisplacementEvent>,
     mut statuses: MessageWriter<StatusEffectEvent>,
+    mut triggers: MessageWriter<AbilityTriggerEvent>,
     units: DisplaceTargets,
 ) {
     // Motions inserted earlier this frame are not visible to the query yet.
@@ -289,6 +290,7 @@ pub fn apply_displacement_events(
         };
         // Self-propelled motion needs a unit that can move.
         if priority == MotionPriority::Own && target_statuses.is_some_and(|s| !s.can_move()) {
+            report_refused_run(event, target_tf.translation, &mut triggers);
             continue;
         }
         let current_priority = pending
@@ -302,6 +304,7 @@ pub fn apply_displacement_events(
         let from = target_tf.translation;
         let Some((path, duration)) = plan_motion(event, from, target_bound, &units, &pending)
         else {
+            report_refused_run(event, from, &mut triggers);
             continue;
         };
         let mut motion = ForcedMovement::new(path, duration);
@@ -353,6 +356,30 @@ pub fn apply_displacement_events(
     }
 }
 
+/// An own dash or charge that cannot start (rooted, stunned, nothing to run at) still ends
+/// where the mover stands: `OnMovementEnd` fires there with no contacts, so an ability whose
+/// payload is on the landing (Earthshock) takes effect in place. Other motion kinds, and
+/// motion with no source, stay silent.
+fn report_refused_run(
+    event: &DisplacementEvent,
+    at: Vec3,
+    triggers: &mut MessageWriter<AbilityTriggerEvent>,
+) {
+    if event.target != event.caster
+        || !matches!(
+            event.kind,
+            DisplacementKind::Dash | DisplacementKind::Charge
+        )
+    {
+        return;
+    }
+    if let Some(src) = event.source {
+        triggers.write(AbilityTriggerEvent(
+            src.context(AbilityTrigger::OnMovementEnd, at),
+        ));
+    }
+}
+
 /// The path and duration cap for one request, or `None` when there is nothing to do
 /// (no distance, a missing chase target, no speed).
 fn plan_motion(
@@ -389,7 +416,17 @@ fn plan_motion(
         }
         DisplacementKind::Dash => {
             // Constant speed: `duration` is the time for the full `distance`.
-            let toward = flat3(event.aim - from);
+            let mut toward = flat3(event.aim - from);
+            if toward.length() < MIN_TRAVEL
+                && let Some(distance) = event.distance
+            {
+                // Aimed at itself (a no-target cast): go the full distance along the
+                // mover's facing, `-Z` when it has no flat direction.
+                let facing = units
+                    .get(event.target)
+                    .map_or(Vec3::NEG_Z, |u| *u.0.forward());
+                toward = crate::abilities::effects::forward_point(from, facing, distance) - from;
+            }
             let max = event.distance.unwrap_or(toward.length());
             let travel = toward.normalize_or_zero() * toward.length().min(max);
             let path = line(travel)?;
@@ -1823,6 +1860,185 @@ mod tests {
         run(&mut app, 2);
         assert!(app.world().get::<ForcedMovement>(victim).is_none());
         assert!(app.world().get::<ForcedMovement>(anchor).is_some());
+    }
+
+    /// A dash event for `unit` aimed at `aim`, `distance` long over `duration` seconds.
+    fn dash_event(app: &mut App, unit: Entity, aim: Vec3, distance: Option<f32>, duration: f32) {
+        let at = pos(app, unit);
+        app.world_mut().write_message(DisplacementEvent {
+            target: unit,
+            kind: DisplacementKind::Dash,
+            caster: unit,
+            origin: at,
+            point: at,
+            aim,
+            cast_target: None,
+            distance,
+            duration,
+            speed: None,
+            source: Some(own_source(unit)),
+            contact_radius: None,
+            bound_stun: None,
+        });
+    }
+
+    #[test]
+    fn dash_with_aim_on_mover_goes_forward_along_facing() {
+        let mut app = sim_app();
+        let dasher = spawn_unit(&mut app, Team::Radiant, Vec3::new(100.0, 0.0, 100.0), 30.0);
+        // Face +X, then dash with the aim on the mover.
+        app.world_mut()
+            .get_mut::<Transform>(dasher)
+            .unwrap()
+            .rotation = Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2);
+        let facing = *app.world().get::<Transform>(dasher).unwrap().forward();
+        assert!(facing.x > 0.99, "test setup faces +X: {facing:?}");
+        step(&mut app);
+        let start = pos(&app, dasher);
+        dash_event(&mut app, dasher, start, Some(250.0), 0.25);
+        let mut seen = Vec::new();
+        for _ in 0..40 {
+            step(&mut app);
+            collect(&app, &mut seen);
+        }
+        let end = pos(&app, dasher);
+        assert!(
+            (end - (start + Vec3::X * 250.0)).length() < 1.0,
+            "forward 250 along facing: {end:?}"
+        );
+        let ends = ends(&seen);
+        assert_eq!(ends.len(), 1, "the dash reports its end once");
+        assert!(ends[0].point.distance(end) < 1.0);
+    }
+
+    #[test]
+    fn dash_toward_an_aim_is_unchanged() {
+        let mut app = sim_app();
+        let dasher = spawn_unit(&mut app, Team::Radiant, Vec3::ZERO, 30.0);
+        step(&mut app);
+        // Facing -Z, aim far to +X: the aim wins, capped at the distance.
+        dash_event(
+            &mut app,
+            dasher,
+            Vec3::new(1000.0, 0.0, 0.0),
+            Some(250.0),
+            0.25,
+        );
+        run(&mut app, 40);
+        let end = pos(&app, dasher);
+        assert!((end - Vec3::new(250.0, 0.0, 0.0)).length() < 1.0, "{end:?}");
+        // A nearer aim still stops there.
+        let mut app = sim_app();
+        let dasher = spawn_unit(&mut app, Team::Radiant, Vec3::ZERO, 30.0);
+        step(&mut app);
+        dash_event(
+            &mut app,
+            dasher,
+            Vec3::new(100.0, 0.0, 0.0),
+            Some(250.0),
+            0.25,
+        );
+        run(&mut app, 40);
+        assert!((pos(&app, dasher) - Vec3::new(100.0, 0.0, 0.0)).length() < 1.0);
+    }
+
+    #[test]
+    fn dash_without_distance_and_aim_on_mover_does_nothing() {
+        let mut app = sim_app();
+        let dasher = spawn_unit(&mut app, Team::Radiant, Vec3::ZERO, 30.0);
+        step(&mut app);
+        let start = pos(&app, dasher);
+        dash_event(&mut app, dasher, start, None, 0.25);
+        run(&mut app, 20);
+        assert!(app.world().get::<ForcedMovement>(dasher).is_none());
+        assert!((pos(&app, dasher) - start).length() < 1e-3);
+    }
+
+    #[test]
+    fn refused_own_dash_still_reports_its_end_in_place() {
+        for rooted in [true, false] {
+            let mut app = sim_app();
+            let dasher = spawn_unit(&mut app, Team::Radiant, Vec3::new(40.0, 0.0, 70.0), 30.0);
+            step(&mut app);
+            let start = pos(&app, dasher);
+            let (aim, distance) = if rooted {
+                // A root forbids the dash outright.
+                app.world_mut()
+                    .get_mut::<StatusEffects>(dasher)
+                    .unwrap()
+                    .effects
+                    .push(crate::status::StatusEffect::rooted(5.0));
+                (start + Vec3::X * 300.0, Some(250.0))
+            } else {
+                // No distance and the aim on the mover: nothing to plan.
+                (start, None)
+            };
+            dash_event(&mut app, dasher, aim, distance, 0.25);
+            let mut seen = Vec::new();
+            for _ in 0..10 {
+                step(&mut app);
+                collect(&app, &mut seen);
+            }
+            assert!(app.world().get::<ForcedMovement>(dasher).is_none());
+            assert!((pos(&app, dasher) - start).length() < 1e-3, "did not move");
+            let ends = ends(&seen);
+            assert_eq!(ends.len(), 1, "rooted: {rooted}");
+            assert_eq!(ends[0].point, start);
+            assert!(ends[0].affected_units.is_empty());
+            assert!(ends[0].trigger_unit.is_none());
+            assert_eq!(ends[0].caster, dasher);
+        }
+    }
+
+    #[test]
+    fn refused_motion_without_a_source_or_of_another_kind_stays_silent() {
+        let mut app = sim_app();
+        let dasher = spawn_unit(&mut app, Team::Radiant, Vec3::ZERO, 30.0);
+        let victim = spawn_unit(&mut app, Team::Dire, Vec3::new(500.0, 0.0, 0.0), 30.0);
+        step(&mut app);
+        app.world_mut()
+            .get_mut::<StatusEffects>(dasher)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::rooted(5.0));
+        // Same dash without a source.
+        app.world_mut().write_message(DisplacementEvent {
+            target: dasher,
+            kind: DisplacementKind::Dash,
+            caster: dasher,
+            origin: Vec3::ZERO,
+            point: Vec3::ZERO,
+            aim: Vec3::X * 300.0,
+            cast_target: None,
+            distance: Some(250.0),
+            duration: 0.25,
+            speed: None,
+            source: None,
+            contact_radius: None,
+            bound_stun: None,
+        });
+        // A foreign dash of someone else's unit (a drag of the victim is not an own run).
+        app.world_mut().write_message(DisplacementEvent {
+            target: victim,
+            kind: DisplacementKind::Dash,
+            caster: dasher,
+            origin: Vec3::ZERO,
+            point: Vec3::ZERO,
+            aim: Vec3::new(500.0, 0.0, 0.0),
+            cast_target: None,
+            distance: Some(0.0),
+            duration: 0.25,
+            speed: None,
+            source: Some(own_source(dasher)),
+            contact_radius: None,
+            bound_stun: None,
+        });
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            step(&mut app);
+            collect(&app, &mut seen);
+        }
+        assert!(ends(&seen).is_empty(), "{seen:?}");
     }
 
     #[test]

@@ -336,6 +336,13 @@ impl MechanicRunner<'_, '_> {
         let mut dest = Vec3::new(ctx.aim.x, from.y, ctx.aim.z);
         if flat.length() > max_distance && flat.length() > 1e-4 {
             dest = from + flat.normalize() * max_distance;
+        } else if flat.length() < 1e-3 {
+            // Aimed at the caster: the dash runs along the facing (see `plan_motion`).
+            let facing = self
+                .units
+                .get(ctx.caster)
+                .map_or(Vec3::NEG_Z, |(tf, _)| *tf.forward());
+            dest = super::effects::forward_point(from, facing, max_distance);
         }
         super::spawn_dash_ghosts(&mut self.commands, &self.assets, from, dest);
         self.displacements.write(DisplacementEvent::from_ctx(

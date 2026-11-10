@@ -62,6 +62,7 @@ from generator_common import (  # noqa: E402
     find_emitted_custom_triggers,
     find_registered_custom_effects,
     chain_fed_triggers,
+    owner_has_stacks_row,
     reaction_triggers,
     warn_duplicate_held_statuses,
     warn_unemitted_triggers,
@@ -485,6 +486,7 @@ def load(items_csv: Path, effects_csv: Path, existing_ids: set[str], *, repo_roo
         ctx = effect_context(item)
         ctx.registered_custom = registered_custom
         ctx.owner_triggers = {e.trigger for e in effects}
+        ctx.owner_has_stacks = owner_has_stacks_row(effects)
         ctx.reaction = reaction_triggers(effects)
         ctx.chain_fed = chain_fed_triggers(effects)
         if item.projectile == "none" and not any(e.trigger in ("on_use", "on_channel_end", "on_channel_interrupted") for e in effects):

@@ -726,6 +726,11 @@ pub enum AbilityId {
     Headshot,
     TakeAim,
     Assassinate,
+    // Ursa (generated stubs)
+    Earthshock,
+    Overpower,
+    FurySwipes,
+    Enrage,
     // </hero_generator:ability_enum>
 }
 
@@ -771,6 +776,10 @@ impl AbilityId {
             AbilityId::Headshot => "Headshot",
             AbilityId::TakeAim => "Take Aim",
             AbilityId::Assassinate => "Assassinate",
+            AbilityId::Earthshock => "Earthshock",
+            AbilityId::Overpower => "Overpower",
+            AbilityId::FurySwipes => "Fury Swipes",
+            AbilityId::Enrage => "Enrage",
             // </hero_generator:ability_display_name>
         }
     }
@@ -787,7 +796,8 @@ impl AbilityId {
                 | AbilityId::Cataclysm
                 | AbilityId::SonicWave
                 | AbilityId::ReversePolarity
-                | AbilityId::Assassinate // </hero_generator:ability_ultimates>
+                | AbilityId::Assassinate
+                | AbilityId::Enrage // </hero_generator:ability_ultimates>
         )
     }
 
@@ -812,6 +822,10 @@ impl AbilityId {
             AbilityId::Headshot => 7,
             AbilityId::TakeAim => 7,
             AbilityId::Assassinate => 4,
+            AbilityId::Earthshock => 7,
+            AbilityId::Overpower => 7,
+            AbilityId::FurySwipes => 7,
+            AbilityId::Enrage => 4,
             // </ability_generator:max_rank>
             _ if self.is_ultimate() => 4,
             _ => 7,

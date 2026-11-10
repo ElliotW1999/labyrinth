@@ -206,8 +206,15 @@ STATUSES = {
     "heal_over_time": (None, "heal_over_time", True),
     "heal_reduction": (None, "heal_reduction", False),
     "heal_block": ("StatusSpec::HealBlock", "heal_block", False),
+    # Per-owner ids (`<owner>_damage_reduction`), like slow and burn.
+    "damage_reduction": (None, "damage_reduction", True),
+    "stacks": (None, "stacks", False),
+    "status_resistance": (None, "status_resistance", True),
     "mana_shield": (None, "mana_shield", True),
 }
+
+# Statuses whose runtime id is `<owner>_<name>` (the keyword alone is not a status id).
+OWNER_ID_STATUSES = ("damage_reduction", "status_resistance", "stacks")
 
 # `effect_type=resource` ids → (kind, spent resource). Hostile kinds act on other units;
 # the spend kinds act on the unit that uses them (caster/owner only).
@@ -379,6 +386,8 @@ SCALING_TYPES = {
     "target_max_health": "EffectScaling::TargetMaxHealth({v})",
     "target_current_health": "EffectScaling::TargetCurrentHealth({v})",
     "distance": "EffectScaling::DistanceFromCaster {{ falloff: {v} }}",
+    # Multiplies the amount by the target's `<owner>_stacks` count plus the offset (0 or 1).
+    "target_stacks": 'EffectScaling::TargetStacks {{ id: "{owner}_stacks", offset: {v} }}',
 }
 
 
@@ -936,6 +945,16 @@ class EffectContext:
     reaction: set[str] | None = None
     #: Custom triggers fed (directly or through gates) by a `chain` row (see `chain_fed_triggers`).
     chain_fed: set[str] | None = None
+    #: Whether the owner has an `apply_status,stacks` row (None = unknown, skip the check).
+    owner_has_stacks: bool | None = None
+
+
+def owner_has_stacks_row(effects: list[EffectRow]) -> bool:
+    """Whether an owner's rows include `apply_status,stacks` (what `target_stacks` reads)."""
+    return any(
+        e.effect_type == "apply_status" and e.row.get("effect_id").lower() == "stacks"
+        for e in effects
+    )
 
 
 def _levels(e: EffectRow, name: str, ctx: EffectContext, report: Report, **kwargs) -> list[float] | None:
@@ -1193,13 +1212,13 @@ def runtime_status_id(text: str) -> str | None:
     Accepts CSV status ids (`stun`), runtime ids (`spell_immunity`) and the per-owner ids that
     timed `stat_modifier` rows create (`<owner>_<stat>`) and the ones burns and slows create
     (`<owner>_burn`, `<owner>_slow`) and the ones `mini_stun` creates (`<owner>_stun`)."""
-    if text == "mini_stun":
-        return None  # the id depends on the owner: name `<owner>_stun`
+    if text in OWNER_ID_STATUSES or text == "mini_stun":
+        return None  # the id depends on the owner: name `<owner>_<status>`
     if text in STATUSES:
         return STATUSES[text][1]
     if text in {runtime for _, runtime, _ in STATUSES.values()}:
         return text
-    for stat in (*TIMED_STATS, *RESOURCE_STATS, "burn", "slow", "stun"):
+    for stat in (*TIMED_STATS, *RESOURCE_STATS, "burn", "slow", "stun", *OWNER_ID_STATUSES):
         suffix = "_" + stat
         if text.endswith(suffix) and ID_PATTERN.match(text[: -len(suffix)]):
             return text
@@ -1307,7 +1326,7 @@ def trigger_to_rust(e: EffectRow, variant: str, report: Report) -> str | None:
 def held_status_id(e: EffectRow) -> str | None:
     """Runtime id of the status a `while` row holds, or None when it cannot be told."""
     effect_id = e.row.get("effect_id").lower()
-    if e.effect_type == "apply_status" and effect_id in ("burn", "slow"):
+    if e.effect_type == "apply_status" and (effect_id in ("burn", "slow") or effect_id in OWNER_ID_STATUSES):
         return f"{e.owner}_{effect_id}"
     if e.effect_type == "apply_status" and effect_id == "mini_stun":
         return f"{e.owner}_stun"
@@ -1522,7 +1541,15 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
         )
         return None
     scaling = "EffectScaling::None"
-    if scaling_type:
+    if scaling_type == "target_stacks":
+        if scaling_value not in (0, 1):
+            report.error(row.file, row.line, "scaling_value", row.get("scaling_value"), "target_stacks offset must be 0 or 1 (stacks counted before this hit, plus the offset)")
+            return None
+        if ctx.owner_has_stacks is False:
+            report.error(row.file, row.line, "scaling_type", scaling_type, f"target_stacks needs an apply_status,stacks row on {e.owner!r} to count")
+            return None
+        scaling = SCALING_TYPES[scaling_type].format(owner=ctx.owner_id, v=int(scaling_value))
+    elif scaling_type:
         scaling = SCALING_TYPES[scaling_type].format(v=f32(scaling_value))
 
     def no_scaling() -> bool:
@@ -1679,6 +1706,24 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             spec = f"StatusSpec::HealReduction {{ percent: {rank_value(percent)} }}"
             if amount:
                 _unused(e, report, "value")
+        elif effect_id == "stacks":
+            if e.trigger in ("while", "while_toggled"):
+                report.error(row.file, row.line, "trigger", e.trigger, "stacks is a timed debuff; it cannot be held by while or while_toggled")
+                return None
+            _unused(e, report, "value", "amount")
+            spec = f'StatusSpec::Stacks {{ id: "{ctx.owner_id}_stacks" }}'
+        elif effect_id in ("damage_reduction", "status_resistance"):
+            percent = amount or value
+            if not percent:
+                report.error(row.file, row.line, "amount", "", f"required: {effect_id} percentage (e.g. 80)")
+                return None
+            if any(not 0 < p <= 100 for p in percent):
+                report.error(row.file, row.line, "amount" if amount else "value", row.get("amount") or row.get("value"), f"{effect_id} percentage must be above 0 and at most 100")
+                return None
+            variant = "".join(part.capitalize() for part in effect_id.split("_"))
+            spec = f'StatusSpec::{variant} {{ id: "{ctx.owner_id}_{effect_id}", percent: {rank_value(percent)} }}'
+            if amount:
+                _unused(e, report, "value")
         elif effect_id == "mana_shield":
             if not _require(e, "value", report, "percent of damage absorbed by mana (0..100)"):
                 return None
@@ -1725,7 +1770,11 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
     elif t in ("remove_status", "dispel"):
         if not _require(e, "effect_id", report, "buff, debuff, or a status id") or not no_scaling():
             return None
-        _unused(e, report, "value", "damage_type", "duration", "amount")
+        # `amount` on dispel,buff|debuff is the strength: 1 = strong dispel (blank/0 = basic).
+        if effect_id in ("buff", "debuff") and t == "dispel":
+            _unused(e, report, "value", "damage_type", "duration")
+        else:
+            _unused(e, report, "value", "damage_type", "duration", "amount")
         if effect_id in ("buff", "debuff"):
             beneficial = effect_id == "debuff"
             strong = bool(amount and any(a >= 0.5 for a in amount))
@@ -1738,6 +1787,9 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             return None
         elif effect_id == "mini_stun":
             report.error(row.file, row.line, "effect_id", row.get("effect_id"), "a mini_stun carries the per-owner id <owner>_stun; name that id to remove it")
+            return None
+        elif effect_id in OWNER_ID_STATUSES:
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), f"a generated {effect_id} carries the per-owner id <owner>_{effect_id}; name that id to remove it")
             return None
         elif ID_PATTERN.match(effect_id):
             status_id = STATUSES[effect_id][1] if effect_id in STATUSES else effect_id
@@ -1789,7 +1841,15 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
     elif t == "stat_modifier":
         if not _require(e, "effect_id", report, "stat to modify") or not _require(e, "value", report, "stat bonus") or not no_scaling():
             return None
-        _unused(e, report, "damage_type", "amount")
+        _unused(e, report, "damage_type")
+        # On a timed row `amount` is the number of attack charges (see below).
+        charges_ok = e.trigger not in ("passive", "while", "while_toggled") and effect_id in TIMED_STATS
+        if amount and not charges_ok:
+            report.error(
+                row.file, row.line, "amount", row.get("amount"),
+                "attack charges (amount) only apply to timed stat modifiers (not passive, while, while_toggled or resource stats)",
+            )
+            return None
         if e.trigger == "passive":
             if effect_id not in PASSIVE_STATS:
                 report.error(row.file, row.line, "effect_id", row.get("effect_id"), f"unknown passive stat; expected one of: {', '.join(PASSIVE_STATS)}")
@@ -1840,6 +1900,10 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
                 kind = "Buff" if beneficial else "Debuff"
                 fields = {name: "RankValue::ZERO" for name in TIMED_STATS.values()}
                 fields[TIMED_STATS[effect_id]] = rank_value(value)
+                if amount and any(not float(a).is_integer() or a < 1 for a in amount):
+                    report.error(row.file, row.line, "amount", row.get("amount"), "attack charges must be whole numbers of at least 1")
+                    return None
+                fields["attack_charges"] = rank_value(amount) if amount else "RankValue::ZERO"
                 body = ", ".join(f"{k}: {v}" for k, v in fields.items())
                 effect = (
                     f'AbilityEffect::ApplyStatus {{ status: StatusSpec::Modifier {{ id: "{ctx.owner_id}_{effect_id}", '

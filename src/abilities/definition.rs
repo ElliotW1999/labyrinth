@@ -344,6 +344,9 @@ pub enum EffectScaling {
     TargetMaxHealth(f32),
     /// Adds `ratio × current` health to the base amount.
     TargetCurrentHealth(f32),
+    /// Multiplies the amount by `stacks of status id on the target + offset`. The hit is
+    /// skipped when that is zero.
+    TargetStacks { id: &'static str, offset: u32 },
     /// At max cast range, damage is multiplied by `(1 − falloff)`; linear in between.
     DistanceFromCaster { falloff: f32 },
 }
@@ -440,6 +443,24 @@ pub enum StatusSpec {
     },
     /// Prevents all healing.
     HealBlock,
+    /// One stack of a per-target stacking debuff (generated `<owner>_stacks`, undispellable).
+    /// Applying it again adds a stack and refreshes the duration; the stacks vanish when it
+    /// expires. [`EffectScaling::TargetStacks`] reads the count.
+    Stacks {
+        id: &'static str,
+    },
+    /// `percent` (0-100) of incoming damage is removed after mitigation (a buff). `id` is
+    /// `<owner>_damage_reduction`; reductions from different ids multiply.
+    DamageReduction {
+        id: &'static str,
+        percent: RankValue,
+    },
+    /// `percent` (0-100) is cut from the duration of hostile debuffs that land on the holder
+    /// while it lasts (a buff). `id` is `<owner>_status_resistance`; resistances multiply.
+    StatusResistance {
+        id: &'static str,
+        percent: RankValue,
+    },
     /// Diverts `absorb_percent` (0–100) of post-mitigation damage to mana, at
     /// `damage_per_mana` damage per point of mana.
     ManaShield {
@@ -477,6 +498,9 @@ pub enum StatusSpec {
         cleave_end_radius: RankValue,
         /// Added to `CombatStats::cleave_distance`: a non-zero value makes the cleave a cone.
         cleave_distance: RankValue,
+        /// Whole basic attacks (released, hit or miss) the status lasts for; ZERO = not
+        /// charge-limited. It still ends on its duration.
+        attack_charges: RankValue,
     },
 }
 
@@ -522,6 +546,7 @@ impl StatusSpec {
             cleave_radius: RankValue::ZERO,
             cleave_end_radius: RankValue::ZERO,
             cleave_distance: RankValue::ZERO,
+            attack_charges: RankValue::ZERO,
         }
     }
 
@@ -631,6 +656,17 @@ impl StatusSpec {
                 StatusEffect::heal_reduction((percent.at(rank) / 100.0).clamp(0.0, 1.0), duration)
             }
             StatusSpec::HealBlock => StatusEffect::heal_block(duration),
+            StatusSpec::Stacks { id } => StatusEffect::stack(id, duration),
+            StatusSpec::StatusResistance { id, percent } => StatusEffect::status_resistance(
+                id,
+                (percent.at(rank) / 100.0).clamp(0.0, 1.0),
+                duration,
+            ),
+            StatusSpec::DamageReduction { id, percent } => StatusEffect::damage_reduction(
+                id,
+                (percent.at(rank) / 100.0).clamp(0.0, 1.0),
+                duration,
+            ),
             StatusSpec::ManaShield {
                 absorb_percent,
                 damage_per_mana,
@@ -662,6 +698,7 @@ impl StatusSpec {
                 cleave_radius,
                 cleave_end_radius,
                 cleave_distance,
+                attack_charges,
             } => {
                 let base = match kind {
                     StatusKind::Buff => StatusEffect::buff(id, duration),
@@ -680,6 +717,7 @@ impl StatusSpec {
                     cleave_radius: cleave_radius.at(rank),
                     cleave_end_radius: cleave_end_radius.at(rank),
                     cleave_distance: cleave_distance.at(rank),
+                    attack_charges: attack_charges.at(rank).round().max(0.0) as u32,
                     ..base
                 }
             }

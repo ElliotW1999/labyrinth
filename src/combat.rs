@@ -351,6 +351,7 @@ pub fn resolve_incoming_damage(
     damage_immune: bool,
     applies_block: bool,
     pierces_shields: bool,
+    taken_factor: f32,
 ) -> ResolvedDamage {
     if damage_immune || raw <= 0.0 {
         return ResolvedDamage {
@@ -376,6 +377,8 @@ pub fn resolve_incoming_damage(
     if target_stats.incoming_damage_amp != 0.0 {
         mitigated *= 1.0 + target_stats.incoming_damage_amp;
     }
+    // Timed damage reduction statuses (shields above already soaked the pre-armor amount).
+    mitigated *= taken_factor;
     ResolvedDamage {
         health_delta: mitigated.max(0.0),
         shield_absorbed,
@@ -466,6 +469,7 @@ pub fn apply_damage_events(
             damage_immune,
             event.applies_block,
             event.pierces_shields,
+            statuses.as_ref().map_or(1.0, |s| s.damage_taken_factor()),
         );
         if resolved.shield_absorbed > 0.0 {
             if let Some(st) = statuses.as_deref_mut() {
@@ -1840,6 +1844,132 @@ mod tests {
             world.run_system_once(apply_damage_events).unwrap();
             assert_eq!(world.get::<Health>(attacker).unwrap().current, 500.0);
             assert_eq!(world.get::<Health>(t).unwrap().current, 1000.0);
+        }
+    }
+
+    mod damage_reduction {
+        use super::*;
+        use crate::status::StatusEffect;
+
+        fn target_with(effects: Vec<StatusEffect>) -> (World, Entity) {
+            let mut world = World::new();
+            world.init_resource::<Messages<DamageEvent>>();
+            world.init_resource::<Messages<DamageAppliedEvent>>();
+            world.init_resource::<Messages<crate::status::StatusLifecycleEvent>>();
+            world.init_resource::<CombatRng>();
+            let mut statuses = StatusEffects::default();
+            statuses.effects = effects;
+            let target = world
+                .spawn((
+                    Health::new(1000.0),
+                    CombatStats::simple(0.0, 0.0, 1.0, 10.0, 0.0, 0.0),
+                    statuses,
+                ))
+                .id();
+            (world, target)
+        }
+
+        fn taken(world: &mut World, target: Entity, damage_type: DamageType) -> f32 {
+            let before = world.get::<Health>(target).unwrap().current;
+            world.write_message(DamageEvent::new(target, 100.0, damage_type));
+            world.run_system_once(apply_damage_events).unwrap();
+            before - world.get::<Health>(target).unwrap().current
+        }
+
+        fn reduction(id: &'static str, fraction: f32, remaining: f32) -> StatusEffect {
+            StatusEffect::damage_reduction(id, fraction, remaining)
+        }
+
+        #[test]
+        fn damage_reduction_scales_post_mitigation_damage_for_all_types() {
+            for damage_type in [DamageType::Physical, DamageType::Magical, DamageType::Pure] {
+                let (mut plain, t) = target_with(vec![]);
+                let full = taken(&mut plain, t, damage_type);
+                let (mut reduced, t) = target_with(vec![reduction("a", 0.8, 5.0)]);
+                let got = taken(&mut reduced, t, damage_type);
+                assert!(
+                    (got - full * 0.2).abs() < 1e-3,
+                    "{damage_type:?}: {got} vs {full} * 0.2"
+                );
+            }
+        }
+
+        #[test]
+        fn shields_still_absorb_the_pre_armor_amount() {
+            let (mut world, t) = target_with(vec![reduction("a", 0.5, 5.0)]);
+            world.entity_mut(t).insert(ShieldPool { amount: 40.0 });
+            let full = apply_damage(
+                60.0,
+                DamageType::Physical,
+                &CombatStats::simple(0.0, 0.0, 1.0, 10.0, 0.0, 0.0),
+            );
+            let got = taken(&mut world, t, DamageType::Physical);
+            assert!((got - full * 0.5).abs() < 1e-3);
+            assert_eq!(world.get::<ShieldPool>(t).unwrap().amount, 0.0);
+        }
+
+        #[test]
+        fn two_damage_reductions_stack_multiplicatively() {
+            let (mut world, t) =
+                target_with(vec![reduction("a", 0.5, 5.0), reduction("b", 0.5, 5.0)]);
+            let statuses = world.get::<StatusEffects>(t).unwrap();
+            assert!((statuses.damage_taken_factor() - 0.25).abs() < 1e-6);
+            let got = taken(&mut world, t, DamageType::Pure);
+            assert!((got - 25.0).abs() < 1e-3);
+        }
+
+        #[test]
+        fn damage_reduction_multiplies_with_incoming_amp_and_follows_block() {
+            let (mut world, t) = target_with(vec![reduction("a", 0.8, 5.0)]);
+            {
+                let mut stats = world.get_mut::<CombatStats>(t).unwrap();
+                stats.incoming_damage_amp = 0.5;
+            }
+            // 100 pure: armor/resist do not apply, amp x1.5, reduction x0.2 = 30.
+            assert!((taken(&mut world, t, DamageType::Pure) - 30.0).abs() < 1e-3);
+            // Block comes off the raw amount first, then reduction scales what is left.
+            let a = resolve_incoming_damage(
+                100.0,
+                DamageType::Pure,
+                &CombatStats {
+                    damage_block: 40.0,
+                    ..CombatStats::simple(0.0, 0.0, 1.0, 10.0, 0.0, 0.0)
+                },
+                None,
+                false,
+                true,
+                false,
+                0.2,
+            );
+            assert!((a.health_delta - 12.0).abs() < 1e-3, "{}", a.health_delta);
+        }
+
+        #[test]
+        fn damage_reduction_applies_before_the_mana_shield_pays() {
+            let (mut world, t) = target_with(vec![reduction("a", 0.5, 5.0)]);
+            world.entity_mut(t).insert(Mana::new(1000.0, 0.0));
+            let mut st = world.get_mut::<StatusEffects>(t).unwrap();
+            st.effects.push(StatusEffect::mana_shield(
+                crate::vitals::ManaShield {
+                    absorb: 1.0,
+                    damage_per_mana: 1.0,
+                },
+                5.0,
+            ));
+            drop(st);
+            // 100 raw -> 50 after reduction; the shield absorbs those 50, health untouched.
+            assert!(taken(&mut world, t, DamageType::Pure).abs() < 1e-3);
+            assert!((world.get::<Mana>(t).unwrap().current - 950.0).abs() < 1e-3);
+        }
+
+        #[test]
+        fn damage_reduction_ends_on_expiry() {
+            let (mut world, t) = target_with(vec![reduction("a", 0.8, 0.0)]);
+            assert_eq!(
+                world.get::<StatusEffects>(t).unwrap().damage_taken_factor(),
+                1.0
+            );
+            assert!((taken(&mut world, t, DamageType::Pure) - 100.0).abs() < 1e-3);
         }
     }
 }

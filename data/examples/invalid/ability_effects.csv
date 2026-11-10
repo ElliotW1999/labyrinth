@@ -35,3 +35,12 @@ fireball,22,on_cast,caster,zone,on_tick_a,6,,5,,,,
 fireball,23,on_cast,caster,zone,on_tick_a,1,,5,,-1,,
 fireball,24,on_cast,units_in_radius,zone,on_tick_a,1,,5,,,,
 fireball,25,on_tick_a,caster,perform_attack,,,,,,,,
+fireball,26,on_cast,caster,stat_modifier,attack_speed_flat,400,,20,,0,,
+fireball,27,on_cast,caster,stat_modifier,attack_speed_flat,400,,20,,2.5,,
+fireball,28,on_cast,caster,stat_modifier,lifesteal,0.2,,20,,3,,
+fireball,29,on_attack_hit,trigger_unit,apply_status,stacks,,,,,,,
+fireball,30,on_attack_hit,trigger_unit,damage,,10,physical,,,,target_stacks,2
+fireball,31,on_cast,caster,apply_status,damage_reduction,,,4,,0,,
+fireball,32,on_cast,caster,apply_status,status_resistance,,,4,,150,,
+fireball,33,on_cast,caster,remove_status,damage_reduction,,,,,,,
+mauler,0,on_attack_hit,trigger_unit,damage,,10,physical,,,,target_stacks,1

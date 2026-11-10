@@ -126,6 +126,17 @@ pub struct StatusEffect {
     pub resource: Option<(crate::vitals::ResourceStat, f32)>,
     /// Fraction (0..1) of healing received that is negated. The strongest one applies.
     pub heal_reduction: f32,
+    /// Fraction (0..1) of incoming damage removed after mitigation; reductions multiply.
+    pub damage_reduction: f32,
+    /// Fraction (0..1) by which the durations of new hostile debuffs are shortened;
+    /// resistances multiply. Read by [`apply_status_effect_events`] when a debuff lands.
+    pub status_resistance: f32,
+    /// Basic attacks (released, hit or miss) this status survives; `0` = not charge-limited.
+    /// Decremented by [`StatusChange::ConsumeAttackCharge`]; the status ends at zero.
+    pub attack_charges: u32,
+    /// Stack count of a stacking status (`0` = not a stacking status). Applying the same id
+    /// again adds the old count to the new one and refreshes the duration.
+    pub stacks: u32,
     /// Prevents all healing while active.
     pub heal_blocked: bool,
     /// Diverts incoming damage to mana while active.
@@ -211,6 +222,10 @@ impl StatusEffect {
             heal_per_sec: 0.0,
             resource: None,
             heal_reduction: 0.0,
+            damage_reduction: 0.0,
+            status_resistance: 0.0,
+            attack_charges: 0,
+            stacks: 0,
             heal_blocked: false,
             mana_shield: None,
             damage_per_sec: 0.0,
@@ -258,6 +273,41 @@ impl StatusEffect {
         Self {
             heal_reduction: fraction,
             ..Self::debuff("heal_reduction", duration)
+        }
+    }
+
+    /// One stack of a per-target stacking debuff; never removed by dispels.
+    pub fn stack(id: &'static str, duration: f32) -> Self {
+        Self {
+            stacks: 1,
+            dispel_type: DispelType::None,
+            ..Self::debuff(id, duration)
+        }
+    }
+
+    /// `fraction` (0..1) of incoming damage is removed (a buff).
+    pub fn damage_reduction(id: &'static str, fraction: f32, duration: f32) -> Self {
+        Self {
+            damage_reduction: fraction.clamp(0.0, 1.0),
+            ..Self::buff(id, duration)
+        }
+    }
+
+    /// `fraction` (0..1) of the duration of new hostile debuffs is cut (a buff).
+    pub fn status_resistance(id: &'static str, fraction: f32, duration: f32) -> Self {
+        Self {
+            status_resistance: fraction.clamp(0.0, 1.0),
+            ..Self::buff(id, duration)
+        }
+    }
+
+    /// Multiply the remaining duration by `factor`; a ticking burn keeps only the ticks that
+    /// still fit.
+    fn scale_duration(&mut self, factor: f32) {
+        self.remaining *= factor;
+        if self.dot_interval > 0.0 {
+            let fit = (self.remaining / self.dot_interval + 1e-4).floor().max(0.0) as u32;
+            self.dot_ticks_left = self.dot_ticks_left.min(fit);
         }
     }
 
@@ -495,6 +545,35 @@ impl StatusEffects {
             .clamp(0.0, 1.0)
     }
 
+    /// Stacks of the stacking status `id` currently on the unit (0 when absent).
+    pub fn stacks(&self, id: &str) -> u32 {
+        self.effects
+            .iter()
+            .filter(|e| e.id == id && e.remaining > 0.0)
+            .map(|e| e.stacks)
+            .sum()
+    }
+
+    /// Product of `(1 - r)` over every active damage reduction: the factor applied to damage
+    /// taken after mitigation (1.0 = none).
+    pub fn damage_taken_factor(&self) -> f32 {
+        self.effects
+            .iter()
+            .filter(|e| e.remaining > 0.0 && e.damage_reduction > 0.0)
+            .map(|e| 1.0 - e.damage_reduction.clamp(0.0, 1.0))
+            .product()
+    }
+
+    /// Product of `(1 - r)` over every active status resistance: the factor applied to the
+    /// duration of a hostile debuff as it lands (1.0 = none).
+    pub fn status_resistance_factor(&self) -> f32 {
+        self.effects
+            .iter()
+            .filter(|e| e.remaining > 0.0 && e.status_resistance > 0.0)
+            .map(|e| 1.0 - e.status_resistance.clamp(0.0, 1.0))
+            .product()
+    }
+
     /// The active mana shield with the highest absorb fraction.
     pub fn mana_shield(&self) -> Option<crate::vitals::ManaShield> {
         self.effects
@@ -686,6 +765,9 @@ pub enum StatusChange {
         strength: DispelStrength,
     },
     Remove(&'static str),
+    /// One of the target's basic attacks was released: every live status with attack
+    /// charges loses one, and ends (as `Expired`) when it has none left.
+    ConsumeAttackCharge,
 }
 
 /// Single entry point for adding/removing statuses so debuff immunity and stat
@@ -944,6 +1026,10 @@ pub fn apply_status(
     if let Some(existing) = statuses.effects.iter().position(|e| e.id == effect.id) {
         let old = statuses.effects.remove(existing);
         subtract_status_stat_delta(&old, stats, agility);
+        if effect.stacks > 0 {
+            // A stacking status keeps what it had and refreshes its duration.
+            effect.stacks += old.stacks;
+        }
     }
     if effect.move_slow_fraction > 0.0 {
         // Measure the slow against the speed without status deltas, after the refreshed
@@ -1068,6 +1154,28 @@ pub fn hostile(
     caster != target && (target_team != caster_team || target_team.is_none())
 }
 
+/// Spend one attack charge per released basic attack (extra attacks never spend one).
+/// Only writes [`StatusEffectEvent`]s; the consumption itself is in
+/// [`apply_status_effect_events`].
+pub fn consume_attack_charges(
+    mut releases: MessageReader<crate::basic_attack::BasicAttackReleaseEvent>,
+    holders: Query<&StatusEffects>,
+    mut changes: MessageWriter<StatusEffectEvent>,
+) {
+    for release in releases.read().filter(|r| !r.extra) {
+        if holders
+            .get(release.attacker)
+            .is_ok_and(|s| s.effects.iter().any(|e| e.attack_charges > 0))
+        {
+            changes.write(StatusEffectEvent::new(
+                Some(release.attacker),
+                release.attacker,
+                StatusChange::ConsumeAttackCharge,
+            ));
+        }
+    }
+}
+
 pub fn apply_status_effect_events(
     mut commands: Commands,
     mut events: MessageReader<StatusEffectEvent>,
@@ -1079,6 +1187,7 @@ pub fn apply_status_effect_events(
         Option<&mut ShieldPool>,
         Option<&HeroAttributes>,
     )>,
+    teams: Query<&Team>,
 ) {
     for event in events.read() {
         let Ok((entity, mut statuses, mut stats, mut shield, attrs)) = units.get_mut(event.target)
@@ -1088,6 +1197,29 @@ pub fn apply_status_effect_events(
         let agility = attrs.map(|a| a.agility).unwrap_or(0.0);
         match &event.change {
             StatusChange::Apply(effect) => {
+                // Status resistance shortens finite debuffs that another unit puts on this
+                // one. Only hostile sources count: self-applied, ally-applied, reactive/held and permanent statuses are left alone.
+                let mut scaled;
+                let effect = if effect.kind == StatusKind::Debuff
+                    && !event.reactive
+                    && !effect.reactive
+                    && effect.remaining.is_finite()
+                    && event.source.is_some_and(|source| {
+                        hostile(
+                            source,
+                            entity,
+                            teams.get(source).ok().copied(),
+                            teams.get(entity).ok().copied(),
+                        )
+                    })
+                    && statuses.status_resistance_factor() < 1.0
+                {
+                    scaled = effect.clone();
+                    scaled.scale_duration(statuses.status_resistance_factor());
+                    &scaled
+                } else {
+                    effect
+                };
                 if effect.debuff_immune {
                     let purged = purge_strong_dispellable_debuffs(
                         &mut statuses,
@@ -1155,6 +1287,33 @@ pub fn apply_status_effect_events(
                     event.source,
                     event.reactive,
                     StatusLifecycle::Dispelled,
+                    removed,
+                );
+            }
+            StatusChange::ConsumeAttackCharge => {
+                let mut spent: Vec<&'static str> = Vec::new();
+                for effect in statuses.effects.iter_mut().filter(|e| e.attack_charges > 0) {
+                    effect.attack_charges -= 1;
+                    if effect.attack_charges == 0 {
+                        spent.push(effect.id);
+                    }
+                }
+                if spent.is_empty() {
+                    continue;
+                }
+                let removed = remove_statuses(
+                    &mut statuses,
+                    &mut stats,
+                    agility,
+                    shield.as_deref_mut(),
+                    |e| e.attack_charges == 0 && spent.contains(&e.id),
+                );
+                report_removed(
+                    &mut lifecycle,
+                    entity,
+                    event.source,
+                    event.reactive,
+                    StatusLifecycle::Expired,
                     removed,
                 );
             }
@@ -3016,6 +3175,483 @@ mod tests {
             assert_eq!(hits.len(), 10, "one slice per frame");
             let total: f32 = hits.iter().map(|h| h.amount).sum();
             assert!((total - 10.0).abs() < 1e-3);
+        }
+    }
+
+    mod status_resistance {
+        use super::*;
+
+        fn app() -> App {
+            let mut app = App::new();
+            app.add_message::<StatusEffectEvent>()
+                .add_message::<StatusLifecycleEvent>()
+                .add_systems(Update, apply_status_effect_events);
+            app
+        }
+
+        fn unit(app: &mut App) -> Entity {
+            app.world_mut()
+                .spawn((
+                    StatusEffects::default(),
+                    CombatStats::simple(10.0, 8.0, 1.0, 0.0, 0.0, 10.0),
+                    HeroAttributes::starter(),
+                ))
+                .id()
+        }
+
+        fn apply(app: &mut App, source: Option<Entity>, target: Entity, effect: StatusEffect) {
+            app.world_mut().write_message(StatusEffectEvent::new(
+                source,
+                target,
+                StatusChange::Apply(effect),
+            ));
+            app.update();
+        }
+
+        fn remaining(app: &App, unit: Entity, id: &str) -> Option<f32> {
+            app.world()
+                .get::<StatusEffects>(unit)
+                .unwrap()
+                .effects
+                .iter()
+                .find(|e| e.id == id)
+                .map(|e| e.remaining)
+        }
+
+        #[test]
+        fn status_resistance_shortens_only_hostile_debuffs() {
+            let mut app = app();
+            let enemy = unit(&mut app);
+            let holder = unit(&mut app);
+            apply(
+                &mut app,
+                Some(holder),
+                holder,
+                StatusEffect::status_resistance("res", 0.5, 10.0),
+            );
+            // Hostile debuffs are halved, whatever their dispel tier.
+            apply(&mut app, Some(enemy), holder, StatusEffect::stunned(4.0));
+            assert_eq!(remaining(&app, holder, "stun"), Some(2.0));
+            // A buff from an enemy, a self-applied debuff and a sourceless debuff are not.
+            apply(
+                &mut app,
+                Some(enemy),
+                holder,
+                StatusEffect::buff("ally_buff", 4.0),
+            );
+            assert_eq!(remaining(&app, holder, "ally_buff"), Some(4.0));
+            apply(
+                &mut app,
+                Some(holder),
+                holder,
+                StatusEffect::debuff("self_debuff", 4.0),
+            );
+            assert_eq!(remaining(&app, holder, "self_debuff"), Some(4.0));
+            apply(&mut app, None, holder, StatusEffect::debuff("env", 4.0));
+            assert_eq!(remaining(&app, holder, "env"), Some(4.0));
+            // Slow amounts are untouched, only the duration shrinks.
+            let slow = StatusEffect {
+                move_speed: -100.0,
+                ..StatusEffect::debuff("slow", 4.0)
+            };
+            apply(&mut app, Some(enemy), holder, slow);
+            assert_eq!(remaining(&app, holder, "slow"), Some(2.0));
+            let stats = app.world().get::<CombatStats>(holder).unwrap();
+            assert_eq!(stats.move_speed, 10.0 - 100.0);
+            // Another unit is unaffected.
+            apply(&mut app, Some(holder), enemy, StatusEffect::stunned(4.0));
+            assert_eq!(remaining(&app, enemy, "stun"), Some(4.0));
+        }
+
+        #[test]
+        fn status_resistance_ignores_debuffs_from_allies() {
+            let mut app = app();
+            let ally = unit(&mut app);
+            let enemy = unit(&mut app);
+            let holder = unit(&mut app);
+            app.world_mut().entity_mut(ally).insert(Team::Radiant);
+            app.world_mut().entity_mut(holder).insert(Team::Radiant);
+            app.world_mut().entity_mut(enemy).insert(Team::Dire);
+            apply(
+                &mut app,
+                Some(holder),
+                holder,
+                StatusEffect::status_resistance("res", 0.5, 10.0),
+            );
+            apply(&mut app, Some(ally), holder, StatusEffect::stunned(4.0));
+            assert_eq!(remaining(&app, holder, "stun"), Some(4.0));
+            apply(
+                &mut app,
+                Some(enemy),
+                holder,
+                StatusEffect::debuff("hex", 4.0),
+            );
+            assert_eq!(remaining(&app, holder, "hex"), Some(2.0));
+        }
+
+        #[test]
+        fn two_resistances_multiply() {
+            let mut app = app();
+            let enemy = unit(&mut app);
+            let holder = unit(&mut app);
+            for (id, fraction) in [("a", 0.5), ("b", 0.5)] {
+                apply(
+                    &mut app,
+                    Some(holder),
+                    holder,
+                    StatusEffect::status_resistance(id, fraction, 10.0),
+                );
+            }
+            apply(&mut app, Some(enemy), holder, StatusEffect::stunned(4.0));
+            assert_eq!(remaining(&app, holder, "stun"), Some(1.0));
+        }
+
+        #[test]
+        fn status_resistance_recomputes_ticking_burn_ticks() {
+            let mut app = app();
+            let enemy = unit(&mut app);
+            let holder = unit(&mut app);
+            apply(
+                &mut app,
+                Some(holder),
+                holder,
+                StatusEffect::status_resistance("res", 0.5, 10.0),
+            );
+            let burn = StatusEffect::burn_ticking("b", 10.0, 1.0, DamageType::Magical, 8.0);
+            assert_eq!(burn.dot_ticks_left, 8);
+            apply(&mut app, Some(enemy), holder, burn);
+            let status = app
+                .world()
+                .get::<StatusEffects>(holder)
+                .unwrap()
+                .effects
+                .iter()
+                .find(|e| e.id == "b")
+                .unwrap()
+                .clone();
+            assert_eq!(status.remaining, 4.0);
+            assert_eq!(status.dot_ticks_left, 4);
+        }
+
+        #[test]
+        fn status_resistance_has_no_effect_after_it_ends() {
+            let mut app = app();
+            let enemy = unit(&mut app);
+            let holder = unit(&mut app);
+            apply(
+                &mut app,
+                Some(holder),
+                holder,
+                StatusEffect::status_resistance("res", 0.5, 10.0),
+            );
+            app.world_mut()
+                .get_mut::<StatusEffects>(holder)
+                .unwrap()
+                .effects[0]
+                .remaining = 0.0;
+            assert_eq!(
+                app.world()
+                    .get::<StatusEffects>(holder)
+                    .unwrap()
+                    .status_resistance_factor(),
+                1.0
+            );
+            apply(&mut app, Some(enemy), holder, StatusEffect::stunned(4.0));
+            assert_eq!(remaining(&app, holder, "stun"), Some(4.0));
+        }
+    }
+
+    mod attack_charges {
+        use super::*;
+        use crate::basic_attack::BasicAttackReleaseEvent;
+
+        fn app() -> App {
+            let mut app = App::new();
+            app.init_resource::<Time>()
+                .add_message::<StatusEffectEvent>()
+                .add_message::<StatusLifecycleEvent>()
+                .add_message::<DamageEvent>()
+                .add_message::<crate::combat::DamageAppliedEvent>()
+                .add_message::<BasicAttackReleaseEvent>()
+                .add_systems(
+                    Update,
+                    (
+                        consume_attack_charges,
+                        apply_status_effect_events,
+                        tick_status_effects,
+                    )
+                        .chain(),
+                );
+            app
+        }
+
+        fn unit(app: &mut App) -> Entity {
+            app.world_mut()
+                .spawn((
+                    StatusEffects::default(),
+                    CombatStats::simple(10.0, 8.0, 1.0, 0.0, 0.0, 10.0),
+                    HeroAttributes::starter(),
+                    Health::new(500.0),
+                ))
+                .id()
+        }
+
+        fn charged(charges: u32, duration: f32) -> StatusEffect {
+            StatusEffect {
+                attack_speed_flat: 400.0,
+                attack_charges: charges,
+                ..StatusEffect::buff("charged", duration)
+            }
+        }
+
+        fn give(app: &mut App, unit: Entity, effect: StatusEffect) {
+            app.world_mut().write_message(StatusEffectEvent::new(
+                Some(unit),
+                unit,
+                StatusChange::Apply(effect),
+            ));
+            frame(app, 0.0);
+        }
+
+        fn frame(app: &mut App, dt: f32) {
+            app.world_mut()
+                .resource_mut::<Time>()
+                .advance_by(std::time::Duration::from_secs_f32(dt));
+            app.update();
+        }
+
+        fn release(app: &mut App, attacker: Entity, extra: bool) {
+            app.world_mut().write_message(BasicAttackReleaseEvent {
+                attacker,
+                target: attacker,
+                damage: 10.0,
+                extra,
+            });
+            frame(app, 0.0);
+        }
+
+        fn charges(app: &App, unit: Entity) -> Option<u32> {
+            app.world()
+                .get::<StatusEffects>(unit)
+                .unwrap()
+                .effects
+                .iter()
+                .find(|e| e.id == "charged")
+                .map(|e| e.attack_charges)
+        }
+
+        fn rating(app: &App, unit: Entity) -> f32 {
+            app.world()
+                .get::<CombatStats>(unit)
+                .unwrap()
+                .attack_speed_flat
+        }
+
+        #[test]
+        fn attack_charges_are_consumed_per_release_and_revert_at_zero() {
+            let mut app = app();
+            let unit = unit(&mut app);
+            let base = rating(&app, unit);
+            give(&mut app, unit, charged(3, 20.0));
+            assert_eq!(rating(&app, unit), base + 400.0);
+            release(&mut app, unit, false);
+            release(&mut app, unit, false);
+            assert_eq!(charges(&app, unit), Some(1));
+            assert_eq!(rating(&app, unit), base + 400.0, "two of three used");
+            release(&mut app, unit, false);
+            assert_eq!(charges(&app, unit), None, "the third attack ends it");
+            assert_eq!(rating(&app, unit), base, "stat delta reverted");
+            // A fourth attack finds nothing to consume.
+            release(&mut app, unit, false);
+            assert_eq!(rating(&app, unit), base);
+        }
+
+        #[test]
+        fn extra_attacks_do_not_consume_charges() {
+            let mut app = app();
+            let unit = unit(&mut app);
+            give(&mut app, unit, charged(2, 20.0));
+            release(&mut app, unit, true);
+            release(&mut app, unit, true);
+            assert_eq!(charges(&app, unit), Some(2));
+        }
+
+        #[test]
+        fn recast_resets_attack_charges() {
+            let mut app = app();
+            let unit = unit(&mut app);
+            let base = rating(&app, unit);
+            give(&mut app, unit, charged(3, 20.0));
+            release(&mut app, unit, false);
+            release(&mut app, unit, false);
+            assert_eq!(charges(&app, unit), Some(1));
+            give(&mut app, unit, charged(3, 20.0));
+            assert_eq!(charges(&app, unit), Some(3));
+            assert_eq!(rating(&app, unit), base + 400.0, "refreshed, not stacked");
+        }
+
+        #[test]
+        fn charged_status_still_expires_on_duration() {
+            let mut app = app();
+            let unit = unit(&mut app);
+            let base = rating(&app, unit);
+            give(&mut app, unit, charged(5, 1.0));
+            release(&mut app, unit, false);
+            frame(&mut app, 1.5);
+            assert_eq!(charges(&app, unit), None);
+            assert_eq!(rating(&app, unit), base);
+        }
+
+        #[test]
+        fn expiry_by_charges_is_reported_as_expired() {
+            let mut app = app();
+            let unit = unit(&mut app);
+            give(&mut app, unit, charged(1, 20.0));
+            app.world_mut()
+                .resource_mut::<Messages<StatusLifecycleEvent>>()
+                .clear();
+            release(&mut app, unit, false);
+            let events: Vec<_> = app
+                .world()
+                .resource::<Messages<StatusLifecycleEvent>>()
+                .iter_current_update_messages()
+                .map(|e| (e.id, e.change))
+                .collect();
+            assert_eq!(events, [("charged", StatusLifecycle::Expired)]);
+        }
+
+        #[test]
+        fn statuses_without_charges_are_not_touched() {
+            let mut app = app();
+            let unit = unit(&mut app);
+            give(&mut app, unit, StatusEffect::buff("plain", 20.0));
+            release(&mut app, unit, false);
+            assert!(
+                app.world()
+                    .get::<StatusEffects>(unit)
+                    .unwrap()
+                    .effects
+                    .iter()
+                    .any(|e| e.id == "plain")
+            );
+        }
+    }
+
+    mod stacking {
+        use super::*;
+
+        fn app() -> App {
+            let mut app = App::new();
+            app.init_resource::<Time>()
+                .add_message::<StatusEffectEvent>()
+                .add_message::<StatusLifecycleEvent>()
+                .add_message::<DamageEvent>()
+                .add_message::<crate::combat::DamageAppliedEvent>()
+                .add_systems(
+                    Update,
+                    (apply_status_effect_events, tick_status_effects).chain(),
+                );
+            app
+        }
+
+        fn unit(app: &mut App) -> Entity {
+            app.world_mut()
+                .spawn((
+                    StatusEffects::default(),
+                    CombatStats::simple(10.0, 8.0, 1.0, 0.0, 0.0, 10.0),
+                    HeroAttributes::starter(),
+                    Health::new(500.0),
+                ))
+                .id()
+        }
+
+        fn stack(app: &mut App, target: Entity, duration: f32) {
+            app.world_mut().write_message(StatusEffectEvent::new(
+                None,
+                target,
+                StatusChange::Apply(StatusEffect::stack("fury", duration)),
+            ));
+            frame(app, 0.0);
+        }
+
+        fn frame(app: &mut App, dt: f32) {
+            app.world_mut()
+                .resource_mut::<Time>()
+                .advance_by(std::time::Duration::from_secs_f32(dt));
+            app.update();
+        }
+
+        fn stacks(app: &App, target: Entity) -> u32 {
+            app.world()
+                .get::<StatusEffects>(target)
+                .unwrap()
+                .stacks("fury")
+        }
+
+        #[test]
+        fn stacking_status_adds_and_refreshes() {
+            let mut app = app();
+            let target = unit(&mut app);
+            stack(&mut app, target, 8.0);
+            frame(&mut app, 5.0);
+            stack(&mut app, target, 8.0);
+            assert_eq!(stacks(&app, target), 2);
+            let effects = &app.world().get::<StatusEffects>(target).unwrap().effects;
+            assert_eq!(effects.len(), 1, "one status carries the count");
+            assert!(effects[0].remaining > 7.9, "duration refreshed");
+            // Refreshed at t=5 means it survives past the first application's expiry.
+            frame(&mut app, 5.0);
+            assert_eq!(stacks(&app, target), 2);
+            stack(&mut app, target, 8.0);
+            assert_eq!(stacks(&app, target), 3);
+        }
+
+        #[test]
+        fn stacks_are_lost_on_expiry() {
+            let mut app = app();
+            let target = unit(&mut app);
+            stack(&mut app, target, 8.0);
+            stack(&mut app, target, 8.0);
+            frame(&mut app, 9.0);
+            assert_eq!(stacks(&app, target), 0);
+            stack(&mut app, target, 8.0);
+            assert_eq!(stacks(&app, target), 1, "starts over");
+        }
+
+        #[test]
+        fn stacks_are_undispellable_and_per_unit() {
+            let mut app = app();
+            let a = unit(&mut app);
+            let b = unit(&mut app);
+            stack(&mut app, a, 8.0);
+            stack(&mut app, a, 8.0);
+            stack(&mut app, b, 8.0);
+            app.world_mut().write_message(StatusEffectEvent::new(
+                None,
+                a,
+                StatusChange::Dispel {
+                    kind: StatusKind::Debuff,
+                    strength: DispelStrength::Strong,
+                },
+            ));
+            frame(&mut app, 0.0);
+            assert_eq!(stacks(&app, a), 2);
+            assert_eq!(stacks(&app, b), 1);
+        }
+
+        #[test]
+        fn debuff_immunity_blocks_new_stacks() {
+            let mut app = app();
+            let target = unit(&mut app);
+            stack(&mut app, target, 8.0);
+            app.world_mut().write_message(StatusEffectEvent::new(
+                None,
+                target,
+                StatusChange::Apply(StatusEffect::debuff_immunity(5.0)),
+            ));
+            frame(&mut app, 0.0);
+            stack(&mut app, target, 8.0);
+            assert_eq!(stacks(&app, target), 1);
         }
     }
 }

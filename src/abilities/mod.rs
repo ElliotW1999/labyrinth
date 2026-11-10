@@ -113,6 +113,7 @@ impl Plugin for AbilitiesPlugin {
                     // frame. The reactive dispatchers run last, in this order.
                     (
                         attack_triggers::attack_triggers,
+                        crate::status::consume_attack_charges,
                         (tick_forced_movement, settle_grounded_units).chain(),
                         reactive_triggers::track_travel,
                         reactive_triggers::proximity_triggers,
@@ -767,6 +768,7 @@ mod tests {
                     projectile_hit_triggers,
                     (
                         attack_triggers::attack_triggers,
+                        crate::status::consume_attack_charges,
                         (tick_forced_movement, settle_grounded_units).chain(),
                         reactive_triggers::track_travel,
                         reactive_triggers::proximity_triggers,
@@ -3029,6 +3031,7 @@ mod tests {
             cleave_radius: RankValue::ZERO,
             cleave_end_radius: RankValue::ZERO,
             cleave_distance: RankValue::ZERO,
+            attack_charges: RankValue::ZERO,
         };
         let mut app = test_app();
         let toggle = AbilityDefinition::new(AbilityId::Overcharge)
@@ -3456,6 +3459,121 @@ mod tests {
             health(&ability_app, ability_target),
             health(&item_app, item_target)
         );
+    }
+
+    fn stacking_hit(offset: u32) -> [AbilityEffect; 2] {
+        [
+            AbilityEffect::Damage {
+                amount: RankValue::fixed(10.0),
+                damage_type: DamageType::Pure,
+                scaling: EffectScaling::TargetStacks {
+                    id: "tester_stacks",
+                    offset,
+                },
+            },
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Stacks {
+                    id: "tester_stacks",
+                },
+                duration: RankValue::fixed(30.0),
+            },
+        ]
+    }
+
+    fn stacking_ability(offset: u32) -> AbilityDefinition {
+        let [damage, stack] = stacking_hit(offset);
+        AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::Unit, RankValue::fixed(500.0), RankValue::ZERO)
+            .costs(RankValue::ZERO, RankValue::ZERO)
+            .timing(0.0, 0.0)
+            .on(AbilityTrigger::OnCast, EffectTarget::CastTarget, damage)
+            .on(AbilityTrigger::OnCast, EffectTarget::CastTarget, stack)
+    }
+
+    fn cast_at(app: &mut App, caster: Entity, target: Entity) -> f32 {
+        let before = health(app, target);
+        request(app, caster, 3, CastTarget::Unit(target));
+        for _ in 0..4 {
+            step(app);
+        }
+        before - health(app, target)
+    }
+
+    #[test]
+    fn target_stacks_scales_by_stacks_plus_offset() {
+        for (offset, expected) in [(1, [10.0, 20.0, 30.0]), (0, [0.0, 10.0, 20.0])] {
+            let mut app = test_app();
+            app.world_mut()
+                .resource_mut::<AbilityDefinitions>()
+                .insert(stacking_ability(offset));
+            let caster = spawn_caster(&mut app, KIT);
+            let target = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+            let dealt: Vec<f32> = (0..3).map(|_| cast_at(&mut app, caster, target)).collect();
+            for (got, want) in dealt.iter().zip(expected) {
+                assert!((got - want).abs() < 1e-3, "offset {offset}: {dealt:?}");
+            }
+            assert_eq!(
+                app.world()
+                    .get::<StatusEffects>(target)
+                    .unwrap()
+                    .stacks("tester_stacks"),
+                3
+            );
+        }
+    }
+
+    #[test]
+    fn different_targets_keep_separate_stacks() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(stacking_ability(1));
+        let caster = spawn_caster(&mut app, KIT);
+        let a = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        let b = spawn_unit(&mut app, Team::Dire, Vec3::new(-80.0, 0.0, 0.0));
+        assert_eq!(cast_at(&mut app, caster, a), 10.0);
+        assert_eq!(cast_at(&mut app, caster, a), 20.0);
+        assert_eq!(cast_at(&mut app, caster, b), 10.0, "b has its own count");
+        assert_eq!(cast_at(&mut app, caster, a), 30.0);
+    }
+
+    #[test]
+    fn item_and_ability_target_stacks_scale_alike() {
+        let effects: &'static [AbilityEffectEntry] = Box::leak(Box::new({
+            let [damage, stack] = stacking_hit(1);
+            [
+                AbilityEffectEntry {
+                    trigger: AbilityTrigger::OnUse,
+                    target: EffectTarget::CastTarget,
+                    effect: damage,
+                },
+                AbilityEffectEntry {
+                    trigger: AbilityTrigger::OnUse,
+                    target: EffectTarget::CastTarget,
+                    effect: stack,
+                },
+            ]
+        }));
+        let _defs = install_test_item_definitions([item_with(
+            effects,
+            TargetType::Unit,
+            TargetTeam::Enemy,
+            500.0,
+        )]);
+        let mut app = test_app();
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        let mut dealt = Vec::new();
+        for _ in 0..2 {
+            let before = health(&app, target);
+            request_item(&mut app, caster, 0, CastTarget::Unit(target));
+            for _ in 0..4 {
+                step(&mut app);
+            }
+            dealt.push(before - health(&app, target));
+        }
+        assert_eq!(dealt, [10.0, 20.0]);
     }
 
     fn costed_self_cast(mana_cost: f32, cast_time: f32) -> AbilityDefinition {
@@ -6419,6 +6537,7 @@ mod tests {
                     cleave_radius: RankValue::ZERO,
                     cleave_end_radius: RankValue::ZERO,
                     cleave_distance: RankValue::ZERO,
+                    attack_charges: RankValue::ZERO,
                 },
                 duration: RankValue::ZERO,
             },
@@ -7196,6 +7315,7 @@ mod tests {
             cleave_radius: RankValue::ZERO,
             cleave_end_radius: RankValue::ZERO,
             cleave_distance: RankValue::ZERO,
+            attack_charges: RankValue::ZERO,
         }
     }
 
@@ -8959,5 +9079,579 @@ mod tests {
         }
         assert!(fired, "a fresh cast after a broken lock still fires");
         assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 825.0);
+    }
+
+    // ---- Ursa ----
+
+    const URSA: [AbilityId; 4] = [
+        AbilityId::Earthshock,
+        AbilityId::Overpower,
+        AbilityId::FurySwipes,
+        AbilityId::Enrage,
+    ];
+
+    fn ursa_app() -> App {
+        qop_app()
+    }
+
+    fn set_rank(app: &mut App, caster: Entity, slot: usize, rank: u32) {
+        app.world_mut()
+            .get_mut::<AbilityLoadout>(caster)
+            .unwrap()
+            .slots[slot]
+            .rank = rank;
+    }
+
+    fn attack_speed_bonus(app: &App, unit: Entity) -> f32 {
+        app.world()
+            .get::<CombatStats>(unit)
+            .unwrap()
+            .attack_speed_flat
+    }
+
+    /// Casts Earthshock and runs long enough for the leap and the shock to finish.
+    fn cast_earthshock(app: &mut App, caster: Entity) {
+        request(app, caster, 0, CastTarget::None);
+        for _ in 0..16 {
+            step(app);
+        }
+    }
+
+    #[test]
+    fn earthshock_leaps_forward_then_shocks_at_landing() {
+        let mut app = ursa_app();
+        let caster = spawn_caster(&mut app, URSA);
+        // The caster faces -Z, so it lands at z = -250. 385 reaches 300 beyond the landing
+        // point, but not 300 behind the take-off point (550 from the landing point).
+        let ahead = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, -550.0));
+        let behind = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, 300.0));
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(0.0, 0.0, -300.0));
+        cast_earthshock(&mut app, caster);
+
+        let landed = position(&app, caster);
+        assert!(
+            landed.distance(Vec3::new(0.0, 0.0, -250.0)) < 1.0,
+            "leapt 250 forward: {landed:?}"
+        );
+        assert_eq!(health(&app, ahead), 1000.0 - 75.0, "75 magical, no resist");
+        let slow = status_of(&app, ahead, "earthshock_slow").expect("slowed");
+        assert!((slow.move_speed + 66.0).abs() < 1e-3, "22% of 300");
+        assert!(slow.remaining > 3.0 && slow.remaining <= 4.0);
+        assert_eq!(health(&app, behind), 1000.0, "out of reach of the landing");
+        assert!(status_of(&app, behind, "earthshock_slow").is_none());
+        assert_eq!(health(&app, ally), 1000.0);
+        assert_eq!(health(&app, caster), 1000.0, "never hits itself");
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 905.0);
+    }
+
+    #[test]
+    fn earthshock_ranks_scale_damage_slow_and_cooldown() {
+        let mut app = ursa_app();
+        let caster = spawn_caster(&mut app, URSA);
+        set_rank(&mut app, caster, 0, 7);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, -300.0));
+        cast_earthshock(&mut app, caster);
+        assert_eq!(health(&app, enemy), 1000.0 - 375.0);
+        let slow = status_of(&app, enemy, "earthshock_slow").unwrap();
+        assert!((slow.move_speed + 174.0).abs() < 1e-3, "58% of 300");
+        let cooldown = app.world().get::<AbilityLoadout>(caster).unwrap().slots[0]
+            .cooldown
+            .remaining;
+        assert!(
+            cooldown > 2.0 && cooldown <= 3.0,
+            "rank 7 cooldown 3: {cooldown}"
+        );
+    }
+
+    #[test]
+    fn earthshock_stops_at_terrain_and_shocks_there() {
+        let mut app = ursa_app();
+        app.world_mut()
+            .resource_mut::<NavGrid>()
+            .rebuild(vec![NavShape::Circle {
+                center: Vec2::new(0.0, -160.0),
+                radius: 40.0,
+            }]);
+        let caster = spawn_caster(&mut app, URSA);
+        app.world_mut()
+            .entity_mut(caster)
+            .insert(CollisionRadius(30.0));
+        // 440 from the take-off point, so only a shock centred near the stop point reaches it.
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, -440.0));
+        cast_earthshock(&mut app, caster);
+        let landed = position(&app, caster);
+        assert!(
+            landed.z < -10.0 && landed.z > -150.0,
+            "stopped at the tree, short of the 250 leap: {landed:?}"
+        );
+        assert_eq!(
+            health(&app, enemy),
+            1000.0 - 75.0,
+            "shock at the stop point"
+        );
+    }
+
+    #[test]
+    fn rooted_earthshock_shocks_in_place() {
+        let mut app = ursa_app();
+        let caster = spawn_caster(&mut app, URSA);
+        let near = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, 300.0));
+        // 600 from the take-off point: out of reach.
+        let far = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, -450.0));
+        app.world_mut()
+            .get_mut::<StatusEffects>(caster)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::rooted(5.0));
+        cast_earthshock(&mut app, caster);
+        assert!(position(&app, caster).length() < 1.0, "did not move");
+        assert_eq!(health(&app, near), 1000.0 - 75.0);
+        assert_eq!(health(&app, far), 1000.0);
+    }
+
+    #[test]
+    fn overpower_lasts_exactly_rank_attacks() {
+        for (rank, attacks) in [(1, 3), (4, 6), (7, 9)] {
+            let mut app = ursa_app();
+            let caster = spawn_caster(&mut app, URSA);
+            set_rank(&mut app, caster, 1, rank);
+            let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+            request(&mut app, caster, 1, CastTarget::None);
+            for _ in 0..8 {
+                step(&mut app);
+            }
+            assert_eq!(attack_speed_bonus(&app, caster), 400.0, "rank {rank}");
+            let status = status_of(&app, caster, "overpower_attack_speed_flat").unwrap();
+            assert_eq!(status.attack_charges, attacks);
+            for used in 1..=attacks {
+                write_attack_release(&mut app, caster, enemy);
+                step(&mut app);
+                let live = status_of(&app, caster, "overpower_attack_speed_flat").is_some();
+                assert_eq!(live, used < attacks, "rank {rank} after attack {used}");
+            }
+            assert_eq!(attack_speed_bonus(&app, caster), 0.0, "reverted");
+            // The next attack is not boosted and nothing breaks.
+            write_attack_release(&mut app, caster, enemy);
+            step(&mut app);
+            assert_eq!(attack_speed_bonus(&app, caster), 0.0);
+        }
+    }
+
+    #[test]
+    fn overpower_expires_after_twenty_seconds_unused() {
+        let mut app = ursa_app();
+        let caster = spawn_caster(&mut app, URSA);
+        request(&mut app, caster, 1, CastTarget::None);
+        for _ in 0..8 {
+            step(&mut app);
+        }
+        assert_eq!(attack_speed_bonus(&app, caster), 400.0);
+        for _ in 0..410 {
+            step(&mut app);
+        }
+        assert!(status_of(&app, caster, "overpower_attack_speed_flat").is_none());
+        assert_eq!(attack_speed_bonus(&app, caster), 0.0);
+    }
+
+    #[test]
+    fn overpower_recast_resets_the_charges() {
+        let mut app = ursa_app();
+        let caster = spawn_caster(&mut app, URSA);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        request(&mut app, caster, 1, CastTarget::None);
+        for _ in 0..8 {
+            step(&mut app);
+        }
+        for _ in 0..2 {
+            write_attack_release(&mut app, caster, enemy);
+            step(&mut app);
+        }
+        assert_eq!(
+            status_of(&app, caster, "overpower_attack_speed_flat")
+                .unwrap()
+                .attack_charges,
+            1
+        );
+        // Clear the cooldown and recast.
+        app.world_mut()
+            .get_mut::<AbilityLoadout>(caster)
+            .unwrap()
+            .slots[1]
+            .cooldown
+            .remaining = 0.0;
+        request(&mut app, caster, 1, CastTarget::None);
+        for _ in 0..8 {
+            step(&mut app);
+        }
+        let status = status_of(&app, caster, "overpower_attack_speed_flat").unwrap();
+        assert_eq!(status.attack_charges, 3);
+        assert_eq!(
+            attack_speed_bonus(&app, caster),
+            400.0,
+            "refreshed, not doubled"
+        );
+    }
+
+    #[test]
+    fn fury_swipes_bonus_grows_per_hit_and_resets_after_expiry() {
+        let mut app = ursa_app();
+        let caster = spawn_caster(&mut app, URSA);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        let mut dealt = Vec::new();
+        for _ in 0..3 {
+            let before = health(&app, enemy);
+            write_attack_hit(&mut app, caster, enemy);
+            step(&mut app);
+            step(&mut app);
+            dealt.push(before - health(&app, enemy));
+        }
+        assert_eq!(dealt, [12.0, 24.0, 36.0], "stack included, rank 1: 12 each");
+        let stacks = app
+            .world()
+            .get::<StatusEffects>(enemy)
+            .unwrap()
+            .stacks("fury_swipes_stacks");
+        assert_eq!(stacks, 3);
+        // Dispels cannot remove the stacks.
+        app.world_mut().write_message(StatusEffectEvent::new(
+            Some(enemy),
+            enemy,
+            crate::status::StatusChange::Dispel {
+                kind: crate::status::StatusKind::Debuff,
+                strength: crate::status::DispelStrength::Strong,
+            },
+        ));
+        step(&mut app);
+        assert_eq!(
+            app.world()
+                .get::<StatusEffects>(enemy)
+                .unwrap()
+                .stacks("fury_swipes_stacks"),
+            3
+        );
+        // 8 s (rank 1) without another hit: the stacks are gone and the count restarts.
+        for _ in 0..170 {
+            step(&mut app);
+        }
+        assert_eq!(
+            app.world()
+                .get::<StatusEffects>(enemy)
+                .unwrap()
+                .stacks("fury_swipes_stacks"),
+            0
+        );
+        let before = health(&app, enemy);
+        write_attack_hit(&mut app, caster, enemy);
+        step(&mut app);
+        step(&mut app);
+        assert_eq!(before - health(&app, enemy), 12.0);
+    }
+
+    #[test]
+    fn fury_swipes_stacks_are_per_target() {
+        let mut app = ursa_app();
+        let caster = spawn_caster(&mut app, URSA);
+        let a = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        let b = spawn_unit(&mut app, Team::Dire, Vec3::new(-100.0, 0.0, 0.0));
+        for target in [a, a, b, a] {
+            write_attack_hit(&mut app, caster, target);
+            step(&mut app);
+            step(&mut app);
+        }
+        assert_eq!(health(&app, a), 1000.0 - (12.0 + 24.0 + 36.0));
+        assert_eq!(health(&app, b), 1000.0 - 12.0);
+    }
+
+    #[test]
+    fn fury_swipes_refreshes_the_stack_duration_and_ranks_scale() {
+        let mut app = ursa_app();
+        let caster = spawn_caster(&mut app, URSA);
+        set_rank(&mut app, caster, 2, 7);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        for _ in 0..2 {
+            write_attack_hit(&mut app, caster, enemy);
+            step(&mut app);
+            step(&mut app);
+        }
+        assert_eq!(
+            health(&app, enemy),
+            1000.0 - (60.0 + 120.0),
+            "rank 7: 60 a stack"
+        );
+        let stack = status_of(&app, enemy, "fury_swipes_stacks").unwrap();
+        assert!(
+            stack.remaining > 31.0,
+            "32 s at rank 7: {}",
+            stack.remaining
+        );
+    }
+
+    #[test]
+    fn enrage_strong_dispels_then_reduces_damage_and_debuff_durations() {
+        use crate::status::{StatusChange, StatusEffect};
+
+        let mut app = ursa_app();
+        let caster = spawn_caster(&mut app, URSA);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(2000.0, 0.0, 0.0));
+        // A basic and a strong-only debuff, and one nothing dispels.
+        for effect in [
+            StatusEffect {
+                dispel_type: crate::status::DispelType::Basic,
+                ..StatusEffect::debuff("weak", 30.0)
+            },
+            StatusEffect {
+                dispel_type: crate::status::DispelType::Strong,
+                ..StatusEffect::debuff("strong", 30.0)
+            },
+            StatusEffect {
+                dispel_type: crate::status::DispelType::None,
+                ..StatusEffect::debuff("sticky", 30.0)
+            },
+        ] {
+            app.world_mut().write_message(StatusEffectEvent::new(
+                Some(enemy),
+                caster,
+                StatusChange::Apply(effect),
+            ));
+        }
+        step(&mut app);
+        request(&mut app, caster, 3, CastTarget::None);
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        assert!(status_of(&app, caster, "weak").is_none());
+        assert!(status_of(&app, caster, "strong").is_none(), "strong dispel");
+        assert!(status_of(&app, caster, "stun").is_none());
+        assert!(
+            status_of(&app, caster, "sticky").is_some(),
+            "undispellable stays"
+        );
+        let reduction =
+            status_of(&app, caster, "enrage_damage_reduction").expect("damage reduction");
+        assert!(reduction.remaining > 3.5 && reduction.remaining <= 4.0);
+        assert!(status_of(&app, caster, "enrage_status_resistance").is_some());
+
+        // 80% less damage, after armor and resist (none here): 100 pure -> 20.
+        app.world_mut()
+            .write_message(DamageEvent::new(caster, 100.0, DamageType::Pure));
+        step(&mut app);
+        assert!(
+            (health(&app, caster) - 980.0).abs() < 1e-3,
+            "{}",
+            health(&app, caster)
+        );
+
+        // A hostile debuff lands at half its length; a self-applied one does not.
+        app.world_mut().write_message(StatusEffectEvent::new(
+            Some(enemy),
+            caster,
+            StatusChange::Apply(StatusEffect::stunned(2.0)),
+        ));
+        app.world_mut().write_message(StatusEffectEvent::new(
+            Some(caster),
+            caster,
+            StatusChange::Apply(StatusEffect::debuff("own", 2.0)),
+        ));
+        step(&mut app);
+        let stun = status_of(&app, caster, "stun").unwrap();
+        assert!(
+            stun.remaining <= 1.0 && stun.remaining > 0.9,
+            "{}",
+            stun.remaining
+        );
+        assert!(status_of(&app, caster, "own").unwrap().remaining > 1.9);
+
+        // After the 4 s both effects are gone: full damage, full-length debuffs.
+        for _ in 0..90 {
+            step(&mut app);
+        }
+        assert!(status_of(&app, caster, "enrage_damage_reduction").is_none());
+        assert!(status_of(&app, caster, "enrage_status_resistance").is_none());
+        let before = health(&app, caster);
+        app.world_mut()
+            .write_message(DamageEvent::new(caster, 100.0, DamageType::Pure));
+        step(&mut app);
+        assert!((before - health(&app, caster) - 100.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn enrage_ranks_scale_duration_and_cooldown() {
+        let mut app = ursa_app();
+        let caster = spawn_caster(&mut app, URSA);
+        set_rank(&mut app, caster, 3, 4);
+        request(&mut app, caster, 3, CastTarget::None);
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        let reduction = status_of(&app, caster, "enrage_damage_reduction").unwrap();
+        assert!(reduction.remaining > 5.0 && reduction.remaining <= 5.5);
+        let cooldown = app.world().get::<AbilityLoadout>(caster).unwrap().slots[3]
+            .cooldown
+            .remaining;
+        assert!(cooldown > 14.0 && cooldown <= 15.0, "{cooldown}");
+    }
+
+    // ---- Ursa verification: G1/G7 regressions on Skewer and Vanguard Dash, Enrage edges ----
+
+    #[test]
+    fn rooted_skewer_changes_nothing_even_though_it_reports_its_end() {
+        let mut app = qop_app();
+        let caster = spawn_caster(&mut app, MAGNUS);
+        let victim = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        app.world_mut()
+            .get_mut::<StatusEffects>(caster)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::rooted(5.0));
+        request(&mut app, caster, 2, CastTarget::Point(Vec3::X * 600.0));
+        for _ in 0..40 {
+            step(&mut app);
+        }
+        assert!(position(&app, caster).length() < 1e-3, "did not move");
+        assert_eq!(position(&app, victim), Vec3::new(100.0, 0.0, 0.0));
+        assert_eq!(health(&app, victim), 1000.0, "no end-of-dash damage");
+        assert!(status_of(&app, victim, "skewer_slow").is_none());
+        assert!(status_of(&app, victim, "skewer_stun").is_none());
+    }
+
+    #[test]
+    fn skewer_clicked_on_the_caster_dashes_along_the_facing() {
+        let mut app = qop_app();
+        let caster = spawn_caster(&mut app, MAGNUS);
+        step(&mut app);
+        let here = position(&app, caster);
+        request(&mut app, caster, 2, CastTarget::Point(here));
+        for _ in 0..80 {
+            step(&mut app);
+        }
+        let moved = position(&app, caster) - here;
+        assert!(moved.length() > 100.0, "G1: it dashes: {moved:?}");
+        assert!(
+            moved.z < 0.0 && moved.x.abs() < 1.0,
+            "along -Z facing: {moved:?}"
+        );
+        assert!(app.world().get::<ForcedMovement>(caster).is_none());
+    }
+
+    #[test]
+    fn vanguard_dash_toward_a_point_is_unchanged_and_self_click_goes_forward() {
+        for self_click in [false, true] {
+            let mut app = qop_app();
+            let caster = spawn_caster(
+                &mut app,
+                [
+                    AbilityId::Dash,
+                    AbilityId::Bolt,
+                    AbilityId::Execute,
+                    AbilityId::Bulwark,
+                ],
+            );
+            step(&mut app);
+            let here = position(&app, caster);
+            let aim = if self_click {
+                here
+            } else {
+                here + Vec3::X * 60.0
+            };
+            request(&mut app, caster, 0, CastTarget::Point(aim));
+            for _ in 0..60 {
+                step(&mut app);
+            }
+            let moved = position(&app, caster) - here;
+            if self_click {
+                assert!(moved.z < -50.0 && moved.x.abs() < 1.0, "forward: {moved:?}");
+            } else {
+                assert!(
+                    (moved - Vec3::X * 60.0).length() < 2.0,
+                    "short aim wins: {moved:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn enrage_recast_and_later_strong_dispels_keep_its_own_buffs() {
+        use crate::status::{DispelStrength, StatusChange, StatusKind};
+
+        let mut app = ursa_app();
+        let caster = spawn_caster(&mut app, URSA);
+        request(&mut app, caster, 3, CastTarget::None);
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        assert!(status_of(&app, caster, "enrage_damage_reduction").is_some());
+        // Recast: the strong dispel row must not strip the buffs it is about to refresh.
+        app.world_mut()
+            .get_mut::<AbilityLoadout>(caster)
+            .unwrap()
+            .slots[3]
+            .cooldown
+            .remaining = 0.0;
+        request(&mut app, caster, 3, CastTarget::None);
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        // A strong dispel of debuffs, from anyone, leaves buffs alone.
+        for kind in [StatusKind::Debuff, StatusKind::Buff] {
+            let before = [
+                status_of(&app, caster, "enrage_damage_reduction").is_some(),
+                status_of(&app, caster, "enrage_status_resistance").is_some(),
+            ];
+            assert_eq!(before, [true, true]);
+            if kind == StatusKind::Buff {
+                break;
+            }
+            app.world_mut().write_message(StatusEffectEvent::new(
+                Some(caster),
+                caster,
+                StatusChange::Dispel {
+                    kind,
+                    strength: DispelStrength::Strong,
+                },
+            ));
+            step(&mut app);
+        }
+        let stacks = app
+            .world()
+            .get::<StatusEffects>(caster)
+            .unwrap()
+            .effects
+            .iter()
+            .filter(|e| e.id == "enrage_damage_reduction")
+            .count();
+        assert_eq!(stacks, 1, "refreshed, not duplicated");
+        // 100 pure still 20 (not 4: reductions do not stack on a refresh).
+        app.world_mut()
+            .write_message(DamageEvent::new(caster, 100.0, DamageType::Pure));
+        step(&mut app);
+        assert!((health(&app, caster) - 980.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn overpower_charges_survive_hits_by_extra_attacks_and_fury_swipes_still_stacks() {
+        let mut app = ursa_app();
+        let caster = spawn_caster(&mut app, URSA);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        request(&mut app, caster, 1, CastTarget::None);
+        for _ in 0..8 {
+            step(&mut app);
+        }
+        // A release that misses (no hit event) still spends a charge; a hit event alone
+        // (as an extra attack's landing) does not.
+        write_attack_release(&mut app, caster, enemy);
+        step(&mut app);
+        let charges = |app: &App| {
+            status_of(app, caster, "overpower_attack_speed_flat")
+                .unwrap()
+                .attack_charges
+        };
+        assert_eq!(charges(&app), 2);
+        write_attack_hit(&mut app, caster, enemy);
+        step(&mut app);
+        assert_eq!(
+            charges(&app),
+            2,
+            "a hit without a normal release spends nothing"
+        );
     }
 }

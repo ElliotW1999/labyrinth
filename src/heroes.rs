@@ -54,6 +54,8 @@ pub enum HeroId {
     Magnus,
     /// Generated hero — abilities are stubs until implemented.
     Sniper,
+    /// Generated hero — abilities are stubs until implemented.
+    Ursa,
     // </hero_generator:hero_enum>
 }
 
@@ -69,6 +71,7 @@ impl HeroId {
             HeroId::QueenOfPain,
             HeroId::Magnus,
             HeroId::Sniper,
+            HeroId::Ursa,
             // </hero_generator:hero_all>
         ]
     }
@@ -109,6 +112,7 @@ impl HeroId {
             HeroId::QueenOfPain => "Queen of Pain",
             HeroId::Magnus => "Magnus",
             HeroId::Sniper => "Sniper",
+            HeroId::Ursa => "Ursa",
             // </hero_generator:hero_name>
         }
     }
@@ -127,6 +131,7 @@ impl HeroId {
             }
             HeroId::Magnus => "Str initiator — Shockwave, Empower, Skewer, Reverse Polarity",
             HeroId::Sniper => "Agi marksman — Shrapnel, Headshot, Take Aim, Assassinate",
+            HeroId::Ursa => "Agi brawler — Earthshock, Overpower, Fury Swipes, Enrage",
             // </hero_generator:hero_blurb>
         }
     }
@@ -143,6 +148,7 @@ impl HeroId {
             HeroId::QueenOfPain => "INT",
             HeroId::Magnus => "STR",
             HeroId::Sniper => "AGI",
+            HeroId::Ursa => "AGI",
             // </hero_generator:hero_primary>
         }
     }
@@ -411,6 +417,31 @@ impl HeroId {
                     AbilityId::Headshot,
                     AbilityId::TakeAim,
                     AbilityId::Assassinate,
+                ],
+                dimensions: UnitDimensions::HERO,
+            },
+            HeroId::Ursa => HeroDef {
+                id: self,
+                attributes: HeroAttributes {
+                    strength: 25.0,
+                    agility: 18.0,
+                    intelligence: 16.0,
+                    str_per_level: 2.4,
+                    agi_per_level: 2.8,
+                    int_per_level: 1.5,
+                },
+                base_health: 220.0,
+                base_health_regen: 0.0,
+                base_mana: 75.0,
+                base_mana_regen: 0.0,
+                combat: hero_combat(
+                    44.0, 150.0, 1.7, 0.3, 0.3, 0.6, -1.52, 4.401839, 310.0, None,
+                ),
+                abilities: [
+                    AbilityId::Earthshock,
+                    AbilityId::Overpower,
+                    AbilityId::FurySwipes,
+                    AbilityId::Enrage,
                 ],
                 dimensions: UnitDimensions::HERO,
             },
@@ -1061,5 +1092,64 @@ mod tests {
             stats.attack_speed
         );
         assert!((stats.attack_speed - 0.747059).abs() < 1e-5);
+    }
+
+    #[test]
+    fn ursa_matches_spec() {
+        use crate::combat::apply_damage;
+        use crate::components::DamageType;
+
+        assert_eq!(HeroId::from_cli("ursa"), Some(HeroId::Ursa));
+        assert_eq!(HeroId::Ursa.name(), "Ursa");
+        assert_eq!(HeroId::Ursa.primary_label(), "AGI");
+        let def = HeroId::Ursa.def();
+        assert_eq!(
+            def.abilities,
+            [
+                AbilityId::Earthshock,
+                AbilityId::Overpower,
+                AbilityId::FurySwipes,
+                AbilityId::Enrage,
+            ]
+        );
+
+        let (health, mana, stats, attrs) = def.vitals();
+        assert!((health.max - 670.0).abs() < 1e-3, "health {}", health.max);
+        assert!((health.regen_per_sec - 3.0).abs() < 1e-4);
+        assert!((mana.max - 267.0).abs() < 1e-3, "mana {}", mana.max);
+        assert!((mana.regen_per_sec - 0.8).abs() < 1e-4);
+        assert!((stats.armor - 1.0).abs() < 1e-3, "armor {}", stats.armor);
+        let taken = apply_damage(100.0, DamageType::Magical, &stats);
+        assert!(
+            (taken - 72.5).abs() < 0.01,
+            "27.5% magic resist: took {taken}"
+        );
+        assert_eq!(
+            (attrs.strength, attrs.agility, attrs.intelligence),
+            (25.0, 18.0, 16.0)
+        );
+        assert_eq!(
+            (
+                attrs.str_per_level,
+                attrs.agi_per_level,
+                attrs.int_per_level
+            ),
+            (2.4, 2.8, 1.5)
+        );
+
+        assert_eq!(stats.attack_damage, 44.0);
+        assert_eq!(stats.attack_range, 150.0);
+        assert!(stats.is_melee());
+        assert_eq!(stats.base_attack_time, 1.7);
+        assert_eq!(stats.attack_point, 0.3);
+        assert_eq!(stats.attack_backswing, 0.3);
+        assert_eq!(stats.turn_rate, 0.6);
+        assert_eq!(stats.move_speed, 310.0);
+        assert!(
+            (stats.attack_speed - 118.0 / 100.0 / 1.7).abs() < 1e-4,
+            "APS {}",
+            stats.attack_speed
+        );
+        assert!((stats.attack_speed - 0.694118).abs() < 1e-5);
     }
 }

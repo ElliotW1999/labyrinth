@@ -114,13 +114,14 @@ A reaction to damage therefore lands one frame after the hit that caused it, and
 
 ## 4. Modifier storage rules
 
-Three storage styles coexist on purpose. Pick by the kind of change and keep a stat in one style.
+Four storage styles coexist on purpose. Pick by the kind of change and keep a stat in one style.
 
 | Style | Where | Use for | Lifetime |
 |---|---|---|---|
 | **Mutate on apply** | `CombatStats` fields changed by `add_status_stat_delta` / `subtract_status_stat_delta` (statuses) and `items::apply_passives` / `remove_passives` (items, passive abilities) | Flat combat stats: armor, move speed, attack damage, attack speed, range | Reverted with the exact delta when the status ends or the item leaves |
 | **Sum on read** | `vitals::resource_stat`: permanent `CombatStats` value plus `StatusEffects::resource_sum` | Fractions and resource modifiers: lifesteal, heal amp, mana cost amp, regen, max health / mana | Always correct without revert bookkeeping |
 | **Snapshot at build** | `StatusSpec::build` reads `StatusBuildContext.move_speed` / `agility` | Percentage slows relative to the target's speed when applied. `apply_status` then re-measures a slow (`move_slow_fraction`) against the speed without status deltas, so a refreshed slow never compounds. Generated slows carry the id `<owner>_slow`, so slows from different sources coexist and add (floored at `scale::MIN_MOVE_SPEED`) | Fixed at application |
+| **Counter on the status** | `StatusEffect.stacks` (stacking debuffs, merged in `status::apply_status`) and `StatusEffect.attack_charges` (decremented by `StatusChange::ConsumeAttackCharge` in `apply_status_effect_events`) | Per-holder counts that belong to one status: Fury Swipes stacks, Overpower charges | Lost with the status (expiry, dispel, removal); a refresh adds stacks, or resets the charges |
 
 `build_status_effect` is the single constructor for statuses (timed, toggled and held `While` statuses). Held statuses get `dot_source = owner` and the owner's outgoing heal amp, exactly like toggle statuses.
 
@@ -135,6 +136,8 @@ How each protection treats each kind of effect. "Skipped" means the unit is neve
 | **Statuses** (`StatusEffectEvent`) | No effect (statuses still apply) | Debuff-kind statuses rejected in `status::apply_status`; gaining immunity purges strong-dispellable debuffs (`purge_strong_dispellable_debuffs`) | Not selected | No effect; DoT ticks go through the Damage column | Unless reactive: `on_status_applied` / `on_status_removed` via `StatusLifecycleEvent` |
 | **Displacement** (`DisplacementEvent`) | No effect | Hostile displacement skipped (`displacement.rs` via `status::hostile` + `blocks_hostile_relocation`); own and ally motion allowed | Cyclone motion has `Suspend` priority, so other motion is refused while it runs | No effect | No; a cyclone launched by a reaction applies a reactive status, so it is silent |
 | **Teleport** (`TeleportEvent`) | No effect | Hostile teleport rejected with `TeleportError::Immune` (`teleport.rs`); self and ally teleports ignore it | `TeleportError::Suspended` while the cyclone motion runs; not selected as an effect target | No effect | No; completed teleports only reset travel tracking (not counted for `on_move`) |
+| **Damage reduction** (`StatusSpec::DamageReduction`) | Not reached (the event is dropped first) | No effect (a buff) | Not selected | Not reached (damage immunity resolves to 0 first) | Not an event: `StatusEffects::damage_taken_factor()` multiplies the post-mitigation damage in `combat::resolve_incoming_damage` for every damage type; shields soak the pre-armor amount first |
+| **Status resistance** (`StatusSpec::StatusResistance`) | No effect | No effect (a buff); a debuff-immune unit still rejects the debuff | Not selected | No effect | Not an event: `apply_status_effect_events` scales the duration of a finite hostile debuff (another unit as source, not reactive) by `status_resistance_factor()` before applying it |
 
 ### Reaction rule per event
 
@@ -510,6 +513,42 @@ shrapnel,1,on_shrapnel_tick,affected_units,damage,,30|45|60|75|90|105|120,magica
 **Assassinate** (unit target, range 3000, cast point 2.0, backswing 1.6, `cast_range_buffer` 600, homing projectile at 1500): damage and `mini_stun` (0.1 s, id `assassinate_stun`) on `on_projectile_hit`. The stun refreshes only itself, so a longer stun from another source is neither replaced nor shortened.
 
 Tests: `sniper_matches_spec`, `sniper_abilities_generate_expected_definitions`, `shrapnel_zone_waits_then_ticks_ten_times`, `shrapnel_zone_slows_units_inside_and_releases_after_leaving`, `headshot_proc_damages_slows_and_knocks_back`, `headshot_and_shrapnel_slows_coexist`, `take_aim_adds_attack_range_per_rank_and_keeps_projectile_speed`, `assassinate_fires_after_two_second_aim_and_mini_stuns`, `assassinate_cancels_free_when_target_leaves_buffer`, `mini_stun_spares_a_longer_foreign_stun`, `item_and_ability_zone_emit_identical_ticks`, plus one set per gap.
+
+### 6.14 Ursa
+
+All four abilities are data rows (`earthshock`, `overpower`, `fury_swipes`, `enrage`; status ids `earthshock_slow`, `overpower_attack_speed_flat`, `fury_swipes_stacks`, `enrage_damage_reduction`, `enrage_status_resistance`). Plan and decisions: `docs/plans/2026-11-09-ursa-hero.md`.
+
+New surface (G1 to G7; nothing else was added):
+
+| Gap | Surface | Where it lives |
+|---|---|---|
+| G1 | A dash whose aim is on the mover goes the full distance along the mover's facing (every dash, `AbilityMechanic::Dash` included) | `displacement.rs` (`plan_motion`) |
+| G2 | Attack charges: `amount` on a timed `stat_modifier` row; `StatusSpec::Modifier.attack_charges`, `StatusChange::ConsumeAttackCharge`, `status::consume_attack_charges` | `definition.rs`, `status.rs`, `generator_common.py` |
+| G3 | `apply_status,stacks` (`StatusSpec::Stacks`, `StatusEffect.stacks`) and `scaling_type=target_stacks` (`EffectScaling::TargetStacks`) | `definition.rs`, `status.rs`, `effects.rs`, `generator_common.py` |
+| G4 | `apply_status,damage_reduction` (`StatusSpec::DamageReduction`) | `status.rs`, `combat.rs` (`resolve_incoming_damage`) |
+| G5 | `apply_status,status_resistance` (`StatusSpec::StatusResistance`) | `status.rs` (`apply_status_effect_events`) |
+| G6 | `dispel,debuff` with `amount` 1 (strong dispel) no longer warns about `amount` | `generator_common.py` |
+| G7 | A refused own dash or charge still fires `on_movement_end` at the mover's position | `displacement.rs` (`report_refused_run`) |
+
+**Earthshock** (no target, radius 385, cast point 0): `movement,dash` 250 over 0.25 s on `on_cast` (G1: the aim is the caster, so it leaps along its facing), then damage and the 4 s `earthshock_slow` on `on_movement_end,units_in_radius`, centred on the landing point (`AreaCenter::TriggerPoint`). It stops short at terrain and shocks there; rooted or stunned, it shocks in place (G7).
+
+```csv
+earthshock,0,on_cast,caster,movement,dash,250,,0.25,,,,
+earthshock,1,on_movement_end,units_in_radius,damage,,75|125|175|225|275|325|375,magical,,,,,
+```
+
+**Overpower**: `stat_modifier,attack_speed_flat` 400 for 20 s with `amount` 3 to 9 attack charges (G2). The charge is spent at attack release, hit or miss, never by extra attacks; a recast resets it.
+
+**Fury Swipes** (passive): two `on_attack_hit,trigger_unit` rows. `apply_status,stacks` adds a stack (8 to 32 s, refreshed by every hit, undispellable) and `damage` physical with `target_stacks` offset 1 deals `value x (stacks + 1)`, so the first hit deals one stack's worth and the hit counts itself.
+
+```csv
+fury_swipes,0,on_attack_hit,trigger_unit,apply_status,stacks,,,8|12|16|20|24|28|32,,,,
+fury_swipes,1,on_attack_hit,trigger_unit,damage,,12|20|28|36|44|52|60,physical,,,,target_stacks,1
+```
+
+**Enrage**: strong self dispel first (`dispel,debuff` with `amount` 1; rows run in `effect_index` order and status events apply in that order), then 80% damage reduction (G4) and 50% status resistance (G5) for 4 to 5.5 s.
+
+Tests: `ursa_matches_spec`, `ursa_abilities_generate_expected_definitions`, `earthshock_leaps_forward_then_shocks_at_landing`, `earthshock_stops_at_terrain_and_shocks_there`, `rooted_earthshock_shocks_in_place`, `overpower_lasts_exactly_rank_attacks`, `fury_swipes_bonus_grows_per_hit_and_resets_after_expiry`, `fury_swipes_stacks_are_per_target`, `enrage_strong_dispels_then_reduces_damage_and_debuff_durations`, plus one set per gap.
 
 ## 7. Checklist: adding a mechanic, effect or trigger
 
