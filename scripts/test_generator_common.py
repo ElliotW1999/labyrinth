@@ -2388,6 +2388,13 @@ class HeroGeneratorTests(unittest.TestCase):
             self._load("true", "150", ",magic_resist", ",6.321839")
         self.assertEqual(err.getvalue(), "")
 
+    def test_apostrophes_do_not_split_identifiers(self) -> None:
+        import HeroGenerator
+
+        self.assertEqual(HeroGenerator.to_pascal_case("Winter's Curse"), "WintersCurse")
+        self.assertEqual(HeroGenerator.to_pascal_case("Winter\u2019s Curse"), "WintersCurse")
+        self.assertEqual(HeroGenerator.to_pascal_case("Queen of Pain"), "QueenOfPain")
+
     def test_turn_rate_is_optional_and_positive(self) -> None:
         import HeroGenerator
 

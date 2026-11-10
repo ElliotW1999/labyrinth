@@ -98,7 +98,9 @@ class HeroRow:
 
 
 def to_pascal_case(name: str) -> str:
-    cleaned = re.sub(r"[^0-9A-Za-z]+", " ", name).strip()
+    # Apostrophes are dropped, not treated as word breaks: "Winter's Curse" -> WintersCurse
+    # (the same id AbilityGenerator derives).
+    cleaned = re.sub(r"[^0-9A-Za-z]+", " ", re.sub(r"['\u2019]", "", name)).strip()
     if not cleaned:
         raise ValueError(f"Cannot derive Rust identifier from empty name {name!r}")
     parts = cleaned.split()
