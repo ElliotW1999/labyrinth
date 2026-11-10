@@ -690,6 +690,7 @@ fn status_name(status: StatusSpec) -> &'static str {
         StatusSpec::Silence => "Silence",
         StatusSpec::Disarm => "Disarm",
         StatusSpec::Phased => "Phased",
+        StatusSpec::Frozen => "Frozen",
         StatusSpec::Forceful => "Forceful",
         StatusSpec::Flying => "Flying",
         StatusSpec::Leash {

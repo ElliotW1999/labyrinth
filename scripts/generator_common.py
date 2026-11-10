@@ -221,6 +221,9 @@ STATUSES = {
     "accuracy": (None, "accuracy", True),
     "true_strike": ("StatusSpec::TrueStrike", "true_strike", True),
     "phased": ("StatusSpec::Phased", "phased", True),
+    # Encased in ice: stunned (cannot move, attack, cast or use items; channels interrupted) and
+    # immune to physical damage. A Buff, so the holder's debuff dispel and debuff immunity leave it.
+    "frozen": ("StatusSpec::Frozen", "frozen", True),
     "forceful": ("StatusSpec::Forceful", "forceful", True),
     # Blocks new debuffs and purges existing ones; magic damage and spells still land.
     "debuff_immunity": ("StatusSpec::DebuffImmunity", "debuff_immunity", True),

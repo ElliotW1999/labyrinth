@@ -365,6 +365,9 @@ pub enum StatusSpec {
     Silence,
     Disarm,
     Phased,
+    /// Encased in ice: stunned and immune to physical damage. A buff, so the holder's debuff
+    /// dispels and debuff immunity leave it alone (see [`StatusEffect::frozen`]).
+    Frozen,
     Forceful,
     /// Flies: trees and other ground obstacles stop blocking (buildings still do).
     Flying,
@@ -632,6 +635,7 @@ impl StatusSpec {
             StatusSpec::Silence => StatusEffect::silenced(duration),
             StatusSpec::Disarm => StatusEffect::disarmed(duration),
             StatusSpec::Phased => StatusEffect::phased(duration),
+            StatusSpec::Frozen => StatusEffect::frozen(duration),
             StatusSpec::Forceful => StatusEffect::forceful(duration),
             StatusSpec::Flying => StatusEffect::flying(duration),
             StatusSpec::Leash { radius, anchor } => {

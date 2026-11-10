@@ -4937,6 +4937,32 @@ mod tests {
     }
 
     #[test]
+    fn frozen_interrupts_channel() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(channelled_heal());
+        let caster = spawn_caster(&mut app, KIT);
+        request(&mut app, caster, 3, CastTarget::None);
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        app.world_mut()
+            .get_mut::<StatusEffects>(caster)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::frozen(1.0));
+        step(&mut app);
+        let ends: Vec<_> = app
+            .world()
+            .resource::<Messages<ActionChannelEndEvent>>()
+            .iter_current_update_messages()
+            .map(|e| e.completed)
+            .collect();
+        assert_eq!(ends, vec![false], "interrupted, not completed");
+    }
+
+    #[test]
     fn self_target_abilities_target_the_caster() {
         let mut app = test_app();
         let def = AbilityDefinition::new(AbilityId::Bulwark)

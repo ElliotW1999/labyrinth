@@ -1077,6 +1077,26 @@ class MoveSpeedBonusTests(unittest.TestCase):
         self.assertIn("<owner>_move_speed_bonus", report.errors[0].message)
 
 
+class FrozenStatusTests(unittest.TestCase):
+    def test_frozen_is_a_plain_buff_status_keyword(self) -> None:
+        report = Report()
+        effect, ctx = _effect("apply_status", "frozen", target="cast_target", duration="4")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertEqual(report.errors, [])
+        self.assertIn("status: StatusSpec::Frozen,", result[2])
+        self.assertEqual(held_status_id(effect), "frozen")
+        self.assertEqual(runtime_status_id("frozen"), "frozen")
+
+    def test_frozen_takes_no_value_and_can_be_removed_by_id(self) -> None:
+        report = Report()
+        effect, ctx = _effect("apply_status", "frozen", target="cast_target", duration="4", value="5")
+        self.assertIsNotNone(effect_to_rust(effect, ctx, report))
+        self.assertTrue(report.warnings)
+        report = Report()
+        effect, ctx = _effect("remove_status", "frozen")
+        self.assertIn('AbilityEffect::RemoveStatus { id: "frozen" }', effect_to_rust(effect, ctx, report)[2])
+
+
 class AttackPointStatusTests(unittest.TestCase):
     def test_attack_point_uses_value_and_the_owner_id(self) -> None:
         report = Report()

@@ -641,6 +641,17 @@ impl StatusEffect {
         }
     }
 
+    /// An ally encased in ice (Cold Embrace): stunned (cannot move, attack, cast or use items,
+    /// and channels are interrupted) and immune to physical damage. A buff, so the holder's own
+    /// `dispel,debuff` and debuff immunity leave it alone; an enemy's `dispel,buff` removes it.
+    pub fn frozen(duration: f32) -> Self {
+        Self {
+            stunned: true,
+            immune_damage: DamageTypeMask::PHYSICAL,
+            ..Self::buff("frozen", duration)
+        }
+    }
+
     pub fn stunned(duration: f32) -> Self {
         Self {
             stunned: true,
@@ -3634,6 +3645,142 @@ mod tests {
             step(&mut app, 4.0);
             step(&mut app, 0.0);
             assert_eq!(snapshot(&app, hero).0.agility, base.0.agility);
+        }
+    }
+
+    mod frozen {
+        use super::*;
+        use std::time::Duration;
+
+        fn app() -> App {
+            let mut app = App::new();
+            app.init_resource::<Time>()
+                .add_message::<StatusEffectEvent>()
+                .add_message::<StatusLifecycleEvent>()
+                .add_message::<DamageEvent>()
+                .add_message::<crate::combat::DamageAppliedEvent>()
+                .add_systems(
+                    Update,
+                    (apply_status_effect_events, tick_status_effects).chain(),
+                );
+            app
+        }
+
+        fn unit(app: &mut App) -> Entity {
+            app.world_mut()
+                .spawn((
+                    StatusEffects::default(),
+                    CombatStats::simple(10.0, 100.0, 1.0, 0.0, 0.0, 300.0),
+                    Health::new(1000.0),
+                ))
+                .id()
+        }
+
+        fn send(app: &mut App, target: Entity, change: StatusChange) {
+            app.world_mut().write_message(StatusEffectEvent {
+                reactive: false,
+                source: None,
+                target,
+                change,
+            });
+        }
+
+        fn step(app: &mut App) {
+            app.world_mut()
+                .resource_mut::<Time>()
+                .advance_by(Duration::from_secs_f32(0.1));
+            app.update();
+        }
+
+        fn is_frozen(app: &App, unit: Entity) -> bool {
+            app.world()
+                .get::<StatusEffects>(unit)
+                .unwrap()
+                .has_status("frozen")
+        }
+
+        #[test]
+        fn frozen_ally_cannot_move_attack_or_cast() {
+            let mut app = app();
+            let unit = unit(&mut app);
+            send(
+                &mut app,
+                unit,
+                StatusChange::Apply(StatusEffect::frozen(4.0)),
+            );
+            step(&mut app);
+            let statuses = app.world().get::<StatusEffects>(unit).unwrap();
+            let blocks = statuses.blocks();
+            for blocked in [
+                ActionBlocks::MOVE,
+                ActionBlocks::ATTACK,
+                ActionBlocks::CAST,
+                ActionBlocks::ITEMS,
+            ] {
+                assert!(blocks.contains(blocked), "{blocked:?}");
+            }
+            assert!(statuses.is_rooted());
+            let frozen = statuses.effects.iter().find(|e| e.id == "frozen").unwrap();
+            assert_eq!(frozen.kind, StatusKind::Buff);
+        }
+
+        #[test]
+        fn frozen_survives_ally_debuff_dispel_and_debuff_immunity() {
+            let mut app = app();
+            let unit = unit(&mut app);
+            send(
+                &mut app,
+                unit,
+                StatusChange::Apply(StatusEffect::frozen(4.0)),
+            );
+            send(
+                &mut app,
+                unit,
+                StatusChange::Dispel {
+                    kind: StatusKind::Debuff,
+                    strength: DispelStrength::Strong,
+                },
+            );
+            step(&mut app);
+            assert!(is_frozen(&app, unit), "the holder's own debuff dispel");
+
+            // Debuff immunity rejects debuffs but neither rejects nor removes the buff.
+            send(
+                &mut app,
+                unit,
+                StatusChange::Apply(StatusEffect::debuff_immunity(4.0)),
+            );
+            step(&mut app);
+            assert!(is_frozen(&app, unit), "debuff immunity applied afterwards");
+            let fresh = unit_of(&mut app);
+            send(
+                &mut app,
+                fresh,
+                StatusChange::Apply(StatusEffect::debuff_immunity(4.0)),
+            );
+            send(
+                &mut app,
+                fresh,
+                StatusChange::Apply(StatusEffect::frozen(4.0)),
+            );
+            step(&mut app);
+            assert!(is_frozen(&app, fresh), "frozen onto a debuff-immune unit");
+
+            // An enemy's buff dispel does remove it.
+            send(
+                &mut app,
+                unit,
+                StatusChange::Dispel {
+                    kind: StatusKind::Buff,
+                    strength: DispelStrength::Basic,
+                },
+            );
+            step(&mut app);
+            assert!(!is_frozen(&app, unit));
+        }
+
+        fn unit_of(app: &mut App) -> Entity {
+            unit(app)
         }
     }
 
