@@ -203,7 +203,7 @@ pub fn request_basic_attacks(
                     .iter()
                     .find(|(e, pos, target_team, radius)| {
                         *e == id
-                            && *target_team == team.enemy()
+                            && attack_allowed(*team, statuses, *e, *target_team)
                             && within_range(origin, self_bound, *pos, *radius, stats.attack_range)
                     })
                     .copied()
@@ -241,14 +241,30 @@ pub fn request_basic_attacks(
     }
 }
 
+/// Whether `attacker_team` may basic-attack `target`: any enemy, or the exact unit an active
+/// [`Compulsion::Attack`] forces the attacker to attack (a taunt may name an ally). The only
+/// place an attack on a non-enemy is allowed; extra attacks, cleave and splash stay enemy-only.
+pub(crate) fn attack_allowed(
+    attacker_team: Team,
+    attacker: Option<&StatusEffects>,
+    target: Entity,
+    target_team: Team,
+) -> bool {
+    target_team == attacker_team.enemy()
+        || matches!(
+            attacker.and_then(|s| s.compulsion()),
+            Some(Compulsion::Attack { target: forced }) if forced == target
+        )
+}
+
 /// Begin the foreswing for each accepted [`BasicAttackEvent`]. Damage is snapshotted here.
 pub fn start_basic_attack_windups(
     mut commands: Commands,
     mut requests: MessageReader<BasicAttackEvent>,
-    attackers: Query<(&CombatStats, Has<AttackSwing>)>,
+    attackers: Query<(&CombatStats, Option<&StatusEffects>, Has<AttackSwing>)>,
 ) {
     for request in requests.read() {
-        let Ok((stats, swinging)) = attackers.get(request.attacker) else {
+        let Ok((stats, statuses, swinging)) = attackers.get(request.attacker) else {
             continue;
         };
         if swinging {
@@ -257,7 +273,7 @@ pub fn start_basic_attack_windups(
         commands
             .entity(request.attacker)
             .insert(AttackSwing::Windup {
-                remaining: stats.attack_point.clamp(0.0, MAX_ATTACK_SWING),
+                remaining: stats.effective_attack_point(statuses),
                 target: request.target,
                 damage: stats.attack_damage,
             });
@@ -382,8 +398,12 @@ pub fn resolve_attack_releases(
             .get(release.target)
             .ok()
             .filter(|(_, target_team, health, _)| {
-                **target_team == team.enemy()
-                    && health.is_alive()
+                attack_allowed(
+                    *team,
+                    statuses_of.get(release.attacker).ok(),
+                    release.target,
+                    **target_team,
+                ) && health.is_alive()
                     && is_targetable(&statuses_of, release.target, TargetIntent::Attack)
             });
 
@@ -575,8 +595,14 @@ pub fn resolve_basic_attack_impacts(
         let Ok((team, health, defender_status, defender_stats)) = targets.get(impact.target) else {
             continue;
         };
-        if *team != impact.attacker_team.enemy()
-            || !health.is_alive()
+        // An attacker that has despawned counts as enemy-only: the attack on a taunted ally
+        // fizzles once the compulsion is gone.
+        if !attack_allowed(
+            impact.attacker_team,
+            statuses_of.get(impact.attacker).ok(),
+            impact.target,
+            *team,
+        ) || !health.is_alive()
             || defender_status.is_some_and(|s| s.rejects(TargetIntent::Attack))
         {
             continue;
@@ -612,6 +638,10 @@ pub fn resolve_basic_attack_impacts(
         let Some((stats, attacker_tf, _)) = attacker else {
             continue;
         };
+        // A forced attack on an ally has no secondary targets: no cleave, no splash.
+        if *team != impact.attacker_team.enemy() {
+            continue;
+        }
         // Secondary hits: never crit, never roll to hit, never leech, never fire triggers.
         // Every cleave instance picks its own targets and deals its own share, so a unit
         // inside two shapes takes both.
@@ -1003,6 +1033,61 @@ mod tests {
         );
         step(&mut world, &mut schedule);
         assert!((hp(&world, target) - expected_hit()).abs() < 1e-3);
+    }
+
+    /// Frames until a melee attacker with `attack_point` 0.56 and the given status damages its
+    /// target.
+    fn frames_to_melee_hit(statuses: Option<StatusEffects>) -> usize {
+        let (mut world, mut schedule) = world_with_pipeline();
+        let target_pos = Vec3::new(100.0, 0.0, 0.0);
+        let target = spawn_unit(&mut world, Team::Dire, target_pos, passive_stats());
+        let attacker = spawn_attacker(&mut world, scale::MELEE_ATTACK_RANGE, target, target_pos);
+        world.get_mut::<CombatStats>(attacker).unwrap().attack_point = 0.56;
+        if let Some(statuses) = statuses {
+            world.entity_mut(attacker).insert(statuses);
+        }
+        for frame in 0..80 {
+            step(&mut world, &mut schedule);
+            if hp(&world, target) < 1000.0 {
+                return frame;
+            }
+        }
+        panic!("never hit");
+    }
+
+    fn attack_point_status(seconds: f32, remaining: f32) -> crate::status::StatusEffect {
+        crate::status::StatusEffect {
+            attack_point_override: Some(seconds),
+            remaining,
+            ..crate::status::StatusEffect::buff("quick_point", 5.0)
+        }
+    }
+
+    #[test]
+    fn attack_point_override_shortens_windup_and_ends_on_expiry() {
+        let normal = frames_to_melee_hit(None);
+        let mut live = StatusEffects::default();
+        live.effects.push(attack_point_status(0.1, 5.0));
+        let quick = frames_to_melee_hit(Some(live));
+        assert!(quick + 5 < normal, "override {quick} vs base {normal}");
+
+        // Once the status has run out the unit's own attack point applies again.
+        let mut expired = StatusEffects::default();
+        expired.effects.push(attack_point_status(0.1, 0.0));
+        assert_eq!(frames_to_melee_hit(Some(expired)), normal);
+    }
+
+    #[test]
+    fn lowest_override_wins() {
+        let mut statuses = StatusEffects::default();
+        assert_eq!(statuses.attack_point_override(), None);
+        statuses.effects.push(attack_point_status(0.3, 5.0));
+        statuses.effects.push(attack_point_status(0.1, 5.0));
+        statuses.effects.push(attack_point_status(0.05, 0.0));
+        assert_eq!(statuses.attack_point_override(), Some(0.1));
+        let stats = CombatStats::simple(10.0, 150.0, 1.0, 0.0, 0.0, 300.0);
+        assert_eq!(stats.effective_attack_point(None), stats.attack_point);
+        assert_eq!(stats.effective_attack_point(Some(&statuses)), 0.1);
     }
 
     #[test]
@@ -1770,12 +1855,166 @@ mod tests {
         assert!(frames_to_hit(700.0) < frames_to_hit(0.0));
     }
 
+    #[test]
+    fn timed_projectile_speed_status_sets_in_flight_attack_speed() {
+        use crate::status::{StatusEffect, StatusEffects, apply_status};
+        let (mut world, mut schedule) = world_with_pipeline();
+        let target_pos = Vec3::new(450.0, 0.0, 0.0);
+        let target = spawn_unit(&mut world, Team::Dire, target_pos, passive_stats());
+        let attacker = spawn_attacker(&mut world, 500.0, target, target_pos);
+        let base = projectile_speed_for(500.0);
+        {
+            let mut entity = world.entity_mut(attacker);
+            let mut stats = entity.get_mut::<CombatStats>().unwrap();
+            let mut statuses = StatusEffects::default();
+            apply_status(
+                &mut statuses,
+                &mut stats,
+                StatusEffect {
+                    attack_projectile_speed: 500.0,
+                    ..StatusEffect::buff("fast_shots", 10.0)
+                },
+                0.0,
+            );
+            drop(stats);
+            entity.insert(statuses);
+        }
+        let mut seen = None;
+        for _ in 0..80 {
+            step(&mut world, &mut schedule);
+            let mut query = world.query::<&BasicAttackInFlight>();
+            if let Some(flight) = query.iter(&world).next() {
+                seen = Some(flight.speed);
+                break;
+            }
+        }
+        assert_eq!(seen, Some(base + 500.0), "in-flight speed is base + bonus");
+    }
+
     fn request_extra(world: &mut World, attacker: Entity, target: Entity, ratio: f32) {
         world.write_message(ExtraAttackEvent {
             attacker,
             target,
             damage_ratio: ratio,
         });
+    }
+
+    // --- Forced attacks on an ally (taunt_target) ---
+
+    /// A Radiant melee attacker forced (Compulsion::Attack) to attack its own Radiant ally.
+    fn taunted_attacker_and_ally(world: &mut World) -> (Entity, Entity) {
+        let ally_pos = Vec3::new(100.0, 0.0, 0.0);
+        let ally = spawn_unit(world, Team::Radiant, ally_pos, passive_stats());
+        let attacker = spawn_attacker(world, scale::MELEE_ATTACK_RANGE, ally, ally_pos);
+        let mut statuses = StatusEffects::default();
+        statuses
+            .effects
+            .push(crate::status::StatusEffect::taunted(30.0, ally));
+        world.entity_mut(attacker).insert(statuses);
+        (attacker, ally)
+    }
+
+    #[test]
+    fn taunted_unit_attacks_its_ally_and_deals_damage() {
+        let (mut world, mut schedule) = world_with_pipeline();
+        let (_, ally) = taunted_attacker_and_ally(&mut world);
+        run_frames(&mut world, &mut schedule, 12);
+        assert!(
+            (hp(&world, ally) - expected_hit()).abs() < 1e-3,
+            "ally hp {}",
+            hp(&world, ally)
+        );
+        assert_eq!(landed_count(&world), 1);
+    }
+
+    #[test]
+    fn untaunted_unit_never_attacks_ally() {
+        let (mut world, mut schedule) = world_with_pipeline();
+        let ally_pos = Vec3::new(100.0, 0.0, 0.0);
+        let ally = spawn_unit(&mut world, Team::Radiant, ally_pos, passive_stats());
+        // Ordered to attack the ally, with and without an unrelated status.
+        let attacker = spawn_attacker(&mut world, scale::MELEE_ATTACK_RANGE, ally, ally_pos);
+        world.entity_mut(attacker).insert(StatusEffects::default());
+        // A compulsion naming someone else does not open the ally either.
+        let other = spawn_unit(
+            &mut world,
+            Team::Dire,
+            Vec3::new(0.0, 0.0, 400.0),
+            passive_stats(),
+        );
+        let mut statuses = StatusEffects::default();
+        statuses
+            .effects
+            .push(crate::status::StatusEffect::taunted(30.0, other));
+        let second = spawn_attacker(&mut world, scale::MELEE_ATTACK_RANGE, ally, ally_pos);
+        world.entity_mut(second).insert(statuses);
+        run_frames(&mut world, &mut schedule, 30);
+        assert_eq!(hp(&world, ally), 1000.0, "allies are never attacked");
+        assert_eq!(landed_count(&world), 0);
+    }
+
+    #[test]
+    fn forced_ally_attack_does_not_cleave_or_splash() {
+        let (mut world, mut schedule) = world_with_pipeline();
+        let (attacker, ally) = taunted_attacker_and_ally(&mut world);
+        with_ratios(&mut world, attacker, 0.5, 0.5);
+        // Inside the cleave radius of the attacker and the splash radius of the ally.
+        let near = bystander(&mut world, Vec3::new(100.0, 0.0, 100.0));
+        run_frames(&mut world, &mut schedule, 12);
+        assert!((hp(&world, ally) - expected_hit()).abs() < 1e-3);
+        assert_eq!(hp(&world, near), 1000.0, "no secondary hits on an ally");
+
+        // Control: the same setup against an enemy primary does cleave and splash.
+        let (mut world, mut schedule) = world_with_pipeline();
+        let (attacker, _) = melee_duel(&mut world);
+        with_ratios(&mut world, attacker, 0.5, 0.5);
+        let near = bystander(&mut world, Vec3::new(100.0, 0.0, 100.0));
+        run_frames(&mut world, &mut schedule, 12);
+        assert!(hp(&world, near) < 1000.0, "the control is not vacuous");
+    }
+
+    #[test]
+    fn extra_attack_on_ally_dropped() {
+        let (mut world, mut schedule) = world_with_pipeline();
+        let (attacker, ally) = taunted_attacker_and_ally(&mut world);
+        // A long cooldown keeps the regular attack out; extra attacks ignore it.
+        world.get_mut::<AttackCooldown>(attacker).unwrap().0 = 5.0;
+        request_extra(&mut world, attacker, ally, 1.0);
+        step(&mut world, &mut schedule);
+        assert_eq!(hp(&world, ally), 1000.0, "extra attacks stay enemy-only");
+        assert_eq!(landed_count(&world), 0);
+    }
+
+    #[test]
+    fn forced_ranged_attack_fizzles_when_the_compulsion_ends() {
+        let (mut world, mut schedule) = world_with_pipeline();
+        let ally_pos = Vec3::new(450.0, 0.0, 0.0);
+        let ally = spawn_unit(&mut world, Team::Radiant, ally_pos, passive_stats());
+        let attacker = spawn_attacker(&mut world, 500.0, ally, ally_pos);
+        let mut statuses = StatusEffects::default();
+        statuses
+            .effects
+            .push(crate::status::StatusEffect::taunted(30.0, ally));
+        world.entity_mut(attacker).insert(statuses);
+        // Run until the projectile is in flight, then end the compulsion.
+        for _ in 0..40 {
+            step(&mut world, &mut schedule);
+            if world.query::<&BasicAttackInFlight>().iter(&world).count() > 0 {
+                break;
+            }
+        }
+        assert_eq!(
+            world.query::<&BasicAttackInFlight>().iter(&world).count(),
+            1
+        );
+        world
+            .get_mut::<StatusEffects>(attacker)
+            .unwrap()
+            .effects
+            .clear();
+        world.entity_mut(attacker).remove::<AttackTarget>();
+        run_frames(&mut world, &mut schedule, 40);
+        assert_eq!(hp(&world, ally), 1000.0, "the attack fizzled at impact");
     }
 
     #[test]

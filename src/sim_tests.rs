@@ -472,6 +472,61 @@ mod compulsions {
     }
 
     #[test]
+    fn taunt_target_forces_attack_on_cast_target_not_caster() {
+        let mut app = sim_app();
+        // The forced attacker, its ally (the unit the taunt names) and the enemy caster.
+        let attacker = spawn_creep_at(&mut app, Team::Dire, Vec3::ZERO);
+        let cursed = spawn_creep_at(&mut app, Team::Dire, Vec3::new(120.0, 0.0, 0.0));
+        let caster = spawn_hero_at(&mut app, Team::Radiant, Vec3::new(0.0, 0.0, 150.0), true);
+        // Taunted before the first frame, so no attack on the caster is already under way.
+        // The cursed unit neither walks off nor fights back, so only the taunt is at work.
+        give(&mut app, cursed, StatusEffect::rooted(60.0));
+        give(&mut app, cursed, StatusEffect::disarmed(60.0));
+        give(&mut app, attacker, StatusEffect::taunted(60.0, cursed));
+        let cursed_before = health(&app, cursed);
+        let caster_before = health(&app, caster);
+        run(&mut app, 60 * 3);
+        assert_eq!(
+            app.world().get::<AttackTarget>(attacker).map(|t| t.0),
+            Some(cursed)
+        );
+        assert!(
+            health(&app, cursed) < cursed_before,
+            "the attacker hit its own ally"
+        );
+        assert_eq!(
+            health(&app, caster),
+            caster_before,
+            "the caster is left alone"
+        );
+    }
+
+    #[test]
+    fn taunt_target_ends_when_target_dies() {
+        let mut app = sim_app();
+        let attacker = spawn_creep_at(&mut app, Team::Dire, Vec3::ZERO);
+        let cursed = spawn_creep_at(&mut app, Team::Dire, Vec3::new(120.0, 0.0, 0.0));
+        app.update();
+        give(&mut app, attacker, StatusEffect::taunted(60.0, cursed));
+        run(&mut app, 3);
+        assert!(
+            app.world()
+                .get::<StatusEffects>(attacker)
+                .unwrap()
+                .has_status("taunt")
+        );
+        app.world_mut().get_mut::<Health>(cursed).unwrap().current = 0.0;
+        run(&mut app, 3);
+        assert!(
+            !app.world()
+                .get::<StatusEffects>(attacker)
+                .unwrap()
+                .has_status("taunt"),
+            "the taunt ends with its target"
+        );
+    }
+
+    #[test]
     fn taunted_hero_cannot_cast_or_use_items() {
         fn mana_after_cast(taunted: bool) -> f32 {
             let mut app = sim_app();

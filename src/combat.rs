@@ -1335,6 +1335,14 @@ mod tests {
     }
 
     #[test]
+    fn frozen_blocks_physical_attacks_but_takes_magical() {
+        let frozen = || crate::status::StatusEffect::frozen(5.0);
+        assert_eq!(damage_taken_with(frozen(), DamageType::Physical), 0.0);
+        assert!(damage_taken_with(frozen(), DamageType::Magical) > 50.0);
+        assert!((damage_taken_with(frozen(), DamageType::Pure) - 100.0).abs() < 1e-3);
+    }
+
+    #[test]
     fn spell_immune_takes_physical_not_magical() {
         let immune = || crate::status::StatusEffect::spell_immunity(5.0);
         assert_eq!(damage_taken_with(immune(), DamageType::Magical), 0.0);

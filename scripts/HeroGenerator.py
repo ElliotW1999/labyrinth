@@ -9,11 +9,26 @@ Reads rows describing hero kits and patches marked regions in:
 Ability implementations are left as Instant no-op stubs (castable, no effect).
 
 Optional hero columns: base_health, base_health_regen, base_mana, base_mana_regen,
-attack_damage, attack_range (`is_melee` must match it: base ranges up to 250 are melee),
-base_attack_time, attack_point, attack_backswing (0..1.0), armor, magic_resist, move_speed and attack_projectile_speed (ranged heroes only, > 0: the
+attack_damage (the level-1 total minus the primary attribute: each point of the primary
+attribute adds 1 attack damage; blank = 55 melee / 48 ranged minus the primary), attack_range (`is_melee` must match it: base ranges up to 250 are melee),
+base_attack_time, attack_point, attack_backswing (0..1.0), armor, magic_resist (blank = 6.321839, 27.5% for every hero at every
+level: Intelligence grants no magic resist; a different value warns), move_speed and attack_projectile_speed (ranged heroes only, > 0: the
 absolute projectile speed of the hero's basic attack; blank keeps the speed derived from
 the attack range), turn_rate (> 0, blank keeps facing::HERO_TURN_RATE) and
 base_attack_speed (20..700, blank keeps the shared 100). Blank cells take the defaults.
+
+Stat conventions: spec values are level-1 totals and the CSV columns are bases, because
+HeroAttributes::apply_to adds the attributes on top:
+  base_health       = HP - STR * 18          base_health_regen = regen - STR * 0.12
+  base_mana         = mana - INT * 12        base_mana_regen   = regen - INT * 0.05
+  armor             = armor - AGI * 0.14
+  magic_resist      = 6.321839 (27.5% for every hero at every level; Intelligence grants none)
+  attack_damage     = total - primary attribute (each primary point adds 1 attack damage)
+Heroes spawn at level 6 with five levels of growth, so in-game values exceed the level-1 spec.
+Defaults for blank cells: attack_damage = 55 (melee) / 48 (ranged) minus the primary attribute,
+magic_resist = 6.321839 (an explicit value that is not 27.5% prints a warning). Worked example,
+Winter Wyvern (STR 22, AGI 16, INT 26, primary INT; HP 604, mana 387, armor 1, damage 46):
+base_health 208, base_mana 75, armor -1.24, magic_resist 6.321839, attack_damage 20.
 
 Usage:
   python3 scripts/HeroGenerator.py data/heroes.csv
@@ -96,7 +111,9 @@ class HeroRow:
 
 
 def to_pascal_case(name: str) -> str:
-    cleaned = re.sub(r"[^0-9A-Za-z]+", " ", name).strip()
+    # Apostrophes are dropped, not treated as word breaks: "Winter's Curse" -> WintersCurse
+    # (the same id AbilityGenerator derives).
+    cleaned = re.sub(r"[^0-9A-Za-z]+", " ", re.sub(r"['\u2019]", "", name)).strip()
     if not cleaned:
         raise ValueError(f"Cannot derive Rust identifier from empty name {name!r}")
     parts = cleaned.split()
@@ -122,6 +139,29 @@ def parse_float(row: dict[str, str], key: str, default: float | None = None) -> 
             raise ValueError(f"Missing required numeric column {key}")
         return default
     return float(raw)
+
+
+# Every hero has 27.5% magic resistance at every level: combat::mitigate gives
+# 0.06 r / (1 + 0.06 |r|), so the rating is (0.275 / 0.725) / 0.06. Intelligence grants none.
+HERO_MR_FRACTION = 0.275
+HERO_MR_RATING = round((HERO_MR_FRACTION / (1.0 - HERO_MR_FRACTION)) / 0.06, 6)
+
+
+def mr_fraction(rating: float) -> float:
+    """Mirrors combat::mitigate for a magic resistance rating."""
+    return 0.06 * rating / (1.0 + 0.06 * abs(rating))
+
+
+def check_magic_resist(rating: float, line: int) -> None:
+    """Warn when an explicit rating is not the uniform 27.5% hero magic resistance."""
+    fraction = mr_fraction(rating)
+    if abs(fraction - HERO_MR_FRACTION) > 0.0005:
+        print(
+            f"warning: row {line}: magic_resist {rating:g} is {fraction * 100:.2f}% magic "
+            f"resistance, not the uniform {HERO_MR_FRACTION * 100:g}% "
+            f"(rating {HERO_MR_RATING})",
+            file=sys.stderr,
+        )
 
 
 # Mirrors basic_attack::MAX_ATTACK_SWING.
@@ -268,7 +308,19 @@ def load_csv(path: Path) -> list[HeroRow]:
                 if not ability:
                     raise SystemExit(f"Row {i}: Ability_{slot_name}_Name is required")
             attack_range_default = 128.0 if is_melee else 500.0
-            attack_damage_default = 55.0 if is_melee else 48.0
+            primary_value = {"STR": base_str, "AGI": base_agi, "INT": base_int}[primary]
+            # The stored damage excludes the primary attribute (+1 damage per point), so a
+            # blank cell keeps the old level-1 total of 55 (melee) / 48 (ranged).
+            attack_damage_default = (55.0 if is_melee else 48.0) - primary_value
+            attack_damage = parse_float(row, "attack_damage", attack_damage_default)
+            if attack_damage + primary_value <= 0:
+                raise SystemExit(
+                    f"Row {i}: attack_damage {attack_damage:g} plus the primary attribute "
+                    f"{primary_value:g} must be above 0 (attack_damage is the level-1 total "
+                    f"minus the primary attribute)"
+                )
+            magic_resist = parse_float(row, "magic_resist", HERO_MR_RATING)
+            check_magic_resist(magic_resist, i)
             attack_range = parse_float(row, "attack_range", attack_range_default)
             check_melee_matches_range(is_melee, attack_range, i)
             blurb = row.get("blurb") or default_blurb(name, primary, q, w, e, r)
@@ -302,15 +354,13 @@ def load_csv(path: Path) -> list[HeroRow]:
                     base_mana_regen=parse_float(
                         row, "base_mana_regen", 0.8 if primary != "INT" else 1.4
                     ),
-                    attack_damage=parse_float(row, "attack_damage", attack_damage_default),
+                    attack_damage=attack_damage,
                     attack_range=attack_range,
                     base_attack_time=parse_float(row, "base_attack_time", 1.7),
                     attack_point=parse_swing(row, "attack_point", 0.3, i),
                     attack_backswing=parse_swing(row, "attack_backswing", 0.35, i),
                     armor=parse_float(row, "armor", 2.0 if is_melee else 0.8),
-                    magic_resist=parse_float(
-                        row, "magic_resist", 0.7 if primary != "INT" else 1.2
-                    ),
+                    magic_resist=magic_resist,
                     move_speed=parse_float(row, "move_speed", 300.0),
                     attack_projectile_speed=parse_projectile_speed(row, is_melee, i),
                     turn_rate=parse_turn_rate(row, i),
@@ -410,6 +460,9 @@ def rust_hero_combat(hero: HeroRow) -> str:
     )
 
 
+PRIMARY_ATTRIBUTES = {"STR": "Strength", "AGI": "Agility", "INT": "Intelligence"}
+
+
 def hero_def_arm(hero: HeroRow) -> str:
     return f"""            HeroId::{hero.rust_id} => HeroDef {{
                 id: self,
@@ -420,6 +473,7 @@ def hero_def_arm(hero: HeroRow) -> str:
                     str_per_level: {f32(hero.str_per_level)},
                     agi_per_level: {f32(hero.agi_per_level)},
                     int_per_level: {f32(hero.int_per_level)},
+                    primary: Some(Attribute::{PRIMARY_ATTRIBUTES[hero.primary]}),
                 }},
                 base_health: {f32(hero.base_health)},
                 base_health_regen: {f32(hero.base_health_regen)},

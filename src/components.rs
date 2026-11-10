@@ -371,6 +371,16 @@ impl CombatStats {
         }
     }
 
+    /// Basic-attack foreswing: the lowest live status override (see
+    /// [`crate::status::StatusEffects::attack_point_override`]), else `attack_point`, clamped to
+    /// [`crate::basic_attack::MAX_ATTACK_SWING`]. The one place the override is read.
+    pub fn effective_attack_point(&self, statuses: Option<&crate::status::StatusEffects>) -> f32 {
+        statuses
+            .and_then(|s| s.attack_point_override())
+            .unwrap_or(self.attack_point)
+            .clamp(0.0, crate::basic_attack::MAX_ATTACK_SWING)
+    }
+
     /// Turn rate after stacking status bonuses and slow on top of the hero/creep base in
     /// `turn_rate`: `base × (1 + Σ bonus / 100) × (1 − strongest slow / 100)`.
     pub fn effective_turn_rate(&self, statuses: Option<&crate::status::StatusEffects>) -> f32 {
@@ -435,6 +445,9 @@ pub struct HeroAttributes {
     pub str_per_level: f32,
     pub agi_per_level: f32,
     pub int_per_level: f32,
+    /// The primary attribute: each point adds one attack damage. `None` for attribute sets
+    /// without a primary (the test starter).
+    pub primary: Option<crate::abilities::definition::Attribute>,
 }
 
 impl HeroAttributes {
@@ -447,8 +460,27 @@ impl HeroAttributes {
             str_per_level: 2.2,
             agi_per_level: 2.0,
             int_per_level: 2.4,
+            primary: None,
         }
     }
+
+    /// Current value of one attribute.
+    pub fn get(&self, attribute: crate::abilities::definition::Attribute) -> f32 {
+        use crate::abilities::definition::Attribute;
+        match attribute {
+            Attribute::Strength => self.strength,
+            Attribute::Agility => self.agility,
+            Attribute::Intelligence => self.intelligence,
+        }
+    }
+
+    /// Current value of the primary attribute (0 without one).
+    pub fn primary_value(&self) -> f32 {
+        self.primary.map_or(0.0, |attribute| self.get(attribute))
+    }
+
+    /// Attack damage per point of the primary attribute.
+    pub const DAMAGE_PER_PRIMARY: f32 = 1.0;
 
     /// Max HP gained per point of Strength.
     pub const HP_PER_STR: f32 = 18.0;
@@ -460,8 +492,6 @@ impl HeroAttributes {
     pub const MANA_PER_INT: f32 = 12.0;
     /// Mana regen per point of Intelligence.
     pub const MANA_REGEN_PER_INT: f32 = 0.05;
-    /// Magic resist per point of Intelligence.
-    pub const MR_PER_INT: f32 = 0.12;
 
     pub fn apply_to(&self, health: &mut Health, mana: &mut Mana, stats: &mut CombatStats) {
         health.max += self.strength * Self::HP_PER_STR;
@@ -471,7 +501,7 @@ impl HeroAttributes {
         mana.max += self.intelligence * Self::MANA_PER_INT;
         mana.current = mana.current.min(mana.max);
         mana.regen_per_sec += self.intelligence * Self::MANA_REGEN_PER_INT;
-        stats.magic_resist += self.intelligence * Self::MR_PER_INT;
+        stats.attack_damage += self.primary_value() * Self::DAMAGE_PER_PRIMARY;
         stats.recompute_attack_speed(self.agility);
     }
 
@@ -495,7 +525,8 @@ impl HeroAttributes {
         mana.max += mp;
         mana.current = (mana.current + mp).min(mana.max);
         mana.regen_per_sec += d_int * Self::MANA_REGEN_PER_INT;
-        stats.magic_resist += d_int * Self::MR_PER_INT;
+        stats.attack_damage +=
+            (after.primary_value() - before.primary_value()) * Self::DAMAGE_PER_PRIMARY;
         stats.recompute_attack_speed(after.agility);
     }
 
@@ -741,6 +772,11 @@ pub enum AbilityId {
     Pounce,
     EssenceShift,
     ShadowDance,
+    // Winter Wyvern (generated stubs)
+    ArcticBurn,
+    SplinterBlast,
+    ColdEmbrace,
+    WintersCurse,
     // </hero_generator:ability_enum>
 }
 
@@ -794,6 +830,10 @@ impl AbilityId {
             AbilityId::Pounce => "Pounce",
             AbilityId::EssenceShift => "Essence Shift",
             AbilityId::ShadowDance => "Shadow Dance",
+            AbilityId::ArcticBurn => "Arctic Burn",
+            AbilityId::SplinterBlast => "Splinter Blast",
+            AbilityId::ColdEmbrace => "Cold Embrace",
+            AbilityId::WintersCurse => "Winter's Curse",
             // </hero_generator:ability_display_name>
         }
     }
@@ -812,7 +852,8 @@ impl AbilityId {
                 | AbilityId::ReversePolarity
                 | AbilityId::Assassinate
                 | AbilityId::Enrage
-                | AbilityId::ShadowDance // </hero_generator:ability_ultimates>
+                | AbilityId::ShadowDance
+                | AbilityId::WintersCurse // </hero_generator:ability_ultimates>
         )
     }
 
@@ -845,6 +886,10 @@ impl AbilityId {
             AbilityId::Pounce => 7,
             AbilityId::EssenceShift => 7,
             AbilityId::ShadowDance => 4,
+            AbilityId::ArcticBurn => 7,
+            AbilityId::SplinterBlast => 7,
+            AbilityId::ColdEmbrace => 7,
+            AbilityId::WintersCurse => 4,
             // </ability_generator:max_rank>
             _ if self.is_ultimate() => 4,
             _ => 7,

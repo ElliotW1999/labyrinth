@@ -16,7 +16,7 @@ use bevy::prelude::*;
 use super::catalog::AbilityDefinitions;
 use super::definition::{
     AbilityEffect, AbilityEffectEntry, AbilityMechanic, AbilityTrigger, AreaCenter, AreaRadius,
-    Attribute, EffectScaling, EffectTarget, StatusBuildContext, TargetTeam,
+    EffectScaling, EffectTarget, StatusBuildContext, TargetTeam,
 };
 use super::mechanics::{ChainCandidate, chain_hops};
 use super::passive::passive_suppressed;
@@ -630,11 +630,7 @@ impl EffectRunner<'_, '_> {
                 let value = self
                     .attributes
                     .get(ctx.caster)
-                    .map_or(0.0, |a| match attribute {
-                        Attribute::Strength => a.strength,
-                        Attribute::Agility => a.agility,
-                        Attribute::Intelligence => a.intelligence,
-                    });
+                    .map_or(0.0, |a| a.get(attribute));
                 Some(base + ratio * value)
             }
             EffectScaling::TargetHealthBelow(threshold) => self
@@ -814,6 +810,14 @@ impl EffectRunner<'_, '_> {
                     source.and_then(|s| self.statuses_of.get(s).ok()),
                 );
                 for target in targets {
+                    // The cursed unit itself is never taunted onto itself.
+                    if matches!(
+                        status,
+                        super::definition::StatusSpec::TauntCastTarget { .. }
+                    ) && ctx.cast_target == Some(target)
+                    {
+                        continue;
+                    }
                     let mut built = build_status_effect(
                         status,
                         rank,
@@ -828,6 +832,7 @@ impl EffectRunner<'_, '_> {
                         ),
                         healer_amp,
                         ctx.source,
+                        ctx.cast_target,
                     );
                     built.reactive = ctx.reaction;
                     if status.kind_follows_hostility() {
@@ -984,6 +989,18 @@ impl EffectRunner<'_, '_> {
                     self.derived.push(ctx.derived(then));
                 }
             }
+            AbilityEffect::RequireStatus { id, then } => {
+                if !self.gate_open(ctx) {
+                    return;
+                }
+                if self
+                    .statuses_of
+                    .get(ctx.caster)
+                    .is_ok_and(|statuses| statuses.has_status(id))
+                {
+                    self.derived.push(ctx.derived(then));
+                }
+            }
             AbilityEffect::Counter { every, then } => {
                 if !self.gate_open(ctx) {
                     return;
@@ -1122,7 +1139,7 @@ impl EffectRunner<'_, '_> {
 /// current damage for everything else.
 pub(crate) fn base_attack_damage(kind: Option<&HeroKind>, stats: Option<&CombatStats>) -> f32 {
     match kind {
-        Some(kind) => kind.0.def().combat.attack_damage,
+        Some(kind) => kind.0.def().level_one_attack_damage(),
         None => stats.map_or(0.0, |s| s.attack_damage),
     }
 }
@@ -1143,6 +1160,7 @@ pub(crate) fn build_status_effect(
     target_base_attack_damage: f32,
     healer_amp: f32,
     origin: EffectSource,
+    cast_target: Option<Entity>,
 ) -> StatusEffect {
     let mut built = spec.build(
         rank,
@@ -1152,6 +1170,7 @@ pub(crate) fn build_status_effect(
             agility: target_attrs.map_or(0.0, |a| a.agility),
             source: caster,
             point,
+            cast_target,
             base_attack_damage: target_base_attack_damage,
         },
     );
@@ -1159,8 +1178,10 @@ pub(crate) fn build_status_effect(
     if built.carries_cleave() {
         built.cleave_source = Some(origin);
     }
-    if built.heal_per_sec > 0.0 {
-        built.heal_per_sec *= (1.0 + healer_amp).max(0.0);
+    if built.heal_per_sec > 0.0 || built.heal_max_health_fraction > 0.0 {
+        let amp = (1.0 + healer_amp).max(0.0);
+        built.heal_per_sec *= amp;
+        built.heal_max_health_fraction *= amp;
     }
     built
 }

@@ -2,6 +2,7 @@
 
 use bevy::prelude::*;
 
+use crate::abilities::definition::Attribute;
 use crate::basic_attack::MAX_ATTACK_SWING;
 use crate::components::{
     AbilityId, AbilityLoadout, CombatStats, Health, HeroAttributes, Mana, Team,
@@ -58,6 +59,8 @@ pub enum HeroId {
     Ursa,
     /// Generated hero — abilities are stubs until implemented.
     Slark,
+    /// Generated hero — abilities are stubs until implemented.
+    WinterWyvern,
     // </hero_generator:hero_enum>
 }
 
@@ -75,6 +78,7 @@ impl HeroId {
             HeroId::Sniper,
             HeroId::Ursa,
             HeroId::Slark,
+            HeroId::WinterWyvern,
             // </hero_generator:hero_all>
         ]
     }
@@ -117,6 +121,7 @@ impl HeroId {
             HeroId::Sniper => "Sniper",
             HeroId::Ursa => "Ursa",
             HeroId::Slark => "Slark",
+            HeroId::WinterWyvern => "Winter Wyvern",
             // </hero_generator:hero_name>
         }
     }
@@ -137,7 +142,9 @@ impl HeroId {
             HeroId::Sniper => "Agi marksman — Shrapnel, Headshot, Take Aim, Assassinate",
             HeroId::Ursa => "Agi brawler — Earthshock, Overpower, Fury Swipes, Enrage",
             HeroId::Slark => "Agi assassin — Dark Pact, Pounce, Essence Shift, Shadow Dance",
-            // </hero_generator:hero_blurb>
+            HeroId::WinterWyvern => {
+                "Int disabler — Arctic Burn, Splinter Blast, Cold Embrace, Winter's Curse"
+            } // </hero_generator:hero_blurb>
         }
     }
 
@@ -155,6 +162,7 @@ impl HeroId {
             HeroId::Sniper => "AGI",
             HeroId::Ursa => "AGI",
             HeroId::Slark => "AGI",
+            HeroId::WinterWyvern => "INT",
             // </hero_generator:hero_primary>
         }
     }
@@ -171,20 +179,21 @@ impl HeroId {
                     str_per_level: 2.6,
                     agi_per_level: 1.7,
                     int_per_level: 1.6,
+                    primary: Some(Attribute::Strength),
                 },
                 base_health: 380.0,
                 base_health_regen: 0.6,
                 base_mana: 90.0,
                 base_mana_regen: 0.8,
                 combat: hero_combat(
-                    58.0,
+                    36.0,
                     scale::MELEE_ATTACK_RANGE,
                     1.7,
                     0.3,
                     0.35,
                     crate::facing::HERO_TURN_RATE,
                     2.0,
-                    0.7,
+                    6.321839,
                     scale::HERO_MOVE_SPEED,
                     None,
                 ),
@@ -205,20 +214,21 @@ impl HeroId {
                     str_per_level: 1.8,
                     agi_per_level: 2.8,
                     int_per_level: 1.5,
+                    primary: Some(Attribute::Agility),
                 },
                 base_health: 320.0,
                 base_health_regen: 0.4,
                 base_mana: 100.0,
                 base_mana_regen: 0.9,
                 combat: hero_combat(
-                    52.0,
+                    28.0,
                     scale::SHORT_ATTACK_RANGE,
                     1.5,
                     0.25,
                     0.3,
                     crate::facing::HERO_TURN_RATE,
                     1.2,
-                    0.6,
+                    6.321839,
                     scale::HERO_MOVE_SPEED_FAST,
                     None,
                 ),
@@ -239,20 +249,21 @@ impl HeroId {
                     str_per_level: 1.6,
                     agi_per_level: 1.5,
                     int_per_level: 3.0,
+                    primary: Some(Attribute::Intelligence),
                 },
                 base_health: 300.0,
                 base_health_regen: 0.35,
                 base_mana: 140.0,
                 base_mana_regen: 1.4,
                 combat: hero_combat(
-                    48.0,
+                    22.0,
                     scale::RANGED_ATTACK_RANGE,
                     1.6,
                     0.35,
                     0.4,
                     crate::facing::HERO_TURN_RATE,
                     0.8,
-                    1.2,
+                    6.321839,
                     scale::HERO_MOVE_SPEED_SLOW,
                     None,
                 ),
@@ -274,20 +285,21 @@ impl HeroId {
                     str_per_level: 3.0,
                     agi_per_level: 1.4,
                     int_per_level: 1.2,
+                    primary: Some(Attribute::Strength),
                 },
                 base_health: 340.0,
                 base_health_regen: 0.5,
                 base_mana: 90.0,
                 base_mana_regen: 0.8,
                 combat: hero_combat(
-                    55.0,
+                    31.0,
                     scale::MELEE_ATTACK_RANGE,
                     1.7,
                     0.3,
                     0.35,
                     crate::facing::HERO_TURN_RATE,
                     2.0,
-                    0.7,
+                    6.321839,
                     scale::HERO_MOVE_SPEED,
                     None,
                 ),
@@ -308,20 +320,21 @@ impl HeroId {
                     str_per_level: 1.5,
                     agi_per_level: 1.6,
                     int_per_level: 3.1,
+                    primary: Some(Attribute::Intelligence),
                 },
                 base_health: 300.0,
                 base_health_regen: 0.35,
                 base_mana: 140.0,
                 base_mana_regen: 1.4,
                 combat: hero_combat(
-                    48.0,
+                    23.0,
                     scale::RANGED_ATTACK_RANGE,
                     1.7,
                     0.3,
                     0.35,
                     crate::facing::HERO_TURN_RATE,
                     0.8,
-                    1.2,
+                    6.321839,
                     scale::HERO_MOVE_SPEED,
                     None,
                 ),
@@ -342,20 +355,21 @@ impl HeroId {
                     str_per_level: 2.4,
                     agi_per_level: 2.5,
                     int_per_level: 3.4,
+                    primary: Some(Attribute::Intelligence),
                 },
                 base_health: 200.0,
                 base_health_regen: -0.15,
                 base_mana: 75.0,
                 base_mana_regen: 0.0,
                 combat: hero_combat(
-                    54.0,
+                    29.0,
                     550.0,
                     1.5,
                     0.56,
                     0.41,
                     crate::facing::HERO_TURN_RATE,
                     -2.8,
-                    3.321839,
+                    6.321839,
                     290.0,
                     Some(1500.0),
                 ),
@@ -376,13 +390,14 @@ impl HeroId {
                     str_per_level: 3.1,
                     agi_per_level: 2.2,
                     int_per_level: 2.1,
+                    primary: Some(Attribute::Strength),
                 },
                 base_health: 211.0,
                 base_health_regen: 0.04,
                 base_mana: 75.0,
                 base_mana_regen: 0.5,
                 combat: hero_combat(
-                    61.0, 200.0, 1.8, 0.5, 0.84, 0.8, -0.96, 3.764384, 305.0, None,
+                    38.0, 200.0, 1.8, 0.5, 0.84, 0.8, -0.96, 6.321839, 305.0, None,
                 ),
                 abilities: [
                     AbilityId::MagnusShockwave,
@@ -401,20 +416,21 @@ impl HeroId {
                     str_per_level: 2.0,
                     agi_per_level: 3.2,
                     int_per_level: 2.6,
+                    primary: Some(Attribute::Agility),
                 },
                 base_health: 196.0,
                 base_health_regen: -0.13,
                 base_mana: 75.0,
                 base_mana_regen: 0.0,
                 combat: hero_combat(
-                    43.0,
+                    16.0,
                     550.0,
                     1.7,
                     0.17,
                     0.7,
                     0.7,
                     -3.78,
-                    4.20907,
+                    6.321839,
                     285.0,
                     Some(3000.0),
                 ),
@@ -435,13 +451,14 @@ impl HeroId {
                     str_per_level: 2.4,
                     agi_per_level: 2.8,
                     int_per_level: 1.5,
+                    primary: Some(Attribute::Agility),
                 },
                 base_health: 220.0,
                 base_health_regen: 0.0,
                 base_mana: 75.0,
                 base_mana_regen: 0.0,
                 combat: hero_combat(
-                    44.0, 150.0, 1.7, 0.3, 0.3, 0.6, -1.52, 4.401839, 310.0, None,
+                    26.0, 150.0, 1.7, 0.3, 0.3, 0.6, -1.52, 6.321839, 310.0, None,
                 ),
                 abilities: [
                     AbilityId::Earthshock,
@@ -460,6 +477,7 @@ impl HeroId {
                     str_per_level: 2.1,
                     agi_per_level: 1.5,
                     int_per_level: 1.9,
+                    primary: Some(Attribute::Agility),
                 },
                 base_health: 200.0,
                 base_health_regen: -0.15,
@@ -468,7 +486,7 @@ impl HeroId {
                 combat: CombatStats {
                     base_attack_speed: 120.0,
                     ..hero_combat(
-                        61.0, 150.0, 1.7, 0.5, 0.3, 0.7, -2.94, 4.401839, 300.0, None,
+                        40.0, 150.0, 1.7, 0.5, 0.3, 0.7, -2.94, 6.321839, 300.0, None,
                     )
                 },
                 abilities: [
@@ -476,6 +494,41 @@ impl HeroId {
                     AbilityId::Pounce,
                     AbilityId::EssenceShift,
                     AbilityId::ShadowDance,
+                ],
+                dimensions: UnitDimensions::HERO,
+            },
+            HeroId::WinterWyvern => HeroDef {
+                id: self,
+                attributes: HeroAttributes {
+                    strength: 22.0,
+                    agility: 16.0,
+                    intelligence: 26.0,
+                    str_per_level: 2.5,
+                    agi_per_level: 1.7,
+                    int_per_level: 3.6,
+                    primary: Some(Attribute::Intelligence),
+                },
+                base_health: 208.0,
+                base_health_regen: -0.19,
+                base_mana: 75.0,
+                base_mana_regen: 0.25,
+                combat: hero_combat(
+                    20.0,
+                    450.0,
+                    1.7,
+                    0.25,
+                    0.8,
+                    0.6,
+                    -1.24,
+                    6.321839,
+                    285.0,
+                    Some(700.0),
+                ),
+                abilities: [
+                    AbilityId::ArcticBurn,
+                    AbilityId::SplinterBlast,
+                    AbilityId::ColdEmbrace,
+                    AbilityId::WintersCurse,
                 ],
                 dimensions: UnitDimensions::HERO,
             },
@@ -561,6 +614,13 @@ fn hero_combat(
 }
 
 impl HeroDef {
+    /// Attack damage of a level-1 hero: the stored base plus one per point of the primary
+    /// attribute. `attack_damage_pct` statuses (Empower) snapshot this.
+    pub fn level_one_attack_damage(&self) -> f32 {
+        self.combat.attack_damage
+            + self.attributes.primary_value() * HeroAttributes::DAMAGE_PER_PRIMARY
+    }
+
     pub fn vitals(&self) -> (Health, Mana, CombatStats, HeroAttributes) {
         let attrs = self.attributes;
         let mut health = Health {
@@ -883,6 +943,142 @@ mod tests {
     use super::*;
 
     #[test]
+    fn every_hero_keeps_level_one_attack_damage_parity() {
+        // Level-1 totals (stored base + primary attribute) from each hero's spec.
+        let expected = [
+            (HeroId::Vanguard, 58.0),
+            (HeroId::Skirmisher, 52.0),
+            (HeroId::Arcanist, 48.0),
+            (HeroId::Warden, 55.0),
+            (HeroId::Hexer, 48.0),
+            (HeroId::QueenOfPain, 54.0),
+            (HeroId::Magnus, 61.0),
+            (HeroId::Sniper, 43.0),
+            (HeroId::Ursa, 44.0),
+            (HeroId::Slark, 61.0),
+            (HeroId::WinterWyvern, 46.0),
+        ];
+        for (hero, total) in expected {
+            let def = hero.def();
+            let (_, _, stats, _) = def.vitals();
+            assert_eq!(stats.attack_damage, total, "{hero:?} vitals damage");
+            assert_eq!(
+                def.level_one_attack_damage(),
+                total,
+                "{hero:?} level-one damage"
+            );
+        }
+    }
+
+    #[test]
+    fn every_hero_primary_matches_primary_label() {
+        for hero in HeroId::all() {
+            let primary = hero.def().attributes.primary.expect("hero has a primary");
+            let label = match primary {
+                Attribute::Strength => "STR",
+                Attribute::Agility => "AGI",
+                Attribute::Intelligence => "INT",
+            };
+            assert_eq!(hero.primary_label(), label, "{hero:?}");
+        }
+    }
+
+    #[test]
+    fn every_hero_magic_resist_is_27_5_percent_at_level_1_and_level_6() {
+        use crate::combat::apply_damage;
+        use crate::components::DamageType;
+
+        for hero in HeroId::all() {
+            let def = hero.def();
+            let (mut health, mut mana, mut stats, mut attrs) = def.vitals();
+            let at_level_1 = apply_damage(100.0, DamageType::Magical, &stats);
+            assert!(
+                (at_level_1 - 72.5).abs() < 0.01,
+                "{hero:?} level 1: {at_level_1}"
+            );
+            // Intelligence grants no magic resist: five levels of growth leave it at 27.5%.
+            for _ in 1..crate::units::STARTING_HERO_LEVEL {
+                let before = attrs;
+                attrs.level_up();
+                HeroAttributes::apply_delta(&before, &attrs, &mut health, &mut mana, &mut stats);
+            }
+            let at_level_6 = apply_damage(100.0, DamageType::Magical, &stats);
+            assert!(
+                (at_level_6 - 72.5).abs() < 0.01,
+                "{hero:?} level 6: {at_level_6}"
+            );
+        }
+    }
+
+    #[test]
+    fn winter_wyvern_matches_spec() {
+        use crate::combat::apply_damage;
+        use crate::components::DamageType;
+
+        assert_eq!(
+            HeroId::from_cli("winter wyvern"),
+            Some(HeroId::WinterWyvern)
+        );
+        assert_eq!(HeroId::WinterWyvern.name(), "Winter Wyvern");
+        assert_eq!(HeroId::WinterWyvern.primary_label(), "INT");
+        let def = HeroId::WinterWyvern.def();
+        assert_eq!(
+            def.abilities,
+            [
+                AbilityId::ArcticBurn,
+                AbilityId::SplinterBlast,
+                AbilityId::ColdEmbrace,
+                AbilityId::WintersCurse,
+            ]
+        );
+
+        let (health, mana, stats, attrs) = def.vitals();
+        assert!((health.max - 604.0).abs() < 1e-3, "health {}", health.max);
+        assert!((health.regen_per_sec - 2.45).abs() < 1e-4);
+        assert!((mana.max - 387.0).abs() < 1e-3, "mana {}", mana.max);
+        assert!((mana.regen_per_sec - 1.55).abs() < 1e-4);
+        assert!((stats.armor - 1.0).abs() < 1e-3, "armor {}", stats.armor);
+        let taken = apply_damage(100.0, DamageType::Magical, &stats);
+        assert!(
+            (taken - 72.5).abs() < 0.01,
+            "27.5% magic resist: took {taken}"
+        );
+        assert_eq!(
+            (attrs.strength, attrs.agility, attrs.intelligence),
+            (22.0, 16.0, 26.0)
+        );
+        assert_eq!(
+            (
+                attrs.str_per_level,
+                attrs.agi_per_level,
+                attrs.int_per_level
+            ),
+            (2.5, 1.7, 3.6)
+        );
+
+        // 46 at level 1: the stored 20 plus 26 Intelligence (the primary).
+        assert_eq!(stats.attack_damage, 46.0);
+        assert_eq!(def.combat.attack_damage, 20.0);
+        assert_eq!(stats.attack_range, 450.0);
+        assert!(!stats.is_melee());
+        assert_eq!(stats.base_attack_time, 1.7);
+        assert_eq!(stats.attack_point, 0.25);
+        assert_eq!(stats.attack_backswing, 0.8);
+        assert_eq!(stats.turn_rate, 0.6);
+        assert_eq!(stats.move_speed, 285.0);
+        assert_eq!(
+            stats.attack_projectile_speed_bonus,
+            700.0 - crate::basic_attack::projectile_speed_for(450.0)
+        );
+        assert!(
+            (stats.attack_speed - 116.0 / 100.0 / 1.7).abs() < 1e-4,
+            "APS {}",
+            stats.attack_speed
+        );
+        assert!((stats.attack_speed - 0.682353).abs() < 1e-5);
+    }
+
+    #[test]
     fn roster_has_unique_kits_and_growth() {
         let v = HeroId::Vanguard.def();
         let s = HeroId::Skirmisher.def();
@@ -1050,8 +1246,8 @@ mod tests {
         assert!((stats.armor - 1.0).abs() < 1e-4, "armor {}", stats.armor);
         let taken = apply_damage(100.0, DamageType::Magical, &stats);
         assert!(
-            (taken - 73.0).abs() < 0.01,
-            "27% magic resist: took {taken}"
+            (taken - 72.5).abs() < 0.01,
+            "27.5% magic resist: took {taken}"
         );
         assert_eq!(
             (attrs.strength, attrs.agility, attrs.intelligence),
@@ -1108,8 +1304,8 @@ mod tests {
         assert!(stats.armor.abs() < 1e-3, "armor {}", stats.armor);
         let taken = apply_damage(100.0, DamageType::Magical, &stats);
         assert!(
-            (taken - 73.5).abs() < 0.01,
-            "26.5% magic resist: took {taken}"
+            (taken - 72.5).abs() < 0.01,
+            "27.5% magic resist: took {taken}"
         );
         assert_eq!(
             (attrs.strength, attrs.agility, attrs.intelligence),

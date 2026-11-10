@@ -87,7 +87,7 @@ REACTION_TRIGGERS = {
     "on_status_removed",
 }
 # Effect types that re-fire the row's context under a custom `on_<name>` trigger.
-GATE_TYPES = ("proc", "pseudo_proc", "counter", "accumulate")
+GATE_TYPES = ("proc", "pseudo_proc", "counter", "accumulate", "require_status")
 # Every effect type that fires a custom trigger: the gates plus the Chain mechanic gate (one
 # derived context per hop) and the Zone mechanic gate (one per tick). Used for reachability and
 # reaction propagation.
@@ -158,9 +158,13 @@ EFFECT_TYPES = {
     # Gates: re-fire the row's context under a custom trigger (see AbilityEffect::Proc / Counter /
     # Accumulate). `pseudo_proc` is a proc with a pseudo-random distribution.
     "proc",
+    # Fires its custom trigger only while the caster holds a status: `on_<name>:<status_id>`.
+    "require_status",
     "pseudo_proc",
     "counter",
     "accumulate",
+    # Gate: fires its trigger only while the caster holds a status (`on_<name>:<status_id>`).
+    "require_status",
     # Mechanic gate: jump from the start unit to nearby units, re-firing a custom trigger per hop.
     "chain",
     # Mechanic gate: a delayed, persistent area that re-fires a custom trigger on every tick with the
@@ -200,9 +204,15 @@ STATUSES = {
     # Taunt and hypnosis force the target towards the caster (see `Compulsion`).
     "taunt": ("StatusSpec::Taunt", "taunt", False),
     "hypnosis": ("StatusSpec::Hypnosis", "hypnosis", False),
+    # Like taunt, but the target attacks the cast's unit target instead of the caster (even an
+    # ally of the holder); optional `value` = attack speed bonus while taunted. Runtime id `taunt`.
+    "taunt_target": (None, "taunt", False),
     "slow": (None, "slow", False),
     # Percent of base move speed (amount or value, 0..400); the id is `<owner>_move_speed_bonus`.
     "move_speed_bonus": (None, "move_speed_bonus", True),
+    # Replaces the holder's basic-attack point with `value` seconds (0..MAX_ATTACK_SWING); the
+    # id is `<owner>_attack_point`.
+    "attack_point": (None, "attack_point", True),
     "attack_speed_slow": (None, "attack_speed_slow", False),
     "turn_rate_slow": (None, "turn_rate_slow", False),
     "turn_rate_bonus": (None, "turn_rate_bonus", True),
@@ -214,6 +224,9 @@ STATUSES = {
     "accuracy": (None, "accuracy", True),
     "true_strike": ("StatusSpec::TrueStrike", "true_strike", True),
     "phased": ("StatusSpec::Phased", "phased", True),
+    # Encased in ice: stunned (cannot move, attack, cast or use items; channels interrupted) and
+    # immune to physical damage. A Buff, so the holder's debuff dispel and debuff immunity leave it.
+    "frozen": ("StatusSpec::Frozen", "frozen", True),
     "forceful": ("StatusSpec::Forceful", "forceful", True),
     # Blocks new debuffs and purges existing ones; magic damage and spells still land.
     "debuff_immunity": ("StatusSpec::DebuffImmunity", "debuff_immunity", True),
@@ -245,7 +258,13 @@ STATUSES = {
 INDEPENDENT_SUFFIX = "independent"
 
 # Statuses whose runtime id is `<owner>_<name>` (the keyword alone is not a status id).
-OWNER_ID_STATUSES = ("damage_reduction", "status_resistance", "stacks", "move_speed_bonus")
+OWNER_ID_STATUSES = ("damage_reduction", "status_resistance", "stacks", "move_speed_bonus", "attack_point")
+
+# Triggers whose context carries the cast's unit target (see TriggerContext::cast_target).
+CAST_TARGET_TRIGGERS = ("on_cast", "on_projectile_hit")
+
+# Mirrors basic_attack::MAX_ATTACK_SWING: the longest attack point or backswing, in seconds.
+MAX_ATTACK_SWING = 1.0
 
 # `effect_type=resource` ids → (kind, spent resource). Hostile kinds act on other units;
 # the spend kinds act on the unit that uses them (caster/owner only).
@@ -328,6 +347,8 @@ TIMED_STATS = {
     "attack_speed_flat": "attack_speed_flat",
     "attack_speed_mult": "attack_speed_mult",
     "attack_range": "attack_range",
+    # Flat change to the attack projectile speed (ranged attackers); negative makes a debuff.
+    "attack_projectile_speed": "attack_projectile_speed",
     # Percent (0..1000) of the target's base attack damage, snapshotted when applied.
     "attack_damage_pct": "attack_damage_pct",
     # Cleave ratio (0..1) added to the target's cleave; only melee attackers cleave.
@@ -845,6 +866,11 @@ def ability_rust_target_type(target_type: str, projectile: str, aoe_radius: list
     return "NoTarget"
 
 
+def fed_trigger(e: "EffectRow") -> str:
+    """The custom trigger a feeder row fires: its effect_id without a `:<argument>` suffix."""
+    return e.row.get("effect_id").lower().partition(":")[0]
+
+
 def find_emitted_custom_triggers(repo_root: Path) -> set[str]:
     """Custom `on_*` trigger names that hand-written Rust (mechanics) may emit."""
     names: set[str] = set()
@@ -857,7 +883,7 @@ def find_emitted_custom_triggers(repo_root: Path) -> set[str]:
 
 def warn_unreachable_custom_triggers(effects: list["EffectRow"], emitted: set[str] | None, report: Report) -> None:
     """A custom trigger only fires when a proc / counter row names it or Rust emits it."""
-    fed = {e.row.get("effect_id").lower() for e in effects if e.effect_type in CUSTOM_TRIGGER_FEEDERS}
+    fed = {fed_trigger(e) for e in effects if e.effect_type in CUSTOM_TRIGGER_FEEDERS}
     for e in effects:
         if e.trigger in ABILITY_TRIGGERS or e.trigger in ITEM_TRIGGERS:
             continue
@@ -1380,7 +1406,7 @@ def reaction_triggers(effects: list[EffectRow]) -> set[str]:
     while changed:
         changed = False
         for e in effects:
-            fed = e.row.get("effect_id").lower()
+            fed = fed_trigger(e)
             if e.effect_type in CUSTOM_TRIGGER_FEEDERS and e.trigger in reaction and fed not in reaction:
                 reaction.add(fed)
                 changed = True
@@ -1399,7 +1425,7 @@ def chain_fed_triggers(effects: list[EffectRow]) -> set[str]:
     while changed:
         changed = False
         for e in effects:
-            fed = e.row.get("effect_id").lower()
+            fed = fed_trigger(e)
             if e.effect_type not in CUSTOM_TRIGGER_FEEDERS or fed in fed_triggers:
                 continue
             if e.effect_type in ("chain", "zone", "attached_zone") or e.trigger in fed_triggers:
@@ -1663,6 +1689,18 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             spec = f'StatusSpec::Slow {{ id: "{ctx.owner_id}_slow", percent: {rank_value(percent)} }}'
             if amount:
                 _unused(e, report, "value")
+        elif effect_id == "taunt_target":
+            if e.trigger not in CAST_TARGET_TRIGGERS:
+                report.error(row.file, row.line, "trigger", e.trigger, f"taunt_target forces attacks on the cast's unit target, so it needs a trigger that carries one ({', '.join(CAST_TARGET_TRIGGERS)}); not passive, while or while_toggled")
+                return None
+            if ctx.target_type is not None and ctx.target_type != "unit":
+                report.error(row.file, row.line, "effect_id", row.get("effect_id"), f"taunt_target needs a source with target_type unit (got {ctx.target_type})")
+                return None
+            if value and any(v < 0 for v in value):
+                report.error(row.file, row.line, "value", row.get("value"), "taunt_target attack speed bonus cannot be negative")
+                return None
+            spec = f"StatusSpec::TauntCastTarget {{ attack_speed: {rank_value(value) if value else 'RankValue::ZERO'} }}"
+            _unused(e, report, "amount")
         elif effect_id == "mini_stun":
             _unused(e, report, "value", "amount")
             if any(d < 0.05 for d in duration if d > 0):
@@ -1726,6 +1764,15 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             spec = f'StatusSpec::MoveSpeedBonus {{ id: "{ctx.owner_id}_move_speed_bonus", percent: {rank_value(percent)} }}'
             if amount:
                 _unused(e, report, "value")
+        elif effect_id == "attack_point":
+            if not value:
+                report.error(row.file, row.line, "value", "", "required: attack_point seconds (e.g. 0.1)")
+                return None
+            if any(not 0 <= v <= MAX_ATTACK_SWING for v in value):
+                report.error(row.file, row.line, "value", row.get("value"), f"attack_point seconds must be within 0..{MAX_ATTACK_SWING:g}")
+                return None
+            spec = f'StatusSpec::AttackPoint {{ id: "{ctx.owner_id}_attack_point", seconds: {rank_value(value)} }}'
+            _unused(e, report, "amount")
         elif effect_id == "turn_rate_bonus":
             percent = amount or value
             if not percent:
@@ -1747,13 +1794,23 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             spec = f"StatusSpec::Leash {{ radius: {rank_value(value)}, anchor: LeashAnchorKind::{anchor} }}"
             _unused(e, report, "amount")
         elif effect_id == "heal_over_time":
-            if not _require(e, "value", report, "health restored per second"):
+            # `value` = flat health per second, `amount` = percent (0..100) of the holder's max
+            # health per second; at least one must be above 0.
+            if not value and not amount:
+                report.error(row.file, row.line, "value", "", "required: health restored per second (value) and/or percent of max health per second (amount)")
                 return None
-            if any(v <= 0 for v in value):
-                report.error(row.file, row.line, "value", row.get("value"), "heal_over_time per-second amount must be above 0")
+            if value and any(v < 0 for v in value):
+                report.error(row.file, row.line, "value", row.get("value"), "heal_over_time per-second amount cannot be negative")
                 return None
-            spec = f"StatusSpec::HealOverTime {{ hps: {rank_value(value)} }}"
-            _unused(e, report, "amount")
+            if amount and any(not 0 <= a <= 100 for a in amount):
+                report.error(row.file, row.line, "amount", row.get("amount"), "heal_over_time max-health percent must be within 0..100")
+                return None
+            if not any(v > 0 for v in value or []) and not any(a > 0 for a in amount or []):
+                report.error(row.file, row.line, "amount", row.get("amount"), "heal_over_time needs a per-second amount (value) or a max-health percent (amount) above 0")
+                return None
+            hps = rank_value(value) if value else "RankValue::ZERO"
+            pct = rank_value(amount) if amount else "RankValue::ZERO"
+            spec = f"StatusSpec::HealOverTime {{ hps: {hps}, max_health_pct: {pct} }}"
         elif effect_id == "heal_reduction":
             percent = amount or value
             if not percent:
@@ -1991,6 +2048,12 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
         if effect is None:
             return None
     elif t in GATE_TYPES:
+        gate_status = None
+        if t == "require_status":
+            effect_id, _, gate_status = effect_id.partition(":")
+            if not effect_id or not gate_status:
+                report.error(row.file, row.line, "effect_id", row.get("effect_id"), "require_status needs effect_id <on_trigger>:<status_id>, e.g. on_burn_hit:my_ability_attack_range")
+                return None
         if not _require(e, "effect_id", report, "the custom trigger to fire (on_<name>)"):
             return None
         if not CUSTOM_TRIGGER_PATTERN.match(effect_id) or effect_id in ABILITY_TRIGGERS or effect_id in ITEM_TRIGGERS:
@@ -2008,7 +2071,14 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
         if not no_scaling():
             return None
         _unused(e, report, "damage_type", "duration", "amount", "radius")
-        if t in ("proc", "pseudo_proc"):
+        if t == "require_status":
+            status_id = runtime_status_id(gate_status)
+            if status_id is None:
+                report.error(row.file, row.line, "effect_id", row.get("effect_id"), f"unknown status {gate_status!r}: name a status keyword, a runtime status id or an <owner>_<stat> id of a timed row")
+                return None
+            _unused(e, report, "value")
+            effect = f'AbilityEffect::RequireStatus {{ id: "{status_id}", then: AbilityTrigger::Custom("{effect_id}") }}'
+        elif t in ("proc", "pseudo_proc"):
             if not _require(e, "value", report, "proc chance percent (above 0, at most 100)"):
                 return None
             if any(not 0 < p <= 100 for p in value):

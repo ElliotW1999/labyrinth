@@ -25,3 +25,7 @@ dark_pact,Dark Pact,Q,active,no_target,enemy,,325,0,,9|8|7|6|5|4|3,65,,,none,,"A
 pounce,Pounce,W,active,no_target,enemy,,,0,,24|20|16|12|8|4|2,75,,,none,,"Slark leaps forward, damaging every enemy he passes; enemies near his landing point are leashed",0.53,,,,,
 essence_shift,Essence Shift,E,passive,no_target,self,,,,,,,,,none,,"Each successful attack drains the target's attack damage and grants Slark agility; every stack wears off on its own",,,,,,
 shadow_dance,Shadow Dance,R,active,no_target,self,,,0,,50|40|30|20,100,,,none,,"Slark hides in a cloud of shadows, becoming untargetable and gaining bonus move speed and health regeneration",0,,,,,
+arctic_burn,Arctic Burn,Q,active,no_target,self,,,0,,29|26|23|20|18.5|17|15.5,100,,,none,,"Winter Wyvern takes flight, gaining attack range, faster attacks and phasing; her attacks burn and slow enemies",0,,,,,
+splinter_blast,Splinter Blast,W,active,unit,enemy,1150,500,0.3,,6,105|115|125|135|140|145|150,,,targeted,650,"Launches a ball of ice at a unit that shatters on arrival, damaging and slowing every other enemy nearby",1.17,,,,,
+cold_embrace,Cold Embrace,E,active,unit,ally,850|900|950|1000|1025|1050|1075,,0.3,,24|21|18|15|13.5|12|10.5,50|60|70|80|85|90|95,,,none,,"Encases an ally in ice: it cannot act, heals every second and is immune to physical damage",0.63,,,,,
+winters_curse,Winter's Curse,R,active,unit,enemy,800,525,0.3,,100|90|80|75,150|200|250|275,,,none,,"Freezes an enemy in place and dispels it; nearby enemies are compelled to attack it with bonus attack speed",1.37,,,,,

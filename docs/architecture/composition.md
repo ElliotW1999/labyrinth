@@ -18,7 +18,7 @@ Plan and decisions: `docs/plans/2026-11-08-mechanic-composition-layers.md`. Reac
 Invariants (I1 to I9 from the composition plan, with I1, I4 and I6 amended and I10 to I12 added by the merge plan):
 
 - **I1.** `EffectRunner::execute` is the only place an `AbilityEffect` becomes gameplay messages. Every status (cast, toggle, `While`) is built by `build_status_effect`. Reactive stamping happens only there and in `reconcile_held_status`.
-- **I2.** Mechanics and gates (`Proc`, `Counter`, `Accumulate`, `Chain`, `Zone`) decide who and when; they never write Damage, Heal or Status events (accepted exceptions: the basic-attack hit stage, DoT ticks, reflection and burn follow-ups).
+- **I2.** Mechanics and gates (`Proc`, `RequireStatus`, `Counter`, `Accumulate`, `Chain`, `Zone`) decide who and when; they never write Damage, Heal or Status events (accepted exceptions: the basic-attack hit stage, DoT ticks, reflection and burn follow-ups).
 - **I3.** Every trigger emitter carries an `EffectSource` (`Ability` or `Item`); nothing hard-codes `Ability`.
 - **I4.** Health goes down only in `combat::apply_damage_events` (the only writer of `DamageAppliedEvent`) and `vitals::apply_resource_drain_events` (floors health at 1; fires no damage, kill or death triggers). Health goes up only in `vitals::apply_heal`. Statuses change only through `StatusEffectEvent`, `tick_status_effects` and `status::wake_from_sleep`, which are the only sources of `StatusLifecycleEvent`.
 - **I5.** Immunity, untargetability, dispel and damage calculation are queried through the `status.rs` / `combat.rs` helpers. `DamageEvent::from_effect` alone chooses the damage kind; the Effects layer then stamps `.reactive(ctx.reaction)`.
@@ -74,7 +74,9 @@ Invariants (I1 to I9 from the composition plan, with I1, I4 and I6 amended and I
                                                  facts; same frame for the rest) --> Effects
 ```
 
-Gates feed back: `Proc` / `Counter` / `Accumulate` / `Chain` push derived `TriggerContext`s into the same queue inside `resolve_ability_triggers`. `ctx.derived()` carries `reaction`, `amount` and `status` through unchanged, so every gate inherits the reaction rule with no extra code. The fact-message loop (Effects -> Gameplay rules -> fact -> dispatcher -> Effects) is what the reaction rule keeps finite: reactive output never produces the facts that dispatch damage or status triggers.
+Gates feed back: `Proc` / `RequireStatus` / `Counter` / `Accumulate` / `Chain` push derived `TriggerContext`s into the same queue inside `resolve_ability_triggers`. `ctx.derived()` carries `reaction`, `amount` and `status` through unchanged, so every gate inherits the reaction rule with no extra code. The fact-message loop (Effects -> Gameplay rules -> fact -> dispatcher -> Effects) is what the reaction rule keeps finite: reactive output never produces the facts that dispatch damage or status triggers.
+
+`RequireStatus { id, then }` is the status gate: when `gate_open` allows it and the caster holds a live status with `id` (`StatusEffects::has_status`) it pushes `ctx.derived(then)`. It uses no RNG and no counter, so it fires once per execution and a refreshing status never stacks; the depth cap applies like any gate. It is how an active ability's `on_attack_hit` rows run only while its buff is up (on-hit rows of a learned ability otherwise always fire).
 
 ## 3. Frame order
 
@@ -126,6 +128,14 @@ Four storage styles coexist on purpose. Pick by the kind of change and keep a st
 
 **Counter / refresh and independent instances.** `status::apply_status` is the only place that decides what a same-id application does: it replaces the old instance (a refresh), merges stacks, or, when `StatusEffect.independent` is set (the `:independent` suffix on a timed `stat_modifier`), skips the replacement so every application keeps its own instance and timer. Removal by id, dispel and debuff-immunity purge remove every matching instance (`remove_statuses` retains by predicate), and each instance reports its own `Applied` / `Expired` lifecycle event, so the status vector grows by one entry per application (Essence Shift: roughly 15 to 20 per target in a long fight; the HUD groups them).
 
+**Primary attribute damage.** One attack damage per point of `HeroAttributes::primary` is part of `HeroAttributes::apply_to` / `apply_delta` (`DAMAGE_PER_PRIMARY`), so level-ups, spawn growth, item attributes and timed attributes all add it and revert it exactly. `HeroDef::level_one_attack_damage()` (stored base plus the level-1 primary) is what `attack_damage_pct` statuses (Empower) snapshot. Intelligence grants no magic resistance: every hero carries the flat rating 6.321839 (27.5%).
+
+**Timed attack projectile speed** (`StatusEffect.attack_projectile_speed`) is a mutate-on-apply stat like `attack_range`: it adds to and reverts from `CombatStats::attack_projectile_speed_bonus`, and the basic attack reads base plus bonus when it releases.
+
+**Attack point override.** `StatusEffect.attack_point_override` (`apply_status,attack_point`) follows the cap pattern below: it is read only by `CombatStats::effective_attack_point` (lowest live value wins, clamped to `MAX_ATTACK_SWING`) when `start_basic_attack_windups` begins a swing, and is not a stat delta, so nothing is reverted when it ends. Backswing is unchanged.
+
+**Heal over time.** `StatusEffect.heal_per_sec` plus `heal_max_health_fraction` (percent of the holder's current max health per second, read each tick); `build_status_effect` folds the healer's amp into both parts once.
+
 **Caps.** `StatusEffect.move_speed_cap` (0 = none) is applied by `CombatStats::effective_move_speed` as `.min(lowest live cap)` after the `scale::MIN_MOVE_SPEED` floor and the slow sum. Hex uses `scale::HEX_MOVE_SPEED`; the cap is not a stat delta, so nothing is reverted when it ends.
 
 `build_status_effect` is the single constructor for statuses (timed, toggled and held `While` statuses). Held statuses get `dot_source = owner` and the owner's outgoing heal amp, exactly like toggle statuses.
@@ -158,7 +168,8 @@ How each protection treats each kind of effect. "Skipped" means the unit is neve
 | `disarmed` | | x | | | | |
 | `breaks_passives` (break, hex) | | | | | | x |
 | `compulsion` Flee (fear) / Approach (hypnosis) | | x | x | x | x | |
-| `compulsion` Attack (taunt) | | | x | x | x | |
+| `compulsion` Attack (taunt, `taunt_target`) | | | x | x | x | |
+| `frozen` (a Buff: `stunned` + physical `immune_damage`) | x | x | x | x | | |
 
 `ORDERS` drops player and AI orders. `PASSIVES` suppresses ability passives only (stats, triggers, conditional statuses; `passive_suppressed`); item passives keep working.
 
@@ -172,7 +183,11 @@ How each protection treats each kind of effect. "Skipped" means the unit is neve
 
 **Targeting-only untargetable (`apply_status,untargetable`, Shadow Dance).** `StatusEffect.targeting_blocked` is read only by `StatusEffects::rejects`, in the `Attack` and `HostileSpell` arms. It is deliberately not the full `untargetable` flag: area effects (`Any`, so enemy and ally areas), dash contact (`displacement.rs`) and homing projectiles already in flight (`combat.rs`) still reach the holder, because those read `is_untargetable()`. Attackers drop the holder (the swing and acquisition checks read `rejects(Attack)`), enemies cannot start a unit-target cast on it (allies and self are never rejected), and its own caster-targeted effects keep working. Cyclone and banish keep the full flag.
 
-**Damage-type immunity.** `StatusEffect.immune_damage` is a `DamageTypeMask`; `combat.rs` asks `is_immune_to(damage_type)` for the event's type. Spell immunity immunises to magical damage only, ethereal to physical only, invulnerable to everything (dropped earlier).
+**Damage-type immunity.** `StatusEffect.immune_damage` is a `DamageTypeMask`; `combat.rs` asks `is_immune_to(damage_type)` for the event's type. Spell immunity immunises to magical damage only, ethereal and frozen to physical only, invulnerable to everything (dropped earlier).
+
+**Frozen** (`StatusSpec::Frozen`, Cold Embrace) is a Buff that is stunned and physically immune. Being Buff-kind, the holder's own `dispel,debuff` and debuff immunity do not touch it, and a debuff-immune unit still accepts it; an enemy basic `dispel,buff` removes it.
+
+**Attacking an ally (`taunt_target`).** Every basic-attack stage used to require an enemy target. `basic_attack::attack_allowed(attacker_team, attacker_statuses, target, target_team)` is now the single exception: an enemy, or the exact unit an active `Compulsion::Attack` names. It is used by `request_basic_attacks` (the chosen target; auto-acquire stays enemy-only), `resolve_attack_releases` and `resolve_basic_attack_impacts` (a despawned attacker counts as enemy-only, so an in-flight attack on an ally fizzles when the compulsion ends). `release_extra_attacks`, cleave, splash and `ai::acquire_targets` stay enemy-only, and a forced hit on a non-enemy primary skips its secondary targets. `StatusSpec::TauntCastTarget` builds the compulsion from `StatusBuildContext.cast_target` (a no-op without one) and carries its attack-speed bonus on the same `taunt` status, so a dispel, expiry or the target's death (`enforce_compulsions`) ends both; the runner skips the cast target itself.
 
 **Concealment.** A unit is concealed when any live status has `invisible` and none has `revealed` (`StatusEffects::is_concealed`). Concealed units are rejected by `Attack` and `HostileSpell` picks, so creeps and towers do not acquire them and unit-target spells cannot be cast at them; area effects, `Any` picks and ally picks still reach them. `fog.rs` keeps a concealed enemy hidden even inside vision, and a `hidden` unit (banish) is drawn for nobody. True sight is content: a proximity / interval trigger applying `reveal`. Invisibility with `invis_breaks_on_action` ends via `break_invisibility` (a non-extra attack release or a fired activation).
 
@@ -621,11 +636,45 @@ dark_pact,2,on_dark_pact_pulse,affected_units,resource,health_drain,7.5|15|22.5|
 
 **Pounce**: `movement,dash` 700 over 0.75 s along the facing (Ursa G1) with a 120 contact radius (damage once per enemy on `on_unit_contact`), then `apply_status,leash` (radius 325, anchored at the landing point) on enemies within 120 of the landing point at `on_movement_end`. A refused dash reports its end in place (Ursa G7).
 
-**Essence Shift** (passive): two `on_attack_hit` rows with independent instances (G2): a Debuff `attack_damage:independent` of -1 on the target and a Buff `agility:independent` of +3 (G3) on Slark, 10 s each, so every stack expires on its own. Agility feeds armor and attack speed only, because the engine has no primary-attribute damage.
+**Essence Shift** (passive): two `on_attack_hit` rows with independent instances (G2): a Debuff `attack_damage:independent` of -1 on the target and a Buff `agility:independent` of +3 (G3) on Slark, 10 s each, so every stack expires on its own. Agility feeds armor and attack speed, and, since Winter Wyvern added primary-attribute damage (see 6.16), +3 attack damage per stack for an agility-primary hero (this supersedes the earlier decision that agility fed no damage).
 
 **Shadow Dance**: three `on_cast` caster rows: `untargetable` (G5), `move_speed_bonus` 20 to 50% (G4) and `health_regen` 70 to 160, for 4 to 4.75 s. He cannot be attacked or picked by enemy unit-target spells, but area effects, dash contact and projectiles already in flight still hit him, and his own Dark Pact keeps pulsing.
 
 Tests: `slark_matches_spec`, `slark_abilities_generate_expected_definitions`, the `dark_pact_*`, `pounce_*`, `essence_shift_*` and `shadow_dance_*` integration tests in `abilities/mod.rs`, plus one set per gap.
+
+### 6.16 Winter Wyvern
+
+All four abilities are data rows (`arctic_burn`, `splinter_blast`, `cold_embrace`, `winters_curse`; trigger `on_arctic_burn_hit`; status ids `arctic_burn_attack_range`, `arctic_burn_attack_projectile_speed`, `arctic_burn_attack_point`, `phased`, `arctic_burn_burn`, `arctic_burn_slow`, `splinter_blast_slow`, `frozen`, `heal_over_time`, `winters_curse_stun`, `taunt`). Plan and decisions: `docs/plans/2026-11-10-winter-wyvern-and-attribute-damage.md`.
+
+New surface (nothing else was added):
+
+| Gap | Surface | Where it lives |
+|---|---|---|
+| P1 | One attack damage per primary-attribute point (`HeroAttributes::primary`, `apply_to` / `apply_delta`) | `components.rs`, `heroes.rs` |
+| P2 / A1 | Flat 27.5% magic resistance for every hero; Intelligence grants none | `components.rs`, `heroes.rs`, `HeroGenerator.py` |
+| G1 | Timed `stat_modifier,attack_projectile_speed` | `status.rs`, `definition.rs`, `generator_common.py` |
+| G2 | `apply_status,attack_point` (`StatusEffect.attack_point_override`, `CombatStats::effective_attack_point`) | `status.rs`, `components.rs`, `basic_attack.rs` |
+| G3 | `require_status` gate (`AbilityEffect::RequireStatus`) | `effects.rs`, `definition.rs`, `generator_common.py` |
+| G4 | `heal_over_time` percent of max health | `status.rs`, `definition.rs`, `effects.rs` |
+| G5 | `apply_status,frozen` (`StatusSpec::Frozen`) | `status.rs`, `definition.rs` |
+| G6 | `apply_status,taunt_target` (`StatusSpec::TauntCastTarget`) and `basic_attack::attack_allowed` | `basic_attack.rs`, `definition.rs`, `effects.rs` |
+| G7 | `HeroGenerator` keeps apostrophes out of identifiers (`WintersCurse`) | `HeroGenerator.py` |
+
+**Arctic Burn** (no target): on cast, caster `stat_modifier` rows for attack range (+250 to +362.5, half steps from rank 5) and projectile speed (+500), `apply_status,attack_point` 0.1 s and `phased`, all for 7 to 11.5 s. An `on_attack_hit` row `require_status,on_arctic_burn_hit:arctic_burn_attack_range` re-fires under `on_arctic_burn_hit` while the range status is held, where `burn` (15 to 82.5 per second, magical) and `slow` last 5 s and refresh on every hit (one `arctic_burn_burn` instance, never stacked). Arctic Burn is an active, so Break does not suppress its on-hit rows. An enemy `dispel,buff` removes all four statuses together.
+
+**Splinter Blast** (unit target, 1150, radius 500): a `targeted` projectile (speed 650) with `aoe_radius`, so `splash_radius = AreaRadius::Ability`. Combat excludes the primary from the splashed list, so `on_projectile_hit,affected_units` damages and slows exactly the other enemies in the radius; no new mechanic. If the primary dies mid-flight the projectile resolves as `OnImpact` and no splinters fire.
+
+**Cold Embrace** (ally unit target, self allowed): `frozen` plus `heal_over_time` (flat 40 to 62.5 and 1.5% to 6% of max health per second) for 4 s. The two are separate statuses, so an enemy buff dispel removes the freeze and leaves the heal. `heal_over_time` keeps its shared id, so it replaces any other heal over time on the target.
+
+**Winter's Curse** (enemy unit target, radius 525): `dispel,buff` and `mini_stun` (id `winters_curse_stun`) on the cast target, then `taunt_target` on enemies around it (attack speed +50 to +87.5%). The cast target is never taunted. Applied at cast time only; the target has no special damage immunity; debuff-immune enemies are not taunted; the taunt ends when the target dies. Taunted units attack their ally with no cleave or splash, and their own `on_attack_hit` rows fire on it.
+
+```csv
+arctic_burn,4,on_attack_hit,caster,require_status,on_arctic_burn_hit:arctic_burn_attack_range,,,,,,,
+arctic_burn,5,on_arctic_burn_hit,trigger_unit,apply_status,burn,15|30|45|60|67.5|75|82.5,magical,5,,,,
+winters_curse,2,on_cast,units_in_radius,apply_status,taunt_target,50|65|80|87.5,,4,,,,
+```
+
+Tests: `winter_wyvern_matches_spec`, `winter_wyvern_abilities_generate_expected_definitions`, the `arctic_burn_*`, `splinter_blast_*`, `cold_embrace_*` and `winters_curse_*` integration tests in `abilities/mod.rs`, plus one set per gap.
 
 ## 7. Checklist: adding a mechanic, effect or trigger
 

@@ -217,6 +217,9 @@ pub struct StatusEffect {
     pub accuracy: f32,
     /// Flat attack range change; also tracked in `CombatStats::attack_range_bonus`.
     pub attack_range: f32,
+    /// Flat attack projectile speed change; tracked in
+    /// `CombatStats::attack_projectile_speed_bonus`.
+    pub attack_projectile_speed: f32,
     /// Cleave ratio contributed to this status's cleave instance while active (melee
     /// attackers only cleave). The four cleave fields sum per `cleave_source` into one
     /// `CombatStats::cleaves` instance.
@@ -231,6 +234,10 @@ pub struct StatusEffect {
     /// instance by this status's id.
     pub cleave_source: Option<crate::abilities::effects::EffectSource>,
     pub heal_per_sec: f32,
+    /// Fraction of the holder's current max health healed per second, on top of
+    /// `heal_per_sec` (0.02 = 2% of max health per second). The healer's amp is folded in
+    /// when the status is applied, like `heal_per_sec`.
+    pub heal_max_health_fraction: f32,
     /// Timed resource modifier, summed when read (see [`crate::vitals::resource_stat`]).
     pub resource: Option<(crate::vitals::ResourceStat, f32)>,
     /// Fraction (0..1) of healing received that is negated. The strongest one applies.
@@ -309,6 +316,9 @@ pub struct StatusEffect {
     pub breaks_passives: bool,
     /// Caps the holder's walking speed (`0` = no cap). The lowest live cap applies.
     pub move_speed_cap: f32,
+    /// Replaces the holder's basic-attack point (foreswing, seconds) while active. The lowest
+    /// live override applies; backswing is unchanged.
+    pub attack_point_override: Option<f32>,
     /// Ignores trees and other ground obstacles while moving (buildings still block).
     pub flying: bool,
     /// Confines the unit to a circle (region restriction or tether).
@@ -401,12 +411,14 @@ impl StatusEffect {
             evasion: 0.0,
             accuracy: 0.0,
             attack_range: 0.0,
+            attack_projectile_speed: 0.0,
             cleave: 0.0,
             cleave_radius: 0.0,
             cleave_end_radius: 0.0,
             cleave_distance: 0.0,
             cleave_source: None,
             heal_per_sec: 0.0,
+            heal_max_health_fraction: 0.0,
             resource: None,
             heal_reduction: 0.0,
             damage_reduction: 0.0,
@@ -447,6 +459,7 @@ impl StatusEffect {
             debuff_immune: false,
             breaks_passives: false,
             move_speed_cap: 0.0,
+            attack_point_override: None,
             flying: false,
             leash: None,
             compulsion: None,
@@ -625,6 +638,17 @@ impl StatusEffect {
         Self {
             silenced: true,
             ..Self::debuff("silence", duration)
+        }
+    }
+
+    /// An ally encased in ice (Cold Embrace): stunned (cannot move, attack, cast or use items,
+    /// and channels are interrupted) and immune to physical damage. A buff, so the holder's own
+    /// `dispel,debuff` and debuff immunity leave it alone; an enemy's `dispel,buff` removes it.
+    pub fn frozen(duration: f32) -> Self {
+        Self {
+            stunned: true,
+            immune_damage: DamageTypeMask::PHYSICAL,
+            ..Self::buff("frozen", duration)
         }
     }
 
@@ -1007,6 +1031,15 @@ impl StatusEffects {
             .min_by(f32::total_cmp)
     }
 
+    /// The lowest live basic-attack point override (`None` = the unit's own attack point).
+    pub fn attack_point_override(&self) -> Option<f32> {
+        self.effects
+            .iter()
+            .filter(|e| e.remaining > 0.0)
+            .filter_map(|e| e.attack_point_override)
+            .min_by(f32::total_cmp)
+    }
+
     pub fn blind_miss_chance(&self) -> f32 {
         self.effects
             .iter()
@@ -1307,9 +1340,11 @@ pub fn tick_status_effects(
         let mut i = 0;
         while i < statuses.effects.len() {
             let effect = &mut statuses.effects[i];
-            if effect.heal_per_sec > 0.0 {
-                // The healer's amp was folded into `heal_per_sec` when the status was applied.
-                crate::vitals::apply_heal(&mut health, effect.heal_per_sec * dt, hot_factor);
+            if effect.heal_per_sec > 0.0 || effect.heal_max_health_fraction > 0.0 {
+                // The healer's amp was folded into both parts when the status was applied; the
+                // percentage reads the holder's max health afresh every tick.
+                let per_sec = effect.heal_per_sec + effect.heal_max_health_fraction * health.max;
+                crate::vitals::apply_heal(&mut health, per_sec * dt, hot_factor);
             }
             if effect.damage_per_sec > 0.0 {
                 damage.write(DamageEvent::dot(
@@ -1390,6 +1425,7 @@ pub(crate) fn subtract_status_stat_delta(
     stats.attack_speed_mult -= effect.attack_speed_mult;
     stats.attack_range -= effect.attack_range;
     stats.attack_range_bonus -= effect.attack_range;
+    stats.attack_projectile_speed_bonus -= effect.attack_projectile_speed;
     if effect.carries_cleave() {
         stats.cleaves.adjust(
             effect.cleave_key(),
@@ -1412,6 +1448,7 @@ pub(crate) fn add_status_stat_delta(effect: &StatusEffect, stats: &mut CombatSta
     stats.attack_speed_mult += effect.attack_speed_mult;
     stats.attack_range += effect.attack_range;
     stats.attack_range_bonus += effect.attack_range;
+    stats.attack_projectile_speed_bonus += effect.attack_projectile_speed;
     if effect.carries_cleave() {
         stats.cleaves.adjust(
             effect.cleave_key(),
@@ -2157,6 +2194,7 @@ mod tests {
                 agility: 0.0,
                 source: None,
                 point: Vec3::ZERO,
+                cast_target: None,
                 base_attack_damage: 0.0,
             },
         );
@@ -2176,6 +2214,7 @@ mod tests {
                 agility: 0.0,
                 source: None,
                 point: Vec3::ZERO,
+                cast_target: None,
                 base_attack_damage: 0.0,
             },
         );
@@ -2394,6 +2433,55 @@ mod tests {
     }
 
     #[test]
+    fn timed_attack_projectile_speed_raises_and_reverts() {
+        use std::time::Duration;
+        let mut world = World::new();
+        world.init_resource::<Time>();
+        world.init_resource::<Messages<DamageEvent>>();
+        world.init_resource::<Messages<StatusLifecycleEvent>>();
+        let mut statuses = StatusEffects::default();
+        let mut stats = CombatStats::simple(10.0, 550.0, 1.0, 0.0, 0.0, 10.0);
+        let base = stats.attack_projectile_speed_bonus;
+        let range = stats.attack_range;
+        apply_status(
+            &mut statuses,
+            &mut stats,
+            StatusEffect {
+                attack_projectile_speed: 500.0,
+                ..StatusEffect::buff("fast_shots", 1.0)
+            },
+            0.0,
+        );
+        assert_eq!(stats.attack_projectile_speed_bonus, base + 500.0);
+        assert_eq!(stats.attack_range, range, "range is untouched");
+        // A debuff version lowers it and stacks with the buff.
+        apply_status(
+            &mut statuses,
+            &mut stats,
+            StatusEffect {
+                attack_projectile_speed: -200.0,
+                ..StatusEffect::debuff("slow_shots", 5.0)
+            },
+            0.0,
+        );
+        assert_eq!(stats.attack_projectile_speed_bonus, base + 300.0);
+        let unit = world.spawn((statuses, stats, Health::new(100.0))).id();
+
+        world
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_secs_f32(2.0));
+        world.run_system_once(tick_status_effects).unwrap();
+        let stats = world.get::<CombatStats>(unit).unwrap();
+        assert_eq!(stats.attack_projectile_speed_bonus, base - 200.0);
+        world
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_secs_f32(5.0));
+        world.run_system_once(tick_status_effects).unwrap();
+        let stats = world.get::<CombatStats>(unit).unwrap();
+        assert_eq!(stats.attack_projectile_speed_bonus, base);
+    }
+
+    #[test]
     fn cleave_modifier_status_adds_and_reverts_exactly() {
         use std::time::Duration;
         let mut world = World::new();
@@ -2491,6 +2579,7 @@ mod tests {
                 agility: 0.0,
                 source: None,
                 point: Vec3::ZERO,
+                cast_target: None,
                 base_attack_damage: 0.0,
             },
         );
@@ -3301,6 +3390,59 @@ mod tests {
         }
 
         #[test]
+        fn timed_agility_adds_damage_to_agility_primary_hero_and_reverts() {
+            let mut app = app();
+            let hero = hero(&mut app);
+            app.world_mut()
+                .get_mut::<HeroAttributes>(hero)
+                .unwrap()
+                .primary = Some(crate::abilities::definition::Attribute::Agility);
+            let damage = |app: &App| app.world().get::<CombatStats>(hero).unwrap().attack_damage;
+            let base = damage(&app);
+            send(
+                &mut app,
+                hero,
+                StatusChange::Apply(modifier("t_agility", ResourceStat::Agility, 9.0, 2.0)),
+            );
+            step(&mut app, 0.0);
+            step(&mut app, 0.0);
+            assert!((damage(&app) - (base + 9.0)).abs() < 1e-4);
+            step(&mut app, 2.5);
+            step(&mut app, 0.0);
+            assert!((damage(&app) - base).abs() < 1e-4);
+        }
+
+        #[test]
+        fn timed_intelligence_adds_damage_to_int_primary_hero_but_no_magic_resist() {
+            let mut app = app();
+            let hero = hero(&mut app);
+            app.world_mut()
+                .get_mut::<HeroAttributes>(hero)
+                .unwrap()
+                .primary = Some(crate::abilities::definition::Attribute::Intelligence);
+            let read = |app: &App| {
+                let stats = app.world().get::<CombatStats>(hero).unwrap();
+                (stats.attack_damage, stats.magic_resist)
+            };
+            let (damage, resist) = read(&app);
+            send(
+                &mut app,
+                hero,
+                StatusChange::Apply(modifier("t_int", ResourceStat::Intelligence, 7.0, 2.0)),
+            );
+            step(&mut app, 0.0);
+            step(&mut app, 0.0);
+            let (up_damage, up_resist) = read(&app);
+            assert!((up_damage - (damage + 7.0)).abs() < 1e-4);
+            assert!((up_resist - resist).abs() < 1e-6, "INT gives no MR");
+            step(&mut app, 2.5);
+            step(&mut app, 0.0);
+            let (down_damage, down_resist) = read(&app);
+            assert!((down_damage - damage).abs() < 1e-4);
+            assert!((down_resist - resist).abs() < 1e-6);
+        }
+
+        #[test]
         fn timed_strength_changes_max_health_like_items() {
             let mut app = app();
             let hero = hero(&mut app);
@@ -3322,7 +3464,10 @@ mod tests {
             step(&mut app, 0.0);
             let down = snapshot(&app, hero);
             assert!((down.2 - (base.2 - 5.0 * HeroAttributes::MANA_PER_INT)).abs() < 1e-3);
-            assert!((down.4 - (base.4 - 5.0 * HeroAttributes::MR_PER_INT)).abs() < 1e-4);
+            assert!(
+                (down.4 - base.4).abs() < 1e-4,
+                "intelligence grants no magic resist"
+            );
         }
 
         #[test]
@@ -3536,6 +3681,142 @@ mod tests {
         }
     }
 
+    mod frozen {
+        use super::*;
+        use std::time::Duration;
+
+        fn app() -> App {
+            let mut app = App::new();
+            app.init_resource::<Time>()
+                .add_message::<StatusEffectEvent>()
+                .add_message::<StatusLifecycleEvent>()
+                .add_message::<DamageEvent>()
+                .add_message::<crate::combat::DamageAppliedEvent>()
+                .add_systems(
+                    Update,
+                    (apply_status_effect_events, tick_status_effects).chain(),
+                );
+            app
+        }
+
+        fn unit(app: &mut App) -> Entity {
+            app.world_mut()
+                .spawn((
+                    StatusEffects::default(),
+                    CombatStats::simple(10.0, 100.0, 1.0, 0.0, 0.0, 300.0),
+                    Health::new(1000.0),
+                ))
+                .id()
+        }
+
+        fn send(app: &mut App, target: Entity, change: StatusChange) {
+            app.world_mut().write_message(StatusEffectEvent {
+                reactive: false,
+                source: None,
+                target,
+                change,
+            });
+        }
+
+        fn step(app: &mut App) {
+            app.world_mut()
+                .resource_mut::<Time>()
+                .advance_by(Duration::from_secs_f32(0.1));
+            app.update();
+        }
+
+        fn is_frozen(app: &App, unit: Entity) -> bool {
+            app.world()
+                .get::<StatusEffects>(unit)
+                .unwrap()
+                .has_status("frozen")
+        }
+
+        #[test]
+        fn frozen_ally_cannot_move_attack_or_cast() {
+            let mut app = app();
+            let unit = unit(&mut app);
+            send(
+                &mut app,
+                unit,
+                StatusChange::Apply(StatusEffect::frozen(4.0)),
+            );
+            step(&mut app);
+            let statuses = app.world().get::<StatusEffects>(unit).unwrap();
+            let blocks = statuses.blocks();
+            for blocked in [
+                ActionBlocks::MOVE,
+                ActionBlocks::ATTACK,
+                ActionBlocks::CAST,
+                ActionBlocks::ITEMS,
+            ] {
+                assert!(blocks.contains(blocked), "{blocked:?}");
+            }
+            assert!(statuses.is_rooted());
+            let frozen = statuses.effects.iter().find(|e| e.id == "frozen").unwrap();
+            assert_eq!(frozen.kind, StatusKind::Buff);
+        }
+
+        #[test]
+        fn frozen_survives_ally_debuff_dispel_and_debuff_immunity() {
+            let mut app = app();
+            let unit = unit(&mut app);
+            send(
+                &mut app,
+                unit,
+                StatusChange::Apply(StatusEffect::frozen(4.0)),
+            );
+            send(
+                &mut app,
+                unit,
+                StatusChange::Dispel {
+                    kind: StatusKind::Debuff,
+                    strength: DispelStrength::Strong,
+                },
+            );
+            step(&mut app);
+            assert!(is_frozen(&app, unit), "the holder's own debuff dispel");
+
+            // Debuff immunity rejects debuffs but neither rejects nor removes the buff.
+            send(
+                &mut app,
+                unit,
+                StatusChange::Apply(StatusEffect::debuff_immunity(4.0)),
+            );
+            step(&mut app);
+            assert!(is_frozen(&app, unit), "debuff immunity applied afterwards");
+            let fresh = unit_of(&mut app);
+            send(
+                &mut app,
+                fresh,
+                StatusChange::Apply(StatusEffect::debuff_immunity(4.0)),
+            );
+            send(
+                &mut app,
+                fresh,
+                StatusChange::Apply(StatusEffect::frozen(4.0)),
+            );
+            step(&mut app);
+            assert!(is_frozen(&app, fresh), "frozen onto a debuff-immune unit");
+
+            // An enemy's buff dispel does remove it.
+            send(
+                &mut app,
+                unit,
+                StatusChange::Dispel {
+                    kind: StatusKind::Buff,
+                    strength: DispelStrength::Basic,
+                },
+            );
+            step(&mut app);
+            assert!(!is_frozen(&app, unit));
+        }
+
+        fn unit_of(app: &mut App) -> Entity {
+            unit(app)
+        }
+    }
+
     mod heal_statuses {
         use super::*;
         use crate::vitals::{HealKind, apply_heal, heal_factor};
@@ -3674,6 +3955,58 @@ mod tests {
                     .effects
                     .is_empty()
             );
+        }
+
+        #[test]
+        fn hot_max_health_percent_reads_current_max_each_tick() {
+            let mut app = app();
+            let unit = wounded(&mut app);
+            let max = app.world().get::<Health>(unit).unwrap().max;
+            send(
+                &mut app,
+                unit,
+                StatusChange::Apply(StatusEffect {
+                    heal_per_sec: 10.0,
+                    heal_max_health_fraction: 0.05,
+                    ..StatusEffect::buff("heal_over_time", 10.0)
+                }),
+            );
+            step(&mut app, 0.0);
+            let before = app.world().get::<Health>(unit).unwrap().current;
+            step(&mut app, 1.0);
+            let after_one = app.world().get::<Health>(unit).unwrap().current;
+            assert!(
+                (after_one - before - (10.0 + 0.05 * max)).abs() < 1e-2,
+                "flat + 5% of {max}: {before} -> {after_one}"
+            );
+            // The percentage follows a changed max health on the very next tick.
+            app.world_mut().get_mut::<Health>(unit).unwrap().max = max * 2.0;
+            step(&mut app, 1.0);
+            let after_two = app.world().get::<Health>(unit).unwrap().current;
+            assert!(
+                (after_two - after_one - (10.0 + 0.05 * max * 2.0)).abs() < 1e-2,
+                "{after_one} -> {after_two}"
+            );
+        }
+
+        #[test]
+        fn hot_percent_alone_heals_without_a_flat_part() {
+            let mut app = app();
+            let unit = wounded(&mut app);
+            let max = app.world().get::<Health>(unit).unwrap().max;
+            send(
+                &mut app,
+                unit,
+                StatusChange::Apply(StatusEffect {
+                    heal_max_health_fraction: 0.1,
+                    ..StatusEffect::buff("heal_over_time", 10.0)
+                }),
+            );
+            step(&mut app, 0.0);
+            let before = app.world().get::<Health>(unit).unwrap().current;
+            step(&mut app, 1.0);
+            let after = app.world().get::<Health>(unit).unwrap().current;
+            assert!((after - before - 0.1 * max).abs() < 1e-2);
         }
 
         #[test]

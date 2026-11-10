@@ -365,6 +365,9 @@ pub enum StatusSpec {
     Silence,
     Disarm,
     Phased,
+    /// Encased in ice: stunned and immune to physical damage. A buff, so the holder's debuff
+    /// dispels and debuff immunity leave it alone (see [`StatusEffect::frozen`]).
+    Frozen,
     Forceful,
     /// Flies: trees and other ground obstacles stop blocking (buildings still do).
     Flying,
@@ -450,6 +453,14 @@ pub enum StatusSpec {
     Fear,
     /// Forced to basic attack `source` (the caster) only; no casting, items or orders.
     Taunt,
+    /// Forced to basic attack the cast's unit target (not the caster) only, even when it is
+    /// the holder's ally; no casting, items or orders. While taunted the holder also gains
+    /// `attack_speed` bonus attack speed, which rides on this status (id `taunt`), so a dispel,
+    /// expiry or the target's death ends both. Without a cast target (a passive or held row)
+    /// this is a no-op status. Valid only on a unit-target source.
+    TauntCastTarget {
+        attack_speed: RankValue,
+    },
     /// Forced to walk to `source` (the caster) and stop at contact; no attacking, casting,
     /// items or orders.
     Hypnosis,
@@ -475,13 +486,21 @@ pub enum StatusSpec {
         id: &'static str,
         percent: RankValue,
     },
+    /// Replaces the holder's basic-attack point with `seconds` (a buff; the lowest live override
+    /// applies, backswing is unchanged). `id` is `<owner>_attack_point` when generated.
+    AttackPoint {
+        id: &'static str,
+        seconds: RankValue,
+    },
     /// `percent` added to base turn rate (a buff; bonuses add up).
     TurnRateBonus {
         percent: RankValue,
     },
-    /// Heals `hps` health per second; the caster's heal amp is folded in on application.
+    /// Heals `hps` health per second plus `max_health_pct` percent (0..=100) of the holder's max
+    /// health per second; the caster's heal amp is folded into both parts on application.
     HealOverTime {
         hps: RankValue,
+        max_health_pct: RankValue,
     },
     /// `percent` (0–100) of healing received is negated; the strongest reduction applies.
     HealReduction {
@@ -533,6 +552,8 @@ pub enum StatusSpec {
         attack_speed_mult: RankValue,
         /// Flat attack range change (does not change melee / ranged classification).
         attack_range: RankValue,
+        /// Flat attack projectile speed change (ranged attackers; units per second).
+        attack_projectile_speed: RankValue,
         /// Percent (0..=1000) of the target's base attack damage, snapshotted when the status
         /// is built (see [`StatusBuildContext::base_attack_damage`]) and added to the flat
         /// `attack_damage` bonus.
@@ -573,6 +594,9 @@ pub struct StatusBuildContext {
     pub source: Option<Entity>,
     /// Where the trigger happened.
     pub point: Vec3,
+    /// The unit the cast was aimed at, when the trigger carries one (`on_cast`,
+    /// `on_projectile_hit` of a unit-target ability).
+    pub cast_target: Option<Entity>,
     /// The target's base attack damage, excluding item bonuses and other statuses: the hero
     /// definition's damage for heroes, the unit's current damage otherwise. Percentage attack
     /// damage modifiers are a snapshot of this at build time.
@@ -597,6 +621,7 @@ impl StatusSpec {
             attack_speed_flat: RankValue::ZERO,
             attack_speed_mult: RankValue::ZERO,
             attack_range: RankValue::ZERO,
+            attack_projectile_speed: RankValue::ZERO,
             attack_damage_pct: RankValue::ZERO,
             cleave: RankValue::ZERO,
             cleave_radius: RankValue::ZERO,
@@ -621,6 +646,7 @@ impl StatusSpec {
             StatusSpec::Silence => StatusEffect::silenced(duration),
             StatusSpec::Disarm => StatusEffect::disarmed(duration),
             StatusSpec::Phased => StatusEffect::phased(duration),
+            StatusSpec::Frozen => StatusEffect::frozen(duration),
             StatusSpec::Forceful => StatusEffect::forceful(duration),
             StatusSpec::Flying => StatusEffect::flying(duration),
             StatusSpec::Leash { radius, anchor } => {
@@ -699,6 +725,13 @@ impl StatusSpec {
                 Some(source) => StatusEffect::taunted(duration, source),
                 None => StatusEffect::debuff("taunt", duration),
             },
+            StatusSpec::TauntCastTarget { attack_speed } => match ctx.cast_target {
+                Some(target) => StatusEffect {
+                    attack_speed_flat: attack_speed.at(rank).max(0.0),
+                    ..StatusEffect::taunted(duration, target)
+                },
+                None => StatusEffect::debuff("taunt", duration),
+            },
             StatusSpec::Hypnosis => match ctx.source {
                 Some(source) => StatusEffect::hypnotized(duration, source),
                 None => StatusEffect::debuff("hypnosis", duration),
@@ -721,6 +754,15 @@ impl StatusSpec {
                     ..StatusEffect::buff(id, duration)
                 }
             }
+            StatusSpec::AttackPoint { id, seconds } => StatusEffect {
+                attack_point_override: Some(
+                    seconds
+                        .at(rank)
+                        .clamp(0.0, crate::basic_attack::MAX_ATTACK_SWING),
+                ),
+                dispel_type: DispelType::Basic,
+                ..StatusEffect::buff(id, duration)
+            },
             StatusSpec::AttackSpeedSlow { percent } => {
                 let p = (percent.at(rank) / 100.0).clamp(0.0, 1.0);
                 StatusEffect {
@@ -739,9 +781,13 @@ impl StatusSpec {
                 dispel_type: DispelType::Basic,
                 ..StatusEffect::buff("turn_rate_bonus", duration)
             },
-            StatusSpec::HealOverTime { hps } => {
-                StatusEffect::heal_over_time(hps.at(rank), duration)
-            }
+            StatusSpec::HealOverTime {
+                hps,
+                max_health_pct,
+            } => StatusEffect {
+                heal_max_health_fraction: (max_health_pct.at(rank) / 100.0).clamp(0.0, 1.0),
+                ..StatusEffect::heal_over_time(hps.at(rank), duration)
+            },
             StatusSpec::HealReduction { percent } => {
                 StatusEffect::heal_reduction((percent.at(rank) / 100.0).clamp(0.0, 1.0), duration)
             }
@@ -787,6 +833,7 @@ impl StatusSpec {
                 attack_speed_flat,
                 attack_speed_mult,
                 attack_range,
+                attack_projectile_speed,
                 attack_damage_pct,
                 cleave,
                 cleave_radius,
@@ -808,6 +855,7 @@ impl StatusSpec {
                     attack_speed_flat: attack_speed_flat.at(rank),
                     attack_speed_mult: attack_speed_mult.at(rank),
                     attack_range: attack_range.at(rank),
+                    attack_projectile_speed: attack_projectile_speed.at(rank),
                     cleave: cleave.at(rank),
                     cleave_radius: cleave_radius.at(rank),
                     cleave_end_radius: cleave_end_radius.at(rank),
@@ -996,6 +1044,13 @@ pub enum AbilityEffect {
         then: AbilityTrigger,
         pseudo: bool,
     },
+    /// Gate: while the caster holds a live status with this `id` (see
+    /// `StatusEffects::has_status`), re-fires this trigger's context under `then`. No RNG and
+    /// no counters: it fires once per execution, so a refreshing status never stacks.
+    RequireStatus {
+        id: &'static str,
+        then: AbilityTrigger,
+    },
     /// Gate: every `every`th execution (counted per source and `then`) re-fires this
     /// trigger's context under the trigger `then`.
     Counter {
@@ -1070,6 +1125,7 @@ impl AbilityEffect {
         !matches!(
             self,
             Self::Proc { .. }
+                | Self::RequireStatus { .. }
                 | Self::Counter { .. }
                 | Self::Accumulate { .. }
                 | Self::Chain { .. }

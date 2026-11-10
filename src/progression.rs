@@ -281,4 +281,109 @@ mod tests {
         assert!(stats.armor > armor_before);
         assert!(stats.attack_speed > 1.0);
     }
+
+    fn attribute_fixture(
+        primary: Option<crate::abilities::definition::Attribute>,
+    ) -> (HeroAttributes, Health, Mana, CombatStats) {
+        let mut attrs = HeroAttributes::starter();
+        attrs.primary = primary;
+        let mut health = Health::new(400.0);
+        let mut mana = Mana::new(200.0, 5.0);
+        let mut stats = CombatStats::simple(30.0, 8.0, 1.0, 2.0, 2.0, 12.0);
+        attrs.apply_to(&mut health, &mut mana, &mut stats);
+        (attrs, health, mana, stats)
+    }
+
+    #[test]
+    fn primary_attribute_adds_attack_damage_on_apply_and_level_up() {
+        use crate::abilities::definition::Attribute;
+        let (mut attrs, mut health, mut mana, mut stats) =
+            attribute_fixture(Some(Attribute::Agility));
+        assert_eq!(stats.attack_damage, 30.0 + attrs.agility);
+        let before = attrs;
+        attrs.level_up();
+        HeroAttributes::apply_delta(&before, &attrs, &mut health, &mut mana, &mut stats);
+        assert!((stats.attack_damage - (30.0 + attrs.agility)).abs() < 1e-4);
+        assert!(
+            (stats.attack_damage - (30.0 + before.agility + before.agi_per_level)).abs() < 1e-4
+        );
+    }
+
+    #[test]
+    fn non_primary_attribute_adds_no_damage() {
+        use crate::abilities::definition::Attribute;
+        let (mut attrs, mut health, mut mana, mut stats) =
+            attribute_fixture(Some(Attribute::Strength));
+        let damage = stats.attack_damage;
+        // Only strength feeds damage; an agility or intelligence delta leaves it untouched.
+        let before = attrs;
+        attrs.agility += 10.0;
+        attrs.intelligence += 10.0;
+        HeroAttributes::apply_delta(&before, &attrs, &mut health, &mut mana, &mut stats);
+        assert_eq!(stats.attack_damage, damage);
+    }
+
+    #[test]
+    fn starter_attributes_without_primary_add_no_damage() {
+        let (mut attrs, mut health, mut mana, mut stats) = attribute_fixture(None);
+        assert_eq!(stats.attack_damage, 30.0);
+        let before = attrs;
+        attrs.level_up();
+        HeroAttributes::apply_delta(&before, &attrs, &mut health, &mut mana, &mut stats);
+        assert_eq!(stats.attack_damage, 30.0);
+    }
+
+    #[test]
+    fn primary_attribute_bonus_survives_level_up_and_reverts_exactly() {
+        use crate::abilities::definition::Attribute;
+        let (mut attrs, mut health, mut mana, mut stats) =
+            attribute_fixture(Some(Attribute::Strength));
+        let start = stats.attack_damage;
+        // A +10 Strength bonus is applied, the hero levels up, then the bonus is removed.
+        let before = attrs;
+        attrs.strength += 10.0;
+        HeroAttributes::apply_delta(&before, &attrs, &mut health, &mut mana, &mut stats);
+        assert!((stats.attack_damage - (start + 10.0)).abs() < 1e-4);
+        let before = attrs;
+        attrs.level_up();
+        HeroAttributes::apply_delta(&before, &attrs, &mut health, &mut mana, &mut stats);
+        let before = attrs;
+        attrs.strength -= 10.0;
+        HeroAttributes::apply_delta(&before, &attrs, &mut health, &mut mana, &mut stats);
+        let expected = start + attrs.str_per_level;
+        assert!(
+            (stats.attack_damage - expected).abs() < 1e-3,
+            "damage {} vs {expected}",
+            stats.attack_damage
+        );
+        assert!((stats.attack_damage - (30.0 + attrs.strength)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn spawned_hero_damage_includes_five_levels_of_primary_growth() {
+        use crate::heroes::HeroId;
+        use crate::resources::SharedAssets;
+        use crate::units::spawn_hero_entity;
+
+        let mut world = World::new();
+        world.init_resource::<SharedAssets>();
+        let hero = world.resource_scope(|world, assets: Mut<SharedAssets>| {
+            let mut queue = bevy::ecs::world::CommandQueue::default();
+            let mut commands = Commands::new(&mut queue, world);
+            let hero = spawn_hero_entity(
+                &mut commands,
+                &assets,
+                crate::components::Team::Radiant,
+                true,
+                1,
+                Vec3::ZERO,
+                HeroId::Vanguard,
+            );
+            queue.apply(world);
+            hero
+        });
+        // Vanguard: level-1 total 58 (STR 22), plus 5 levels x 2.6 STR.
+        let damage = world.get::<CombatStats>(hero).unwrap().attack_damage;
+        assert!((damage - (58.0 + 13.0)).abs() < 1e-3, "damage {damage}");
+    }
 }

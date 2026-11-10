@@ -673,13 +673,49 @@ class ResourceEffectTests(unittest.TestCase):
         self.assertEqual(report.errors[0].field, "value")
 
 
+class HealOverTimePercentTests(unittest.TestCase):
+    @staticmethod
+    def _hot(levels: int = 1, **cells: str):
+        effect, ctx = _effect("apply_status", "heal_over_time", target="caster", duration="4", **cells)
+        ctx.levels = levels
+        report = Report()
+        return effect_to_rust(effect, ctx, report), report
+
+    def test_flat_and_percent_parts_fill_their_fields(self) -> None:
+        result, report = self._hot(value="40", amount="2.5")
+        self.assertEqual(report.errors, [])
+        self.assertIn("hps: RankValue::fixed(40.0), max_health_pct: RankValue::fixed(2.5)", result[2])
+        # Level lists work on both parts.
+        result, report = self._hot(levels=2, value="40|45", amount="1.5|2.5")
+        self.assertEqual(report.errors, [])
+        self.assertIn("RankValue::from_level_1(40.0, 5.0)", result[2])
+        self.assertIn("RankValue::from_level_1(1.5, 1.0)", result[2])
+
+    def test_percent_alone_is_enough(self) -> None:
+        result, report = self._hot(amount="3")
+        self.assertEqual(report.errors, [])
+        self.assertIn("hps: RankValue::ZERO, max_health_pct: RankValue::fixed(3.0)", result[2])
+
+    def test_percent_is_within_zero_and_one_hundred(self) -> None:
+        for bad in ("-1", "101"):
+            result, report = self._hot(value="10", amount=bad)
+            self.assertIsNone(result, bad)
+            self.assertTrue(any("0..100" in e.message for e in report.errors), bad)
+
+    def test_one_of_value_or_amount_must_be_above_zero(self) -> None:
+        for cells in ({}, {"value": "0"}, {"amount": "0"}, {"value": "0", "amount": "0"}):
+            result, report = self._hot(**cells)
+            self.assertIsNone(result, cells)
+            self.assertTrue(report.errors, cells)
+
+
 class HealStatusTests(unittest.TestCase):
     def test_heal_statuses_heal_over_time(self) -> None:
         report = Report()
         effect, ctx = _effect("apply_status", "heal_over_time", target="caster", value="25", duration="6")
         result = effect_to_rust(effect, ctx, report)
         self.assertFalse(report.errors)
-        self.assertIn("StatusSpec::HealOverTime { hps: RankValue::fixed(25.0) }", result[2])
+        self.assertIn("StatusSpec::HealOverTime { hps: RankValue::fixed(25.0), max_health_pct: RankValue::ZERO }", result[2])
 
         report = Report()
         effect, ctx = _effect("apply_status", "heal_over_time", target="caster", duration="6")
@@ -1039,6 +1075,104 @@ class MoveSpeedBonusTests(unittest.TestCase):
         effect, ctx = _effect("remove_status", "move_speed_bonus")
         self.assertIsNone(effect_to_rust(effect, ctx, report))
         self.assertIn("<owner>_move_speed_bonus", report.errors[0].message)
+
+
+class TauntTargetTests(unittest.TestCase):
+    @staticmethod
+    def _taunt(trigger: str = "on_cast", target_type: str = "unit", **cells: str):
+        cells.setdefault("duration", "4")
+        effect, ctx = _effect("apply_status", "taunt_target", target="units_in_radius", trigger=trigger, **cells)
+        ctx.target_type = target_type
+        ctx.has_aoe = True
+        report = Report()
+        return effect_to_rust(effect, ctx, report), report
+
+    def test_value_is_the_attack_speed_bonus_and_the_status_id_is_taunt(self) -> None:
+        result, report = self._taunt(value="50")
+        self.assertEqual(report.errors, [])
+        self.assertIn("StatusSpec::TauntCastTarget { attack_speed: RankValue::fixed(50.0) }", result[2])
+        result, report = self._taunt()
+        self.assertEqual(report.errors, [])
+        self.assertIn("attack_speed: RankValue::ZERO", result[2])
+        effect, _ = _effect("apply_status", "taunt_target", target="units_in_radius")
+        self.assertEqual(held_status_id(effect), "taunt")
+        self.assertEqual(runtime_status_id("taunt_target"), "taunt")
+
+    def test_projectile_hit_also_carries_the_cast_target(self) -> None:
+        result, report = self._taunt(trigger="on_projectile_hit")
+        self.assertEqual(report.errors, [])
+        self.assertIsNotNone(result)
+
+    def test_no_target_ability_is_rejected(self) -> None:
+        for target_type in ("no_target", "point"):
+            result, report = self._taunt(target_type=target_type)
+            self.assertIsNone(result, target_type)
+            self.assertTrue(any("target_type unit" in e.message for e in report.errors), target_type)
+
+    def test_rows_without_a_cast_target_are_rejected(self) -> None:
+        for trigger in ("while", "passive", "on_attack_hit"):
+            result, report = self._taunt(trigger=trigger, duration="")
+            self.assertIsNone(result, trigger)
+            self.assertTrue(report.errors, trigger)
+
+    def test_negative_attack_speed_is_rejected(self) -> None:
+        result, report = self._taunt(value="-10")
+        self.assertIsNone(result)
+        self.assertTrue(any("cannot be negative" in e.message for e in report.errors))
+
+
+class FrozenStatusTests(unittest.TestCase):
+    def test_frozen_is_a_plain_buff_status_keyword(self) -> None:
+        report = Report()
+        effect, ctx = _effect("apply_status", "frozen", target="cast_target", duration="4")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertEqual(report.errors, [])
+        self.assertIn("status: StatusSpec::Frozen,", result[2])
+        self.assertEqual(held_status_id(effect), "frozen")
+        self.assertEqual(runtime_status_id("frozen"), "frozen")
+
+    def test_frozen_takes_no_value_and_can_be_removed_by_id(self) -> None:
+        report = Report()
+        effect, ctx = _effect("apply_status", "frozen", target="cast_target", duration="4", value="5")
+        self.assertIsNotNone(effect_to_rust(effect, ctx, report))
+        self.assertTrue(report.warnings)
+        report = Report()
+        effect, ctx = _effect("remove_status", "frozen")
+        self.assertIn('AbilityEffect::RemoveStatus { id: "frozen" }', effect_to_rust(effect, ctx, report)[2])
+
+
+class AttackPointStatusTests(unittest.TestCase):
+    def test_attack_point_uses_value_and_the_owner_id(self) -> None:
+        report = Report()
+        effect, ctx = _effect("apply_status", "attack_point", target="caster", duration="7", value="0.1")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors)
+        self.assertIn(
+            'StatusSpec::AttackPoint { id: "tester_attack_point", seconds: RankValue::fixed(0.1) }',
+            result[2],
+        )
+        self.assertEqual(held_status_id(effect), "tester_attack_point")
+        self.assertEqual(runtime_status_id("tester_attack_point"), "tester_attack_point")
+
+    def test_seconds_must_be_within_zero_and_the_swing_cap(self) -> None:
+        for bad in ("-0.1", "1.5"):
+            report = Report()
+            effect, ctx = _effect("apply_status", "attack_point", target="caster", duration="7", value=bad)
+            self.assertIsNone(effect_to_rust(effect, ctx, report))
+            self.assertTrue(any("attack_point seconds" in e.message for e in report.errors), bad)
+        report = Report()
+        effect, ctx = _effect("apply_status", "attack_point", target="caster", duration="7", value="1")
+        self.assertIsNotNone(effect_to_rust(effect, ctx, report))
+        report = Report()
+        effect, ctx = _effect("apply_status", "attack_point", target="caster", duration="7")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertTrue(any("required" in e.message for e in report.errors))
+
+    def test_remove_status_is_rejected_with_a_hint(self) -> None:
+        report = Report()
+        effect, ctx = _effect("remove_status", "attack_point")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertIn("<owner>_attack_point", report.errors[0].message)
 
 
 class UntargetableStatusTests(unittest.TestCase):
@@ -1624,6 +1758,74 @@ def _gate_row(effect_type: str, effect_id: str, trigger: str, value: str, owner_
     return effect, ctx
 
 
+class RequireStatusTests(unittest.TestCase):
+    @staticmethod
+    def _gate(effect_id: str, target: str = "caster", trigger: str = "on_attack_hit", consumers=("on_buffed",)):
+        effect, ctx = _effect("require_status", effect_id, target=target, trigger=trigger, kind="ability")
+        ctx.owner_triggers = set(consumers)
+        report = Report()
+        return effect_to_rust(effect, ctx, report), report
+
+    def test_gate_emits_the_runtime_status_id_and_trigger(self) -> None:
+        result, report = self._gate("on_buffed:tester_attack_range")
+        self.assertEqual(report.errors, [])
+        self.assertIn(
+            'AbilityEffect::RequireStatus { id: "tester_attack_range", then: AbilityTrigger::Custom("on_buffed") }',
+            result[2],
+        )
+        # A status keyword resolves to its runtime id.
+        result, report = self._gate("on_buffed:phased")
+        self.assertEqual(report.errors, [])
+        self.assertIn('id: "phased"', result[2])
+        for target in ("owner", "attacker"):
+            result, report = self._gate("on_buffed:phased", target=target)
+            self.assertEqual(report.errors, [], target)
+
+    def test_gate_feeds_its_custom_trigger(self) -> None:
+        def make(trigger: str, effect_type: str, effect_id: str) -> EffectRow:
+            cells = {"ability_id": "t", "effect_index": "0", "trigger": trigger, "effect_target": "caster", "effect_type": effect_type, "effect_id": effect_id}
+            return EffectRow(row(cells), "t", 0, trigger, "caster", effect_type)
+
+        report = Report()
+        warn_unreachable_custom_triggers(
+            [make("on_attack_hit", "require_status", "on_buffed:phased"), make("on_buffed", "heal", "")],
+            set(),
+            report,
+        )
+        self.assertFalse(report.warnings)
+
+    def test_unknown_status_is_rejected(self) -> None:
+        for bad in ("on_buffed:not-a-status", "on_buffed:no_such_thing"):
+            result, report = self._gate(bad)
+            self.assertIsNone(result, bad)
+            self.assertTrue(any("unknown status" in e.message for e in report.errors), bad)
+
+    def test_missing_status_trigger_target_and_consumer_are_rejected(self) -> None:
+        result, report = self._gate("on_buffed")
+        self.assertIsNone(result)
+        self.assertTrue(any("<on_trigger>:<status_id>" in e.message for e in report.errors))
+        result, report = self._gate("on_buffed:phased", target="trigger_unit")
+        self.assertIsNone(result)
+        self.assertTrue(any("acts on the unit using it" in e.message for e in report.errors))
+        result, report = self._gate("on_buffed:phased", consumers=())
+        self.assertIsNone(result)
+        self.assertTrue(any("would do nothing" in e.message for e in report.errors))
+        result, report = self._gate("on_attack_hit:phased", trigger="on_attack_hit")
+        self.assertIsNone(result)
+        result, report = self._gate("on_buffed:phased", trigger="on_buffed")
+        self.assertIsNone(result)
+        self.assertTrue(any("own trigger" in e.message for e in report.errors))
+
+    def test_ability_and_item_generators_share_the_gate(self) -> None:
+        for kind, target in (("ability", "caster"), ("item", "owner")):
+            effect, ctx = _effect("require_status", "on_buffed:phased", target=target, trigger="on_attack_hit", kind=kind)
+            ctx.owner_triggers = {"on_buffed"}
+            report = Report()
+            result = effect_to_rust(effect, ctx, report)
+            self.assertEqual(report.errors, [], kind)
+            self.assertIn("AbilityEffect::RequireStatus", result[2], kind)
+
+
 class ReactiveTriggerTests(unittest.TestCase):
     @staticmethod
     def _render(trigger: str, kind: str = "item", **cells: str):
@@ -2097,6 +2299,29 @@ class CastRangeBufferTests(unittest.TestCase):
         self.assertTrue(any(w.field == "cast_range_buffer" for w in report.warnings))
 
 
+class TimedProjectileSpeedTests(unittest.TestCase):
+    @staticmethod
+    def _stat(value: str, **cells: str):
+        effect = {"effect_type": "stat_modifier", "effect_id": "attack_projectile_speed", "value": value, "duration": "5"}
+        effect.update(cells)
+        return load_test_ability(effects=[effect])
+
+    def test_timed_projectile_speed_fills_its_modifier_field(self) -> None:
+        abilities, report = self._stat("500")
+        self.assertEqual(report.errors, [])
+        text = str(abilities[0].effects)
+        self.assertIn("attack_projectile_speed: RankValue::fixed(500.0)", text)
+        self.assertIn('id: "tester_attack_projectile_speed"', text)
+        self.assertIn("StatusKind::Buff", text)
+        # The range field stays zero.
+        self.assertIn("attack_range: RankValue::ZERO", text)
+
+    def test_negative_projectile_speed_is_a_debuff(self) -> None:
+        abilities, report = self._stat("-200")
+        self.assertEqual(report.errors, [])
+        self.assertIn("StatusKind::Debuff", str(abilities[0].effects))
+
+
 class TimedStatModifierTests(unittest.TestCase):
     @staticmethod
     def _stat(effect_id: str, value: str, **cells: str):
@@ -2346,6 +2571,54 @@ class HeroGeneratorTests(unittest.TestCase):
         self.assertEqual(self._load("true", "250")[0].attack_range, 250.0)
         self.assertEqual(self._load("true", "")[0].attack_range, 128.0)
         self.assertEqual(self._load("false", "550")[0].attack_range, 550.0)
+
+    def test_primary_attribute_is_emitted(self) -> None:
+        import HeroGenerator
+
+        hero = self._load("true", "150")[0]
+        self.assertIn("primary: Some(Attribute::Strength),", HeroGenerator.hero_def_arm(hero))
+
+    def test_blank_attack_damage_subtracts_the_primary_attribute(self) -> None:
+        # Melee total 55 and ranged total 48, minus the primary (STR 20 in the fixture).
+        self.assertEqual(self._load("true", "150")[0].attack_damage, 35.0)
+        self.assertEqual(self._load("false", "550")[0].attack_damage, 28.0)
+        explicit = self._load("true", "150", ",attack_damage", ",31")[0]
+        self.assertEqual(explicit.attack_damage, 31.0)
+
+    def test_non_positive_attack_damage_total_is_rejected(self) -> None:
+        with self.assertRaises(SystemExit) as ctx:
+            self._load("true", "150", ",attack_damage", ",-20")
+        self.assertIn("must be above 0", str(ctx.exception))
+
+    def test_blank_magic_resist_is_the_uniform_27_5_percent_rating(self) -> None:
+        import HeroGenerator
+
+        self.assertEqual(HeroGenerator.HERO_MR_RATING, 6.321839)
+        self.assertAlmostEqual(HeroGenerator.mr_fraction(6.321839), 0.275, places=6)
+        self.assertEqual(self._load("true", "150")[0].magic_resist, 6.321839)
+        # Independent of the primary attribute.
+        self.assertEqual(self._load("false", "550")[0].magic_resist, 6.321839)
+
+    def test_non_uniform_magic_resist_warns_but_is_accepted(self) -> None:
+        import contextlib
+        import io
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            hero = self._load("true", "150", ",magic_resist", ",3.2")[0]
+        self.assertEqual(hero.magic_resist, 3.2)
+        self.assertIn("not the uniform 27.5%", err.getvalue())
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self._load("true", "150", ",magic_resist", ",6.321839")
+        self.assertEqual(err.getvalue(), "")
+
+    def test_apostrophes_do_not_split_identifiers(self) -> None:
+        import HeroGenerator
+
+        self.assertEqual(HeroGenerator.to_pascal_case("Winter's Curse"), "WintersCurse")
+        self.assertEqual(HeroGenerator.to_pascal_case("Winter\u2019s Curse"), "WintersCurse")
+        self.assertEqual(HeroGenerator.to_pascal_case("Queen of Pain"), "QueenOfPain")
 
     def test_turn_rate_is_optional_and_positive(self) -> None:
         import HeroGenerator

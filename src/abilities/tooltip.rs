@@ -398,6 +398,7 @@ fn effect_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
         | AbilityEffect::Teleport { .. }
         | AbilityEffect::RemoveStatus { .. }
         | AbilityEffect::Proc { .. }
+        | AbilityEffect::RequireStatus { .. }
         | AbilityEffect::Counter { .. }
         | AbilityEffect::Chain { .. }
         | AbilityEffect::Zone { .. }
@@ -420,6 +421,16 @@ fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
                 seconds_row("Move speed bonus duration", duration),
             ]
         }
+        StatusSpec::TauntCastTarget { attack_speed } => vec![
+            row("Attack speed while taunted", attack_speed),
+            seconds_row("Taunt duration", duration),
+        ],
+        StatusSpec::AttackPoint { seconds, .. } => {
+            vec![
+                seconds_row("Attack point", seconds),
+                seconds_row("Attack point duration", duration),
+            ]
+        }
         StatusSpec::Burn {
             amount,
             tick_interval,
@@ -433,10 +444,20 @@ fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
             };
             vec![row(label, amount), seconds_row("Burn duration", duration)]
         }
-        StatusSpec::HealOverTime { hps } => vec![
-            row("Heal per second", hps),
-            seconds_row("Heal duration", duration),
-        ],
+        StatusSpec::HealOverTime {
+            hps,
+            max_health_pct,
+        } => {
+            let mut rows = Vec::new();
+            if hps != RankValue::ZERO {
+                rows.push(row("Heal per second", hps));
+            }
+            if max_health_pct != RankValue::ZERO {
+                rows.push(row("Heal % max health per second", max_health_pct));
+            }
+            rows.push(seconds_row("Heal duration", duration));
+            rows
+        }
         StatusSpec::Evasion { percent } => vec![
             row("Evasion %", percent),
             seconds_row("Evasion duration", duration),
@@ -480,6 +501,7 @@ fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
             move_speed,
             attack_damage,
             attack_range,
+            attack_projectile_speed,
             attack_damage_pct,
             cleave,
             cleave_radius,
@@ -518,6 +540,9 @@ fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
             }
             if attack_range != RankValue::ZERO {
                 rows.push(row("Attack range", attack_range));
+            }
+            if attack_projectile_speed != RankValue::ZERO {
+                rows.push(row("Attack projectile speed", attack_projectile_speed));
             }
             if attack_charges != RankValue::ZERO {
                 rows.push(row("For the next attacks", attack_charges));
@@ -562,6 +587,9 @@ fn effect_text_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
                 "{hits} for {}% damage",
                 fmt_num(damage_ratio.at(1) * 100.0)
             ))]
+        }
+        AbilityEffect::RequireStatus { .. } => {
+            vec![text_row("While the effect is active".to_string())]
         }
         AbilityEffect::Counter { every, .. } => {
             vec![text_row(format!("Every {every} attacks"))]
@@ -666,6 +694,7 @@ fn status_name(status: StatusSpec) -> &'static str {
         StatusSpec::Silence => "Silence",
         StatusSpec::Disarm => "Disarm",
         StatusSpec::Phased => "Phased",
+        StatusSpec::Frozen => "Frozen",
         StatusSpec::Forceful => "Forceful",
         StatusSpec::Flying => "Flying",
         StatusSpec::Leash {
@@ -695,10 +724,11 @@ fn status_name(status: StatusSpec) -> &'static str {
         StatusSpec::Accuracy { .. } => "Accuracy",
         StatusSpec::TrueStrike => "True strike",
         StatusSpec::Fear => "Fear",
-        StatusSpec::Taunt => "Taunt",
+        StatusSpec::Taunt | StatusSpec::TauntCastTarget { .. } => "Taunt",
         StatusSpec::Hypnosis => "Hypnosis",
         StatusSpec::Slow { .. } => "Slow",
         StatusSpec::MoveSpeedBonus { .. } => "Move speed bonus",
+        StatusSpec::AttackPoint { .. } => "Attack point",
         StatusSpec::AttackSpeedSlow { .. } => "Attack speed slow",
         StatusSpec::TurnRateSlow { .. } => "Turn rate slow",
         StatusSpec::TurnRateBonus { .. } => "Turn rate bonus",

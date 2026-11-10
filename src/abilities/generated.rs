@@ -50,6 +50,10 @@ pub fn definition(id: AbilityId) -> Option<AbilityDefinition> {
         AbilityId::Pounce => Some(pounce()),
         AbilityId::EssenceShift => Some(essence_shift()),
         AbilityId::ShadowDance => Some(shadow_dance()),
+        AbilityId::ArcticBurn => Some(arctic_burn()),
+        AbilityId::SplinterBlast => Some(splinter_blast()),
+        AbilityId::ColdEmbrace => Some(cold_embrace()),
+        AbilityId::WintersCurse => Some(winters_curse()),
         _ => None,
     }
 }
@@ -240,6 +244,7 @@ fn overcharge() -> AbilityDefinition {
                     attack_speed_flat: RankValue::ZERO,
                     attack_speed_mult: RankValue::fixed(0.2),
                     attack_range: RankValue::ZERO,
+                    attack_projectile_speed: RankValue::ZERO,
                     attack_damage_pct: RankValue::ZERO,
                     cleave: RankValue::ZERO,
                     cleave_radius: RankValue::ZERO,
@@ -265,6 +270,7 @@ fn overcharge() -> AbilityDefinition {
                     attack_speed_flat: RankValue::ZERO,
                     attack_speed_mult: RankValue::ZERO,
                     attack_range: RankValue::ZERO,
+                    attack_projectile_speed: RankValue::ZERO,
                     attack_damage_pct: RankValue::ZERO,
                     cleave: RankValue::ZERO,
                     cleave_radius: RankValue::ZERO,
@@ -557,6 +563,7 @@ fn empower() -> AbilityDefinition {
                     attack_speed_flat: RankValue::ZERO,
                     attack_speed_mult: RankValue::ZERO,
                     attack_range: RankValue::ZERO,
+                    attack_projectile_speed: RankValue::ZERO,
                     attack_damage_pct: RankValue::from_level_1(16.0, 8.0),
                     cleave: RankValue::ZERO,
                     cleave_radius: RankValue::ZERO,
@@ -582,6 +589,7 @@ fn empower() -> AbilityDefinition {
                     attack_speed_flat: RankValue::ZERO,
                     attack_speed_mult: RankValue::ZERO,
                     attack_range: RankValue::ZERO,
+                    attack_projectile_speed: RankValue::ZERO,
                     attack_damage_pct: RankValue::ZERO,
                     cleave: RankValue::from_level_1(0.16, 0.08),
                     cleave_radius: RankValue::ZERO,
@@ -607,6 +615,7 @@ fn empower() -> AbilityDefinition {
                     attack_speed_flat: RankValue::ZERO,
                     attack_speed_mult: RankValue::ZERO,
                     attack_range: RankValue::ZERO,
+                    attack_projectile_speed: RankValue::ZERO,
                     attack_damage_pct: RankValue::ZERO,
                     cleave: RankValue::ZERO,
                     cleave_radius: RankValue::fixed(150.0),
@@ -632,6 +641,7 @@ fn empower() -> AbilityDefinition {
                     attack_speed_flat: RankValue::ZERO,
                     attack_speed_mult: RankValue::ZERO,
                     attack_range: RankValue::ZERO,
+                    attack_projectile_speed: RankValue::ZERO,
                     attack_damage_pct: RankValue::ZERO,
                     cleave: RankValue::ZERO,
                     cleave_radius: RankValue::ZERO,
@@ -657,6 +667,7 @@ fn empower() -> AbilityDefinition {
                     attack_speed_flat: RankValue::ZERO,
                     attack_speed_mult: RankValue::ZERO,
                     attack_range: RankValue::ZERO,
+                    attack_projectile_speed: RankValue::ZERO,
                     attack_damage_pct: RankValue::ZERO,
                     cleave: RankValue::ZERO,
                     cleave_radius: RankValue::ZERO,
@@ -898,6 +909,7 @@ fn headshot() -> AbilityDefinition {
                     attack_speed_flat: RankValue::fixed(-100.0),
                     attack_speed_mult: RankValue::ZERO,
                     attack_range: RankValue::ZERO,
+                    attack_projectile_speed: RankValue::ZERO,
                     attack_damage_pct: RankValue::ZERO,
                     cleave: RankValue::ZERO,
                     cleave_radius: RankValue::ZERO,
@@ -1070,6 +1082,7 @@ fn overpower() -> AbilityDefinition {
                     attack_speed_flat: RankValue::fixed(400.0),
                     attack_speed_mult: RankValue::ZERO,
                     attack_range: RankValue::ZERO,
+                    attack_projectile_speed: RankValue::ZERO,
                     attack_damage_pct: RankValue::ZERO,
                     cleave: RankValue::ZERO,
                     cleave_radius: RankValue::ZERO,
@@ -1285,6 +1298,7 @@ fn essence_shift() -> AbilityDefinition {
                     attack_speed_flat: RankValue::ZERO,
                     attack_speed_mult: RankValue::ZERO,
                     attack_range: RankValue::ZERO,
+                    attack_projectile_speed: RankValue::ZERO,
                     attack_damage_pct: RankValue::ZERO,
                     cleave: RankValue::ZERO,
                     cleave_radius: RankValue::ZERO,
@@ -1360,3 +1374,259 @@ fn shadow_dance() -> AbilityDefinition {
         )
 }
 // </ability:shadow_dance>
+
+// <ability:arctic_burn>
+fn arctic_burn() -> AbilityDefinition {
+    const DESCRIPTION: &str = "Winter Wyvern takes flight, gaining attack range, faster attacks and phasing; her attacks burn and slow enemies";
+    AbilityDefinition::new(AbilityId::ArcticBurn)
+        .description(DESCRIPTION)
+        .targeting(TargetType::NoTarget, RankValue::ZERO, RankValue::ZERO)
+        .team(TargetTeam::SelfOnly)
+        .costs(
+            RankValue::levels(&[29.0, 26.0, 23.0, 20.0, 18.5, 17.0, 15.5]),
+            RankValue::fixed(100.0),
+        )
+        .timing(0.0, 0.0)
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::Caster,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Modifier {
+                    id: "arctic_burn_attack_range",
+                    kind: StatusKind::Buff,
+                    armor: RankValue::ZERO,
+                    magic_resist: RankValue::ZERO,
+                    move_speed: RankValue::ZERO,
+                    attack_damage: RankValue::ZERO,
+                    attack_speed_flat: RankValue::ZERO,
+                    attack_speed_mult: RankValue::ZERO,
+                    attack_range: RankValue::levels(&[
+                        250.0, 275.0, 300.0, 325.0, 337.5, 350.0, 362.5,
+                    ]),
+                    attack_projectile_speed: RankValue::ZERO,
+                    attack_damage_pct: RankValue::ZERO,
+                    cleave: RankValue::ZERO,
+                    cleave_radius: RankValue::ZERO,
+                    cleave_end_radius: RankValue::ZERO,
+                    cleave_distance: RankValue::ZERO,
+                    attack_charges: RankValue::ZERO,
+                    independent: false,
+                },
+                duration: RankValue::levels(&[7.0, 8.0, 9.0, 10.0, 10.5, 11.0, 11.5]),
+            },
+        )
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::Caster,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Modifier {
+                    id: "arctic_burn_attack_projectile_speed",
+                    kind: StatusKind::Buff,
+                    armor: RankValue::ZERO,
+                    magic_resist: RankValue::ZERO,
+                    move_speed: RankValue::ZERO,
+                    attack_damage: RankValue::ZERO,
+                    attack_speed_flat: RankValue::ZERO,
+                    attack_speed_mult: RankValue::ZERO,
+                    attack_range: RankValue::ZERO,
+                    attack_projectile_speed: RankValue::fixed(500.0),
+                    attack_damage_pct: RankValue::ZERO,
+                    cleave: RankValue::ZERO,
+                    cleave_radius: RankValue::ZERO,
+                    cleave_end_radius: RankValue::ZERO,
+                    cleave_distance: RankValue::ZERO,
+                    attack_charges: RankValue::ZERO,
+                    independent: false,
+                },
+                duration: RankValue::levels(&[7.0, 8.0, 9.0, 10.0, 10.5, 11.0, 11.5]),
+            },
+        )
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::Caster,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::AttackPoint {
+                    id: "arctic_burn_attack_point",
+                    seconds: RankValue::fixed(0.1),
+                },
+                duration: RankValue::levels(&[7.0, 8.0, 9.0, 10.0, 10.5, 11.0, 11.5]),
+            },
+        )
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::Caster,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Phased,
+                duration: RankValue::levels(&[7.0, 8.0, 9.0, 10.0, 10.5, 11.0, 11.5]),
+            },
+        )
+        .on(
+            AbilityTrigger::OnAttackHit,
+            EffectTarget::Caster,
+            AbilityEffect::RequireStatus {
+                id: "arctic_burn_attack_range",
+                then: AbilityTrigger::Custom("on_arctic_burn_hit"),
+            },
+        )
+        .on(
+            AbilityTrigger::Custom("on_arctic_burn_hit"),
+            EffectTarget::TriggerUnit,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Burn {
+                    id: "arctic_burn_burn",
+                    amount: RankValue::levels(&[15.0, 30.0, 45.0, 60.0, 67.5, 75.0, 82.5]),
+                    damage_type: DamageType::Magical,
+                    tick_interval: RankValue::ZERO,
+                },
+                duration: RankValue::fixed(5.0),
+            },
+        )
+        .on(
+            AbilityTrigger::Custom("on_arctic_burn_hit"),
+            EffectTarget::TriggerUnit,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Slow {
+                    id: "arctic_burn_slow",
+                    percent: RankValue::levels(&[15.0, 20.0, 25.0, 30.0, 32.5, 35.0, 37.5]),
+                },
+                duration: RankValue::fixed(5.0),
+            },
+        )
+}
+// </ability:arctic_burn>
+
+// <ability:splinter_blast>
+fn splinter_blast() -> AbilityDefinition {
+    const DESCRIPTION: &str = "Launches a ball of ice at a unit that shatters on arrival, damaging and slowing every other enemy nearby";
+    AbilityDefinition::new(AbilityId::SplinterBlast)
+        .description(DESCRIPTION)
+        .targeting(
+            TargetType::Unit,
+            RankValue::fixed(1150.0),
+            RankValue::fixed(500.0),
+        )
+        .team(TargetTeam::Enemy)
+        .costs(
+            RankValue::fixed(6.0),
+            RankValue::levels(&[105.0, 115.0, 125.0, 135.0, 140.0, 145.0, 150.0]),
+        )
+        .timing(0.3, 1.17)
+        .mechanic(AbilityMechanic::Projectile {
+            splash_radius: AreaRadius::Ability,
+            speed: Some(650.0),
+            skillshot: false,
+            first_hit: false,
+            end_radius: None,
+            origin_offset: None,
+        })
+        .on(
+            AbilityTrigger::OnProjectileHit,
+            EffectTarget::AffectedUnits,
+            AbilityEffect::Damage {
+                amount: RankValue::levels(&[80.0, 160.0, 240.0, 320.0, 360.0, 400.0, 440.0]),
+                damage_type: DamageType::Magical,
+                scaling: EffectScaling::None,
+            },
+        )
+        .on(
+            AbilityTrigger::OnProjectileHit,
+            EffectTarget::AffectedUnits,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Slow {
+                    id: "splinter_blast_slow",
+                    percent: RankValue::levels(&[27.0, 30.0, 33.0, 36.0, 37.5, 39.0, 40.5]),
+                },
+                duration: RankValue::fixed(4.0),
+            },
+        )
+}
+// </ability:splinter_blast>
+
+// <ability:cold_embrace>
+fn cold_embrace() -> AbilityDefinition {
+    const DESCRIPTION: &str = "Encases an ally in ice: it cannot act, heals every second and is immune to physical damage";
+    AbilityDefinition::new(AbilityId::ColdEmbrace)
+        .description(DESCRIPTION)
+        .targeting(
+            TargetType::Unit,
+            RankValue::levels(&[850.0, 900.0, 950.0, 1000.0, 1025.0, 1050.0, 1075.0]),
+            RankValue::ZERO,
+        )
+        .team(TargetTeam::Ally)
+        .costs(
+            RankValue::levels(&[24.0, 21.0, 18.0, 15.0, 13.5, 12.0, 10.5]),
+            RankValue::levels(&[50.0, 60.0, 70.0, 80.0, 85.0, 90.0, 95.0]),
+        )
+        .timing(0.3, 0.63)
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::CastTarget,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Frozen,
+                duration: RankValue::fixed(4.0),
+            },
+        )
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::CastTarget,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::HealOverTime {
+                    hps: RankValue::levels(&[40.0, 45.0, 50.0, 55.0, 57.5, 60.0, 62.5]),
+                    max_health_pct: RankValue::levels(&[1.5, 2.5, 3.5, 4.5, 5.0, 5.5, 6.0]),
+                },
+                duration: RankValue::fixed(4.0),
+            },
+        )
+}
+// </ability:cold_embrace>
+
+// <ability:winters_curse>
+fn winters_curse() -> AbilityDefinition {
+    const DESCRIPTION: &str = "Freezes an enemy in place and dispels it; nearby enemies are compelled to attack it with bonus attack speed";
+    AbilityDefinition::new(AbilityId::WintersCurse)
+        .description(DESCRIPTION)
+        .targeting(
+            TargetType::Unit,
+            RankValue::fixed(800.0),
+            RankValue::fixed(525.0),
+        )
+        .team(TargetTeam::Enemy)
+        .costs(
+            RankValue::levels(&[100.0, 90.0, 80.0, 75.0]),
+            RankValue::levels(&[150.0, 200.0, 250.0, 275.0]),
+        )
+        .timing(0.3, 1.37)
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::CastTarget,
+            AbilityEffect::Dispel {
+                kind: StatusKind::Buff,
+                strength: DispelStrength::Basic,
+            },
+        )
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::CastTarget,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::OwnedStun {
+                    id: "winters_curse_stun",
+                },
+                duration: RankValue::fixed(4.0),
+            },
+        )
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::UnitsInRadius {
+                center: AreaCenter::Aim,
+                radius: AreaRadius::Ability,
+                team: TargetTeam::Enemy,
+            },
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::TauntCastTarget {
+                    attack_speed: RankValue::levels(&[50.0, 65.0, 80.0, 87.5]),
+                },
+                duration: RankValue::fixed(4.0),
+            },
+        )
+}
+// </ability:winters_curse>
