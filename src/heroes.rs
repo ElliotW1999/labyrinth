@@ -186,7 +186,7 @@ impl HeroId {
                     0.35,
                     crate::facing::HERO_TURN_RATE,
                     2.0,
-                    0.7,
+                    6.321839,
                     scale::HERO_MOVE_SPEED,
                     None,
                 ),
@@ -221,7 +221,7 @@ impl HeroId {
                     0.3,
                     crate::facing::HERO_TURN_RATE,
                     1.2,
-                    0.6,
+                    6.321839,
                     scale::HERO_MOVE_SPEED_FAST,
                     None,
                 ),
@@ -256,7 +256,7 @@ impl HeroId {
                     0.4,
                     crate::facing::HERO_TURN_RATE,
                     0.8,
-                    1.2,
+                    6.321839,
                     scale::HERO_MOVE_SPEED_SLOW,
                     None,
                 ),
@@ -292,7 +292,7 @@ impl HeroId {
                     0.35,
                     crate::facing::HERO_TURN_RATE,
                     2.0,
-                    0.7,
+                    6.321839,
                     scale::HERO_MOVE_SPEED,
                     None,
                 ),
@@ -327,7 +327,7 @@ impl HeroId {
                     0.35,
                     crate::facing::HERO_TURN_RATE,
                     0.8,
-                    1.2,
+                    6.321839,
                     scale::HERO_MOVE_SPEED,
                     None,
                 ),
@@ -362,7 +362,7 @@ impl HeroId {
                     0.41,
                     crate::facing::HERO_TURN_RATE,
                     -2.8,
-                    3.321839,
+                    6.321839,
                     290.0,
                     Some(1500.0),
                 ),
@@ -390,7 +390,7 @@ impl HeroId {
                 base_mana: 75.0,
                 base_mana_regen: 0.5,
                 combat: hero_combat(
-                    38.0, 200.0, 1.8, 0.5, 0.84, 0.8, -0.96, 3.764384, 305.0, None,
+                    38.0, 200.0, 1.8, 0.5, 0.84, 0.8, -0.96, 6.321839, 305.0, None,
                 ),
                 abilities: [
                     AbilityId::MagnusShockwave,
@@ -423,7 +423,7 @@ impl HeroId {
                     0.7,
                     0.7,
                     -3.78,
-                    4.20907,
+                    6.321839,
                     285.0,
                     Some(3000.0),
                 ),
@@ -451,7 +451,7 @@ impl HeroId {
                 base_mana: 75.0,
                 base_mana_regen: 0.0,
                 combat: hero_combat(
-                    26.0, 150.0, 1.7, 0.3, 0.3, 0.6, -1.52, 4.401839, 310.0, None,
+                    26.0, 150.0, 1.7, 0.3, 0.3, 0.6, -1.52, 6.321839, 310.0, None,
                 ),
                 abilities: [
                     AbilityId::Earthshock,
@@ -479,7 +479,7 @@ impl HeroId {
                 combat: CombatStats {
                     base_attack_speed: 120.0,
                     ..hero_combat(
-                        40.0, 150.0, 1.7, 0.5, 0.3, 0.7, -2.94, 4.401839, 300.0, None,
+                        40.0, 150.0, 1.7, 0.5, 0.3, 0.7, -2.94, 6.321839, 300.0, None,
                     )
                 },
                 abilities: [
@@ -941,6 +941,33 @@ mod tests {
     }
 
     #[test]
+    fn every_hero_magic_resist_is_27_5_percent_at_level_1_and_level_6() {
+        use crate::combat::apply_damage;
+        use crate::components::DamageType;
+
+        for hero in HeroId::all() {
+            let def = hero.def();
+            let (mut health, mut mana, mut stats, mut attrs) = def.vitals();
+            let at_level_1 = apply_damage(100.0, DamageType::Magical, &stats);
+            assert!(
+                (at_level_1 - 72.5).abs() < 0.01,
+                "{hero:?} level 1: {at_level_1}"
+            );
+            // Intelligence grants no magic resist: five levels of growth leave it at 27.5%.
+            for _ in 1..crate::units::STARTING_HERO_LEVEL {
+                let before = attrs;
+                attrs.level_up();
+                HeroAttributes::apply_delta(&before, &attrs, &mut health, &mut mana, &mut stats);
+            }
+            let at_level_6 = apply_damage(100.0, DamageType::Magical, &stats);
+            assert!(
+                (at_level_6 - 72.5).abs() < 0.01,
+                "{hero:?} level 6: {at_level_6}"
+            );
+        }
+    }
+
+    #[test]
     fn roster_has_unique_kits_and_growth() {
         let v = HeroId::Vanguard.def();
         let s = HeroId::Skirmisher.def();
@@ -1108,8 +1135,8 @@ mod tests {
         assert!((stats.armor - 1.0).abs() < 1e-4, "armor {}", stats.armor);
         let taken = apply_damage(100.0, DamageType::Magical, &stats);
         assert!(
-            (taken - 73.0).abs() < 0.01,
-            "27% magic resist: took {taken}"
+            (taken - 72.5).abs() < 0.01,
+            "27.5% magic resist: took {taken}"
         );
         assert_eq!(
             (attrs.strength, attrs.agility, attrs.intelligence),
@@ -1166,8 +1193,8 @@ mod tests {
         assert!(stats.armor.abs() < 1e-3, "armor {}", stats.armor);
         let taken = apply_damage(100.0, DamageType::Magical, &stats);
         assert!(
-            (taken - 73.5).abs() < 0.01,
-            "26.5% magic resist: took {taken}"
+            (taken - 72.5).abs() < 0.01,
+            "27.5% magic resist: took {taken}"
         );
         assert_eq!(
             (attrs.strength, attrs.agility, attrs.intelligence),

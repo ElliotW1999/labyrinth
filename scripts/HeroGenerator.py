@@ -11,7 +11,8 @@ Ability implementations are left as Instant no-op stubs (castable, no effect).
 Optional hero columns: base_health, base_health_regen, base_mana, base_mana_regen,
 attack_damage (the level-1 total minus the primary attribute: each point of the primary
 attribute adds 1 attack damage; blank = 55 melee / 48 ranged minus the primary), attack_range (`is_melee` must match it: base ranges up to 250 are melee),
-base_attack_time, attack_point, attack_backswing (0..1.0), armor, magic_resist, move_speed and attack_projectile_speed (ranged heroes only, > 0: the
+base_attack_time, attack_point, attack_backswing (0..1.0), armor, magic_resist (blank = 6.321839, 27.5% for every hero at every
+level: Intelligence grants no magic resist; a different value warns), move_speed and attack_projectile_speed (ranged heroes only, > 0: the
 absolute projectile speed of the hero's basic attack; blank keeps the speed derived from
 the attack range), turn_rate (> 0, blank keeps facing::HERO_TURN_RATE) and
 base_attack_speed (20..700, blank keeps the shared 100). Blank cells take the defaults.
@@ -123,6 +124,29 @@ def parse_float(row: dict[str, str], key: str, default: float | None = None) -> 
             raise ValueError(f"Missing required numeric column {key}")
         return default
     return float(raw)
+
+
+# Every hero has 27.5% magic resistance at every level: combat::mitigate gives
+# 0.06 r / (1 + 0.06 |r|), so the rating is (0.275 / 0.725) / 0.06. Intelligence grants none.
+HERO_MR_FRACTION = 0.275
+HERO_MR_RATING = round((HERO_MR_FRACTION / (1.0 - HERO_MR_FRACTION)) / 0.06, 6)
+
+
+def mr_fraction(rating: float) -> float:
+    """Mirrors combat::mitigate for a magic resistance rating."""
+    return 0.06 * rating / (1.0 + 0.06 * abs(rating))
+
+
+def check_magic_resist(rating: float, line: int) -> None:
+    """Warn when an explicit rating is not the uniform 27.5% hero magic resistance."""
+    fraction = mr_fraction(rating)
+    if abs(fraction - HERO_MR_FRACTION) > 0.0005:
+        print(
+            f"warning: row {line}: magic_resist {rating:g} is {fraction * 100:.2f}% magic "
+            f"resistance, not the uniform {HERO_MR_FRACTION * 100:g}% "
+            f"(rating {HERO_MR_RATING})",
+            file=sys.stderr,
+        )
 
 
 # Mirrors basic_attack::MAX_ATTACK_SWING.
@@ -280,6 +304,8 @@ def load_csv(path: Path) -> list[HeroRow]:
                     f"{primary_value:g} must be above 0 (attack_damage is the level-1 total "
                     f"minus the primary attribute)"
                 )
+            magic_resist = parse_float(row, "magic_resist", HERO_MR_RATING)
+            check_magic_resist(magic_resist, i)
             attack_range = parse_float(row, "attack_range", attack_range_default)
             check_melee_matches_range(is_melee, attack_range, i)
             blurb = row.get("blurb") or default_blurb(name, primary, q, w, e, r)
@@ -319,9 +345,7 @@ def load_csv(path: Path) -> list[HeroRow]:
                     attack_point=parse_swing(row, "attack_point", 0.3, i),
                     attack_backswing=parse_swing(row, "attack_backswing", 0.35, i),
                     armor=parse_float(row, "armor", 2.0 if is_melee else 0.8),
-                    magic_resist=parse_float(
-                        row, "magic_resist", 0.7 if primary != "INT" else 1.2
-                    ),
+                    magic_resist=magic_resist,
                     move_speed=parse_float(row, "move_speed", 300.0),
                     attack_projectile_speed=parse_projectile_speed(row, is_melee, i),
                     turn_rate=parse_turn_rate(row, i),

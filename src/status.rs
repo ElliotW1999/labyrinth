@@ -3345,7 +3345,10 @@ mod tests {
             step(&mut app, 0.0);
             let down = snapshot(&app, hero);
             assert!((down.2 - (base.2 - 5.0 * HeroAttributes::MANA_PER_INT)).abs() < 1e-3);
-            assert!((down.4 - (base.4 - 5.0 * HeroAttributes::MR_PER_INT)).abs() < 1e-4);
+            assert!(
+                (down.4 - base.4).abs() < 1e-4,
+                "intelligence grants no magic resist"
+            );
         }
 
         #[test]

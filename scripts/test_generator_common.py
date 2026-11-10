@@ -2365,6 +2365,29 @@ class HeroGeneratorTests(unittest.TestCase):
             self._load("true", "150", ",attack_damage", ",-20")
         self.assertIn("must be above 0", str(ctx.exception))
 
+    def test_blank_magic_resist_is_the_uniform_27_5_percent_rating(self) -> None:
+        import HeroGenerator
+
+        self.assertEqual(HeroGenerator.HERO_MR_RATING, 6.321839)
+        self.assertAlmostEqual(HeroGenerator.mr_fraction(6.321839), 0.275, places=6)
+        self.assertEqual(self._load("true", "150")[0].magic_resist, 6.321839)
+        # Independent of the primary attribute.
+        self.assertEqual(self._load("false", "550")[0].magic_resist, 6.321839)
+
+    def test_non_uniform_magic_resist_warns_but_is_accepted(self) -> None:
+        import contextlib
+        import io
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            hero = self._load("true", "150", ",magic_resist", ",3.2")[0]
+        self.assertEqual(hero.magic_resist, 3.2)
+        self.assertIn("not the uniform 27.5%", err.getvalue())
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self._load("true", "150", ",magic_resist", ",6.321839")
+        self.assertEqual(err.getvalue(), "")
+
     def test_turn_rate_is_optional_and_positive(self) -> None:
         import HeroGenerator
 

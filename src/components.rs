@@ -482,8 +482,6 @@ impl HeroAttributes {
     pub const MANA_PER_INT: f32 = 12.0;
     /// Mana regen per point of Intelligence.
     pub const MANA_REGEN_PER_INT: f32 = 0.05;
-    /// Magic resist per point of Intelligence.
-    pub const MR_PER_INT: f32 = 0.12;
 
     pub fn apply_to(&self, health: &mut Health, mana: &mut Mana, stats: &mut CombatStats) {
         health.max += self.strength * Self::HP_PER_STR;
@@ -493,7 +491,6 @@ impl HeroAttributes {
         mana.max += self.intelligence * Self::MANA_PER_INT;
         mana.current = mana.current.min(mana.max);
         mana.regen_per_sec += self.intelligence * Self::MANA_REGEN_PER_INT;
-        stats.magic_resist += self.intelligence * Self::MR_PER_INT;
         stats.attack_damage += self.primary_value() * Self::DAMAGE_PER_PRIMARY;
         stats.recompute_attack_speed(self.agility);
     }
@@ -518,7 +515,6 @@ impl HeroAttributes {
         mana.max += mp;
         mana.current = (mana.current + mp).min(mana.max);
         mana.regen_per_sec += d_int * Self::MANA_REGEN_PER_INT;
-        stats.magic_resist += d_int * Self::MR_PER_INT;
         stats.attack_damage +=
             (after.primary_value() - before.primary_value()) * Self::DAMAGE_PER_PRIMARY;
         stats.recompute_attack_speed(after.agility);
