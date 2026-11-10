@@ -468,6 +468,13 @@ pub enum StatusSpec {
     TurnRateSlow {
         percent: RankValue,
     },
+    /// Raises the holder's move speed by `percent` (0..400) of its base speed, a buff. `id` is
+    /// the status id (`<owner>_move_speed_bonus` when generated), so bonuses from different
+    /// sources coexist and add (and add to slows) while the same source refreshes.
+    MoveSpeedBonus {
+        id: &'static str,
+        percent: RankValue,
+    },
     /// `percent` added to base turn rate (a buff; bonuses add up).
     TurnRateBonus {
         percent: RankValue,
@@ -697,6 +704,15 @@ impl StatusSpec {
                     move_slow_fraction: p,
                     dispel_type: DispelType::Basic,
                     ..StatusEffect::debuff(id, duration)
+                }
+            }
+            StatusSpec::MoveSpeedBonus { id, percent } => {
+                let p = (percent.at(rank) / 100.0).clamp(0.0, 4.0);
+                StatusEffect {
+                    move_speed: ctx.move_speed * p,
+                    move_bonus_fraction: p,
+                    dispel_type: DispelType::Basic,
+                    ..StatusEffect::buff(id, duration)
                 }
             }
             StatusSpec::AttackSpeedSlow { percent } => {

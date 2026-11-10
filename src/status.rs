@@ -196,6 +196,10 @@ pub struct StatusEffect {
     /// [`apply_status`] recomputes `move_speed` as `-fraction x base`, where base is the move
     /// speed without any status deltas, so a refreshed slow never compounds on itself.
     pub move_slow_fraction: f32,
+    /// Percent move-speed bonus as a fraction (0..4) of the holder's base move speed; the mirror
+    /// of [`Self::move_slow_fraction`]. [`apply_status`] measures `move_speed` as
+    /// `(bonus - slow) x base`, so a refreshed bonus never compounds on itself.
+    pub move_bonus_fraction: f32,
     /// Flat IAS change from this effect (negative values slow attack speed).
     pub attack_speed_flat: f32,
     /// Multiplicative AS modifier × (1 + `attack_speed_mult`) — negative slows.
@@ -384,6 +388,7 @@ impl StatusEffect {
             magic_resist: 0.0,
             move_speed: 0.0,
             move_slow_fraction: 0.0,
+            move_bonus_fraction: 0.0,
             attack_speed_flat: 0.0,
             attack_speed_mult: 0.0,
             turn_rate_slow_percent: 0.0,
@@ -1435,12 +1440,12 @@ pub fn apply_status(
             effect.stacks += old.stacks;
         }
     }
-    if effect.move_slow_fraction > 0.0 {
-        // Measure the slow against the speed without status deltas, after the refreshed
-        // status is gone, so refreshing never shrinks or removes the slow.
+    if effect.move_slow_fraction > 0.0 || effect.move_bonus_fraction > 0.0 {
+        // Measure the slow or bonus against the speed without status deltas, after the
+        // refreshed status is gone, so refreshing never shrinks, removes or compounds it.
         let status_speed: f32 = statuses.effects.iter().map(|e| e.move_speed).sum();
         let base = (stats.move_speed - status_speed).max(0.0);
-        effect.move_speed = -effect.move_slow_fraction * base;
+        effect.move_speed = (effect.move_bonus_fraction - effect.move_slow_fraction) * base;
     }
     add_status_stat_delta(&effect, stats, agility);
     statuses.effects.push(effect);
@@ -2149,6 +2154,79 @@ mod tests {
             },
         );
         StatusEffect { id, ..built }
+    }
+
+    fn percent_bonus(id: &'static str, percent: f32, duration: f32, speed: f32) -> StatusEffect {
+        let built = StatusSpec::MoveSpeedBonus {
+            id,
+            percent: RankValue::fixed(percent),
+        }
+        .build(
+            1,
+            duration,
+            StatusBuildContext {
+                move_speed: speed,
+                agility: 0.0,
+                source: None,
+                point: Vec3::ZERO,
+                base_attack_damage: 0.0,
+            },
+        );
+        assert_eq!(built.id, id);
+        built
+    }
+
+    #[test]
+    fn move_speed_bonus_is_percent_of_base_and_reverts() {
+        let mut statuses = StatusEffects::default();
+        let mut stats = CombatStats::simple(10.0, 8.0, 1.0, 2.0, 1.0, 300.0);
+        let bonus = percent_bonus("dance_move_speed_bonus", 50.0, 4.0, stats.move_speed);
+        assert_eq!(bonus.kind, StatusKind::Buff);
+        assert!((bonus.move_speed - 150.0).abs() < 1e-4);
+        apply_status(&mut statuses, &mut stats, bonus, 0.0);
+        assert!((stats.move_speed - 450.0).abs() < 1e-4);
+        assert!((stats.effective_move_speed(Some(&statuses)) - 450.0).abs() < 1e-4);
+        let expired = statuses.effects.remove(0);
+        subtract_status_stat_delta(&expired, &mut stats, 0.0);
+        assert!((stats.move_speed - 300.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn refreshed_bonus_does_not_compound() {
+        let mut statuses = StatusEffects::default();
+        let mut stats = CombatStats::simple(10.0, 8.0, 1.0, 2.0, 1.0, 300.0);
+        for _ in 0..10 {
+            // Built against the already-hasted speed, as build_status_effect does.
+            let bonus = percent_bonus("dance_move_speed_bonus", 20.0, 4.0, stats.move_speed);
+            apply_status(&mut statuses, &mut stats, bonus, 0.0);
+        }
+        assert!((stats.move_speed - 360.0).abs() < 1e-3);
+        assert_eq!(statuses.effects.len(), 1);
+    }
+
+    #[test]
+    fn bonus_and_slow_from_two_ids_add() {
+        let mut statuses = StatusEffects::default();
+        let mut stats = CombatStats::simple(10.0, 8.0, 1.0, 2.0, 1.0, 300.0);
+        let slow = percent_slow("slow", 30.0, 5.0, stats.move_speed);
+        apply_status(&mut statuses, &mut stats, slow, 0.0);
+        let bonus = percent_bonus("dance_move_speed_bonus", 50.0, 5.0, stats.move_speed);
+        apply_status(&mut statuses, &mut stats, bonus, 0.0);
+        // +50% and -30% of the 300 base: 300 + 150 - 90.
+        assert!(
+            (stats.move_speed - 360.0).abs() < 1e-3,
+            "{}",
+            stats.move_speed
+        );
+        assert_eq!(statuses.effects.len(), 2);
+        // Refreshing the slow keeps both measured against base.
+        let slow = percent_slow("slow", 30.0, 5.0, stats.move_speed);
+        apply_status(&mut statuses, &mut stats, slow, 0.0);
+        assert!(
+            (stats.move_speed - 360.0).abs() < 1e-3,
+            "{}",
+            stats.move_speed
+        );
     }
 
     #[test]

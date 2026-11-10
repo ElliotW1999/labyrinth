@@ -199,6 +199,8 @@ STATUSES = {
     "taunt": ("StatusSpec::Taunt", "taunt", False),
     "hypnosis": ("StatusSpec::Hypnosis", "hypnosis", False),
     "slow": (None, "slow", False),
+    # Percent of base move speed (amount or value, 0..400); the id is `<owner>_move_speed_bonus`.
+    "move_speed_bonus": (None, "move_speed_bonus", True),
     "attack_speed_slow": (None, "attack_speed_slow", False),
     "turn_rate_slow": (None, "turn_rate_slow", False),
     "turn_rate_bonus": (None, "turn_rate_bonus", True),
@@ -238,7 +240,7 @@ STATUSES = {
 }
 
 # Statuses whose runtime id is `<owner>_<name>` (the keyword alone is not a status id).
-OWNER_ID_STATUSES = ("damage_reduction", "status_resistance", "stacks")
+OWNER_ID_STATUSES = ("damage_reduction", "status_resistance", "stacks", "move_speed_bonus")
 
 # `effect_type=resource` ids → (kind, spent resource). Hostile kinds act on other units;
 # the spend kinds act on the unit that uses them (caster/owner only).
@@ -1689,6 +1691,17 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
                 report.error(row.file, row.line, "amount" if amount else "value", row.get("amount") or row.get("value"), "turn_rate_slow percentage must be within 0..100")
                 return None
             spec = f"StatusSpec::TurnRateSlow {{ percent: {rank_value(percent)} }}"
+            if amount:
+                _unused(e, report, "value")
+        elif effect_id == "move_speed_bonus":
+            percent = amount or value
+            if not percent:
+                report.error(row.file, row.line, "amount", "", "required: move_speed_bonus percentage (e.g. 20)")
+                return None
+            if any(not 0 < p <= 400 for p in percent):
+                report.error(row.file, row.line, "amount" if amount else "value", row.get("amount") or row.get("value"), "move_speed_bonus percentage must be above 0 and at most 400")
+                return None
+            spec = f'StatusSpec::MoveSpeedBonus {{ id: "{ctx.owner_id}_move_speed_bonus", percent: {rank_value(percent)} }}'
             if amount:
                 _unused(e, report, "value")
         elif effect_id == "turn_rate_bonus":

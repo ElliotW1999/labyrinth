@@ -414,6 +414,12 @@ fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
                 seconds_row("Slow duration", duration),
             ]
         }
+        StatusSpec::MoveSpeedBonus { percent, .. } => {
+            vec![
+                row("Move speed bonus %", percent),
+                seconds_row("Move speed bonus duration", duration),
+            ]
+        }
         StatusSpec::Burn {
             amount,
             tick_interval,
@@ -686,6 +692,7 @@ fn status_name(status: StatusSpec) -> &'static str {
         StatusSpec::Taunt => "Taunt",
         StatusSpec::Hypnosis => "Hypnosis",
         StatusSpec::Slow { .. } => "Slow",
+        StatusSpec::MoveSpeedBonus { .. } => "Move speed bonus",
         StatusSpec::AttackSpeedSlow { .. } => "Attack speed slow",
         StatusSpec::TurnRateSlow { .. } => "Turn rate slow",
         StatusSpec::TurnRateBonus { .. } => "Turn rate bonus",

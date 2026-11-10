@@ -881,6 +881,37 @@ class SlowStatusTests(unittest.TestCase):
         self.assertIn("<owner>_slow", report.errors[0].message)
 
 
+class MoveSpeedBonusTests(unittest.TestCase):
+    def test_bonus_uses_amount_or_value_and_the_owner_id(self) -> None:
+        for column in ("amount", "value"):
+            report = Report()
+            effect, ctx = _effect("apply_status", "move_speed_bonus", duration="4", **{column: "20"})
+            result = effect_to_rust(effect, ctx, report)
+            self.assertFalse(report.errors, column)
+            self.assertIn(
+                'StatusSpec::MoveSpeedBonus { id: "tester_move_speed_bonus", percent:', result[2]
+            )
+        self.assertEqual(held_status_id(effect), "tester_move_speed_bonus")
+        self.assertEqual(runtime_status_id("tester_move_speed_bonus"), "tester_move_speed_bonus")
+
+    def test_percent_must_be_above_zero_and_at_most_400(self) -> None:
+        for bad in ("0", "500", "-5"):
+            report = Report()
+            effect, ctx = _effect("apply_status", "move_speed_bonus", duration="4", amount=bad)
+            self.assertIsNone(effect_to_rust(effect, ctx, report))
+            self.assertTrue(any("move_speed_bonus percentage" in e.message for e in report.errors), bad)
+        report = Report()
+        effect, ctx = _effect("apply_status", "move_speed_bonus", duration="4")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertTrue(any("required" in e.message for e in report.errors))
+
+    def test_remove_status_is_rejected_with_a_hint(self) -> None:
+        report = Report()
+        effect, ctx = _effect("remove_status", "move_speed_bonus")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertIn("<owner>_move_speed_bonus", report.errors[0].message)
+
+
 class UntargetableStatusTests(unittest.TestCase):
     def test_untargetable_keyword_is_a_self_buff_status(self) -> None:
         report = Report()
