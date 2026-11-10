@@ -1,6 +1,6 @@
 # Winter Wyvern, primary-attribute damage and uniform magic resistance: implementation spec
 
-Status: **approved 2026-11-10 with amendments (see §13).** Build nothing beyond the listed gaps (P1, P2, G1–G7). If implementation shows that something else is needed, stop and ask.
+Status: **approved 2026-11-10 with amendments (see §13); implemented (see §14).** Build nothing beyond the listed gaps (P1, P2, G1–G7). If implementation shows that something else is needed, stop and ask.
 
 Related plans and docs:
 - `docs/plans/2026-11-10-slark-hero.md`: the model for this spec. It covers the scratch-CSV HeroGenerator flow, the precedent for adding a field to every `StatusSpec::Modifier` site (G2 `independent`), the `:suffix` effect_id syntax, `OWNER_ID_STATUSES`, and the `base_attack_speed` column (G6).
@@ -488,3 +488,50 @@ git diff --stat src/abilities/generated.rs src/item_catalog.rs   # only the allo
   - Docs: remove "MR 0.12/INT" from README "Attributes" and from the conventions subsection (`magic_resist = 6.321839` flat).
 - **D2 approved:** half steps for unspecified ranks.
 - **D3–D10 approved** as recommended: Arctic Burn burn/slow 5 s, refreshing; Splinter Blast projectile 650; Cold Embrace removable by an enemy buff dispel; taunted units may attack their ally, with no cleave or splash.
+
+## 14. Implementation notes
+
+Implemented in the order of §9, one commit per step, with `cargo fmt --check`, `cargo build` and `cargo test` green after each commit. The §13 amendments override earlier sections throughout (A1: Intelligence grants no magic resistance and every hero's `magic_resist` is 6.321839).
+
+### Commits
+
+1. P1: primary-attribute attack damage.
+2. P2 with A1: uniform 27.5% magic resistance, `MR_PER_INT` removed.
+3. G7: apostrophes in HeroGenerator identifiers.
+4. G1: timed `attack_projectile_speed`.
+5. G2: `attack_point` status.
+6. G3: `require_status` gate.
+7. G4: `heal_over_time` percent of max health.
+8. G5: `frozen` status.
+9. G6: `taunt_target` and `basic_attack::attack_allowed`.
+10. Data: Winter Wyvern hero, four abilities, invalid examples, spec, catalog and integration tests.
+11. Docs: README, `composition.md` (§3 gate note, §4, §5, §6.15 amendment, new §6.16), HeroGenerator docstring, these notes.
+
+### Deviations and reasons
+
+- **A1 is implemented as the amendment says, not as the P2 formula.** `HeroAttributes::MR_PER_INT` and its two `+=` lines are removed, every `hero_combat` arm uses 6.321839, and the Winter Wyvern row uses `magic_resist` 6.321839 (the §8 value 3.201839 is superseded). The P2 parity table's "New MR col" is replaced by 6.321839 everywhere. The HeroGenerator default and warning use `HERO_MR_RATING = 6.321839` with a 0.05 percentage point tolerance.
+- **P1/P2 test placement.** The three `HeroAttributes` tests and `spawned_hero_damage_includes_five_levels_of_primary_growth` live in the `progression.rs` test module (it already imports the attribute and spawn helpers); `components.rs` has no test module.
+- **Function names.** The plan's `start_basic_attack_requests` is `request_basic_attacks` in the code; the three `attack_allowed` call sites are in `request_basic_attacks`, `resolve_attack_releases` and `resolve_basic_attack_impacts`.
+- **G6 tests.** `taunt_target_forces_attack_on_cast_target_not_caster` and `taunt_target_ends_when_target_dies` are whole-sim tests in `sim_tests.rs` (module `compulsions`), because they need `enforce_compulsions` and the full attack pipeline; there is no `ai.rs` test module with that harness. They build the compulsion with `StatusEffect::taunted(duration, ally)`; the ability-level path (`TauntCastTarget` from a cast) is covered by `taunt_target_skips_cast_target` and the Winter's Curse tests. One extra test, `forced_ranged_attack_fizzles_when_the_compulsion_ends`, covers D8.
+- **Invalid examples** for G2 to G6 were added together in step 10 (as §9 lists them), not per gap; each gap's own unit tests in `test_generator_common.py` landed with the gap.
+- **`require_status` target.** The runtime gate checks the status on `ctx.caster` whatever the row's `effect_target` (`caster`, `owner` or `attacker` are accepted by the generator, as for the other gates, and for items the caster is the owner).
+- **Tooltip.** `RequireStatus` renders the text row "While the effect is active"; `AttackPoint`, `TauntCastTarget` and the two-part `HealOverTime` got rows too (the match is exhaustive).
+- **Generator rule for `heal_over_time`.** `value` and `amount` are both optional, at least one must be above 0, negatives are rejected, and `amount` must be within 0..100.
+- **`frozen` generator test.** `FrozenStatusTests` also checks that `remove_status,frozen` works by id (it is not an owner-id status).
+- **Winter Wyvern integration tests** that need the real projectile landing (`splinter_blast_*`) spawn a `Projectile` at the target from the cast's `SpawnProjectileEvent` and run `combat::apply_projectile_hits`, so the primary exclusion and the team and radius filters are exercised by the shipped combat code. The taunt-death test adds `ai::enforce_compulsions` to its app.
+- **Environment only.** The sandbox lacked the Linux development packages Bevy needs; `libwayland-dev`, `libasound2-dev`, `libudev-dev` and `libxkbcommon-dev` were installed with apt to build. No repository file was changed for that.
+
+### Re-baselined tests (cause: P1 or A1 only)
+
+- `heroes::tests::magnus_matches_spec`: magical damage taken 73.0 to 72.5 (27% to 27.5%).
+- `heroes::tests::sniper_matches_spec`: 73.5 to 72.5 (26.5% to 27.5%).
+- `status::tests::attributes::timed_strength_changes_max_health_like_items`: the intelligence-steal assertion changed from `-5 * MR_PER_INT` to "magic resist unchanged" (A1).
+- `abilities::tests::attack_damage_pct_snapshots_hero_def_damage_and_ignores_item_bonuses`: uses `level_one_attack_damage()` (listed in §2).
+- No `sim_tests.rs` or `net` expectation needed re-baselining; the QoP, Ursa and Slark spec tests and every `*_matches_spec` damage assert are unchanged because level-1 totals are preserved.
+
+### Known limitations
+
+- A basic-attack swing already under way when a taunt lands completes against its original target (`enforce_compulsions` only clears swings for fear and hypnosis). This predates this work and applies to every taunt.
+- `StatusEffects` is not replicated, so these statuses are correct only on the sim authority (as before).
+- Taunted ranged attacks in flight at the moment the curse ends fizzle at impact (D8).
+

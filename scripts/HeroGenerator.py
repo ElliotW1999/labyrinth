@@ -17,6 +17,19 @@ absolute projectile speed of the hero's basic attack; blank keeps the speed deri
 the attack range), turn_rate (> 0, blank keeps facing::HERO_TURN_RATE) and
 base_attack_speed (20..700, blank keeps the shared 100). Blank cells take the defaults.
 
+Stat conventions: spec values are level-1 totals and the CSV columns are bases, because
+HeroAttributes::apply_to adds the attributes on top:
+  base_health       = HP - STR * 18          base_health_regen = regen - STR * 0.12
+  base_mana         = mana - INT * 12        base_mana_regen   = regen - INT * 0.05
+  armor             = armor - AGI * 0.14
+  magic_resist      = 6.321839 (27.5% for every hero at every level; Intelligence grants none)
+  attack_damage     = total - primary attribute (each primary point adds 1 attack damage)
+Heroes spawn at level 6 with five levels of growth, so in-game values exceed the level-1 spec.
+Defaults for blank cells: attack_damage = 55 (melee) / 48 (ranged) minus the primary attribute,
+magic_resist = 6.321839 (an explicit value that is not 27.5% prints a warning). Worked example,
+Winter Wyvern (STR 22, AGI 16, INT 26, primary INT; HP 604, mana 387, armor 1, damage 46):
+base_health 208, base_mana 75, armor -1.24, magic_resist 6.321839, attack_damage 20.
+
 Usage:
   python3 scripts/HeroGenerator.py data/heroes.csv
   python3 scripts/HeroGenerator.py data/heroes.csv --dry-run
