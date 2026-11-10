@@ -901,6 +901,21 @@ mod tests {
     }
 
     #[test]
+    fn hero_base_attack_speed_override_feeds_attack_speed() {
+        let plain = hero_combat(61.0, 150.0, 1.7, 0.5, 0.3, 0.7, 0.0, 0.0, 300.0, None);
+        assert_eq!(plain.base_attack_speed, 100.0);
+        let fast = CombatStats {
+            base_attack_speed: 120.0,
+            ..hero_combat(61.0, 150.0, 1.7, 0.5, 0.3, 0.7, 0.0, 0.0, 300.0, None)
+        };
+        assert_eq!(fast.base_attack_speed, 120.0);
+        assert_eq!(fast.base_attack_time, 1.7);
+        let mut stats = fast;
+        stats.recompute_attack_speed(21.0);
+        assert!((stats.attack_speed - 141.0 / 100.0 / 1.7).abs() < 1e-5);
+    }
+
+    #[test]
     fn hero_combat_attack_projectile_speed_override() {
         let c = hero_combat(
             50.0,

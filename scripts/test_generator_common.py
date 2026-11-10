@@ -2189,6 +2189,25 @@ class HeroGeneratorTests(unittest.TestCase):
                 self._load("true", "150", ",turn_rate", "," + bad)
             self.assertIn("turn_rate must be above 0", str(ctx.exception))
 
+    def test_base_attack_speed_is_optional_and_bounded(self) -> None:
+        import HeroGenerator
+
+        blank = self._load("true", "150", ",base_attack_speed", ",")[0]
+        self.assertIsNone(blank.base_attack_speed)
+        arm = HeroGenerator.hero_def_arm(blank)
+        self.assertIn("combat: hero_combat(", arm)
+        self.assertNotIn("base_attack_speed", arm)
+        hero = self._load("true", "150", ",base_attack_speed", ",120")[0]
+        self.assertEqual(hero.base_attack_speed, 120.0)
+        arm = HeroGenerator.hero_def_arm(hero)
+        self.assertIn("combat: CombatStats {", arm)
+        self.assertIn("base_attack_speed: 120.0,", arm)
+        self.assertIn("..hero_combat(", arm)
+        for bad in ("0", "10", "701", "-5"):
+            with self.assertRaises(SystemExit) as ctx:
+                self._load("true", "150", ",base_attack_speed", "," + bad)
+            self.assertIn("base_attack_speed must be within 20..700", str(ctx.exception))
+
     def test_is_melee_must_match_attack_range(self) -> None:
         with self.assertRaises(SystemExit) as ctx:
             self._load("true", "400")
