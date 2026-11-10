@@ -533,6 +533,8 @@ pub enum StatusSpec {
         attack_speed_mult: RankValue,
         /// Flat attack range change (does not change melee / ranged classification).
         attack_range: RankValue,
+        /// Flat attack projectile speed change (ranged attackers; units per second).
+        attack_projectile_speed: RankValue,
         /// Percent (0..=1000) of the target's base attack damage, snapshotted when the status
         /// is built (see [`StatusBuildContext::base_attack_damage`]) and added to the flat
         /// `attack_damage` bonus.
@@ -597,6 +599,7 @@ impl StatusSpec {
             attack_speed_flat: RankValue::ZERO,
             attack_speed_mult: RankValue::ZERO,
             attack_range: RankValue::ZERO,
+            attack_projectile_speed: RankValue::ZERO,
             attack_damage_pct: RankValue::ZERO,
             cleave: RankValue::ZERO,
             cleave_radius: RankValue::ZERO,
@@ -787,6 +790,7 @@ impl StatusSpec {
                 attack_speed_flat,
                 attack_speed_mult,
                 attack_range,
+                attack_projectile_speed,
                 attack_damage_pct,
                 cleave,
                 cleave_radius,
@@ -808,6 +812,7 @@ impl StatusSpec {
                     attack_speed_flat: attack_speed_flat.at(rank),
                     attack_speed_mult: attack_speed_mult.at(rank),
                     attack_range: attack_range.at(rank),
+                    attack_projectile_speed: attack_projectile_speed.at(rank),
                     cleave: cleave.at(rank),
                     cleave_radius: cleave_radius.at(rank),
                     cleave_end_radius: cleave_end_radius.at(rank),

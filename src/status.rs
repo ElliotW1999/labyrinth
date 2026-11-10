@@ -217,6 +217,9 @@ pub struct StatusEffect {
     pub accuracy: f32,
     /// Flat attack range change; also tracked in `CombatStats::attack_range_bonus`.
     pub attack_range: f32,
+    /// Flat attack projectile speed change; tracked in
+    /// `CombatStats::attack_projectile_speed_bonus`.
+    pub attack_projectile_speed: f32,
     /// Cleave ratio contributed to this status's cleave instance while active (melee
     /// attackers only cleave). The four cleave fields sum per `cleave_source` into one
     /// `CombatStats::cleaves` instance.
@@ -401,6 +404,7 @@ impl StatusEffect {
             evasion: 0.0,
             accuracy: 0.0,
             attack_range: 0.0,
+            attack_projectile_speed: 0.0,
             cleave: 0.0,
             cleave_radius: 0.0,
             cleave_end_radius: 0.0,
@@ -1390,6 +1394,7 @@ pub(crate) fn subtract_status_stat_delta(
     stats.attack_speed_mult -= effect.attack_speed_mult;
     stats.attack_range -= effect.attack_range;
     stats.attack_range_bonus -= effect.attack_range;
+    stats.attack_projectile_speed_bonus -= effect.attack_projectile_speed;
     if effect.carries_cleave() {
         stats.cleaves.adjust(
             effect.cleave_key(),
@@ -1412,6 +1417,7 @@ pub(crate) fn add_status_stat_delta(effect: &StatusEffect, stats: &mut CombatSta
     stats.attack_speed_mult += effect.attack_speed_mult;
     stats.attack_range += effect.attack_range;
     stats.attack_range_bonus += effect.attack_range;
+    stats.attack_projectile_speed_bonus += effect.attack_projectile_speed;
     if effect.carries_cleave() {
         stats.cleaves.adjust(
             effect.cleave_key(),
@@ -2391,6 +2397,55 @@ mod tests {
         assert_eq!(stats.attack_range, base);
         assert_eq!(stats.attack_range_bonus, 0.0);
         assert!(world.get::<StatusEffects>(unit).unwrap().effects.is_empty());
+    }
+
+    #[test]
+    fn timed_attack_projectile_speed_raises_and_reverts() {
+        use std::time::Duration;
+        let mut world = World::new();
+        world.init_resource::<Time>();
+        world.init_resource::<Messages<DamageEvent>>();
+        world.init_resource::<Messages<StatusLifecycleEvent>>();
+        let mut statuses = StatusEffects::default();
+        let mut stats = CombatStats::simple(10.0, 550.0, 1.0, 0.0, 0.0, 10.0);
+        let base = stats.attack_projectile_speed_bonus;
+        let range = stats.attack_range;
+        apply_status(
+            &mut statuses,
+            &mut stats,
+            StatusEffect {
+                attack_projectile_speed: 500.0,
+                ..StatusEffect::buff("fast_shots", 1.0)
+            },
+            0.0,
+        );
+        assert_eq!(stats.attack_projectile_speed_bonus, base + 500.0);
+        assert_eq!(stats.attack_range, range, "range is untouched");
+        // A debuff version lowers it and stacks with the buff.
+        apply_status(
+            &mut statuses,
+            &mut stats,
+            StatusEffect {
+                attack_projectile_speed: -200.0,
+                ..StatusEffect::debuff("slow_shots", 5.0)
+            },
+            0.0,
+        );
+        assert_eq!(stats.attack_projectile_speed_bonus, base + 300.0);
+        let unit = world.spawn((statuses, stats, Health::new(100.0))).id();
+
+        world
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_secs_f32(2.0));
+        world.run_system_once(tick_status_effects).unwrap();
+        let stats = world.get::<CombatStats>(unit).unwrap();
+        assert_eq!(stats.attack_projectile_speed_bonus, base - 200.0);
+        world
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_secs_f32(5.0));
+        world.run_system_once(tick_status_effects).unwrap();
+        let stats = world.get::<CombatStats>(unit).unwrap();
+        assert_eq!(stats.attack_projectile_speed_bonus, base);
     }
 
     #[test]

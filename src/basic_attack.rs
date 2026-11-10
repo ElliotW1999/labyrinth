@@ -1770,6 +1770,42 @@ mod tests {
         assert!(frames_to_hit(700.0) < frames_to_hit(0.0));
     }
 
+    #[test]
+    fn timed_projectile_speed_status_sets_in_flight_attack_speed() {
+        use crate::status::{StatusEffect, StatusEffects, apply_status};
+        let (mut world, mut schedule) = world_with_pipeline();
+        let target_pos = Vec3::new(450.0, 0.0, 0.0);
+        let target = spawn_unit(&mut world, Team::Dire, target_pos, passive_stats());
+        let attacker = spawn_attacker(&mut world, 500.0, target, target_pos);
+        let base = projectile_speed_for(500.0);
+        {
+            let mut entity = world.entity_mut(attacker);
+            let mut stats = entity.get_mut::<CombatStats>().unwrap();
+            let mut statuses = StatusEffects::default();
+            apply_status(
+                &mut statuses,
+                &mut stats,
+                StatusEffect {
+                    attack_projectile_speed: 500.0,
+                    ..StatusEffect::buff("fast_shots", 10.0)
+                },
+                0.0,
+            );
+            drop(stats);
+            entity.insert(statuses);
+        }
+        let mut seen = None;
+        for _ in 0..80 {
+            step(&mut world, &mut schedule);
+            let mut query = world.query::<&BasicAttackInFlight>();
+            if let Some(flight) = query.iter(&world).next() {
+                seen = Some(flight.speed);
+                break;
+            }
+        }
+        assert_eq!(seen, Some(base + 500.0), "in-flight speed is base + bonus");
+    }
+
     fn request_extra(world: &mut World, attacker: Entity, target: Entity, ratio: f32) {
         world.write_message(ExtraAttackEvent {
             attacker,

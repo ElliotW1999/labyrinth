@@ -328,6 +328,8 @@ TIMED_STATS = {
     "attack_speed_flat": "attack_speed_flat",
     "attack_speed_mult": "attack_speed_mult",
     "attack_range": "attack_range",
+    # Flat change to the attack projectile speed (ranged attackers); negative makes a debuff.
+    "attack_projectile_speed": "attack_projectile_speed",
     # Percent (0..1000) of the target's base attack damage, snapshotted when applied.
     "attack_damage_pct": "attack_damage_pct",
     # Cleave ratio (0..1) added to the target's cleave; only melee attackers cleave.

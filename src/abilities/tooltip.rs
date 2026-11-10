@@ -480,6 +480,7 @@ fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
             move_speed,
             attack_damage,
             attack_range,
+            attack_projectile_speed,
             attack_damage_pct,
             cleave,
             cleave_radius,
@@ -518,6 +519,9 @@ fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
             }
             if attack_range != RankValue::ZERO {
                 rows.push(row("Attack range", attack_range));
+            }
+            if attack_projectile_speed != RankValue::ZERO {
+                rows.push(row("Attack projectile speed", attack_projectile_speed));
             }
             if attack_charges != RankValue::ZERO {
                 rows.push(row("For the next attacks", attack_charges));

@@ -2097,6 +2097,29 @@ class CastRangeBufferTests(unittest.TestCase):
         self.assertTrue(any(w.field == "cast_range_buffer" for w in report.warnings))
 
 
+class TimedProjectileSpeedTests(unittest.TestCase):
+    @staticmethod
+    def _stat(value: str, **cells: str):
+        effect = {"effect_type": "stat_modifier", "effect_id": "attack_projectile_speed", "value": value, "duration": "5"}
+        effect.update(cells)
+        return load_test_ability(effects=[effect])
+
+    def test_timed_projectile_speed_fills_its_modifier_field(self) -> None:
+        abilities, report = self._stat("500")
+        self.assertEqual(report.errors, [])
+        text = str(abilities[0].effects)
+        self.assertIn("attack_projectile_speed: RankValue::fixed(500.0)", text)
+        self.assertIn('id: "tester_attack_projectile_speed"', text)
+        self.assertIn("StatusKind::Buff", text)
+        # The range field stays zero.
+        self.assertIn("attack_range: RankValue::ZERO", text)
+
+    def test_negative_projectile_speed_is_a_debuff(self) -> None:
+        abilities, report = self._stat("-200")
+        self.assertEqual(report.errors, [])
+        self.assertIn("StatusKind::Debuff", str(abilities[0].effects))
+
+
 class TimedStatModifierTests(unittest.TestCase):
     @staticmethod
     def _stat(effect_id: str, value: str, **cells: str):
