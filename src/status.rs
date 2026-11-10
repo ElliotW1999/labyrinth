@@ -1052,13 +1052,6 @@ impl StatusEffects {
             && !self.effects.iter().any(|e| e.revealed && e.remaining > 0.0)
     }
 
-    /// Whether a live effect negates hostile unit-target spells once.
-    pub fn has_spell_block(&self) -> bool {
-        self.effects
-            .iter()
-            .any(|e| e.spell_block && e.remaining > 0.0)
-    }
-
     /// Whether a live effect reflects hostile unit-target spells.
     pub fn has_spell_reflect(&self) -> bool {
         self.effects

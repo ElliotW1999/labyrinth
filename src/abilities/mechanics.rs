@@ -19,7 +19,9 @@ use super::catalog::AbilityDefinitions;
 use super::definition::{
     AbilityMechanic, AbilityTrigger, AreaCenter, AreaRadius, DisplacementKind, RingStyle,
 };
-use super::effects::{AbilityTriggerEvent, EffectSource, TriggerContext, unit_in_area};
+use super::effects::{
+    AbilityTriggerEvent, EffectSource, SpellReflectEvent, TriggerContext, unit_in_area,
+};
 use crate::actions::{ActionFiredEvent, ActionId};
 use crate::combat::{ProjectileHitEvent, ProjectilePayload, SpawnProjectileEvent, flat_distance};
 use crate::components::{AbilityId, AttackTarget, BoundRadius, Health, Team};
@@ -88,6 +90,8 @@ pub struct CastContext {
     pub unit_target: Option<Entity>,
     pub aoe_radius: f32,
     pub cast_range: f32,
+    /// A reflected recast: the reflector is the caster and its spell is never reflected again.
+    pub reflected: bool,
 }
 
 impl CastContext {
@@ -113,6 +117,7 @@ impl CastContext {
         )
         .at(point)
         .cast_target(self.unit_target)
+        .reflected(self.reflected)
     }
 }
 
@@ -242,6 +247,7 @@ impl MechanicRunner<'_, '_> {
                         rank: ctx.rank,
                         cast_target: ctx.unit_target,
                         aim: ctx.aim,
+                        reflected: ctx.reflected,
                     },
                 });
             }
@@ -323,6 +329,7 @@ impl MechanicRunner<'_, '_> {
                     rank: ctx.rank,
                     cast_target: Some(unit),
                     aim: ctx.aim,
+                    reflected: ctx.reflected,
                 },
             });
         }
@@ -359,10 +366,15 @@ impl MechanicRunner<'_, '_> {
 /// Items run the same mechanics as abilities: when an item activation fires, its
 /// `ItemDefinition::mechanics` start (a projectile, …) with the item as the effect source.
 /// The `OnUse` trigger itself comes from `items::resolve_item_uses`.
+///
+/// Also recasts reflected item spells ([`SpellReflectEvent`]): the reflector runs the item's
+/// mechanics and `OnUse` entries against the original caster, with no use event or cooldown.
 pub fn execute_item_mechanics(
     mut fired: MessageReader<ActionFiredEvent>,
+    mut reflects: MessageReader<SpellReflectEvent>,
     casters: Query<(&Transform, &Team)>,
     mut runner: MechanicRunner,
+    mut triggers: MessageWriter<AbilityTriggerEvent>,
 ) {
     for event in fired.read() {
         let ActionId::Item { item, .. } = event.action else {
@@ -385,15 +397,65 @@ pub fn execute_item_mechanics(
             unit_target: event.target.unit().and_then(|e| runner.living_unit(e)),
             aoe_radius: def.aoe_radius(),
             cast_range: def.activation.cast_range,
+            reflected: false,
         };
         for mechanic in def.mechanics {
             runner.run(&ctx, mechanic);
         }
     }
+    for reflect in reflects.read() {
+        let EffectSource::Item(item) = reflect.source else {
+            continue;
+        };
+        let def = item.definition();
+        let Some(ctx) = reflected_context(
+            reflect,
+            &casters,
+            &runner,
+            def.aoe_radius(),
+            def.activation.cast_range,
+        ) else {
+            continue;
+        };
+        for mechanic in def.mechanics {
+            runner.run(&ctx, mechanic);
+        }
+        let mut on_use = ctx.trigger(AbilityTrigger::OnUse, ctx.origin);
+        on_use.trigger_unit = ctx.unit_target;
+        triggers.write(AbilityTriggerEvent(on_use));
+    }
+}
+
+/// The recast of a reflected spell: the reflector casts at the original caster. `None` when
+/// either of them is gone.
+fn reflected_context(
+    reflect: &SpellReflectEvent,
+    casters: &Query<(&Transform, &Team)>,
+    runner: &MechanicRunner,
+    aoe_radius: f32,
+    cast_range: f32,
+) -> Option<CastContext> {
+    let (transform, team) = casters.get(reflect.reflector).ok()?;
+    runner.living_unit(reflect.reflector)?;
+    let original = runner.living_unit(reflect.original_caster)?;
+    let (original_transform, _) = casters.get(original).ok()?;
+    Some(CastContext {
+        caster: reflect.reflector,
+        team: *team,
+        source: reflect.source,
+        rank: reflect.rank,
+        origin: transform.translation,
+        aim: original_transform.translation,
+        unit_target: Some(original),
+        aoe_radius,
+        cast_range,
+        reflected: true,
+    })
 }
 
 pub fn execute_ability_casts(
     mut casts: MessageReader<AbilityCastEvent>,
+    mut reflects: MessageReader<SpellReflectEvent>,
     defs: Res<AbilityDefinitions>,
     behaviors: Res<CustomAbilityBehaviors>,
     casters: Query<(&Transform, &Team)>,
@@ -417,6 +479,7 @@ pub fn execute_ability_casts(
             unit_target: cast.target.unit().and_then(|e| runner.living_unit(e)),
             aoe_radius: def.aoe_radius.at(cast.rank),
             cast_range: def.cast_range.at(cast.rank),
+            reflected: false,
         };
         for mechanic in &def.mechanics {
             runner.run(&ctx, mechanic);
@@ -427,6 +490,31 @@ pub fn execute_ability_casts(
         if let Some(&behavior) = behaviors.0.get(&cast.ability) {
             runner.commands.run_system_with(behavior, ctx);
         }
+    }
+    // Reflected recasts skip the cast event (no cooldown, no cast reactions) and the ability's
+    // custom behavior: only its mechanics and `OnCast` entries run, once, on the original caster.
+    for reflect in reflects.read() {
+        let EffectSource::Ability(ability) = reflect.source else {
+            continue;
+        };
+        let Some(def) = defs.get(ability) else {
+            continue;
+        };
+        let Some(ctx) = reflected_context(
+            reflect,
+            &casters,
+            &runner,
+            def.aoe_radius.at(reflect.rank),
+            def.cast_range.at(reflect.rank),
+        ) else {
+            continue;
+        };
+        for mechanic in &def.mechanics {
+            runner.run(&ctx, mechanic);
+        }
+        let mut on_cast = ctx.trigger(AbilityTrigger::OnCast, ctx.aim);
+        on_cast.trigger_unit = ctx.unit_target;
+        triggers.write(AbilityTriggerEvent(on_cast));
     }
 }
 
@@ -460,6 +548,7 @@ pub fn projectile_hit_triggers(
             )
             .at(hit.impact)
             .cast_target(payload.cast_target)
+            .reflected(payload.reflected)
             .trigger_unit(hit.primary)
             .affected(hit.splashed.clone()),
         ));

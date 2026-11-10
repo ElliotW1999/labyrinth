@@ -637,6 +637,8 @@ pub struct ProjectilePayload {
     pub rank: u32,
     pub cast_target: Option<Entity>,
     pub aim: Vec3,
+    /// Fired by a reflected cast: it is never reflected again.
+    pub reflected: bool,
 }
 
 /// A spell projectile ended. Carries who was involved, not what happens to them:
@@ -1140,6 +1142,7 @@ mod tests {
             rank: 1,
             cast_target: Some(target),
             aim: Vec3::ZERO,
+            reflected: false,
         };
         world.spawn((
             Transform::from_xyz(0.0, scale::body(1.0), 0.0),
@@ -1391,6 +1394,7 @@ mod tests {
             rank: 1,
             cast_target: Some(target),
             aim: Vec3::ZERO,
+            reflected: false,
         };
         world.spawn((
             Transform::from_xyz(0.0, scale::body(1.0), 0.0),
@@ -1434,6 +1438,7 @@ mod tests {
             rank: 1,
             cast_target: None,
             aim: Vec3::ZERO,
+            reflected: false,
         };
         let run = |max_hits: Option<u32>| {
             let mut world = World::new();
@@ -1495,6 +1500,7 @@ mod tests {
             rank: 1,
             cast_target: None,
             aim: Vec3::ZERO,
+            reflected: false,
         };
         // A wave from the origin that widens from 100 to 450 over 900 units. An enemy 300
         // to the side of the path is outside the starting width but inside the final one.
