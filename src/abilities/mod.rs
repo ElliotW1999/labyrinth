@@ -11491,4 +11491,326 @@ mod tests {
             "all ten pulses landed while untargetable"
         );
     }
+
+    // ---- Winter Wyvern ----
+
+    const WYVERN: [AbilityId; 4] = [
+        AbilityId::ArcticBurn,
+        AbilityId::SplinterBlast,
+        AbilityId::ColdEmbrace,
+        AbilityId::WintersCurse,
+    ];
+
+    /// The status-ticking test app plus the compulsion enforcement (taunts end with their target).
+    fn wyvern_app() -> App {
+        let mut app = qop_app();
+        app.add_systems(Update, crate::ai::enforce_compulsions);
+        app
+    }
+
+    fn stats_of(app: &App, unit: Entity) -> CombatStats {
+        *app.world().get::<CombatStats>(unit).unwrap()
+    }
+
+    #[test]
+    fn arctic_burn_grants_range_projectile_speed_attack_point_and_phase_then_reverts() {
+        let mut app = wyvern_app();
+        let caster = spawn_caster(&mut app, WYVERN);
+        let before = stats_of(&app, caster);
+        request(&mut app, caster, 0, CastTarget::None);
+        run_seconds(&mut app, 0.3);
+
+        let during = stats_of(&app, caster);
+        assert_eq!(during.attack_range, before.attack_range + 250.0);
+        assert_eq!(during.attack_range_bonus, before.attack_range_bonus + 250.0);
+        assert_eq!(
+            during.attack_projectile_speed_bonus,
+            before.attack_projectile_speed_bonus + 500.0
+        );
+        let statuses = app.world().get::<StatusEffects>(caster).unwrap();
+        assert_eq!(statuses.attack_point_override(), Some(0.1));
+        assert!(statuses.is_phased());
+        assert!(has_status(&app, caster, "arctic_burn_attack_range"));
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 900.0);
+
+        // Rank 1 lasts 7 s; every part ends with it and the stats return exactly.
+        run_seconds(&mut app, 7.2);
+        let after = stats_of(&app, caster);
+        assert_eq!(after.attack_range, before.attack_range);
+        assert_eq!(after.attack_range_bonus, before.attack_range_bonus);
+        assert_eq!(
+            after.attack_projectile_speed_bonus,
+            before.attack_projectile_speed_bonus
+        );
+        let statuses = app.world().get::<StatusEffects>(caster).unwrap();
+        assert_eq!(statuses.attack_point_override(), None);
+        assert!(!statuses.is_phased());
+        assert!(statuses.effects.is_empty());
+    }
+
+    #[test]
+    fn arctic_burn_attacks_burn_and_slow_only_while_active() {
+        let mut app = wyvern_app();
+        let caster = spawn_caster(&mut app, WYVERN);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(300.0, 0.0, 0.0));
+
+        // Not active: a hit does nothing extra (the passive-style rows are gated).
+        write_attack_hit(&mut app, caster, target);
+        run_seconds(&mut app, 0.2);
+        assert!(!has_status(&app, target, "arctic_burn_burn"));
+        assert!(!has_status(&app, target, "arctic_burn_slow"));
+
+        request(&mut app, caster, 0, CastTarget::None);
+        run_seconds(&mut app, 0.3);
+        write_attack_hit(&mut app, caster, target);
+        run_seconds(&mut app, 0.2);
+        let burn = status_of(&app, target, "arctic_burn_burn").expect("burning");
+        assert_eq!(burn.damage_per_sec, 15.0);
+        assert_eq!(burn.dot_source, Some(caster));
+        let slow = status_of(&app, target, "arctic_burn_slow").expect("slowed");
+        assert!((slow.move_slow_fraction - 0.15).abs() < 1e-6);
+        let hp = health(&app, target);
+        assert!(hp < 1000.0, "the burn ticks");
+        // The burn and slow outlast nothing: 5 s later they are gone.
+        run_seconds(&mut app, 5.5);
+        assert!(!has_status(&app, target, "arctic_burn_burn"));
+        assert!(!has_status(&app, target, "arctic_burn_slow"));
+
+        // After the ability itself ran out (7 s) a hit again applies nothing.
+        run_seconds(&mut app, 2.0);
+        assert!(!has_status(&app, caster, "arctic_burn_attack_range"));
+        write_attack_hit(&mut app, caster, target);
+        run_seconds(&mut app, 0.2);
+        assert!(!has_status(&app, target, "arctic_burn_burn"));
+        assert!(!has_status(&app, target, "arctic_burn_slow"));
+    }
+
+    #[test]
+    fn arctic_burn_burn_does_not_stack_on_repeat_hits() {
+        let mut app = wyvern_app();
+        let caster = spawn_caster(&mut app, WYVERN);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(300.0, 0.0, 0.0));
+        request(&mut app, caster, 0, CastTarget::None);
+        run_seconds(&mut app, 0.3);
+        write_attack_hit(&mut app, caster, target);
+        run_seconds(&mut app, 2.0);
+        let aged = status_of(&app, target, "arctic_burn_burn")
+            .unwrap()
+            .remaining;
+        for _ in 0..3 {
+            write_attack_hit(&mut app, caster, target);
+            run_seconds(&mut app, 0.1);
+        }
+        assert_eq!(instances(&app, target, "arctic_burn_burn"), 1);
+        assert_eq!(instances(&app, target, "arctic_burn_slow"), 1);
+        let refreshed = status_of(&app, target, "arctic_burn_burn")
+            .unwrap()
+            .remaining;
+        assert!(refreshed > aged, "refreshed {refreshed} vs aged {aged}");
+        assert_eq!(
+            status_of(&app, target, "arctic_burn_burn")
+                .unwrap()
+                .damage_per_sec,
+            15.0,
+            "flat dps, not summed"
+        );
+    }
+
+    /// Casts Splinter Blast at `target` and lands its projectile through the real combat
+    /// splash rules: the primary is struck, the rest of the radius is `splashed`.
+    fn land_splinter_blast(app: &mut App, caster: Entity, target: Entity) {
+        use bevy::ecs::system::RunSystemOnce;
+        let spawned = cast_for_projectiles(app, caster, 1, CastTarget::Unit(target));
+        assert_eq!(spawned.len(), 1);
+        let shot = spawned[0];
+        assert_eq!(shot.splash_radius, 500.0);
+        assert_eq!(shot.speed, Some(650.0));
+        let at = app.world().get::<Transform>(target).unwrap().translation;
+        app.world_mut().spawn((
+            Transform::from_xyz(at.x, crate::scale::body(1.0), at.z),
+            crate::components::Projectile {
+                speed: 1.0,
+                team: Team::Radiant,
+                radius: crate::scale::body(0.85),
+                lifetime: 1.0,
+                splash_radius: shot.splash_radius,
+            },
+            shot.payload,
+            crate::components::ProjectileHome {
+                target,
+                last_pos: at,
+            },
+        ));
+        app.world_mut()
+            .run_system_once(crate::combat::apply_projectile_hits)
+            .unwrap();
+        for _ in 0..6 {
+            step(app);
+        }
+    }
+
+    #[test]
+    fn splinter_blast_hits_enemies_around_target_but_not_target() {
+        let mut app = wyvern_app();
+        let caster = spawn_caster(&mut app, WYVERN);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(800.0, 0.0, 0.0));
+        let near = spawn_unit(&mut app, Team::Dire, Vec3::new(800.0, 0.0, 300.0));
+        let edge = spawn_unit(&mut app, Team::Dire, Vec3::new(1250.0, 0.0, 0.0));
+        land_splinter_blast(&mut app, caster, target);
+        // Rank 1: 80 magical damage (no resistance) and a 27% slow on every other enemy.
+        for splashed in [near, edge] {
+            assert_eq!(health(&app, splashed), 920.0);
+            let slow = status_of(&app, splashed, "splinter_blast_slow").expect("slowed");
+            assert!((slow.move_slow_fraction - 0.27).abs() < 1e-6);
+        }
+        assert_eq!(health(&app, target), 1000.0, "the primary is not splashed");
+        assert!(!has_status(&app, target, "splinter_blast_slow"));
+    }
+
+    #[test]
+    fn splinter_blast_ignores_allies_and_far_enemies() {
+        let mut app = wyvern_app();
+        let caster = spawn_caster(&mut app, WYVERN);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(800.0, 0.0, 0.0));
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(800.0, 0.0, 100.0));
+        let far = spawn_unit(&mut app, Team::Dire, Vec3::new(800.0, 0.0, 700.0));
+        land_splinter_blast(&mut app, caster, target);
+        for untouched in [target, ally, far] {
+            assert_eq!(health(&app, untouched), 1000.0);
+            assert!(!has_status(&app, untouched, "splinter_blast_slow"));
+        }
+    }
+
+    #[test]
+    fn cold_embrace_freezes_heals_flat_plus_max_hp_and_blocks_physical() {
+        let mut app = wyvern_app();
+        let caster = spawn_caster(&mut app, WYVERN);
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(300.0, 0.0, 0.0));
+        set_health(&mut app, ally, 200.0);
+        request(&mut app, caster, 2, CastTarget::Unit(ally));
+        run_seconds(&mut app, 0.5);
+        assert!(has_status(&app, ally, "frozen"));
+        assert!(has_status(&app, ally, "heal_over_time"));
+        let statuses = app.world().get::<StatusEffects>(ally).unwrap();
+        assert!(statuses.is_stunned());
+        assert!(
+            statuses
+                .blocks()
+                .contains(crate::status::ActionBlocks::CAST)
+        );
+
+        // Rank 1: 40 + 1.5% of 1000 max health = 55 per second.
+        let start = health(&app, ally);
+        run_seconds(&mut app, 2.0);
+        let healed = health(&app, ally) - start;
+        assert!((healed - 110.0).abs() < 4.0, "healed {healed} in 2 s");
+
+        // Physical damage is blocked (the heal keeps ticking), magical damage is not.
+        let hp = health(&app, ally);
+        app.world_mut()
+            .write_message(DamageEvent::new(ally, 100.0, DamageType::Physical));
+        step(&mut app);
+        assert!(health(&app, ally) >= hp, "no physical damage taken");
+        let hp = health(&app, ally);
+        app.world_mut()
+            .write_message(DamageEvent::new(ally, 100.0, DamageType::Magical));
+        step(&mut app);
+        assert!(health(&app, ally) < hp - 90.0, "magical damage lands");
+
+        // It ends after 4 s and the status leaves no trace.
+        run_seconds(&mut app, 2.5);
+        assert!(!has_status(&app, ally, "frozen"));
+        assert!(!has_status(&app, ally, "heal_over_time"));
+    }
+
+    #[test]
+    fn cold_embrace_self_cast_allowed() {
+        let mut app = wyvern_app();
+        let caster = spawn_caster(&mut app, WYVERN);
+        request(&mut app, caster, 2, CastTarget::Unit(caster));
+        run_seconds(&mut app, 0.5);
+        assert!(has_status(&app, caster, "frozen"), "self cast lands");
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 950.0);
+    }
+
+    #[test]
+    fn winters_curse_dispels_and_stuns_target() {
+        let mut app = wyvern_app();
+        let caster = spawn_caster(&mut app, WYVERN);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(400.0, 0.0, 0.0));
+        hold_status(&mut app, target, "some_buff", 30.0);
+        request(&mut app, caster, 3, CastTarget::Unit(target));
+        run_seconds(&mut app, 0.4);
+        assert!(!has_status(&app, target, "some_buff"), "buffs dispelled");
+        let stun = status_of(&app, target, "winters_curse_stun").expect("stunned");
+        assert!(stun.stunned);
+        assert!(
+            (stun.remaining - 4.0).abs() <= 0.5,
+            "4 s stun: {}",
+            stun.remaining
+        );
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 850.0);
+    }
+
+    #[test]
+    fn winters_curse_taunts_nearby_enemies_to_attack_target_with_bonus_attack_speed() {
+        let mut app = wyvern_app();
+        let caster = spawn_caster(&mut app, WYVERN);
+        let cursed = spawn_unit(&mut app, Team::Dire, Vec3::new(400.0, 0.0, 0.0));
+        let near = spawn_unit(&mut app, Team::Dire, Vec3::new(700.0, 0.0, 0.0));
+        let far = spawn_unit(&mut app, Team::Dire, Vec3::new(1200.0, 0.0, 0.0));
+        let speed = |app: &App, unit| stats_of(app, unit).attack_speed_flat;
+        let before = speed(&app, near);
+        request(&mut app, caster, 3, CastTarget::Unit(cursed));
+        run_seconds(&mut app, 0.4);
+        let taunt = taunt_of(&app, near).expect("nearby enemy is taunted");
+        assert_eq!(
+            taunt.compulsion,
+            Some(crate::status::Compulsion::Attack { target: cursed })
+        );
+        assert_eq!(
+            speed(&app, near),
+            before + 50.0,
+            "rank 1 bonus attack speed"
+        );
+        assert!(taunt_of(&app, far).is_none(), "outside the 525 radius");
+        assert!(taunt_of(&app, caster).is_none());
+    }
+
+    #[test]
+    fn winters_curse_cursed_target_not_taunted() {
+        let mut app = wyvern_app();
+        let caster = spawn_caster(&mut app, WYVERN);
+        let cursed = spawn_unit(&mut app, Team::Dire, Vec3::new(400.0, 0.0, 0.0));
+        let _near = spawn_unit(&mut app, Team::Dire, Vec3::new(500.0, 0.0, 0.0));
+        let before = stats_of(&app, cursed).attack_speed_flat;
+        request(&mut app, caster, 3, CastTarget::Unit(cursed));
+        run_seconds(&mut app, 0.4);
+        assert!(taunt_of(&app, cursed).is_none());
+        assert!(has_status(&app, cursed, "winters_curse_stun"));
+        assert_eq!(stats_of(&app, cursed).attack_speed_flat, before);
+    }
+
+    #[test]
+    fn winters_curse_taunt_ends_when_target_dies() {
+        let mut app = wyvern_app();
+        let caster = spawn_caster(&mut app, WYVERN);
+        let cursed = spawn_unit(&mut app, Team::Dire, Vec3::new(400.0, 0.0, 0.0));
+        let near = spawn_unit(&mut app, Team::Dire, Vec3::new(500.0, 0.0, 0.0));
+        let before = stats_of(&app, near).attack_speed_flat;
+        request(&mut app, caster, 3, CastTarget::Unit(cursed));
+        run_seconds(&mut app, 0.4);
+        assert!(taunt_of(&app, near).is_some());
+        set_health(&mut app, cursed, 0.0);
+        run_seconds(&mut app, 0.3);
+        assert!(
+            taunt_of(&app, near).is_none(),
+            "the taunt ended with its target"
+        );
+        assert_eq!(
+            stats_of(&app, near).attack_speed_flat,
+            before,
+            "and its attack speed with it"
+        );
+    }
 }

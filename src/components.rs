@@ -772,6 +772,11 @@ pub enum AbilityId {
     Pounce,
     EssenceShift,
     ShadowDance,
+    // Winter Wyvern (generated stubs)
+    ArcticBurn,
+    SplinterBlast,
+    ColdEmbrace,
+    WintersCurse,
     // </hero_generator:ability_enum>
 }
 
@@ -825,6 +830,10 @@ impl AbilityId {
             AbilityId::Pounce => "Pounce",
             AbilityId::EssenceShift => "Essence Shift",
             AbilityId::ShadowDance => "Shadow Dance",
+            AbilityId::ArcticBurn => "Arctic Burn",
+            AbilityId::SplinterBlast => "Splinter Blast",
+            AbilityId::ColdEmbrace => "Cold Embrace",
+            AbilityId::WintersCurse => "Winter's Curse",
             // </hero_generator:ability_display_name>
         }
     }
@@ -843,7 +852,8 @@ impl AbilityId {
                 | AbilityId::ReversePolarity
                 | AbilityId::Assassinate
                 | AbilityId::Enrage
-                | AbilityId::ShadowDance // </hero_generator:ability_ultimates>
+                | AbilityId::ShadowDance
+                | AbilityId::WintersCurse // </hero_generator:ability_ultimates>
         )
     }
 
@@ -876,6 +886,10 @@ impl AbilityId {
             AbilityId::Pounce => 7,
             AbilityId::EssenceShift => 7,
             AbilityId::ShadowDance => 4,
+            AbilityId::ArcticBurn => 7,
+            AbilityId::SplinterBlast => 7,
+            AbilityId::ColdEmbrace => 7,
+            AbilityId::WintersCurse => 4,
             // </ability_generator:max_rank>
             _ if self.is_ultimate() => 4,
             _ => 7,

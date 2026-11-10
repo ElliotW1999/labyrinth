@@ -1303,6 +1303,148 @@ mod tests {
     }
 
     #[test]
+    fn winter_wyvern_abilities_generate_expected_definitions() {
+        use crate::abilities::definition::{AreaRadius, StatusSpec};
+        use crate::actions::TargetType;
+
+        assert_eq!(AbilityId::ArcticBurn.display_name(), "Arctic Burn");
+        assert_eq!(AbilityId::SplinterBlast.display_name(), "Splinter Blast");
+        assert_eq!(AbilityId::ColdEmbrace.display_name(), "Cold Embrace");
+        assert_eq!(AbilityId::WintersCurse.display_name(), "Winter's Curse");
+        assert!(AbilityId::WintersCurse.is_ultimate());
+        assert!(!AbilityId::ArcticBurn.is_ultimate());
+
+        // Q: a no-target self buff; its attack-hit rows are gated on the range status.
+        let q = builtin(AbilityId::ArcticBurn);
+        assert_eq!(q.max_rank, 7);
+        assert_eq!(q.target_type, TargetType::NoTarget);
+        assert_eq!(q.mana_cost.at(1), 100.0);
+        assert_eq!(q.cooldown.at(1), 29.0);
+        assert_eq!(q.cooldown.at(7), 15.5);
+        assert!(q.effects_for(AbilityTrigger::OnAttackHit).any(|e| matches!(
+            (e.target, e.effect),
+            (
+                EffectTarget::Caster,
+                AbilityEffect::RequireStatus {
+                    id: "arctic_burn_attack_range",
+                    then: AbilityTrigger::Custom("on_arctic_burn_hit"),
+                }
+            )
+        )));
+        let hit = AbilityTrigger::Custom("on_arctic_burn_hit");
+        assert!(q.effects_for(hit).any(|e| matches!(
+            e.effect,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Burn { amount, damage_type: DamageType::Magical, .. },
+                duration,
+            } if amount.at(1) == 15.0 && amount.at(5) == 67.5 && amount.at(7) == 82.5
+                && duration.at(1) == 5.0
+        )));
+        assert!(q.effects_for(hit).any(|e| matches!(
+            e.effect,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Slow { id: "arctic_burn_slow", percent },
+                duration,
+            } if percent.at(1) == 15.0 && percent.at(7) == 37.5 && duration.at(1) == 5.0
+        )));
+        assert!(q.effects_for(AbilityTrigger::OnCast).any(|e| matches!(
+            e.effect,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::AttackPoint { id: "arctic_burn_attack_point", seconds },
+                ..
+            } if seconds.at(1) == 0.1
+        )));
+        assert!(q.effects_for(AbilityTrigger::OnCast).any(|e| matches!(
+            e.effect,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Modifier { attack_projectile_speed, .. },
+                ..
+            } if attack_projectile_speed.at(1) == 500.0
+        )));
+
+        // W: a targeted projectile (speed 650) that splashes 500 around its target.
+        let w = builtin(AbilityId::SplinterBlast);
+        assert_eq!(w.max_rank, 7);
+        assert_eq!(w.target_type, TargetType::Unit);
+        assert_eq!(w.aoe_radius.at(1), 500.0);
+        assert_eq!(w.mana_cost.at(7), 150.0);
+        assert!(w.mechanics.iter().any(|m| matches!(
+            m,
+            AbilityMechanic::Projectile {
+                splash_radius: AreaRadius::Ability,
+                speed: Some(650.0),
+                skillshot: false,
+                ..
+            }
+        )));
+        assert!(
+            w.effects_for(AbilityTrigger::OnProjectileHit)
+                .any(|e| matches!(
+                    (e.target, e.effect),
+                    (
+                        EffectTarget::AffectedUnits,
+                        AbilityEffect::Damage { amount, damage_type: DamageType::Magical, .. }
+                    ) if amount.at(1) == 80.0 && amount.at(7) == 440.0
+                ))
+        );
+
+        // E: freeze plus a heal over time with a flat and a max-health part.
+        let e = builtin(AbilityId::ColdEmbrace);
+        assert_eq!(e.max_rank, 7);
+        assert_eq!(e.target_type, TargetType::Unit);
+        assert_eq!(e.cast_range.at(5), 1025.0);
+        assert_eq!(e.mana_cost.at(7), 95.0);
+        assert!(e.effects_for(AbilityTrigger::OnCast).any(|x| matches!(
+            (x.target, x.effect),
+            (
+                EffectTarget::CastTarget,
+                AbilityEffect::ApplyStatus { status: StatusSpec::Frozen, duration }
+            ) if duration.at(1) == 4.0
+        )));
+        assert!(e.effects_for(AbilityTrigger::OnCast).any(|x| matches!(
+            x.effect,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::HealOverTime { hps, max_health_pct },
+                ..
+            } if hps.at(5) == 57.5 && max_health_pct.at(5) == 5.0
+        )));
+
+        // R: four ranks; dispel and stun the target, taunt the area onto it.
+        let r = builtin(AbilityId::WintersCurse);
+        assert_eq!(r.max_rank, 4);
+        assert_eq!(r.target_type, TargetType::Unit);
+        assert_eq!(r.aoe_radius.at(1), 525.0);
+        assert_eq!(r.cooldown.at(4), 75.0);
+        assert_eq!(r.mana_cost.at(4), 275.0);
+        assert!(r.effects_for(AbilityTrigger::OnCast).any(|x| matches!(
+            (x.target, x.effect),
+            (
+                EffectTarget::CastTarget,
+                AbilityEffect::Dispel {
+                    kind: crate::status::StatusKind::Buff,
+                    ..
+                }
+            )
+        )));
+        assert!(r.effects_for(AbilityTrigger::OnCast).any(|x| matches!(
+            x.effect,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::OwnedStun {
+                    id: "winters_curse_stun"
+                },
+                ..
+            }
+        )));
+        assert!(r.effects_for(AbilityTrigger::OnCast).any(|x| matches!(
+            x.effect,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::TauntCastTarget { attack_speed },
+                ..
+            } if attack_speed.at(1) == 50.0 && attack_speed.at(4) == 87.5
+        )));
+    }
+
+    #[test]
     fn loadouts_register_their_definitions() {
         let mut world = World::new();
         world.init_resource::<AbilityDefinitions>();

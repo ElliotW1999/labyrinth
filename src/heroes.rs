@@ -59,6 +59,8 @@ pub enum HeroId {
     Ursa,
     /// Generated hero — abilities are stubs until implemented.
     Slark,
+    /// Generated hero — abilities are stubs until implemented.
+    WinterWyvern,
     // </hero_generator:hero_enum>
 }
 
@@ -76,6 +78,7 @@ impl HeroId {
             HeroId::Sniper,
             HeroId::Ursa,
             HeroId::Slark,
+            HeroId::WinterWyvern,
             // </hero_generator:hero_all>
         ]
     }
@@ -118,6 +121,7 @@ impl HeroId {
             HeroId::Sniper => "Sniper",
             HeroId::Ursa => "Ursa",
             HeroId::Slark => "Slark",
+            HeroId::WinterWyvern => "Winter Wyvern",
             // </hero_generator:hero_name>
         }
     }
@@ -138,7 +142,9 @@ impl HeroId {
             HeroId::Sniper => "Agi marksman — Shrapnel, Headshot, Take Aim, Assassinate",
             HeroId::Ursa => "Agi brawler — Earthshock, Overpower, Fury Swipes, Enrage",
             HeroId::Slark => "Agi assassin — Dark Pact, Pounce, Essence Shift, Shadow Dance",
-            // </hero_generator:hero_blurb>
+            HeroId::WinterWyvern => {
+                "Int disabler — Arctic Burn, Splinter Blast, Cold Embrace, Winter's Curse"
+            } // </hero_generator:hero_blurb>
         }
     }
 
@@ -156,6 +162,7 @@ impl HeroId {
             HeroId::Sniper => "AGI",
             HeroId::Ursa => "AGI",
             HeroId::Slark => "AGI",
+            HeroId::WinterWyvern => "INT",
             // </hero_generator:hero_primary>
         }
     }
@@ -487,6 +494,41 @@ impl HeroId {
                     AbilityId::Pounce,
                     AbilityId::EssenceShift,
                     AbilityId::ShadowDance,
+                ],
+                dimensions: UnitDimensions::HERO,
+            },
+            HeroId::WinterWyvern => HeroDef {
+                id: self,
+                attributes: HeroAttributes {
+                    strength: 22.0,
+                    agility: 16.0,
+                    intelligence: 26.0,
+                    str_per_level: 2.5,
+                    agi_per_level: 1.7,
+                    int_per_level: 3.6,
+                    primary: Some(Attribute::Intelligence),
+                },
+                base_health: 208.0,
+                base_health_regen: -0.19,
+                base_mana: 75.0,
+                base_mana_regen: 0.25,
+                combat: hero_combat(
+                    20.0,
+                    450.0,
+                    1.7,
+                    0.25,
+                    0.8,
+                    0.6,
+                    -1.24,
+                    6.321839,
+                    285.0,
+                    Some(700.0),
+                ),
+                abilities: [
+                    AbilityId::ArcticBurn,
+                    AbilityId::SplinterBlast,
+                    AbilityId::ColdEmbrace,
+                    AbilityId::WintersCurse,
                 ],
                 dimensions: UnitDimensions::HERO,
             },
@@ -914,6 +956,7 @@ mod tests {
             (HeroId::Sniper, 43.0),
             (HeroId::Ursa, 44.0),
             (HeroId::Slark, 61.0),
+            (HeroId::WinterWyvern, 46.0),
         ];
         for (hero, total) in expected {
             let def = hero.def();
@@ -965,6 +1008,74 @@ mod tests {
                 "{hero:?} level 6: {at_level_6}"
             );
         }
+    }
+
+    #[test]
+    fn winter_wyvern_matches_spec() {
+        use crate::combat::apply_damage;
+        use crate::components::DamageType;
+
+        assert_eq!(
+            HeroId::from_cli("winter wyvern"),
+            Some(HeroId::WinterWyvern)
+        );
+        assert_eq!(HeroId::WinterWyvern.name(), "Winter Wyvern");
+        assert_eq!(HeroId::WinterWyvern.primary_label(), "INT");
+        let def = HeroId::WinterWyvern.def();
+        assert_eq!(
+            def.abilities,
+            [
+                AbilityId::ArcticBurn,
+                AbilityId::SplinterBlast,
+                AbilityId::ColdEmbrace,
+                AbilityId::WintersCurse,
+            ]
+        );
+
+        let (health, mana, stats, attrs) = def.vitals();
+        assert!((health.max - 604.0).abs() < 1e-3, "health {}", health.max);
+        assert!((health.regen_per_sec - 2.45).abs() < 1e-4);
+        assert!((mana.max - 387.0).abs() < 1e-3, "mana {}", mana.max);
+        assert!((mana.regen_per_sec - 1.55).abs() < 1e-4);
+        assert!((stats.armor - 1.0).abs() < 1e-3, "armor {}", stats.armor);
+        let taken = apply_damage(100.0, DamageType::Magical, &stats);
+        assert!(
+            (taken - 72.5).abs() < 0.01,
+            "27.5% magic resist: took {taken}"
+        );
+        assert_eq!(
+            (attrs.strength, attrs.agility, attrs.intelligence),
+            (22.0, 16.0, 26.0)
+        );
+        assert_eq!(
+            (
+                attrs.str_per_level,
+                attrs.agi_per_level,
+                attrs.int_per_level
+            ),
+            (2.5, 1.7, 3.6)
+        );
+
+        // 46 at level 1: the stored 20 plus 26 Intelligence (the primary).
+        assert_eq!(stats.attack_damage, 46.0);
+        assert_eq!(def.combat.attack_damage, 20.0);
+        assert_eq!(stats.attack_range, 450.0);
+        assert!(!stats.is_melee());
+        assert_eq!(stats.base_attack_time, 1.7);
+        assert_eq!(stats.attack_point, 0.25);
+        assert_eq!(stats.attack_backswing, 0.8);
+        assert_eq!(stats.turn_rate, 0.6);
+        assert_eq!(stats.move_speed, 285.0);
+        assert_eq!(
+            stats.attack_projectile_speed_bonus,
+            700.0 - crate::basic_attack::projectile_speed_for(450.0)
+        );
+        assert!(
+            (stats.attack_speed - 116.0 / 100.0 / 1.7).abs() < 1e-4,
+            "APS {}",
+            stats.attack_speed
+        );
+        assert!((stats.attack_speed - 0.682353).abs() < 1e-5);
     }
 
     #[test]
