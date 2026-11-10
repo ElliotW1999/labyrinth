@@ -1307,7 +1307,7 @@ fn essence_shift() -> AbilityDefinition {
                     attack_charges: RankValue::ZERO,
                     independent: true,
                 },
-                duration: RankValue::fixed(10.0),
+                duration: RankValue::from_level_1(30.0, 20.0),
             },
         )
         .on(
@@ -1321,7 +1321,7 @@ fn essence_shift() -> AbilityDefinition {
                     amount: RankValue::fixed(3.0),
                     independent: true,
                 },
-                duration: RankValue::fixed(10.0),
+                duration: RankValue::from_level_1(30.0, 20.0),
             },
         )
 }

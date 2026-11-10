@@ -217,13 +217,17 @@ pub struct CombatStats {
     pub attack_speed_flat: f32,
     /// Multiplicative AS bonus (0.0 ⇒ ×1.0).
     pub attack_speed_mult: f32,
-    /// Base attack time in seconds. APS = (IAS/100) / BAT.
+    /// Base attack time in seconds: the attack interval at 100 attack speed.
+    /// Interval = BAT × 100 / AS, so APS = (AS / 100) / BAT.
     pub base_attack_time: f32,
     /// Cached attacks-per-second after the IAS formula (used by combat/HUD).
     pub attack_speed: f32,
-    /// Foreswing before the projectile/hit fires (0..=1.0s, `basic_attack::MAX_ATTACK_SWING`).
+    /// Base foreswing before the projectile/hit fires, at 100 attack speed
+    /// (0..=1.0s, `basic_attack::MAX_ATTACK_SWING`). Scaled by [`Self::effective_attack_point`].
     pub attack_point: f32,
-    /// Backswing after the attack (0..=1.0s, `basic_attack::MAX_ATTACK_SWING`); cancelled by new player orders.
+    /// Base backswing after the attack, at 100 attack speed (0..=1.0s,
+    /// `basic_attack::MAX_ATTACK_SWING`); cancelled by new player orders. Scaled by
+    /// [`Self::effective_attack_backswing`].
     pub attack_backswing: f32,
     /// Yaw turn rate in radians per 0.03 seconds.
     pub turn_rate: f32,
@@ -288,12 +292,17 @@ impl CombatStats {
         magic_resist: f32,
         move_speed: f32,
     ) -> Self {
-        let bat = 1.0;
-        let ias = (attacks_per_sec * bat * 100.0).clamp(20.0, 700.0);
+        // The rate lives in BAT at a neutral 100 attack speed, so the attack point and
+        // backswing keep their base durations: interval = BAT × 100 / AS = 1 / attacks_per_sec.
+        let bat = if attacks_per_sec > 0.0 {
+            1.0 / attacks_per_sec
+        } else {
+            1.0
+        };
         let mut stats = Self {
             attack_damage,
             attack_range,
-            base_attack_speed: ias,
+            base_attack_speed: 100.0,
             attack_speed_flat: 0.0,
             attack_speed_mult: 0.0,
             base_attack_time: bat,
@@ -371,14 +380,34 @@ impl CombatStats {
         }
     }
 
-    /// Basic-attack foreswing: the lowest live status override (see
-    /// [`crate::status::StatusEffects::attack_point_override`]), else `attack_point`, clamped to
-    /// [`crate::basic_attack::MAX_ATTACK_SWING`]. The one place the override is read.
+    /// Current attack speed as a multiple of 100 (`AS / 100`), recovered from the cached
+    /// attacks-per-second: `APS × BAT`. 1.0 at 100 attack speed, 5.0 at 500.
+    pub fn attack_speed_ratio(&self) -> f32 {
+        (self.attack_speed * self.base_attack_time).max(0.2)
+    }
+
+    /// Seconds from the start of one attack to the start of the next: `BAT × 100 / AS`.
+    pub fn attack_interval(&self) -> f32 {
+        1.0 / self.attack_speed.max(0.05)
+    }
+
+    /// Basic-attack foreswing: the base attack point (the lowest live status override, see
+    /// [`crate::status::StatusEffects::attack_point_override`], else `attack_point`, clamped to
+    /// [`crate::basic_attack::MAX_ATTACK_SWING`]) scaled by attack speed:
+    /// `base × 100 / AS`. The one place the override is read.
     pub fn effective_attack_point(&self, statuses: Option<&crate::status::StatusEffects>) -> f32 {
         statuses
             .and_then(|s| s.attack_point_override())
             .unwrap_or(self.attack_point)
             .clamp(0.0, crate::basic_attack::MAX_ATTACK_SWING)
+            / self.attack_speed_ratio()
+    }
+
+    /// Basic-attack backswing scaled by attack speed like the attack point: `base × 100 / AS`.
+    pub fn effective_attack_backswing(&self) -> f32 {
+        self.attack_backswing
+            .clamp(0.0, crate::basic_attack::MAX_ATTACK_SWING)
+            / self.attack_speed_ratio()
     }
 
     /// Turn rate after stacking status bonuses and slow on top of the hero/creep base in

@@ -1233,7 +1233,7 @@ mod tests {
                     },
                     duration,
                 }
-            ) if attack_damage.at(1) == -1.0 && duration.at(1) == 10.0
+            ) if attack_damage.at(1) == -1.0 && duration.at(1) == 30.0 && duration.at(7) == 150.0
         ));
         assert!(matches!(
             (hit[1].target, hit[1].effect),
@@ -1249,7 +1249,7 @@ mod tests {
                     },
                     duration,
                 }
-            ) if amount.at(1) == 3.0 && duration.at(1) == 10.0
+            ) if amount.at(1) == 3.0 && duration.at(1) == 30.0 && duration.at(7) == 150.0
         ));
 
         // R: untargetable, move speed bonus and health regeneration.

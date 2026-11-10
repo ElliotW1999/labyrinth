@@ -280,8 +280,10 @@ pub fn start_basic_attack_windups(
     }
 }
 
-/// Advance foreswing / backswing timers. At the attack point the cooldown starts
-/// and a [`BasicAttackReleaseEvent`] is emitted; disabled attackers lose their swing.
+/// Advance foreswing / backswing timers. At the attack point a [`BasicAttackReleaseEvent`] is
+/// emitted and the cooldown is set to what remains of the attack interval
+/// (`BAT × 100 / AS − attack point`), so attacks start once per interval; disabled attackers
+/// lose their swing. A windup cancelled before release spends no cooldown.
 pub fn tick_attack_swings(
     time: Res<Time>,
     mut commands: Commands,
@@ -321,8 +323,11 @@ pub fn tick_attack_swings(
                     damage,
                     extra: false,
                 });
-                cooldown.0 = 1.0 / stats.attack_speed.max(0.05);
-                let back = stats.attack_backswing.clamp(0.0, MAX_ATTACK_SWING);
+                // The attack interval runs from the start of the attack, and the windup
+                // (the attack point) is already behind us.
+                cooldown.0 =
+                    (stats.attack_interval() - stats.effective_attack_point(statuses)).max(0.0);
+                let back = stats.effective_attack_backswing();
                 if back > 0.0 {
                     *swing = AttackSwing::Backswing { remaining: back };
                 } else {
@@ -995,6 +1000,112 @@ mod tests {
         CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 0.0)
     }
 
+    /// The user's Ursa example: BAT 1.7, base attack point 0.3, 100 + 400 attack speed ⇒ an
+    /// attack starts every 0.34s and connects 0.06s after it starts.
+    fn overpowered_ursa_stats() -> CombatStats {
+        let mut stats = CombatStats::simple(50.0, scale::MELEE_ATTACK_RANGE, 1.0, 0.0, 0.0, 300.0);
+        stats.base_attack_speed = 100.0;
+        stats.base_attack_time = 1.7;
+        stats.attack_point = 0.3;
+        stats.attack_backswing = 0.7;
+        stats.attack_speed_flat = 400.0;
+        stats.recompute_attack_speed(0.0);
+        stats
+    }
+
+    #[test]
+    fn attack_interval_and_attack_point_scale_with_attack_speed() {
+        let stats = overpowered_ursa_stats();
+        assert!((stats.attack_speed_ratio() - 5.0).abs() < 1e-4);
+        assert!((stats.attack_interval() - 0.34).abs() < 1e-4);
+        assert!((stats.effective_attack_point(None) - 0.06).abs() < 1e-4);
+        assert!((stats.effective_attack_backswing() - 0.14).abs() < 1e-4);
+
+        // At 100 attack speed the base values apply unchanged.
+        let mut base = stats;
+        base.attack_speed_flat = 0.0;
+        base.recompute_attack_speed(0.0);
+        assert!((base.attack_interval() - 1.7).abs() < 1e-4);
+        assert!((base.effective_attack_point(None) - 0.3).abs() < 1e-4);
+        assert!((base.effective_attack_backswing() - 0.7).abs() < 1e-4);
+
+        // A status attack-point override is a base value and scales too.
+        let mut statuses = StatusEffects::default();
+        statuses.effects.push(crate::status::StatusEffect {
+            attack_point_override: Some(0.1),
+            ..crate::status::StatusEffect::buff("test_attack_point", 5.0)
+        });
+        assert!((stats.effective_attack_point(Some(&statuses)) - 0.02).abs() < 1e-4);
+    }
+
+    #[test]
+    fn simple_stats_keep_their_rate_and_base_swing() {
+        let creep = CombatStats::simple(20.0, 100.0, 0.5, 0.0, 0.0, 300.0);
+        assert!((creep.attack_interval() - 2.0).abs() < 1e-4);
+        assert!((creep.effective_attack_point(None) - 0.2).abs() < 1e-4);
+    }
+
+    #[test]
+    fn attacks_start_once_per_interval_and_connect_at_the_scaled_attack_point() {
+        const STEP: f32 = 0.002;
+        let (mut world, _) = world_with_pipeline();
+        let mut schedule = Schedule::default();
+        schedule.add_systems(
+            (
+                |time: Res<Time>, mut q: Query<&mut AttackCooldown>| {
+                    for mut cd in &mut q {
+                        cd.0 = (cd.0 - time.delta_secs()).max(0.0);
+                    }
+                },
+                request_basic_attacks,
+                start_basic_attack_windups,
+                tick_attack_swings,
+            )
+                .chain(),
+        );
+        let target_pos = Vec3::new(100.0, 0.0, 0.0);
+        let target = spawn_unit(&mut world, Team::Dire, target_pos, passive_stats());
+        let attacker = spawn_attacker(&mut world, scale::MELEE_ATTACK_RANGE, target, target_pos);
+        *world.get_mut::<CombatStats>(attacker).unwrap() = overpowered_ursa_stats();
+
+        let mut starts = Vec::new();
+        let mut releases = Vec::new();
+        let mut was_winding = false;
+        for frame in 1..=1000 {
+            world
+                .resource_mut::<Time>()
+                .advance_by(Duration::from_secs_f32(STEP));
+            schedule.run(&mut world);
+            let t = frame as f32 * STEP;
+            let winding = matches!(
+                world.get::<AttackSwing>(attacker),
+                Some(AttackSwing::Windup { .. })
+            );
+            if winding && !was_winding {
+                starts.push(t);
+            }
+            // Windup ends only by releasing here: nothing cancels or disables the attacker.
+            if was_winding && !winding {
+                releases.push(t);
+            }
+            was_winding = winding;
+        }
+
+        assert!(starts.len() >= 5, "starts: {starts:?}");
+        for pair in starts.windows(2) {
+            assert!(
+                (pair[1] - pair[0] - 0.34).abs() < 3.0 * STEP,
+                "attacks must start every 0.34s: {starts:?}"
+            );
+        }
+        for (start, release) in starts.iter().zip(&releases) {
+            assert!(
+                (release - start - 0.06).abs() < 3.0 * STEP,
+                "attack must connect 0.06s after it starts: {starts:?} {releases:?}"
+            );
+        }
+    }
+
     #[test]
     fn melee_attack_damages_at_attack_point_not_on_request() {
         let (mut world, mut schedule) = world_with_pipeline();
@@ -1021,9 +1132,10 @@ mod tests {
             stats.attack_point = 0.56;
             stats.attack_backswing = 0.41;
         }
-        // 0.56s windup plus the request/turn frames: untouched after 14 steps, which a 0.5s
-        // clamp would not satisfy.
-        for _ in 0..14 {
+        // The attacker already faces its target, so the windup starts on the first step and
+        // 0.56s releases on step 12: untouched after 11 steps, which a 0.5s clamp (release on
+        // step 10) would not satisfy.
+        for _ in 0..11 {
             step(&mut world, &mut schedule);
         }
         assert_eq!(

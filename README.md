@@ -144,13 +144,13 @@ Each unit carries three explicit gameplay dimensions from `dimensions::UnitDimen
 - **Bounds radius** (`BoundRadius`) — range, targeting, attack reach and spells, measured edge-to-edge (`center distance − source bounds − target bounds`) by `dimensions::within_range` / `edge_distance` / `area_contains` / `cast_distance`
 - **Selection bounds** (`SelectionBounds { offset, half_extents }`) — a forgiving 3D box ray-tested for hover, left-click selection and right-click / unit-target clicks. Overlaps resolve by most-centered hit, then nearest, then entity index
 - Debug overlay: **F5** collision rings, **F6** bounds rings, **F7** selection boxes, **F8** all (or start with `--debug-dims`); **F9** navigation (or `--debug-nav`, see below)
-- Units only **start** moving, attacking, or casting once the aim/target is within **11.5°** of facing
+- Units only **start** moving, attacking, or casting once the aim/target is within **11.5°** of facing. Facing is Bevy's local **−Z** (`Transform::forward`, where the nose sits); `facing::yaw_toward` is the one yaw convention every facing write uses
 - **Turn rate** is radians per **0.03s** (heroes default **0.6**, creeps **0.5**)
-- Attacks use **foreswing** (0–0.5s) then fire, then **backswing** (0–0.5s; cancelled by move/stop/new orders)
+- Attacks use **foreswing** (attack point) then fire, then **backswing** (cancelled by move/stop/new orders). Base values are 0–1.0s at 100 attack speed; both scale as `base × 100 / AS` (`CombatStats::effective_attack_point` / `effective_attack_backswing`)
 - **Melee** auto-attacks (range ≤ 150) deal damage instantly with a rectangular slash VFX; **ranged** attacks still use projectiles
 - A **white ring** on the ground shows the local hero's attack range
 - Hovering an ability icon shows a **blue ring**: its cast range (for skillshots, how far they travel), or its effect radius for no-target abilities
-- Attack speed rating: `(base AS + agility + flat bonuses) × (1 + mult)`, clamped **20–700**; APS = `(IAS/100) / BAT`
+- Attack speed rating: `(base AS + agility + flat bonuses) × (1 + mult)`, clamped **20–700**; attack interval = `BAT × 100 / AS` (APS = `(AS/100) / BAT`), measured from the **start** of one attack to the start of the next (the cooldown armed at release is the interval minus the scaled attack point; a windup cancelled before release spends nothing). E.g. BAT 1.7, attack point 0.3, 500 AS ⇒ an attack every 0.34s, connecting 0.06s in
 - Abilities use **cast point** then fire, then cancellable **cast backswing**
 
 ### Navigation and command queue
@@ -223,7 +223,7 @@ IssueCommand (input / minimap / network host)
 | Evasion | Buff: `StatusSpec::Evasion` / `CombatStats::evasion`; chance that attacks against the holder miss. Sources stack as `1 - prod(1 - e)`; basic-dispellable |
 | Accuracy / True strike | Buff: `StatusSpec::Accuracy` / `TrueStrike` / `CombatStats::accuracy`; chance that the holder's attacks land despite blind or evasion. True strike is accuracy 1.0 and ignores both |
 | Attack projectile speed | Timed `stat_modifier,attack_projectile_speed` (`Modifier.attack_projectile_speed`): flat change added to `attack_projectile_speed_bonus` (ranged attackers), reverted exactly; negative is a debuff |
-| Attack point override | `StatusSpec::AttackPoint` (`apply_status,attack_point`, `value` = seconds 0..1.0, id `<owner>_attack_point`, basic-dispellable buff): `StatusEffect::attack_point_override`, lowest live value wins, read only by `CombatStats::effective_attack_point` (backswing unchanged); not a stat delta, so nothing to revert |
+| Attack point override | `StatusSpec::AttackPoint` (`apply_status,attack_point`, `value` = seconds 0..1.0, id `<owner>_attack_point`, basic-dispellable buff): `StatusEffect::attack_point_override`, lowest live value wins, read only by `CombatStats::effective_attack_point`, which scales it by attack speed like the base attack point (backswing unchanged); not a stat delta, so nothing to revert |
 | Frozen | Buff: `StatusSpec::Frozen` (`apply_status,frozen`): stunned (move / attack / cast / items blocked, channels interrupted) and immune to physical damage. A Buff, so the holder's `dispel,debuff` and debuff immunity leave it alone; an enemy basic `dispel,buff` removes it |
 | Taunt onto the cast target | `StatusSpec::TauntCastTarget` (`apply_status,taunt_target`, optional `value` = attack speed bonus while taunted; runtime id `taunt`): the holder is forced to attack the cast's unit target instead of the caster, even its own ally (`basic_attack::attack_allowed`; no cleave / splash, extra attacks stay enemy-only). Only on a `target_type=unit` source and `on_cast` / `on_projectile_hit`; the cast target itself is skipped. Ends with the taunt (dispel, expiry, target death) |
 | Attack range | `Modifier.attack_range` / `PassiveStat::AttackRange`: flat bonus to `attack_range`, also tracked in `attack_range_bonus`, so melee units stay melee (`CombatStats::is_melee`) |
