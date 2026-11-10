@@ -9,7 +9,8 @@ Reads rows describing hero kits and patches marked regions in:
 Ability implementations are left as Instant no-op stubs (castable, no effect).
 
 Optional hero columns: base_health, base_health_regen, base_mana, base_mana_regen,
-attack_damage, attack_range (`is_melee` must match it: base ranges up to 250 are melee),
+attack_damage (the level-1 total minus the primary attribute: each point of the primary
+attribute adds 1 attack damage; blank = 55 melee / 48 ranged minus the primary), attack_range (`is_melee` must match it: base ranges up to 250 are melee),
 base_attack_time, attack_point, attack_backswing (0..1.0), armor, magic_resist, move_speed and attack_projectile_speed (ranged heroes only, > 0: the
 absolute projectile speed of the hero's basic attack; blank keeps the speed derived from
 the attack range), turn_rate (> 0, blank keeps facing::HERO_TURN_RATE) and
@@ -268,7 +269,17 @@ def load_csv(path: Path) -> list[HeroRow]:
                 if not ability:
                     raise SystemExit(f"Row {i}: Ability_{slot_name}_Name is required")
             attack_range_default = 128.0 if is_melee else 500.0
-            attack_damage_default = 55.0 if is_melee else 48.0
+            primary_value = {"STR": base_str, "AGI": base_agi, "INT": base_int}[primary]
+            # The stored damage excludes the primary attribute (+1 damage per point), so a
+            # blank cell keeps the old level-1 total of 55 (melee) / 48 (ranged).
+            attack_damage_default = (55.0 if is_melee else 48.0) - primary_value
+            attack_damage = parse_float(row, "attack_damage", attack_damage_default)
+            if attack_damage + primary_value <= 0:
+                raise SystemExit(
+                    f"Row {i}: attack_damage {attack_damage:g} plus the primary attribute "
+                    f"{primary_value:g} must be above 0 (attack_damage is the level-1 total "
+                    f"minus the primary attribute)"
+                )
             attack_range = parse_float(row, "attack_range", attack_range_default)
             check_melee_matches_range(is_melee, attack_range, i)
             blurb = row.get("blurb") or default_blurb(name, primary, q, w, e, r)
@@ -302,7 +313,7 @@ def load_csv(path: Path) -> list[HeroRow]:
                     base_mana_regen=parse_float(
                         row, "base_mana_regen", 0.8 if primary != "INT" else 1.4
                     ),
-                    attack_damage=parse_float(row, "attack_damage", attack_damage_default),
+                    attack_damage=attack_damage,
                     attack_range=attack_range,
                     base_attack_time=parse_float(row, "base_attack_time", 1.7),
                     attack_point=parse_swing(row, "attack_point", 0.3, i),
@@ -410,6 +421,9 @@ def rust_hero_combat(hero: HeroRow) -> str:
     )
 
 
+PRIMARY_ATTRIBUTES = {"STR": "Strength", "AGI": "Agility", "INT": "Intelligence"}
+
+
 def hero_def_arm(hero: HeroRow) -> str:
     return f"""            HeroId::{hero.rust_id} => HeroDef {{
                 id: self,
@@ -420,6 +434,7 @@ def hero_def_arm(hero: HeroRow) -> str:
                     str_per_level: {f32(hero.str_per_level)},
                     agi_per_level: {f32(hero.agi_per_level)},
                     int_per_level: {f32(hero.int_per_level)},
+                    primary: Some(Attribute::{PRIMARY_ATTRIBUTES[hero.primary]}),
                 }},
                 base_health: {f32(hero.base_health)},
                 base_health_regen: {f32(hero.base_health_regen)},

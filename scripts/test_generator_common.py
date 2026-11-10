@@ -2347,6 +2347,24 @@ class HeroGeneratorTests(unittest.TestCase):
         self.assertEqual(self._load("true", "")[0].attack_range, 128.0)
         self.assertEqual(self._load("false", "550")[0].attack_range, 550.0)
 
+    def test_primary_attribute_is_emitted(self) -> None:
+        import HeroGenerator
+
+        hero = self._load("true", "150")[0]
+        self.assertIn("primary: Some(Attribute::Strength),", HeroGenerator.hero_def_arm(hero))
+
+    def test_blank_attack_damage_subtracts_the_primary_attribute(self) -> None:
+        # Melee total 55 and ranged total 48, minus the primary (STR 20 in the fixture).
+        self.assertEqual(self._load("true", "150")[0].attack_damage, 35.0)
+        self.assertEqual(self._load("false", "550")[0].attack_damage, 28.0)
+        explicit = self._load("true", "150", ",attack_damage", ",31")[0]
+        self.assertEqual(explicit.attack_damage, 31.0)
+
+    def test_non_positive_attack_damage_total_is_rejected(self) -> None:
+        with self.assertRaises(SystemExit) as ctx:
+            self._load("true", "150", ",attack_damage", ",-20")
+        self.assertIn("must be above 0", str(ctx.exception))
+
     def test_turn_rate_is_optional_and_positive(self) -> None:
         import HeroGenerator
 

@@ -2029,6 +2029,29 @@ mod tests {
     }
 
     #[test]
+    fn strength_item_adds_damage_only_to_a_strength_primary_hero() {
+        use crate::heroes::HeroId;
+
+        let passives = ItemPassives {
+            strength: 10.0,
+            ..default()
+        };
+        // Vanguard is Strength primary: +10 damage, reverted on removal.
+        let (mut health, mut mana, mut stats, mut attrs) = HeroId::Vanguard.def().vitals();
+        let damage = stats.attack_damage;
+        apply_passives(passives, &mut health, &mut mana, &mut stats, &mut attrs);
+        assert!((stats.attack_damage - (damage + 10.0)).abs() < 1e-4);
+        remove_passives(passives, 1, &mut health, &mut mana, &mut stats, &mut attrs);
+        assert!((stats.attack_damage - damage).abs() < 1e-4);
+
+        // Skirmisher is Agility primary: the same item adds no damage.
+        let (mut health, mut mana, mut stats, mut attrs) = HeroId::Skirmisher.def().vitals();
+        let damage = stats.attack_damage;
+        apply_passives(passives, &mut health, &mut mana, &mut stats, &mut attrs);
+        assert_eq!(stats.attack_damage, damage);
+    }
+
+    #[test]
     fn attack_modifier_passives_apply_and_remove_symmetrically() {
         let mut health = Health::new(720.0);
         let mut mana = Mana::new(320.0, 12.0);

@@ -435,6 +435,9 @@ pub struct HeroAttributes {
     pub str_per_level: f32,
     pub agi_per_level: f32,
     pub int_per_level: f32,
+    /// The primary attribute: each point adds one attack damage. `None` for attribute sets
+    /// without a primary (the test starter).
+    pub primary: Option<crate::abilities::definition::Attribute>,
 }
 
 impl HeroAttributes {
@@ -447,8 +450,27 @@ impl HeroAttributes {
             str_per_level: 2.2,
             agi_per_level: 2.0,
             int_per_level: 2.4,
+            primary: None,
         }
     }
+
+    /// Current value of one attribute.
+    pub fn get(&self, attribute: crate::abilities::definition::Attribute) -> f32 {
+        use crate::abilities::definition::Attribute;
+        match attribute {
+            Attribute::Strength => self.strength,
+            Attribute::Agility => self.agility,
+            Attribute::Intelligence => self.intelligence,
+        }
+    }
+
+    /// Current value of the primary attribute (0 without one).
+    pub fn primary_value(&self) -> f32 {
+        self.primary.map_or(0.0, |attribute| self.get(attribute))
+    }
+
+    /// Attack damage per point of the primary attribute.
+    pub const DAMAGE_PER_PRIMARY: f32 = 1.0;
 
     /// Max HP gained per point of Strength.
     pub const HP_PER_STR: f32 = 18.0;
@@ -472,6 +494,7 @@ impl HeroAttributes {
         mana.current = mana.current.min(mana.max);
         mana.regen_per_sec += self.intelligence * Self::MANA_REGEN_PER_INT;
         stats.magic_resist += self.intelligence * Self::MR_PER_INT;
+        stats.attack_damage += self.primary_value() * Self::DAMAGE_PER_PRIMARY;
         stats.recompute_attack_speed(self.agility);
     }
 
@@ -496,6 +519,8 @@ impl HeroAttributes {
         mana.current = (mana.current + mp).min(mana.max);
         mana.regen_per_sec += d_int * Self::MANA_REGEN_PER_INT;
         stats.magic_resist += d_int * Self::MR_PER_INT;
+        stats.attack_damage +=
+            (after.primary_value() - before.primary_value()) * Self::DAMAGE_PER_PRIMARY;
         stats.recompute_attack_speed(after.agility);
     }
 

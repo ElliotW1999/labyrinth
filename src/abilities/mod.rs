@@ -7344,7 +7344,9 @@ mod tests {
             .resource_mut::<AbilityDefinitions>()
             .insert(ally_buff_ability(pct_modifier("empower_test", 50.0), 1.0));
         let caster = spawn_caster(&mut app, KIT);
-        let hero_base = crate::heroes::HeroId::Vanguard.def().combat.attack_damage;
+        let hero_base = crate::heroes::HeroId::Vanguard
+            .def()
+            .level_one_attack_damage();
 
         // A hero holding +100 damage from items: the bonus is 50% of the definition's damage.
         let hero = spawn_unit(&mut app, Team::Radiant, Vec3::new(100.0, 0.0, 0.0));

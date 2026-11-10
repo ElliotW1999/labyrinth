@@ -16,7 +16,7 @@ use bevy::prelude::*;
 use super::catalog::AbilityDefinitions;
 use super::definition::{
     AbilityEffect, AbilityEffectEntry, AbilityMechanic, AbilityTrigger, AreaCenter, AreaRadius,
-    Attribute, EffectScaling, EffectTarget, StatusBuildContext, TargetTeam,
+    EffectScaling, EffectTarget, StatusBuildContext, TargetTeam,
 };
 use super::mechanics::{ChainCandidate, chain_hops};
 use super::passive::passive_suppressed;
@@ -630,11 +630,7 @@ impl EffectRunner<'_, '_> {
                 let value = self
                     .attributes
                     .get(ctx.caster)
-                    .map_or(0.0, |a| match attribute {
-                        Attribute::Strength => a.strength,
-                        Attribute::Agility => a.agility,
-                        Attribute::Intelligence => a.intelligence,
-                    });
+                    .map_or(0.0, |a| a.get(attribute));
                 Some(base + ratio * value)
             }
             EffectScaling::TargetHealthBelow(threshold) => self
@@ -1122,7 +1118,7 @@ impl EffectRunner<'_, '_> {
 /// current damage for everything else.
 pub(crate) fn base_attack_damage(kind: Option<&HeroKind>, stats: Option<&CombatStats>) -> f32 {
     match kind {
-        Some(kind) => kind.0.def().combat.attack_damage,
+        Some(kind) => kind.0.def().level_one_attack_damage(),
         None => stats.map_or(0.0, |s| s.attack_damage),
     }
 }

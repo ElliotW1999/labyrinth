@@ -3301,6 +3301,29 @@ mod tests {
         }
 
         #[test]
+        fn timed_agility_adds_damage_to_agility_primary_hero_and_reverts() {
+            let mut app = app();
+            let hero = hero(&mut app);
+            app.world_mut()
+                .get_mut::<HeroAttributes>(hero)
+                .unwrap()
+                .primary = Some(crate::abilities::definition::Attribute::Agility);
+            let damage = |app: &App| app.world().get::<CombatStats>(hero).unwrap().attack_damage;
+            let base = damage(&app);
+            send(
+                &mut app,
+                hero,
+                StatusChange::Apply(modifier("t_agility", ResourceStat::Agility, 9.0, 2.0)),
+            );
+            step(&mut app, 0.0);
+            step(&mut app, 0.0);
+            assert!((damage(&app) - (base + 9.0)).abs() < 1e-4);
+            step(&mut app, 2.5);
+            step(&mut app, 0.0);
+            assert!((damage(&app) - base).abs() < 1e-4);
+        }
+
+        #[test]
         fn timed_strength_changes_max_health_like_items() {
             let mut app = app();
             let hero = hero(&mut app);
