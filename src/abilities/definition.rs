@@ -415,6 +415,19 @@ pub enum StatusSpec {
     Hex,
     /// Ability passives (stats and triggers) are suppressed. Item passives are not.
     Break,
+    /// Concealed from enemies: no attacks, hostile unit-target spells or auto-acquisition pick
+    /// the holder, and fog hides it even inside vision. Area effects still hit it. Ends when
+    /// the holder attacks or casts if `breaks_on_action`.
+    Invisibility {
+        breaks_on_action: bool,
+    },
+    /// True sight: the holder's invisibility is void while this lasts.
+    Reveal,
+    /// Negates the next hostile unit-target spell that lands on the holder, then is consumed.
+    SpellBlock,
+    /// Reflects hostile unit-target spells at their caster; the original still lands unless
+    /// blocked. A reflected spell is never reflected again.
+    SpellReflect,
     /// Percent chance (0–100) that basic attacks miss.
     Blind {
         miss_chance_percent: RankValue,
@@ -638,6 +651,12 @@ impl StatusSpec {
             StatusSpec::Invulnerable => StatusEffect::invulnerable(duration),
             StatusSpec::Hex => StatusEffect::hexed(duration),
             StatusSpec::Break => StatusEffect::broken(duration),
+            StatusSpec::Invisibility { breaks_on_action } => {
+                StatusEffect::invisibility(duration, breaks_on_action)
+            }
+            StatusSpec::Reveal => StatusEffect::reveal(duration),
+            StatusSpec::SpellBlock => StatusEffect::spell_block(duration),
+            StatusSpec::SpellReflect => StatusEffect::spell_reflect(duration),
             StatusSpec::Blind {
                 miss_chance_percent,
             } => StatusEffect::blind(

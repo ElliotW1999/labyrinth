@@ -891,6 +891,9 @@ class ImmunityStatusTests(unittest.TestCase):
             ("break", "StatusSpec::Break"),
             ("taunt", "StatusSpec::Taunt"),
             ("hypnosis", "StatusSpec::Hypnosis"),
+            ("reveal", "StatusSpec::Reveal"),
+            ("spell_block", "StatusSpec::SpellBlock"),
+            ("spell_reflect", "StatusSpec::SpellReflect"),
         ):
             report = Report()
             effect, ctx = _effect("apply_status", keyword, duration="2")
@@ -907,6 +910,16 @@ class ImmunityStatusTests(unittest.TestCase):
         self.assertEqual(runtime_status_id("taunt"), "taunt")
         self.assertEqual(runtime_status_id("hypnosis"), "hypnosis")
         self.assertEqual(runtime_status_id("ethereal"), "ethereal")
+        for keyword in ("invisibility", "reveal", "spell_block", "spell_reflect"):
+            self.assertEqual(runtime_status_id(keyword), keyword)
+
+    def test_invisibility_breaks_on_action_unless_amount_is_zero(self) -> None:
+        for amount, expected in (({}, "true"), ({"amount": "0"}, "false"), ({"amount": "1"}, "true")):
+            report = Report()
+            effect, ctx = _effect("apply_status", "invisibility", duration="5", **amount)
+            result = effect_to_rust(effect, ctx, report)
+            self.assertFalse(report.errors, amount)
+            self.assertIn(f"StatusSpec::Invisibility {{ breaks_on_action: {expected} }}", result[2])
 
     def test_ethereal_needs_a_bounded_magic_amp(self) -> None:
         report = Report()

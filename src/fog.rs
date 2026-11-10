@@ -1,4 +1,7 @@
 //! Fog of war: team vision, tree line-of-sight, fog-free zones, and a grey overlay.
+//!
+//! Statuses override vision: a `hidden` unit (banish) is drawn for nobody, and an enemy that is
+//! concealed (invisible and not revealed) stays hidden even inside vision.
 
 use bevy::prelude::*;
 
@@ -244,7 +247,10 @@ fn update_unit_fog_visibility(
             *vis = unit_visibility(hidden, true, true);
             continue;
         }
-        let revealed = point_revealed(tf.translation, &vision, &fog_free, &tree_snaps);
+        // An enemy concealed by invisibility stays hidden even inside vision (until revealed).
+        let concealed = statuses.is_some_and(|s| s.is_concealed());
+        let revealed =
+            !concealed && point_revealed(tf.translation, &vision, &fog_free, &tree_snaps);
         *vis = unit_visibility(hidden, false, revealed);
     }
 }
@@ -423,6 +429,53 @@ mod tests {
             app.world().get::<Visibility>(plain),
             Some(&Visibility::Visible)
         );
+    }
+
+    #[test]
+    fn concealed_enemy_hidden_inside_vision() {
+        use crate::components::PlayerHero;
+        use crate::status::StatusEffect;
+        let mut app = App::new();
+        app.init_resource::<FogFreeZones>()
+            .add_systems(Update, update_unit_fog_visibility);
+        app.world_mut()
+            .spawn((PlayerHero, Team::Radiant, Transform::default()));
+        let mut spawn = |app: &mut App, team: Team, effects: Vec<StatusEffect>| {
+            app.world_mut()
+                .spawn((
+                    NetworkedHero,
+                    team,
+                    Transform::default(),
+                    Visibility::Hidden,
+                    StatusEffects { effects },
+                ))
+                .id()
+        };
+        let invisible_enemy = spawn(
+            &mut app,
+            Team::Dire,
+            vec![StatusEffect::invisibility(5.0, true)],
+        );
+        let revealed_enemy = spawn(
+            &mut app,
+            Team::Dire,
+            vec![
+                StatusEffect::invisibility(5.0, true),
+                StatusEffect::reveal(5.0),
+            ],
+        );
+        let plain_enemy = spawn(&mut app, Team::Dire, vec![]);
+        let invisible_ally = spawn(
+            &mut app,
+            Team::Radiant,
+            vec![StatusEffect::invisibility(5.0, true)],
+        );
+        app.update();
+        let vis = |e| *app.world().get::<Visibility>(e).unwrap();
+        assert_eq!(vis(invisible_enemy), Visibility::Hidden);
+        assert_eq!(vis(revealed_enemy), Visibility::Visible);
+        assert_eq!(vis(plain_enemy), Visibility::Visible);
+        assert_eq!(vis(invisible_ally), Visibility::Visible);
     }
 
     #[test]

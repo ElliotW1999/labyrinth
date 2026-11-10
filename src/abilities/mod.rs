@@ -114,6 +114,7 @@ impl Plugin for AbilitiesPlugin {
                     (
                         attack_triggers::attack_triggers,
                         crate::status::consume_attack_charges,
+                        crate::status::break_invisibility,
                         (tick_forced_movement, settle_grounded_units).chain(),
                         reactive_triggers::track_travel,
                         reactive_triggers::proximity_triggers,
@@ -769,6 +770,7 @@ mod tests {
                     (
                         attack_triggers::attack_triggers,
                         crate::status::consume_attack_charges,
+                        crate::status::break_invisibility,
                         (tick_forced_movement, settle_grounded_units).chain(),
                         reactive_triggers::track_travel,
                         reactive_triggers::proximity_triggers,
@@ -8138,6 +8140,70 @@ mod tests {
             step(&mut app);
         }
         assert!(app.world().get::<Mana>(caster).unwrap().current < 1000.0);
+    }
+
+    #[test]
+    fn cannot_unit_target_concealed_enemy() {
+        let mut app = test_app();
+        let caster = spawn_caster(&mut app, KIT);
+        let hidden = spawn_unit(&mut app, Team::Dire, Vec3::new(50.0, 0.0, 0.0));
+        app.world_mut()
+            .get_mut::<StatusEffects>(hidden)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::invisibility(30.0, true));
+        request(&mut app, caster, 1, CastTarget::Unit(hidden));
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        assert!(app.world().get::<Activation>(caster).is_none());
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 1000.0);
+
+        // True sight makes it targetable again.
+        app.world_mut()
+            .get_mut::<StatusEffects>(hidden)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::reveal(30.0));
+        request(&mut app, caster, 1, CastTarget::Unit(hidden));
+        for _ in 0..12 {
+            step(&mut app);
+        }
+        assert!(app.world().get::<Mana>(caster).unwrap().current < 1000.0);
+    }
+
+    #[test]
+    fn area_damage_hits_invisible_unit() {
+        let mut app = test_app();
+        let caster = spawn_caster(&mut app, KIT);
+        let hidden = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        app.world_mut()
+            .get_mut::<StatusEffects>(hidden)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::invisibility(30.0, true));
+        request(&mut app, caster, 0, CastTarget::None);
+        for _ in 0..10 {
+            step(&mut app);
+        }
+        assert!(app.world().get::<Health>(hidden).unwrap().current < 1000.0);
+    }
+
+    #[test]
+    fn cast_by_invisible_caster_ends_invisibility() {
+        let mut app = test_app();
+        let caster = spawn_caster(&mut app, KIT);
+        app.world_mut()
+            .get_mut::<StatusEffects>(caster)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::invisibility(30.0, true));
+        let _enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        request(&mut app, caster, 0, CastTarget::None);
+        for _ in 0..10 {
+            step(&mut app);
+        }
+        assert!(status_of(&app, caster, "invisibility").is_none());
     }
 
     #[test]

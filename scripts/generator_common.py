@@ -187,6 +187,13 @@ STATUSES = {
     "hex": ("StatusSpec::Hex", "hex", False),
     # Ability passives (stats and triggers) are suppressed; item passives keep working.
     "break": ("StatusSpec::Break", "break", False),
+    # Invisibility: concealed from enemies. `amount=0` keeps it when the holder attacks or casts
+    # (default: it breaks). Reveal (true sight) voids it.
+    "invisibility": (None, "invisibility", True),
+    "reveal": ("StatusSpec::Reveal", "reveal", False),
+    # Negates the next hostile unit-target spell; reflect also sends it back (original lands).
+    "spell_block": ("StatusSpec::SpellBlock", "spell_block", True),
+    "spell_reflect": ("StatusSpec::SpellReflect", "spell_reflect", True),
     "fear": ("StatusSpec::Fear", "fear", False),
     # Taunt and hypnosis force the target towards the caster (see `Compulsion`).
     "taunt": ("StatusSpec::Taunt", "taunt", False),
@@ -1776,6 +1783,10 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             spec = f"StatusSpec::Ethereal {{ magic_amp_percent: {rank_value(percent)} }}"
             if amount:
                 _unused(e, report, "value")
+        elif effect_id == "invisibility":
+            breaks = not (amount and all(a == 0 for a in amount))
+            spec = f"StatusSpec::Invisibility {{ breaks_on_action: {'true' if breaks else 'false'} }}"
+            _unused(e, report, "value")
         elif effect_id == "blind":
             miss = amount or value
             if not miss:

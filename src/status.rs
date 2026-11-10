@@ -269,6 +269,17 @@ pub struct StatusEffect {
     pub spell_immune: bool,
     /// Drawn for nobody (banished out of the world), whatever the vision.
     pub hidden: bool,
+    /// Concealed from enemies (no attack or hostile spell may pick the holder, and fog hides it
+    /// even inside vision) unless some live [`StatusEffect::revealed`] is present.
+    pub invisible: bool,
+    /// True sight: while any live effect has this set, the holder's invisibility is void.
+    pub revealed: bool,
+    /// With `invisible`: the status is removed when the holder attacks or fires an action.
+    pub invis_breaks_on_action: bool,
+    /// Negates the next hostile unit-target spell that lands on the holder, then is consumed.
+    pub spell_block: bool,
+    /// Reflects hostile unit-target spells back at their caster (the original still lands).
+    pub spell_reflect: bool,
     /// When true, skip collision with creeps and heroes (buildings/trees still block).
     pub ignore_unit_collision: bool,
     /// When true, this unit claims more separation against overlapping creeps/heroes.
@@ -403,6 +414,11 @@ impl StatusEffect {
             attack_immune: false,
             spell_immune: false,
             hidden: false,
+            invisible: false,
+            revealed: false,
+            invis_breaks_on_action: false,
+            spell_block: false,
+            spell_reflect: false,
             ignore_unit_collision: false,
             force_unit_push: false,
             silenced: false,
@@ -762,6 +778,40 @@ impl StatusEffect {
         }
     }
 
+    /// Concealed from enemies until revealed; with `breaks_on_action` it ends when the holder
+    /// attacks or casts.
+    pub fn invisibility(duration: f32, breaks_on_action: bool) -> Self {
+        Self {
+            invisible: true,
+            invis_breaks_on_action: breaks_on_action,
+            ..Self::buff("invisibility", duration)
+        }
+    }
+
+    /// True sight: voids the holder's invisibility.
+    pub fn reveal(duration: f32) -> Self {
+        Self {
+            revealed: true,
+            ..Self::debuff("reveal", duration)
+        }
+    }
+
+    /// Negates the next hostile unit-target spell, then is consumed.
+    pub fn spell_block(duration: f32) -> Self {
+        Self {
+            spell_block: true,
+            ..Self::buff("spell_block", duration)
+        }
+    }
+
+    /// Reflects hostile unit-target spells at their caster (Lotus style: the original lands too).
+    pub fn spell_reflect(duration: f32) -> Self {
+        Self {
+            spell_reflect: true,
+            ..Self::buff("spell_reflect", duration)
+        }
+    }
+
     /// Only ability passives are suppressed (stats and triggers); items keep working.
     pub fn broken(duration: f32) -> Self {
         Self {
@@ -994,19 +1044,45 @@ impl StatusEffects {
             .any(|e| e.untargetable && e.remaining > 0.0)
     }
 
+    /// Invisible and not revealed: enemies cannot pick it and fog hides it.
+    pub fn is_concealed(&self) -> bool {
+        self.effects
+            .iter()
+            .any(|e| e.invisible && e.remaining > 0.0)
+            && !self.effects.iter().any(|e| e.revealed && e.remaining > 0.0)
+    }
+
+    /// Whether a live effect negates hostile unit-target spells once.
+    pub fn has_spell_block(&self) -> bool {
+        self.effects
+            .iter()
+            .any(|e| e.spell_block && e.remaining > 0.0)
+    }
+
+    /// Whether a live effect reflects hostile unit-target spells.
+    pub fn has_spell_reflect(&self) -> bool {
+        self.effects
+            .iter()
+            .any(|e| e.spell_reflect && e.remaining > 0.0)
+    }
+
     /// Whether a unit pick made with `intent` must skip this holder.
     pub fn rejects(&self, intent: TargetIntent) -> bool {
         self.is_untargetable()
             || match intent {
                 TargetIntent::Any => false,
-                TargetIntent::Attack => self
-                    .effects
-                    .iter()
-                    .any(|e| e.attack_immune && e.remaining > 0.0),
-                TargetIntent::HostileSpell => self
-                    .effects
-                    .iter()
-                    .any(|e| e.spell_immune && e.remaining > 0.0),
+                TargetIntent::Attack => {
+                    self.effects
+                        .iter()
+                        .any(|e| e.attack_immune && e.remaining > 0.0)
+                        || self.is_concealed()
+                }
+                TargetIntent::HostileSpell => {
+                    self.effects
+                        .iter()
+                        .any(|e| e.spell_immune && e.remaining > 0.0)
+                        || self.is_concealed()
+                }
             }
     }
 
@@ -1481,6 +1557,49 @@ pub fn consume_attack_charges(
                 Some(release.attacker),
                 release.attacker,
                 StatusChange::ConsumeAttackCharge,
+            ));
+        }
+    }
+}
+
+/// An invisible holder that attacks (non-extra release) or fires an activation loses every
+/// `invis_breaks_on_action` invisibility. Writes [`StatusChange::Remove`] events only.
+pub fn break_invisibility(
+    mut releases: MessageReader<crate::basic_attack::BasicAttackReleaseEvent>,
+    mut fired: MessageReader<crate::actions::ActionFiredEvent>,
+    holders: Query<&StatusEffects>,
+    mut changes: MessageWriter<StatusEffectEvent>,
+) {
+    let actors: Vec<Entity> = releases
+        .read()
+        .filter(|r| !r.extra)
+        .map(|r| r.attacker)
+        .chain(fired.read().map(|f| f.caster))
+        .collect();
+    let mut done: Vec<Entity> = Vec::new();
+    for actor in actors {
+        if done.contains(&actor) {
+            continue;
+        }
+        let Ok(statuses) = holders.get(actor) else {
+            continue;
+        };
+        let mut ids: Vec<&'static str> = statuses
+            .effects
+            .iter()
+            .filter(|e| e.invisible && e.invis_breaks_on_action && e.remaining > 0.0)
+            .map(|e| e.id)
+            .collect();
+        ids.dedup();
+        if ids.is_empty() {
+            continue;
+        }
+        done.push(actor);
+        for id in ids {
+            changes.write(StatusEffectEvent::new(
+                Some(actor),
+                actor,
+                StatusChange::Remove(id),
             ));
         }
     }
@@ -4128,6 +4247,127 @@ mod tests {
                     .iter()
                     .any(|e| e.id == "plain")
             );
+        }
+    }
+
+    mod invisibility {
+        use super::*;
+        use crate::actions::{ActionFiredEvent, ActionId, ActionSource};
+        use crate::basic_attack::BasicAttackReleaseEvent;
+        use crate::components::CastTarget;
+
+        fn app() -> App {
+            let mut app = App::new();
+            app.init_resource::<Time>()
+                .add_message::<StatusEffectEvent>()
+                .add_message::<StatusLifecycleEvent>()
+                .add_message::<DamageEvent>()
+                .add_message::<crate::combat::DamageAppliedEvent>()
+                .add_message::<BasicAttackReleaseEvent>()
+                .add_message::<ActionFiredEvent>()
+                .add_systems(
+                    Update,
+                    (break_invisibility, apply_status_effect_events).chain(),
+                );
+            app
+        }
+
+        fn unit(app: &mut App, effects: Vec<StatusEffect>) -> Entity {
+            app.world_mut()
+                .spawn((
+                    StatusEffects { effects },
+                    CombatStats::simple(10.0, 8.0, 1.0, 0.0, 0.0, 10.0),
+                    HeroAttributes::starter(),
+                    Health::new(500.0),
+                ))
+                .id()
+        }
+
+        fn invisible(app: &App, unit: Entity) -> bool {
+            app.world()
+                .get::<StatusEffects>(unit)
+                .unwrap()
+                .is_concealed()
+        }
+
+        #[test]
+        fn revealed_invisible_is_not_concealed() {
+            let mut statuses = StatusEffects {
+                effects: vec![StatusEffect::invisibility(5.0, true)],
+            };
+            assert!(statuses.is_concealed());
+            assert!(statuses.rejects(TargetIntent::Attack));
+            assert!(statuses.rejects(TargetIntent::HostileSpell));
+            assert!(!statuses.rejects(TargetIntent::Any), "areas still hit it");
+            statuses.effects.push(StatusEffect::reveal(5.0));
+            assert!(!statuses.is_concealed());
+            assert!(!statuses.rejects(TargetIntent::Attack));
+            // An expired reveal no longer voids it.
+            statuses.effects[1].remaining = 0.0;
+            assert!(statuses.is_concealed());
+            assert!(!StatusEffects::default().is_concealed());
+        }
+
+        #[test]
+        fn attack_release_breaks_invisibility() {
+            let mut app = app();
+            let unit = unit(&mut app, vec![StatusEffect::invisibility(30.0, true)]);
+            let other = unit_with_nothing(&mut app);
+            app.world_mut().write_message(BasicAttackReleaseEvent {
+                attacker: other,
+                target: unit,
+                damage: 1.0,
+                extra: false,
+            });
+            app.update();
+            assert!(
+                invisible(&app, unit),
+                "another unit's attack changes nothing"
+            );
+            // Extra attacks are not the holder's own action.
+            app.world_mut().write_message(BasicAttackReleaseEvent {
+                attacker: unit,
+                target: other,
+                damage: 1.0,
+                extra: true,
+            });
+            app.update();
+            assert!(invisible(&app, unit));
+            app.world_mut().write_message(BasicAttackReleaseEvent {
+                attacker: unit,
+                target: other,
+                damage: 1.0,
+                extra: false,
+            });
+            app.update();
+            assert!(!invisible(&app, unit));
+        }
+
+        fn unit_with_nothing(app: &mut App) -> Entity {
+            unit(app, vec![])
+        }
+
+        fn fire(app: &mut App, caster: Entity) {
+            app.world_mut().write_message(ActionFiredEvent {
+                caster,
+                source: ActionSource::Ability(0),
+                action: ActionId::Ability(crate::components::AbilityId::Bolt),
+                level: 1,
+                target: CastTarget::None,
+                aim: Vec3::ZERO,
+            });
+            app.update();
+        }
+
+        #[test]
+        fn cast_breaks_invisibility_unless_flagged() {
+            let mut app = app();
+            let breaks = unit(&mut app, vec![StatusEffect::invisibility(30.0, true)]);
+            let keeps = unit(&mut app, vec![StatusEffect::invisibility(30.0, false)]);
+            fire(&mut app, breaks);
+            fire(&mut app, keeps);
+            assert!(!invisible(&app, breaks));
+            assert!(invisible(&app, keeps), "breaks_on_action false survives");
         }
     }
 

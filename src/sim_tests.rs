@@ -557,4 +557,32 @@ mod compulsions {
             "taunted: only the taunter may be hit"
         );
     }
+
+    #[test]
+    fn creeps_do_not_acquire_invisible_enemy() {
+        fn hero_damage(invisible: bool) -> (f32, bool) {
+            let mut app = sim_app();
+            let creep = spawn_creep_at(&mut app, Team::Dire, Vec3::ZERO);
+            let hero = spawn_hero_at(&mut app, Team::Radiant, Vec3::new(120.0, 0.0, 0.0), true);
+            app.update();
+            give(&mut app, creep, StatusEffect::rooted(60.0));
+            if invisible {
+                give(&mut app, hero, StatusEffect::invisibility(60.0, true));
+            }
+            let before = health(&app, hero);
+            run(&mut app, 120);
+            (
+                before - health(&app, hero),
+                app.world().get::<AttackTarget>(creep).is_some(),
+            )
+        }
+        let (damage, targeted) = hero_damage(false);
+        assert!(
+            damage > 1.0 && targeted,
+            "control: the creep attacks the hero"
+        );
+        let (damage, targeted) = hero_damage(true);
+        assert_eq!(damage, 0.0, "invisible hero is left alone");
+        assert!(!targeted, "and never acquired");
+    }
 }
