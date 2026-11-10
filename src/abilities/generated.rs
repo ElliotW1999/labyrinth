@@ -46,6 +46,10 @@ pub fn definition(id: AbilityId) -> Option<AbilityDefinition> {
         AbilityId::Overpower => Some(overpower()),
         AbilityId::FurySwipes => Some(fury_swipes()),
         AbilityId::Enrage => Some(enrage()),
+        AbilityId::DarkPact => Some(dark_pact()),
+        AbilityId::Pounce => Some(pounce()),
+        AbilityId::EssenceShift => Some(essence_shift()),
+        AbilityId::ShadowDance => Some(shadow_dance()),
         _ => None,
     }
 }
@@ -1156,3 +1160,203 @@ fn enrage() -> AbilityDefinition {
         )
 }
 // </ability:enrage>
+
+// <ability:dark_pact>
+fn dark_pact() -> AbilityDefinition {
+    const DESCRIPTION: &str = "After a short delay, Slark sheds most debuffs and damages nearby enemies in quick pulses, healing for part of the damage dealt";
+    AbilityDefinition::new(AbilityId::DarkPact)
+        .description(DESCRIPTION)
+        .targeting(
+            TargetType::NoTarget,
+            RankValue::ZERO,
+            RankValue::fixed(325.0),
+        )
+        .team(TargetTeam::Enemy)
+        .costs(RankValue::from_level_1(9.0, -1.0), RankValue::fixed(65.0))
+        .timing(0.0, 0.0)
+        .mechanic(shockwave_ring())
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::Caster,
+            AbilityEffect::Zone {
+                radius: AreaRadius::Ability,
+                team: TargetTeam::Enemy,
+                delay: RankValue::fixed(1.5),
+                duration: RankValue::fixed(1.0),
+                interval: RankValue::fixed(0.1),
+                then: AbilityTrigger::Custom("on_dark_pact_pulse"),
+                follow_caster: true,
+            },
+        )
+        .on(
+            AbilityTrigger::Custom("on_dark_pact_pulse"),
+            EffectTarget::Caster,
+            AbilityEffect::Dispel {
+                kind: StatusKind::Debuff,
+                strength: DispelStrength::Basic,
+            },
+        )
+        .on(
+            AbilityTrigger::Custom("on_dark_pact_pulse"),
+            EffectTarget::AffectedUnits,
+            AbilityEffect::DrainHealth {
+                amount: RankValue::from_level_1(7.5, 7.5),
+                damage_type: DamageType::Magical,
+                scaling: EffectScaling::None,
+                transfer_ratio: 0.15,
+            },
+        )
+}
+// </ability:dark_pact>
+
+// <ability:pounce>
+fn pounce() -> AbilityDefinition {
+    const DESCRIPTION: &str = "Slark leaps forward, damaging every enemy he passes; enemies near his landing point are leashed";
+    AbilityDefinition::new(AbilityId::Pounce)
+        .description(DESCRIPTION)
+        .targeting(TargetType::NoTarget, RankValue::ZERO, RankValue::ZERO)
+        .team(TargetTeam::Enemy)
+        .costs(
+            RankValue::levels(&[24.0, 20.0, 16.0, 12.0, 8.0, 4.0, 2.0]),
+            RankValue::fixed(75.0),
+        )
+        .timing(0.0, 0.53)
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::Caster,
+            AbilityEffect::Displace {
+                kind: DisplacementKind::Dash,
+                distance: Some(RankValue::fixed(700.0)),
+                duration: RankValue::fixed(0.75),
+                speed: None,
+                contact_radius: Some(RankValue::fixed(120.0)),
+                forward_offset: None,
+                bound_stun: None,
+            },
+        )
+        .on(
+            AbilityTrigger::OnUnitContact,
+            EffectTarget::TriggerUnit,
+            AbilityEffect::Damage {
+                amount: RankValue::from_level_1(100.0, 60.0),
+                damage_type: DamageType::Magical,
+                scaling: EffectScaling::None,
+            },
+        )
+        .on(
+            AbilityTrigger::OnMovementEnd,
+            EffectTarget::UnitsInRadius {
+                center: AreaCenter::TriggerPoint,
+                radius: AreaRadius::Fixed(RankValue::fixed(120.0)),
+                team: TargetTeam::Enemy,
+            },
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Leash {
+                    radius: RankValue::fixed(325.0),
+                    anchor: LeashAnchorKind::TriggerPoint,
+                },
+                duration: RankValue::from_level_1(2.5, 0.25),
+            },
+        )
+}
+// </ability:pounce>
+
+// <ability:essence_shift>
+fn essence_shift() -> AbilityDefinition {
+    const DESCRIPTION: &str = "Each successful attack drains the target's attack damage and grants Slark agility; every stack wears off on its own";
+    AbilityDefinition::new(AbilityId::EssenceShift)
+        .description(DESCRIPTION)
+        .behavior(AbilityBehavior::Passive)
+        .targeting(TargetType::NoTarget, RankValue::ZERO, RankValue::ZERO)
+        .team(TargetTeam::SelfOnly)
+        .costs(RankValue::ZERO, RankValue::ZERO)
+        .timing(0.0, 0.25)
+        .on(
+            AbilityTrigger::OnAttackHit,
+            EffectTarget::TriggerUnit,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Modifier {
+                    id: "essence_shift_attack_damage",
+                    kind: StatusKind::Debuff,
+                    armor: RankValue::ZERO,
+                    magic_resist: RankValue::ZERO,
+                    move_speed: RankValue::ZERO,
+                    attack_damage: RankValue::fixed(-1.0),
+                    attack_speed_flat: RankValue::ZERO,
+                    attack_speed_mult: RankValue::ZERO,
+                    attack_range: RankValue::ZERO,
+                    attack_damage_pct: RankValue::ZERO,
+                    cleave: RankValue::ZERO,
+                    cleave_radius: RankValue::ZERO,
+                    cleave_end_radius: RankValue::ZERO,
+                    cleave_distance: RankValue::ZERO,
+                    attack_charges: RankValue::ZERO,
+                    independent: true,
+                },
+                duration: RankValue::fixed(10.0),
+            },
+        )
+        .on(
+            AbilityTrigger::OnAttackHit,
+            EffectTarget::Caster,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::ResourceModifier {
+                    id: "essence_shift_agility",
+                    kind: StatusKind::Buff,
+                    stat: ResourceStat::Agility,
+                    amount: RankValue::fixed(3.0),
+                    independent: true,
+                },
+                duration: RankValue::fixed(10.0),
+            },
+        )
+}
+// </ability:essence_shift>
+
+// <ability:shadow_dance>
+fn shadow_dance() -> AbilityDefinition {
+    const DESCRIPTION: &str = "Slark hides in a cloud of shadows, becoming untargetable and gaining bonus move speed and health regeneration";
+    AbilityDefinition::new(AbilityId::ShadowDance)
+        .description(DESCRIPTION)
+        .targeting(TargetType::NoTarget, RankValue::ZERO, RankValue::ZERO)
+        .team(TargetTeam::SelfOnly)
+        .costs(
+            RankValue::from_level_1(50.0, -10.0),
+            RankValue::fixed(100.0),
+        )
+        .timing(0.0, 0.0)
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::Caster,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Untargetable,
+                duration: RankValue::from_level_1(4.0, 0.25),
+            },
+        )
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::Caster,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::MoveSpeedBonus {
+                    id: "shadow_dance_move_speed_bonus",
+                    percent: RankValue::from_level_1(20.0, 10.0),
+                },
+                duration: RankValue::from_level_1(4.0, 0.25),
+            },
+        )
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::Caster,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::ResourceModifier {
+                    id: "shadow_dance_health_regen",
+                    kind: StatusKind::Buff,
+                    stat: ResourceStat::HealthRegen,
+                    amount: RankValue::from_level_1(70.0, 30.0),
+                    independent: false,
+                },
+                duration: RankValue::from_level_1(4.0, 0.25),
+            },
+        )
+}
+// </ability:shadow_dance>

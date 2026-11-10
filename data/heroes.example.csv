@@ -6,3 +6,4 @@ Queen of Pain,false,Shadow Strike,Queen of Pain Blink,Scream of Pain,Sonic Wave,
 Magnus,true,Magnus Shockwave,Empower,Skewer,Reverse Polarity,23,14,20,3.1,2.2,2.1,STR,"Str initiator — Shockwave, Empower, Skewer, Reverse Polarity",211,75,61,200,305,-0.96,3.764384,0.04,0.5,1.8,0.5,0.84,,0.8
 Sniper,false,Shrapnel,Headshot,Take Aim,Assassinate,19,27,15,2,3.2,2.6,AGI,"Agi marksman — Shrapnel, Headshot, Take Aim, Assassinate",196,75,43,550,285,-3.78,4.20907,-0.13,0,1.7,0.17,0.7,3000,0.7
 Ursa,true,Earthshock,Overpower,Fury Swipes,Enrage,25,18,16,2.4,2.8,1.5,AGI,"Agi brawler — Earthshock, Overpower, Fury Swipes, Enrage",220,75,44,150,310,-1.52,4.401839,0,0,1.7,0.3,0.3,,0.6
+Slark,true,Dark Pact,Pounce,Essence Shift,Shadow Dance,20,21,16,2.1,1.5,1.9,AGI,"Agi assassin — Dark Pact, Pounce, Essence Shift, Shadow Dance",200,75,61,150,300,-2.94,4.401839,-0.15,0,1.7,0.5,0.3,,0.7,120
