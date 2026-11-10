@@ -3742,6 +3742,18 @@ mod tests {
         assert_eq!(health, 550.0);
     }
 
+    #[test]
+    fn asleep_unit_cannot_use_item() {
+        let (fired, health) = channel_with_status(Some(StatusEffect::sleep(5.0)));
+        assert_eq!(fired, vec![AbilityTrigger::OnChannelInterrupted]);
+        assert_eq!(health, 550.0, "sleep interrupts an item channel");
+        assert!(
+            crate::actions::DisableRule::MuteOrStun.blocks(Some(&StatusEffects {
+                effects: vec![StatusEffect::sleep(5.0)],
+            }))
+        );
+    }
+
     fn radius_entry(trigger: AbilityTrigger, radius: AreaRadius) -> AbilityEffectEntry {
         AbilityEffectEntry {
             trigger,

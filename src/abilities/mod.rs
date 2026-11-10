@@ -8071,6 +8071,49 @@ mod tests {
         );
     }
 
+    /// A stun that expires within the frame it lands in is still seen by the interrupt
+    /// checks, because production orders `tick_status_effects` after `tick_activations`.
+    #[test]
+    fn sub_frame_stun_still_interrupts_channel() {
+        let mut app = test_app();
+        // Mirror the production ordering: the status ticker runs after the activation tick.
+        app.add_systems(
+            Update,
+            crate::status::tick_status_effects
+                .after(tick_activations)
+                .before(reactive_triggers::status_triggers),
+        );
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(channelled_heal());
+        let channeller = spawn_caster(&mut app, KIT);
+        request(&mut app, channeller, 3, CastTarget::None);
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        // Shorter than one 0.05s frame: it is gone after this frame's status tick.
+        app.world_mut()
+            .get_mut::<StatusEffects>(channeller)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::stunned(0.01));
+        step(&mut app);
+        let ends: Vec<_> = app
+            .world()
+            .resource::<Messages<ActionChannelEndEvent>>()
+            .iter_current_update_messages()
+            .map(|e| e.completed)
+            .collect();
+        assert_eq!(ends, vec![false], "interrupted despite the stun expiring");
+        assert!(
+            !app.world()
+                .get::<StatusEffects>(channeller)
+                .unwrap()
+                .is_stunned(),
+            "the stun has expired"
+        );
+    }
+
     // ---- zones (AbilityEffect::Zone) ----
 
     const ZONE_TICK: AbilityTrigger = AbilityTrigger::Custom("on_zone_tick");

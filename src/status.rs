@@ -18,8 +18,50 @@ impl Plugin for StatusPlugin {
                 Update,
                 tick_status_effects
                     .before(crate::combat::apply_damage_events)
-                    .before(crate::vitals::sync_status_resource_caps),
+                    .before(crate::vitals::sync_status_resource_caps)
+                    // Interrupt checks must see a stun before it expires: a stun shorter than
+                    // one frame still cancels a channel, cast point or attack swing.
+                    .after(crate::actions::tick_activations)
+                    .after(crate::basic_attack::tick_attack_swings),
             );
+    }
+}
+
+/// Which kinds of action a unit is blocked from, as a small bit set. Derived from status flags
+/// by [`StatusEffect::blocks`] / [`StatusEffects::blocks`]; every "can this unit act" check
+/// reads it, so the disable matrix lives in one place.
+///
+/// | flag | MOVE | ATTACK | CAST | ITEMS |
+/// |---|---|---|---|---|
+/// | stunned, asleep | x | x | x | x |
+/// | rooted | x | | | |
+/// | silenced | | | x | |
+/// | muted | | | | x |
+/// | disarmed | | x | | |
+///
+/// `ORDERS` and `PASSIVES` are reserved for compulsions and break.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ActionBlocks(u8);
+
+#[allow(dead_code)]
+impl ActionBlocks {
+    pub const NONE: Self = Self(0);
+    pub const MOVE: Self = Self(1);
+    pub const ATTACK: Self = Self(1 << 1);
+    pub const CAST: Self = Self(1 << 2);
+    pub const ITEMS: Self = Self(1 << 3);
+    /// Player and AI orders are dropped (compulsions).
+    pub const ORDERS: Self = Self(1 << 4);
+    /// Ability passives are suppressed (break).
+    pub const PASSIVES: Self = Self(1 << 5);
+
+    /// Whether every bit of `other` is set.
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
     }
 }
 
@@ -192,6 +234,31 @@ impl StatusEffect {
             Some(source) => crate::components::CleaveSource::Effect(source),
             None => crate::components::CleaveSource::Status(self.id),
         }
+    }
+
+    /// What this single status blocks, ignoring its duration.
+    pub fn blocks(&self) -> ActionBlocks {
+        let mut blocks = ActionBlocks::NONE;
+        if self.stunned || self.asleep {
+            blocks = blocks
+                .union(ActionBlocks::MOVE)
+                .union(ActionBlocks::ATTACK)
+                .union(ActionBlocks::CAST)
+                .union(ActionBlocks::ITEMS);
+        }
+        if self.rooted {
+            blocks = blocks.union(ActionBlocks::MOVE);
+        }
+        if self.silenced {
+            blocks = blocks.union(ActionBlocks::CAST);
+        }
+        if self.muted {
+            blocks = blocks.union(ActionBlocks::ITEMS);
+        }
+        if self.disarmed {
+            blocks = blocks.union(ActionBlocks::ATTACK);
+        }
+        blocks
     }
 
     pub fn buff(id: &'static str, duration: f32) -> Self {
@@ -630,16 +697,27 @@ impl StatusEffects {
         self.effects.iter().any(|e| e.asleep && e.remaining > 0.0)
     }
 
-    pub fn is_rooted(&self) -> bool {
+    /// Union of what every live status blocks.
+    pub fn blocks(&self) -> ActionBlocks {
         self.effects
             .iter()
-            .any(|e| (e.rooted || e.stunned || e.asleep) && e.remaining > 0.0)
+            .filter(|e| e.remaining > 0.0)
+            .fold(ActionBlocks::NONE, |acc, e| acc.union(e.blocks()))
     }
 
+    /// Cannot move (root, stun, sleep).
+    pub fn is_rooted(&self) -> bool {
+        self.blocks().contains(ActionBlocks::MOVE)
+    }
+
+    /// Cannot basic attack (disarm, stun, sleep).
     pub fn is_disarmed(&self) -> bool {
-        self.effects
-            .iter()
-            .any(|e| (e.disarmed || e.stunned || e.asleep) && e.remaining > 0.0)
+        self.blocks().contains(ActionBlocks::ATTACK)
+    }
+
+    /// Cannot use items (mute, stun, sleep).
+    pub fn blocks_items(&self) -> bool {
+        self.blocks().contains(ActionBlocks::ITEMS)
     }
 
     pub fn is_muted(&self) -> bool {
@@ -726,7 +804,7 @@ impl StatusEffects {
     }
 
     pub fn can_cast(&self) -> bool {
-        !self.is_silenced() && !self.is_stunned() && !self.is_asleep()
+        !self.blocks().contains(ActionBlocks::CAST)
     }
 }
 
@@ -1344,6 +1422,77 @@ mod tests {
     use crate::abilities::definition::{RankValue, StatusBuildContext, StatusSpec};
     use crate::components::CleaveSource;
     use bevy::ecs::system::RunSystemOnce;
+
+    #[test]
+    fn blocks_matrix_matches_documented_table() {
+        use ActionBlocks as B;
+        let all = B::MOVE.union(B::ATTACK).union(B::CAST).union(B::ITEMS);
+        let cases: [(StatusEffect, B); 8] = [
+            (StatusEffect::stunned(1.0), all),
+            (StatusEffect::sleep(1.0), all),
+            (StatusEffect::rooted(1.0), B::MOVE),
+            (StatusEffect::silenced(1.0), B::CAST),
+            (StatusEffect::mute(1.0), B::ITEMS),
+            (StatusEffect::disarmed(1.0), B::ATTACK),
+            (
+                StatusEffect::hexed(1.0),
+                B::CAST.union(B::ITEMS).union(B::ATTACK),
+            ),
+            (StatusEffect::buff("plain", 1.0), B::NONE),
+        ];
+        for (effect, expected) in cases {
+            assert_eq!(effect.blocks(), expected, "{}", effect.id);
+            let live = StatusEffects {
+                effects: vec![effect.clone()],
+            };
+            assert_eq!(live.blocks(), expected, "{}", effect.id);
+            assert_eq!(
+                live.is_rooted(),
+                expected.contains(B::MOVE),
+                "{}",
+                effect.id
+            );
+            assert_eq!(
+                live.is_disarmed(),
+                expected.contains(B::ATTACK),
+                "{}",
+                effect.id
+            );
+            assert_eq!(
+                live.can_cast(),
+                !expected.contains(B::CAST),
+                "{}",
+                effect.id
+            );
+            assert_eq!(
+                live.blocks_items(),
+                expected.contains(B::ITEMS),
+                "{}",
+                effect.id
+            );
+        }
+        // Reserved bits stay clear; expired effects block nothing; effects union.
+        assert!(!all.contains(B::ORDERS) && !all.contains(B::PASSIVES));
+        let mut expired = StatusEffect::stunned(1.0);
+        expired.remaining = 0.0;
+        let mixed = StatusEffects {
+            effects: vec![expired, StatusEffect::rooted(1.0), StatusEffect::mute(1.0)],
+        };
+        assert_eq!(mixed.blocks(), B::MOVE.union(B::ITEMS));
+    }
+
+    #[test]
+    fn sleep_blocks_items() {
+        let asleep = StatusEffects {
+            effects: vec![StatusEffect::sleep(2.0)],
+        };
+        assert!(asleep.blocks_items());
+        assert!(crate::actions::DisableRule::MuteOrStun.blocks(Some(&asleep)));
+        let silenced = StatusEffects {
+            effects: vec![StatusEffect::silenced(2.0)],
+        };
+        assert!(!crate::actions::DisableRule::MuteOrStun.blocks(Some(&silenced)));
+    }
 
     #[test]
     fn status_buff_applies_and_expires_modifiers() {
