@@ -1041,6 +1041,40 @@ class MoveSpeedBonusTests(unittest.TestCase):
         self.assertIn("<owner>_move_speed_bonus", report.errors[0].message)
 
 
+class AttackPointStatusTests(unittest.TestCase):
+    def test_attack_point_uses_value_and_the_owner_id(self) -> None:
+        report = Report()
+        effect, ctx = _effect("apply_status", "attack_point", target="caster", duration="7", value="0.1")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors)
+        self.assertIn(
+            'StatusSpec::AttackPoint { id: "tester_attack_point", seconds: RankValue::fixed(0.1) }',
+            result[2],
+        )
+        self.assertEqual(held_status_id(effect), "tester_attack_point")
+        self.assertEqual(runtime_status_id("tester_attack_point"), "tester_attack_point")
+
+    def test_seconds_must_be_within_zero_and_the_swing_cap(self) -> None:
+        for bad in ("-0.1", "1.5"):
+            report = Report()
+            effect, ctx = _effect("apply_status", "attack_point", target="caster", duration="7", value=bad)
+            self.assertIsNone(effect_to_rust(effect, ctx, report))
+            self.assertTrue(any("attack_point seconds" in e.message for e in report.errors), bad)
+        report = Report()
+        effect, ctx = _effect("apply_status", "attack_point", target="caster", duration="7", value="1")
+        self.assertIsNotNone(effect_to_rust(effect, ctx, report))
+        report = Report()
+        effect, ctx = _effect("apply_status", "attack_point", target="caster", duration="7")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertTrue(any("required" in e.message for e in report.errors))
+
+    def test_remove_status_is_rejected_with_a_hint(self) -> None:
+        report = Report()
+        effect, ctx = _effect("remove_status", "attack_point")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertIn("<owner>_attack_point", report.errors[0].message)
+
+
 class UntargetableStatusTests(unittest.TestCase):
     def test_untargetable_keyword_is_a_self_buff_status(self) -> None:
         report = Report()

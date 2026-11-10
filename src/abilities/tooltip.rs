@@ -420,6 +420,12 @@ fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
                 seconds_row("Move speed bonus duration", duration),
             ]
         }
+        StatusSpec::AttackPoint { seconds, .. } => {
+            vec![
+                seconds_row("Attack point", seconds),
+                seconds_row("Attack point duration", duration),
+            ]
+        }
         StatusSpec::Burn {
             amount,
             tick_interval,
@@ -703,6 +709,7 @@ fn status_name(status: StatusSpec) -> &'static str {
         StatusSpec::Hypnosis => "Hypnosis",
         StatusSpec::Slow { .. } => "Slow",
         StatusSpec::MoveSpeedBonus { .. } => "Move speed bonus",
+        StatusSpec::AttackPoint { .. } => "Attack point",
         StatusSpec::AttackSpeedSlow { .. } => "Attack speed slow",
         StatusSpec::TurnRateSlow { .. } => "Turn rate slow",
         StatusSpec::TurnRateBonus { .. } => "Turn rate bonus",

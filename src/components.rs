@@ -371,6 +371,16 @@ impl CombatStats {
         }
     }
 
+    /// Basic-attack foreswing: the lowest live status override (see
+    /// [`crate::status::StatusEffects::attack_point_override`]), else `attack_point`, clamped to
+    /// [`crate::basic_attack::MAX_ATTACK_SWING`]. The one place the override is read.
+    pub fn effective_attack_point(&self, statuses: Option<&crate::status::StatusEffects>) -> f32 {
+        statuses
+            .and_then(|s| s.attack_point_override())
+            .unwrap_or(self.attack_point)
+            .clamp(0.0, crate::basic_attack::MAX_ATTACK_SWING)
+    }
+
     /// Turn rate after stacking status bonuses and slow on top of the hero/creep base in
     /// `turn_rate`: `base × (1 + Σ bonus / 100) × (1 − strongest slow / 100)`.
     pub fn effective_turn_rate(&self, statuses: Option<&crate::status::StatusEffects>) -> f32 {

@@ -203,6 +203,9 @@ STATUSES = {
     "slow": (None, "slow", False),
     # Percent of base move speed (amount or value, 0..400); the id is `<owner>_move_speed_bonus`.
     "move_speed_bonus": (None, "move_speed_bonus", True),
+    # Replaces the holder's basic-attack point with `value` seconds (0..MAX_ATTACK_SWING); the
+    # id is `<owner>_attack_point`.
+    "attack_point": (None, "attack_point", True),
     "attack_speed_slow": (None, "attack_speed_slow", False),
     "turn_rate_slow": (None, "turn_rate_slow", False),
     "turn_rate_bonus": (None, "turn_rate_bonus", True),
@@ -245,7 +248,10 @@ STATUSES = {
 INDEPENDENT_SUFFIX = "independent"
 
 # Statuses whose runtime id is `<owner>_<name>` (the keyword alone is not a status id).
-OWNER_ID_STATUSES = ("damage_reduction", "status_resistance", "stacks", "move_speed_bonus")
+OWNER_ID_STATUSES = ("damage_reduction", "status_resistance", "stacks", "move_speed_bonus", "attack_point")
+
+# Mirrors basic_attack::MAX_ATTACK_SWING: the longest attack point or backswing, in seconds.
+MAX_ATTACK_SWING = 1.0
 
 # `effect_type=resource` ids → (kind, spent resource). Hostile kinds act on other units;
 # the spend kinds act on the unit that uses them (caster/owner only).
@@ -1728,6 +1734,15 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             spec = f'StatusSpec::MoveSpeedBonus {{ id: "{ctx.owner_id}_move_speed_bonus", percent: {rank_value(percent)} }}'
             if amount:
                 _unused(e, report, "value")
+        elif effect_id == "attack_point":
+            if not value:
+                report.error(row.file, row.line, "value", "", "required: attack_point seconds (e.g. 0.1)")
+                return None
+            if any(not 0 <= v <= MAX_ATTACK_SWING for v in value):
+                report.error(row.file, row.line, "value", row.get("value"), f"attack_point seconds must be within 0..{MAX_ATTACK_SWING:g}")
+                return None
+            spec = f'StatusSpec::AttackPoint {{ id: "{ctx.owner_id}_attack_point", seconds: {rank_value(value)} }}'
+            _unused(e, report, "amount")
         elif effect_id == "turn_rate_bonus":
             percent = amount or value
             if not percent:

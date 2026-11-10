@@ -475,6 +475,12 @@ pub enum StatusSpec {
         id: &'static str,
         percent: RankValue,
     },
+    /// Replaces the holder's basic-attack point with `seconds` (a buff; the lowest live override
+    /// applies, backswing is unchanged). `id` is `<owner>_attack_point` when generated.
+    AttackPoint {
+        id: &'static str,
+        seconds: RankValue,
+    },
     /// `percent` added to base turn rate (a buff; bonuses add up).
     TurnRateBonus {
         percent: RankValue,
@@ -724,6 +730,15 @@ impl StatusSpec {
                     ..StatusEffect::buff(id, duration)
                 }
             }
+            StatusSpec::AttackPoint { id, seconds } => StatusEffect {
+                attack_point_override: Some(
+                    seconds
+                        .at(rank)
+                        .clamp(0.0, crate::basic_attack::MAX_ATTACK_SWING),
+                ),
+                dispel_type: DispelType::Basic,
+                ..StatusEffect::buff(id, duration)
+            },
             StatusSpec::AttackSpeedSlow { percent } => {
                 let p = (percent.at(rank) / 100.0).clamp(0.0, 1.0);
                 StatusEffect {

@@ -312,6 +312,9 @@ pub struct StatusEffect {
     pub breaks_passives: bool,
     /// Caps the holder's walking speed (`0` = no cap). The lowest live cap applies.
     pub move_speed_cap: f32,
+    /// Replaces the holder's basic-attack point (foreswing, seconds) while active. The lowest
+    /// live override applies; backswing is unchanged.
+    pub attack_point_override: Option<f32>,
     /// Ignores trees and other ground obstacles while moving (buildings still block).
     pub flying: bool,
     /// Confines the unit to a circle (region restriction or tether).
@@ -451,6 +454,7 @@ impl StatusEffect {
             debuff_immune: false,
             breaks_passives: false,
             move_speed_cap: 0.0,
+            attack_point_override: None,
             flying: false,
             leash: None,
             compulsion: None,
@@ -1008,6 +1012,15 @@ impl StatusEffects {
             .iter()
             .filter(|e| e.remaining > 0.0 && e.move_speed_cap > 0.0)
             .map(|e| e.move_speed_cap)
+            .min_by(f32::total_cmp)
+    }
+
+    /// The lowest live basic-attack point override (`None` = the unit's own attack point).
+    pub fn attack_point_override(&self) -> Option<f32> {
+        self.effects
+            .iter()
+            .filter(|e| e.remaining > 0.0)
+            .filter_map(|e| e.attack_point_override)
             .min_by(f32::total_cmp)
     }
 

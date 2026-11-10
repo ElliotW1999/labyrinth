@@ -245,10 +245,10 @@ pub fn request_basic_attacks(
 pub fn start_basic_attack_windups(
     mut commands: Commands,
     mut requests: MessageReader<BasicAttackEvent>,
-    attackers: Query<(&CombatStats, Has<AttackSwing>)>,
+    attackers: Query<(&CombatStats, Option<&StatusEffects>, Has<AttackSwing>)>,
 ) {
     for request in requests.read() {
-        let Ok((stats, swinging)) = attackers.get(request.attacker) else {
+        let Ok((stats, statuses, swinging)) = attackers.get(request.attacker) else {
             continue;
         };
         if swinging {
@@ -257,7 +257,7 @@ pub fn start_basic_attack_windups(
         commands
             .entity(request.attacker)
             .insert(AttackSwing::Windup {
-                remaining: stats.attack_point.clamp(0.0, MAX_ATTACK_SWING),
+                remaining: stats.effective_attack_point(statuses),
                 target: request.target,
                 damage: stats.attack_damage,
             });
@@ -1003,6 +1003,61 @@ mod tests {
         );
         step(&mut world, &mut schedule);
         assert!((hp(&world, target) - expected_hit()).abs() < 1e-3);
+    }
+
+    /// Frames until a melee attacker with `attack_point` 0.56 and the given status damages its
+    /// target.
+    fn frames_to_melee_hit(statuses: Option<StatusEffects>) -> usize {
+        let (mut world, mut schedule) = world_with_pipeline();
+        let target_pos = Vec3::new(100.0, 0.0, 0.0);
+        let target = spawn_unit(&mut world, Team::Dire, target_pos, passive_stats());
+        let attacker = spawn_attacker(&mut world, scale::MELEE_ATTACK_RANGE, target, target_pos);
+        world.get_mut::<CombatStats>(attacker).unwrap().attack_point = 0.56;
+        if let Some(statuses) = statuses {
+            world.entity_mut(attacker).insert(statuses);
+        }
+        for frame in 0..80 {
+            step(&mut world, &mut schedule);
+            if hp(&world, target) < 1000.0 {
+                return frame;
+            }
+        }
+        panic!("never hit");
+    }
+
+    fn attack_point_status(seconds: f32, remaining: f32) -> crate::status::StatusEffect {
+        crate::status::StatusEffect {
+            attack_point_override: Some(seconds),
+            remaining,
+            ..crate::status::StatusEffect::buff("quick_point", 5.0)
+        }
+    }
+
+    #[test]
+    fn attack_point_override_shortens_windup_and_ends_on_expiry() {
+        let normal = frames_to_melee_hit(None);
+        let mut live = StatusEffects::default();
+        live.effects.push(attack_point_status(0.1, 5.0));
+        let quick = frames_to_melee_hit(Some(live));
+        assert!(quick + 5 < normal, "override {quick} vs base {normal}");
+
+        // Once the status has run out the unit's own attack point applies again.
+        let mut expired = StatusEffects::default();
+        expired.effects.push(attack_point_status(0.1, 0.0));
+        assert_eq!(frames_to_melee_hit(Some(expired)), normal);
+    }
+
+    #[test]
+    fn lowest_override_wins() {
+        let mut statuses = StatusEffects::default();
+        assert_eq!(statuses.attack_point_override(), None);
+        statuses.effects.push(attack_point_status(0.3, 5.0));
+        statuses.effects.push(attack_point_status(0.1, 5.0));
+        statuses.effects.push(attack_point_status(0.05, 0.0));
+        assert_eq!(statuses.attack_point_override(), Some(0.1));
+        let stats = CombatStats::simple(10.0, 150.0, 1.0, 0.0, 0.0, 300.0);
+        assert_eq!(stats.effective_attack_point(None), stats.attack_point);
+        assert_eq!(stats.effective_attack_point(Some(&statuses)), 0.1);
     }
 
     #[test]
