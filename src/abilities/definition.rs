@@ -374,8 +374,22 @@ pub enum StatusSpec {
         radius: RankValue,
         anchor: LeashAnchorKind,
     },
-    /// Purges existing debuffs on application.
+    /// Blocks new debuffs and purges existing ones on application. Magic damage and hostile
+    /// spells still land.
     DebuffImmunity,
+    /// Debuff immunity, plus: hostile unit-target spells cannot pick the holder and magical
+    /// damage is ignored (area spells still reach it).
+    SpellImmunity,
+    /// Basic attacks cannot target the holder.
+    AttackImmunity,
+    /// Disarmed; immune to physical damage and to being attacked; takes `magic_amp_percent`
+    /// (0-90) extra magic damage. Buff or debuff by hostility.
+    Ethereal {
+        magic_amp_percent: RankValue,
+    },
+    /// Out of the world: stunned, invulnerable, untargetable, hidden and phased. Not
+    /// dispellable. Buff or debuff by hostility.
+    Banish,
     /// Absorbing shield pool (`amount` at rank).
     Shield {
         amount: RankValue,
@@ -396,8 +410,24 @@ pub enum StatusSpec {
     Sleep,
     /// No damage from any source.
     Invulnerable,
-    /// Composite silence + disarm + mute (items).
+    /// Composite silence + disarm + mute (items) + break, with walking speed capped at
+    /// `scale::HEX_MOVE_SPEED`.
     Hex,
+    /// Ability passives (stats and triggers) are suppressed. Item passives are not.
+    Break,
+    /// Concealed from enemies: no attacks, hostile unit-target spells or auto-acquisition pick
+    /// the holder, and fog hides it even inside vision. Area effects still hit it. Ends when
+    /// the holder attacks or casts if `breaks_on_action`.
+    Invisibility {
+        breaks_on_action: bool,
+    },
+    /// True sight: the holder's invisibility is void while this lasts.
+    Reveal,
+    /// Negates the next hostile unit-target spell that lands on the holder, then is consumed.
+    SpellBlock,
+    /// Reflects hostile unit-target spells at their caster; the original still lands unless
+    /// blocked. A reflected spell is never reflected again.
+    SpellReflect,
     /// Percent chance (0–100) that basic attacks miss.
     Blind {
         miss_chance_percent: RankValue,
@@ -412,8 +442,13 @@ pub enum StatusSpec {
     },
     /// The target's attacks never miss: ignores evasion and blind.
     TrueStrike,
-    /// Run away from `source` (typically the caster).
+    /// Run away from `source` (typically the caster); no attacking, casting, items or orders.
     Fear,
+    /// Forced to basic attack `source` (the caster) only; no casting, items or orders.
+    Taunt,
+    /// Forced to walk to `source` (the caster) and stop at contact; no attacking, casting,
+    /// items or orders.
+    Hypnosis,
     /// Reduces the target's move speed by `percent` of its base speed. `id` is the status id:
     /// hand-written slows use `"slow"`, generated ones `<owner>_slow`, so slows from different
     /// sources coexist and add while the same source refreshes.
@@ -518,7 +553,6 @@ pub enum LeashAnchorKind {
 pub struct StatusBuildContext {
     pub move_speed: f32,
     pub agility: f32,
-    pub fear_source: Option<Entity>,
     /// The unit that caused the status (the caster).
     pub source: Option<Entity>,
     /// Where the trigger happened.
@@ -530,6 +564,12 @@ pub struct StatusBuildContext {
 }
 
 impl StatusSpec {
+    /// Whether the status is a debuff on a hostile target and a buff on an ally or the caster
+    /// (the runner sets the kind from the target's relation to the source).
+    pub const fn kind_follows_hostility(self) -> bool {
+        matches!(self, StatusSpec::Ethereal { .. } | StatusSpec::Banish)
+    }
+
     pub const fn armor_buff(id: &'static str, armor: RankValue) -> Self {
         Self::Modifier {
             id,
@@ -582,6 +622,13 @@ impl StatusSpec {
                 )
             }
             StatusSpec::DebuffImmunity => StatusEffect::debuff_immunity(duration),
+            StatusSpec::SpellImmunity => StatusEffect::spell_immunity(duration),
+            StatusSpec::AttackImmunity => StatusEffect::attack_immunity(duration),
+            // A hostile cast is a debuff; the runner re-sets the kind from the real relation.
+            StatusSpec::Ethereal { magic_amp_percent } => {
+                StatusEffect::ethereal(duration, magic_amp_percent.at(rank), true)
+            }
+            StatusSpec::Banish => StatusEffect::banish(duration, true),
             StatusSpec::Shield { amount } => StatusEffect::shield(amount.at(rank), duration),
             StatusSpec::Burn {
                 id,
@@ -603,6 +650,13 @@ impl StatusSpec {
             StatusSpec::Sleep => StatusEffect::sleep(duration),
             StatusSpec::Invulnerable => StatusEffect::invulnerable(duration),
             StatusSpec::Hex => StatusEffect::hexed(duration),
+            StatusSpec::Break => StatusEffect::broken(duration),
+            StatusSpec::Invisibility { breaks_on_action } => {
+                StatusEffect::invisibility(duration, breaks_on_action)
+            }
+            StatusSpec::Reveal => StatusEffect::reveal(duration),
+            StatusSpec::SpellBlock => StatusEffect::spell_block(duration),
+            StatusSpec::SpellReflect => StatusEffect::spell_reflect(duration),
             StatusSpec::Blind {
                 miss_chance_percent,
             } => StatusEffect::blind(
@@ -621,7 +675,16 @@ impl StatusSpec {
                 accuracy: 1.0,
                 ..StatusEffect::buff("true_strike", duration)
             },
-            StatusSpec::Fear => StatusEffect::fear(duration, ctx.fear_source),
+            StatusSpec::Fear => StatusEffect::fear(duration, ctx.source),
+            // Without a caster to look at or walk to there is nothing to force: a no-op status.
+            StatusSpec::Taunt => match ctx.source {
+                Some(source) => StatusEffect::taunted(duration, source),
+                None => StatusEffect::debuff("taunt", duration),
+            },
+            StatusSpec::Hypnosis => match ctx.source {
+                Some(source) => StatusEffect::hypnotized(duration, source),
+                None => StatusEffect::debuff("hypnosis", duration),
+            },
             StatusSpec::Slow { id, percent } => {
                 let p = (percent.at(rank) / 100.0).clamp(0.0, 1.0);
                 StatusEffect {

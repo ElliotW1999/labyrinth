@@ -45,6 +45,8 @@ pub const CREEP_ATTACK_RANGE: f32 = CREEP_MELEE_ATTACK_RANGE;
 /// Walking speed never drops below this, however many slows stack. Units with a base
 /// speed of zero stay stationary.
 pub const MIN_MOVE_SPEED: f32 = 100.0;
+/// Walking speed of a hexed unit: a status cap, applied after the floor and any bonuses.
+pub const HEX_MOVE_SPEED: f32 = 140.0;
 /// Typical hero base movement speed (units / second).
 pub const HERO_MOVE_SPEED: f32 = 300.0;
 /// Faster hero MS (Skirmisher-style).

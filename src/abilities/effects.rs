@@ -15,12 +15,13 @@ use bevy::prelude::*;
 
 use super::catalog::AbilityDefinitions;
 use super::definition::{
-    AbilityEffect, AbilityEffectEntry, AbilityTrigger, AreaCenter, AreaRadius, Attribute,
-    EffectScaling, EffectTarget, StatusBuildContext, TargetTeam,
+    AbilityEffect, AbilityEffectEntry, AbilityMechanic, AbilityTrigger, AreaCenter, AreaRadius,
+    Attribute, EffectScaling, EffectTarget, StatusBuildContext, TargetTeam,
 };
 use super::mechanics::{ChainCandidate, chain_hops};
+use super::passive::passive_suppressed;
 use super::zones::SpawnZoneEvent;
-use crate::actions::{ActionId, team_allows};
+use crate::actions::{ActionId, TargetType, team_allows};
 use crate::basic_attack::ExtraAttackEvent;
 use crate::combat::{CombatRng, DamageEvent};
 use crate::components::{AbilityId, BoundRadius, CombatStats, Health, HeroAttributes, Mana, Team};
@@ -202,6 +203,9 @@ pub struct TriggerContext {
     pub reaction: bool,
     /// The status a status trigger is about.
     pub status: Option<StatusMeta>,
+    /// Produced by a spell reflection: it is never reflected again. Inherited by derived
+    /// contexts.
+    pub reflected: bool,
 }
 
 impl TriggerContext {
@@ -234,6 +238,7 @@ impl TriggerContext {
             amount: 1.0,
             reaction: trigger.is_reaction(),
             status: None,
+            reflected: false,
         }
     }
 
@@ -277,6 +282,11 @@ impl TriggerContext {
         self
     }
 
+    pub fn reflected(mut self, reflected: bool) -> Self {
+        self.reflected = reflected;
+        self
+    }
+
     pub fn status(mut self, status: StatusMeta) -> Self {
         self.status = Some(status);
         self
@@ -290,6 +300,65 @@ impl TriggerContext {
 
 #[derive(Message, Debug, Clone, PartialEq)]
 pub struct AbilityTriggerEvent(pub TriggerContext);
+
+/// A hostile unit-target spell landed on a unit with spell reflection: the reflector recasts it
+/// on the original caster. Written by [`resolve_ability_triggers`]; consumed next frame by
+/// `execute_ability_casts` / `execute_item_mechanics`. It is not a cast: no `AbilityCastEvent`,
+/// no cooldown, no custom behavior.
+#[derive(Message, Debug, Clone, Copy, PartialEq)]
+pub struct SpellReflectEvent {
+    pub reflector: Entity,
+    pub original_caster: Entity,
+    pub source: EffectSource,
+    pub rank: u32,
+}
+
+/// The unit a hostile unit-target spell lands on in this context, if this context is the
+/// landing of such a spell: depth 0, not a reaction, the source is cast on a unit, and either a
+/// homing projectile hit the cast target or the cast / use had no homing projectile (it lands
+/// at once). Everything else (areas, skillshots, gate-derived contexts) returns `None`.
+pub fn landing_target(ctx: &TriggerContext, defs: &AbilityDefinitions) -> Option<Entity> {
+    if ctx.depth != 0 || ctx.reaction {
+        return None;
+    }
+    let target = ctx.cast_target?;
+    let (is_unit_cast, has_homing_projectile) = match ctx.source {
+        EffectSource::Ability(id) => {
+            let def = defs.get(id)?;
+            (
+                def.target_type == TargetType::Unit,
+                def.mechanics.iter().any(is_homing_projectile),
+            )
+        }
+        EffectSource::Item(id) => {
+            let def = id.definition();
+            (
+                def.activation.target_type == TargetType::Unit,
+                def.mechanics.iter().any(is_homing_projectile),
+            )
+        }
+    };
+    if !is_unit_cast {
+        return None;
+    }
+    match ctx.trigger {
+        AbilityTrigger::OnProjectileHit => (ctx.trigger_unit == Some(target)).then_some(target),
+        AbilityTrigger::OnCast | AbilityTrigger::OnUse => {
+            (!has_homing_projectile).then_some(target)
+        }
+        _ => None,
+    }
+}
+
+fn is_homing_projectile(mechanic: &AbilityMechanic) -> bool {
+    matches!(
+        mechanic,
+        AbilityMechanic::Projectile {
+            skillshot: false,
+            ..
+        } | AbilityMechanic::ProjectileToEach { .. }
+    )
+}
 
 /// A cast's effects resolved onto an enemy (one per cast context and distinct enemy).
 /// Written by [`resolve_ability_triggers`]; the `OnSpellHit` dispatcher reads it next frame.
@@ -465,6 +534,15 @@ impl EffectRunner<'_, '_> {
             .get(entity)
             .is_ok_and(|(_, _, _, health, _)| health.is_alive())
             && (entity == ctx.caster || !is_untargetable(&self.statuses_of, entity))
+    }
+
+    /// Queues removal of the status `id` from `target` (spent spell block).
+    fn remove_status(&mut self, ctx: &TriggerContext, target: Entity, id: &'static str) {
+        self.statuses.write(StatusEffectEvent::new(
+            Some(ctx.caster),
+            target,
+            StatusChange::Remove(id),
+        ));
     }
 
     /// Whether `entity` is a living unit of the team opposing the context's.
@@ -752,6 +830,18 @@ impl EffectRunner<'_, '_> {
                         ctx.source,
                     );
                     built.reactive = ctx.reaction;
+                    if status.kind_follows_hostility() {
+                        built.kind = if crate::status::hostile(
+                            ctx.caster,
+                            target,
+                            Some(ctx.team),
+                            self.units.get(target).ok().map(|u| *u.2),
+                        ) {
+                            StatusKind::Debuff
+                        } else {
+                            StatusKind::Buff
+                        };
+                    }
                     self.statuses.write(
                         StatusEffectEvent::new(source, target, StatusChange::Apply(built))
                             .reactive(ctx.reaction),
@@ -1052,17 +1142,12 @@ pub(crate) fn build_status_effect(
     healer_amp: f32,
     origin: EffectSource,
 ) -> StatusEffect {
-    let fear_source = match spec {
-        super::definition::StatusSpec::Fear => caster,
-        _ => None,
-    };
     let mut built = spec.build(
         rank,
         duration,
         StatusBuildContext {
             move_speed: target_stats.map_or(0.0, |s| s.move_speed),
             agility: target_attrs.map_or(0.0, |a| a.agility),
-            fear_source,
             source: caster,
             point,
             base_attack_damage: target_base_attack_damage,
@@ -1127,12 +1212,28 @@ pub fn resolve_ability_triggers(
     defs: Res<AbilityDefinitions>,
     mut runner: EffectRunner,
     mut spell_hits: MessageWriter<SpellHitEvent>,
+    mut reflects: MessageWriter<SpellReflectEvent>,
+    statuses: Query<&StatusEffects>,
 ) {
+    // Spell blocks spent during this call: the removal lands after it, so a second spell in
+    // the same frame must not be blocked by the same status.
+    let mut spent_blocks: Vec<Entity> = Vec::new();
     // First in, first out: gates append derived contexts behind everything already queued,
     // so the order (and the RNG draw order) is fixed by message order.
     let mut queue: VecDeque<TriggerContext> =
         triggers.read().map(|event| event.0.clone()).collect();
     while let Some(ctx) = queue.pop_front() {
+        // A broken owner's ability passives do nothing: root contexts (straight from a
+        // dispatcher) that are not part of a cast are dropped, so a context derived from a
+        // live cast and the cast-phase contexts of active abilities are never affected.
+        if ctx.depth == 0
+            && !ctx.trigger.is_cast_phase()
+            && statuses
+                .get(ctx.caster)
+                .is_ok_and(|s| passive_suppressed(ctx.source, &defs, s))
+        {
+            continue;
+        }
         let Some(params) = source_params(ctx.source, &defs, ctx.rank) else {
             continue;
         };
@@ -1143,13 +1244,48 @@ pub fn resolve_ability_triggers(
             }
             _ => None,
         };
+        // A hostile unit-target spell landing on an enemy: spell immunity or an unspent spell
+        // block shields it from this context's effects entirely; otherwise reflection recasts
+        // the spell back at the caster while the original still lands.
+        let mut shielded: Option<Entity> = None;
+        if let Some(target) =
+            landing_target(&ctx, &defs).filter(|&target| runner.is_enemy(&ctx, target))
+            && let Ok(held) = statuses.get(target)
+        {
+            let block = held
+                .effects
+                .iter()
+                .find(|e| e.spell_block && e.remaining > 0.0)
+                .map(|e| e.id);
+            if held
+                .effects
+                .iter()
+                .any(|e| e.spell_immune && e.remaining > 0.0)
+            {
+                shielded = Some(target);
+            } else if let Some(id) = block
+                && !spent_blocks.contains(&target)
+            {
+                spent_blocks.push(target);
+                runner.remove_status(&ctx, target, id);
+                shielded = Some(target);
+            } else if held.has_spell_reflect() && !ctx.reflected {
+                reflects.write(SpellReflectEvent {
+                    reflector: target,
+                    original_caster: ctx.caster,
+                    source: ctx.source,
+                    rank: ctx.rank,
+                });
+            }
+        }
         let mut enemies_hit: Vec<Entity> = Vec::new();
         for entry in params
             .entries
             .iter()
             .filter(|entry| entry.trigger == ctx.trigger)
         {
-            let targets = runner.targets(&ctx, entry.target, params.aoe_radius);
+            let mut targets = runner.targets(&ctx, entry.target, params.aoe_radius);
+            targets.retain(|target| Some(*target) != shielded);
             if spell.is_some() && entry.effect.acts_on_targets() {
                 for &target in &targets {
                     if runner.is_enemy(&ctx, target) && !enemies_hit.contains(&target) {

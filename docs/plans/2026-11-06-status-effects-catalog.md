@@ -4,6 +4,8 @@
 **Scope:** Audit and planning only (no gameplay behavior changes in this document’s PR).  
 **Goal:** Map MOBA-style disables and related mechanics against the current engine, identify reuse vs new data, and propose an incremental rollout for implementer/tester.
 
+> **Superseded (2026-11-10).** The mechanic matrix and implementation status in this document are out of date. See `docs/plans/2026-11-10-status-effects-completion.md` for the audit, design (`ActionBlocks`, `TargetIntent`, compulsions, concealment, spell block / reflect) and the implemented steps, and `docs/architecture/composition.md` section 5 for the current rules. Kept for history.
+
 ---
 
 ## Executive conclusion

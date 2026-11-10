@@ -8,7 +8,9 @@ use super::effects::{EffectSource, base_attack_damage, build_status_effect};
 use crate::components::{AbilityId, AbilityLoadout, CombatStats, Health, HeroAttributes, Mana};
 use crate::heroes::HeroKind;
 use crate::items::{ItemPassives, apply_passives, remove_passives};
-use crate::status::{DispelType, StatusChange, StatusEffect, StatusEffectEvent, StatusEffects};
+use crate::status::{
+    ActionBlocks, DispelType, StatusChange, StatusEffect, StatusEffectEvent, StatusEffects,
+};
 use crate::vitals::{effective_mana_cost, outgoing_heal_amp};
 
 /// Make a held status match `wanted`: apply it (permanent, undispellable) when wanted and
@@ -38,21 +40,45 @@ pub(crate) fn reconcile_held_status(
     }
 }
 
+/// Whether `source` is an ability passive that a break on its owner (`statuses`) suppresses.
+/// Only abilities with `AbilityBehavior::Passive` are affected: item passives and active or
+/// toggle abilities keep working. The one predicate behind the passive stat sync, trigger
+/// resolution and held-status upkeep.
+pub(crate) fn passive_suppressed(
+    source: EffectSource,
+    defs: &AbilityDefinitions,
+    statuses: &StatusEffects,
+) -> bool {
+    let EffectSource::Ability(id) = source else {
+        return false;
+    };
+    statuses.blocks().contains(ActionBlocks::PASSIVES)
+        && defs
+            .get(id)
+            .is_some_and(|def| def.behavior == AbilityBehavior::Passive)
+}
+
 /// Net passive stat bonuses currently applied from ranked passive abilities.
 #[derive(Component, Clone, Default, PartialEq)]
 pub struct AppliedAbilityPassives(pub ItemPassives);
 
-/// Last `(ability id, rank)` per slot used to refresh [`AppliedAbilityPassives`].
-#[derive(Component, Default)]
-pub struct AbilityPassiveSync(pub Option<[(AbilityId, u32); 4]>);
+/// The loadout key (`(ability id, rank)` per slot) and whether passives were broken, as last
+/// used to refresh [`AppliedAbilityPassives`].
+pub type PassiveSyncKey = ([(AbilityId, u32); 4], bool);
 
-fn loadout_passive_key(loadout: &AbilityLoadout) -> [(AbilityId, u32); 4] {
-    [
-        (loadout.slots[0].id, loadout.slots[0].rank),
-        (loadout.slots[1].id, loadout.slots[1].rank),
-        (loadout.slots[2].id, loadout.slots[2].rank),
-        (loadout.slots[3].id, loadout.slots[3].rank),
-    ]
+#[derive(Component, Default)]
+pub struct AbilityPassiveSync(pub Option<PassiveSyncKey>);
+
+fn loadout_passive_key(loadout: &AbilityLoadout, broken: bool) -> PassiveSyncKey {
+    (
+        [
+            (loadout.slots[0].id, loadout.slots[0].rank),
+            (loadout.slots[1].id, loadout.slots[1].rank),
+            (loadout.slots[2].id, loadout.slots[2].rank),
+            (loadout.slots[3].id, loadout.slots[3].rank),
+        ],
+        broken,
+    )
 }
 
 /// Sum `Passive` trigger stat entries for one learned ability rank.
@@ -70,13 +96,20 @@ pub fn passives_at_rank(def: &super::definition::AbilityDefinition, rank: u32) -
     total
 }
 
-pub fn loadout_passives(loadout: &AbilityLoadout, defs: &AbilityDefinitions) -> ItemPassives {
+pub fn loadout_passives(
+    loadout: &AbilityLoadout,
+    defs: &AbilityDefinitions,
+    statuses: Option<&StatusEffects>,
+) -> ItemPassives {
     let mut total = ItemPassives::default();
     for slot in &loadout.slots {
         let Some(def) = defs.get(slot.id) else {
             continue;
         };
         if def.behavior != AbilityBehavior::Passive {
+            continue;
+        }
+        if statuses.is_some_and(|s| passive_suppressed(EffectSource::Ability(slot.id), defs, s)) {
             continue;
         }
         total += passives_at_rank(def, slot.rank);
@@ -89,6 +122,7 @@ pub fn sync_ability_passives(
     defs: Res<AbilityDefinitions>,
     mut heroes: Query<(
         &AbilityLoadout,
+        Option<&StatusEffects>,
         &mut AbilityPassiveSync,
         &mut AppliedAbilityPassives,
         &mut Health,
@@ -97,14 +131,16 @@ pub fn sync_ability_passives(
         &mut HeroAttributes,
     )>,
 ) {
-    for (loadout, mut sync, mut applied, mut health, mut mana, mut stats, mut attrs) in &mut heroes
+    for (loadout, statuses, mut sync, mut applied, mut health, mut mana, mut stats, mut attrs) in
+        &mut heroes
     {
-        let key = loadout_passive_key(loadout);
+        let broken = statuses.is_some_and(|s| s.breaks_passives());
+        let key = loadout_passive_key(loadout, broken);
         if sync.0.as_ref() == Some(&key) {
             continue;
         }
         sync.0 = Some(key);
-        let desired = loadout_passives(loadout, &defs);
+        let desired = loadout_passives(loadout, &defs, statuses);
         if desired == applied.0 {
             continue;
         }
@@ -211,9 +247,93 @@ mod tests {
         loadout.slots[0].rank = 2;
         let mut defs = defs;
         defs.ensure_builtin(AbilityId::StoneSkin);
-        assert_eq!(loadout_passives(&loadout, &defs).armor, 8.0);
+        assert_eq!(loadout_passives(&loadout, &defs, None).armor, 8.0);
         loadout.slots[0].rank = 0;
-        assert_eq!(loadout_passives(&loadout, &defs).armor, 0.0);
+        assert_eq!(loadout_passives(&loadout, &defs, None).armor, 0.0);
+    }
+
+    mod broken_passives {
+        use std::time::Duration;
+
+        use super::*;
+        use crate::status::StatusPlugin;
+
+        fn app() -> App {
+            let mut app = App::new();
+            app.init_resource::<Time>()
+                .init_resource::<AbilityDefinitions>()
+                .add_message::<crate::combat::DamageEvent>()
+                .add_message::<crate::combat::DamageAppliedEvent>()
+                .add_message::<crate::status::StatusLifecycleEvent>()
+                .add_plugins(StatusPlugin)
+                .add_systems(
+                    Update,
+                    sync_ability_passives.after(crate::status::tick_status_effects),
+                );
+            app.world_mut()
+                .resource_mut::<AbilityDefinitions>()
+                .ensure_builtin(AbilityId::StoneSkin);
+            app
+        }
+
+        fn step(app: &mut App, secs: f32) {
+            app.world_mut()
+                .resource_mut::<Time>()
+                .advance_by(Duration::from_secs_f32(secs));
+            app.update();
+        }
+
+        fn armor(app: &App, hero: Entity) -> f32 {
+            app.world().get::<CombatStats>(hero).unwrap().armor
+        }
+
+        #[test]
+        fn break_removes_passive_ability_stats_and_restores_on_expiry() {
+            let mut app = app();
+            let mut loadout = AbilityLoadout::from_abilities([
+                AbilityId::StoneSkin,
+                AbilityId::Dash,
+                AbilityId::Bolt,
+                AbilityId::Nova,
+            ]);
+            loadout.slots[0].rank = 2;
+            let hero = app
+                .world_mut()
+                .spawn((
+                    loadout,
+                    AbilityPassiveSync::default(),
+                    AppliedAbilityPassives::default(),
+                    Health::new(100.0),
+                    Mana::new(10.0, 0.0),
+                    CombatStats::simple(10.0, 5.0, 1.0, 0.0, 0.0, 300.0),
+                    HeroAttributes::starter(),
+                    StatusEffects::default(),
+                ))
+                .id();
+            let base = armor(&app, hero);
+            step(&mut app, 0.1);
+            let with_passive = armor(&app, hero);
+            assert_eq!(with_passive, base + 8.0, "rank 2 stone skin");
+
+            app.world_mut()
+                .get_mut::<StatusEffects>(hero)
+                .unwrap()
+                .effects
+                .push(StatusEffect::broken(0.5));
+            step(&mut app, 0.1);
+            assert_eq!(armor(&app, hero), base, "the passive's armor is gone");
+            step(&mut app, 0.1);
+            assert_eq!(armor(&app, hero), base, "removed once, not repeatedly");
+
+            step(&mut app, 0.5);
+            assert!(
+                !app.world()
+                    .get::<StatusEffects>(hero)
+                    .unwrap()
+                    .breaks_passives()
+            );
+            assert_eq!(armor(&app, hero), with_passive, "restored on expiry");
+        }
     }
 
     mod toggles {

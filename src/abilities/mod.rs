@@ -74,6 +74,7 @@ impl Plugin for AbilitiesPlugin {
             .add_message::<AbilityCastEvent>()
             .add_message::<AbilityTriggerEvent>()
             .add_message::<crate::abilities::effects::SpellHitEvent>()
+            .add_message::<crate::abilities::effects::SpellReflectEvent>()
             .add_message::<zones::SpawnZoneEvent>()
             .add_message::<crate::abilities::reactive_triggers::CooldownReadyEvent>()
             .add_message::<HealEvent>()
@@ -114,6 +115,7 @@ impl Plugin for AbilitiesPlugin {
                     (
                         attack_triggers::attack_triggers,
                         crate::status::consume_attack_charges,
+                        crate::status::break_invisibility,
                         (tick_forced_movement, settle_grounded_units).chain(),
                         reactive_triggers::track_travel,
                         reactive_triggers::proximity_triggers,
@@ -731,6 +733,7 @@ mod tests {
             .add_message::<AbilityCastEvent>()
             .add_message::<AbilityTriggerEvent>()
             .add_message::<crate::abilities::effects::SpellHitEvent>()
+            .add_message::<crate::abilities::effects::SpellReflectEvent>()
             .add_message::<zones::SpawnZoneEvent>()
             .add_message::<crate::abilities::reactive_triggers::CooldownReadyEvent>()
             .add_message::<HealEvent>()
@@ -769,6 +772,7 @@ mod tests {
                     (
                         attack_triggers::attack_triggers,
                         crate::status::consume_attack_charges,
+                        crate::status::break_invisibility,
                         (tick_forced_movement, settle_grounded_units).chain(),
                         reactive_triggers::track_travel,
                         reactive_triggers::proximity_triggers,
@@ -2271,7 +2275,7 @@ mod tests {
         app.world_mut()
             .entity_mut(cycloned)
             .insert(crate::status::StatusEffects {
-                effects: vec![crate::status::StatusEffect::buff("cyclone", 5.0)],
+                effects: vec![crate::status::StatusEffect::cyclone(5.0, true)],
             });
 
         let spawned = cast_scream(&mut app, caster);
@@ -2485,6 +2489,7 @@ mod tests {
             rank: 1,
             cast_target: None,
             aim: Vec3::X * 200.0,
+            reflected: false,
         };
         app.world_mut()
             .write_message(hit(payload, Vec3::X * 200.0, None, vec![enemy]));
@@ -2500,6 +2505,7 @@ mod tests {
             rank: 1,
             cast_target: Some(primary),
             aim: Vec3::X * 200.0,
+            reflected: false,
         };
         app.world_mut()
             .write_message(hit(payload, Vec3::X * 200.0, Some(primary), Vec::new()));
@@ -3167,6 +3173,7 @@ mod tests {
                 rank: 1,
                 cast_target: None,
                 aim: Vec3::X,
+                reflected: false,
             };
             let primary = (trigger == AbilityTrigger::OnProjectileHit).then_some(victim);
             app.world_mut()
@@ -3930,6 +3937,7 @@ mod tests {
                 amount: 1.0,
                 reaction: false,
                 status: None,
+                reflected: false,
             }));
         step(&mut app);
         assert!((health(&app, near) - 910.0).abs() < 1e-3);
@@ -4021,6 +4029,7 @@ mod tests {
             rank: 1,
             cast_target: None,
             aim: Vec3::new(900.0, 0.0, 0.0),
+            reflected: false,
         };
         app.world_mut().write_message(hit(
             payload,
@@ -7993,6 +8002,577 @@ mod tests {
             )
     }
 
+    fn apply_status_ability(spec: StatusSpec, duration: f32) -> AbilityDefinition {
+        AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::Unit, RankValue::fixed(500.0), RankValue::ZERO)
+            .team(TargetTeam::Any)
+            .costs(RankValue::ZERO, RankValue::ZERO)
+            .timing(0.0, 0.0)
+            .on(
+                AbilityTrigger::OnCast,
+                EffectTarget::CastTarget,
+                AbilityEffect::ApplyStatus {
+                    status: spec,
+                    duration: RankValue::fixed(duration),
+                },
+            )
+    }
+
+    /// Casts `spec` from the Radiant caster on a unit of `team` and returns the status it left.
+    fn cast_status_on(spec: StatusSpec, team: Team) -> crate::status::StatusEffect {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(apply_status_ability(spec, 5.0));
+        let caster = spawn_caster(&mut app, KIT);
+        let target = spawn_unit(&mut app, team, Vec3::new(80.0, 0.0, 0.0));
+        request(&mut app, caster, 3, CastTarget::Unit(target));
+        for _ in 0..3 {
+            step(&mut app);
+        }
+        let id = match spec {
+            StatusSpec::Ethereal { .. } => "ethereal",
+            _ => "banish",
+        };
+        status_of(&app, target, id)
+            .unwrap_or_else(|| panic!("{id} applied to a {team:?} unit"))
+            .clone()
+    }
+
+    #[test]
+    fn ethereal_kind_follows_hostility() {
+        let ethereal = StatusSpec::Ethereal {
+            magic_amp_percent: RankValue::fixed(40.0),
+        };
+        assert!(ethereal.kind_follows_hostility() && StatusSpec::Banish.kind_follows_hostility());
+        assert!(!StatusSpec::Stun.kind_follows_hostility());
+        assert_eq!(
+            cast_status_on(ethereal, Team::Dire).kind,
+            crate::status::StatusKind::Debuff,
+            "on an enemy"
+        );
+        assert_eq!(
+            cast_status_on(ethereal, Team::Radiant).kind,
+            crate::status::StatusKind::Buff,
+            "on an ally"
+        );
+        assert_eq!(
+            cast_status_on(StatusSpec::Banish, Team::Dire).kind,
+            crate::status::StatusKind::Debuff
+        );
+        assert_eq!(
+            cast_status_on(StatusSpec::Banish, Team::Radiant).kind,
+            crate::status::StatusKind::Buff
+        );
+    }
+
+    #[test]
+    fn hostile_ethereal_is_blocked_by_debuff_immunity() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(apply_status_ability(
+                StatusSpec::Ethereal {
+                    magic_amp_percent: RankValue::fixed(40.0),
+                },
+                5.0,
+            ));
+        let caster = spawn_caster(&mut app, KIT);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        app.world_mut()
+            .get_mut::<StatusEffects>(target)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::debuff_immunity(10.0));
+        request(&mut app, caster, 3, CastTarget::Unit(target));
+        for _ in 0..3 {
+            step(&mut app);
+        }
+        assert!(status_of(&app, target, "ethereal").is_none());
+    }
+
+    #[test]
+    fn area_spell_still_hits_spell_immune_but_deals_no_magic() {
+        let mut app = test_app();
+        let caster = spawn_caster(&mut app, KIT);
+        let immune = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        let plain = spawn_unit(&mut app, Team::Dire, Vec3::new(-100.0, 0.0, 0.0));
+        app.world_mut()
+            .get_mut::<StatusEffects>(immune)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::spell_immunity(30.0));
+        request(&mut app, caster, 0, CastTarget::None);
+        let mut hits = Vec::new();
+        for _ in 0..10 {
+            step(&mut app);
+            hits.extend(current_messages::<DamageEvent>(&app));
+        }
+        assert!(
+            hits.iter().any(|e| e.target == immune),
+            "the area still reaches the spell immune unit"
+        );
+        let world = app.world();
+        assert_eq!(world.get::<Health>(immune).unwrap().current, 1000.0);
+        assert!(world.get::<Health>(plain).unwrap().current < 1000.0);
+    }
+
+    #[test]
+    fn unit_target_spell_cannot_pick_a_spell_immune_enemy() {
+        let mut app = test_app();
+        let caster = spawn_caster(&mut app, KIT);
+        let immune = spawn_unit(&mut app, Team::Dire, Vec3::new(50.0, 0.0, 0.0));
+        app.world_mut()
+            .get_mut::<StatusEffects>(immune)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::spell_immunity(30.0));
+        request(&mut app, caster, 1, CastTarget::Unit(immune));
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        let world = app.world();
+        assert!(world.get::<Activation>(caster).is_none());
+        assert!(world.get::<QueuedActivation>(caster).is_none());
+        assert_eq!(world.get::<Mana>(caster).unwrap().current, 1000.0);
+
+        // Without the immunity the same cast starts and is paid for.
+        app.world_mut()
+            .get_mut::<StatusEffects>(immune)
+            .unwrap()
+            .effects
+            .clear();
+        request(&mut app, caster, 1, CastTarget::Unit(immune));
+        for _ in 0..12 {
+            step(&mut app);
+        }
+        assert!(app.world().get::<Mana>(caster).unwrap().current < 1000.0);
+    }
+
+    #[test]
+    fn cannot_unit_target_concealed_enemy() {
+        let mut app = test_app();
+        let caster = spawn_caster(&mut app, KIT);
+        let hidden = spawn_unit(&mut app, Team::Dire, Vec3::new(50.0, 0.0, 0.0));
+        app.world_mut()
+            .get_mut::<StatusEffects>(hidden)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::invisibility(30.0, true));
+        request(&mut app, caster, 1, CastTarget::Unit(hidden));
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        assert!(app.world().get::<Activation>(caster).is_none());
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 1000.0);
+
+        // True sight makes it targetable again.
+        app.world_mut()
+            .get_mut::<StatusEffects>(hidden)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::reveal(30.0));
+        request(&mut app, caster, 1, CastTarget::Unit(hidden));
+        for _ in 0..12 {
+            step(&mut app);
+        }
+        assert!(app.world().get::<Mana>(caster).unwrap().current < 1000.0);
+    }
+
+    #[test]
+    fn area_damage_hits_invisible_unit() {
+        let mut app = test_app();
+        let caster = spawn_caster(&mut app, KIT);
+        let hidden = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        app.world_mut()
+            .get_mut::<StatusEffects>(hidden)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::invisibility(30.0, true));
+        request(&mut app, caster, 0, CastTarget::None);
+        for _ in 0..10 {
+            step(&mut app);
+        }
+        assert!(app.world().get::<Health>(hidden).unwrap().current < 1000.0);
+    }
+
+    #[test]
+    fn cast_by_invisible_caster_ends_invisibility() {
+        let mut app = test_app();
+        let caster = spawn_caster(&mut app, KIT);
+        app.world_mut()
+            .get_mut::<StatusEffects>(caster)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::invisibility(30.0, true));
+        let _enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        request(&mut app, caster, 0, CastTarget::None);
+        for _ in 0..10 {
+            step(&mut app);
+        }
+        assert!(status_of(&app, caster, "invisibility").is_none());
+    }
+
+    // --- Spell block and reflection ---
+
+    fn unit_spell(cooldown: f32) -> AbilityDefinition {
+        AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::Unit, RankValue::fixed(500.0), RankValue::ZERO)
+            .costs(RankValue::fixed(cooldown), RankValue::ZERO)
+            .timing(0.0, 0.0)
+            .on(
+                AbilityTrigger::OnCast,
+                EffectTarget::CastTarget,
+                AbilityEffect::ApplyStatus {
+                    status: StatusSpec::OwnedStun { id: "test_stun" },
+                    duration: RankValue::fixed(3.0),
+                },
+            )
+    }
+
+    fn give_status(app: &mut App, unit: Entity, effect: crate::status::StatusEffect) {
+        app.world_mut()
+            .get_mut::<StatusEffects>(unit)
+            .unwrap()
+            .effects
+            .push(effect);
+    }
+
+    fn cast_unit_spell(app: &mut App, caster: Entity, target: Entity, frames: usize) {
+        request(app, caster, 3, CastTarget::Unit(target));
+        for _ in 0..frames {
+            step(app);
+        }
+    }
+
+    #[test]
+    fn spell_block_negates_unit_target_and_is_consumed() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(unit_spell(0.0));
+        let caster = spawn_caster(&mut app, KIT);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        give_status(
+            &mut app,
+            target,
+            crate::status::StatusEffect::spell_block(30.0),
+        );
+        cast_unit_spell(&mut app, caster, target, 4);
+        assert!(status_of(&app, target, "test_stun").is_none(), "blocked");
+        assert!(status_of(&app, target, "spell_block").is_none(), "consumed");
+        cast_unit_spell(&mut app, caster, target, 4);
+        assert!(
+            status_of(&app, target, "test_stun").is_some(),
+            "second lands"
+        );
+    }
+
+    #[test]
+    fn spell_block_blocks_projectile_on_hit_not_on_launch() {
+        let mut app = test_app();
+        let def = AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::Unit, RankValue::fixed(500.0), RankValue::ZERO)
+            .costs(RankValue::ZERO, RankValue::ZERO)
+            .timing(0.0, 0.0)
+            .mechanic(AbilityMechanic::Projectile {
+                splash_radius: AreaRadius::Fixed(RankValue::fixed(0.0)),
+                speed: None,
+                skillshot: false,
+                first_hit: false,
+                end_radius: None,
+                origin_offset: None,
+            })
+            .on(
+                AbilityTrigger::OnProjectileHit,
+                EffectTarget::TriggerUnit,
+                AbilityEffect::ApplyStatus {
+                    status: StatusSpec::OwnedStun { id: "test_stun" },
+                    duration: RankValue::fixed(3.0),
+                },
+            );
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(def);
+        let caster = spawn_caster(&mut app, KIT);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        give_status(
+            &mut app,
+            target,
+            crate::status::StatusEffect::spell_block(30.0),
+        );
+        cast_unit_spell(&mut app, caster, target, 4);
+        assert!(
+            status_of(&app, target, "spell_block").is_some(),
+            "launching the projectile does not spend the block"
+        );
+        let payload = ProjectilePayload {
+            caster,
+            source: EffectSource::Ability(AbilityId::Bulwark),
+            rank: 1,
+            cast_target: Some(target),
+            aim: Vec3::X * 80.0,
+            reflected: false,
+        };
+        app.world_mut()
+            .write_message(hit(payload, Vec3::X * 80.0, Some(target), Vec::new()));
+        for _ in 0..3 {
+            step(&mut app);
+        }
+        assert!(
+            status_of(&app, target, "spell_block").is_none(),
+            "hit spends it"
+        );
+        assert!(status_of(&app, target, "test_stun").is_none(), "and blocks");
+    }
+
+    #[test]
+    fn two_spells_same_frame_only_first_blocked() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(unit_spell(0.0));
+        let caster = spawn_caster(&mut app, KIT);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        give_status(
+            &mut app,
+            target,
+            crate::status::StatusEffect::spell_block(30.0),
+        );
+        for _ in 0..2 {
+            app.world_mut().write_message(AbilityTriggerEvent(
+                TriggerContext::new(
+                    AbilityTrigger::OnCast,
+                    EffectSource::Ability(AbilityId::Bulwark),
+                    caster,
+                    Team::Radiant,
+                    1,
+                    Vec3::ZERO,
+                    Vec3::X * 80.0,
+                )
+                .cast_target(Some(target)),
+            ));
+        }
+        step(&mut app);
+        step(&mut app);
+        assert!(status_of(&app, target, "spell_block").is_none());
+        let stuns = app
+            .world()
+            .get::<StatusEffects>(target)
+            .unwrap()
+            .effects
+            .iter()
+            .filter(|e| e.id == "test_stun")
+            .count();
+        assert_eq!(stuns, 1, "the first spell was blocked, the second landed");
+    }
+
+    #[test]
+    fn spell_block_ignores_aoe_and_ally_casts() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(apply_status_ability(
+                StatusSpec::OwnedStun { id: "test_stun" },
+                3.0,
+            ));
+        let caster = spawn_caster(&mut app, KIT);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(-100.0, 0.0, 0.0));
+        for unit in [enemy, ally] {
+            give_status(
+                &mut app,
+                unit,
+                crate::status::StatusEffect::spell_block(30.0),
+            );
+        }
+        // Area (Shockwave, slot 0) hits the blocked enemy and leaves the block alone.
+        request(&mut app, caster, 0, CastTarget::None);
+        for _ in 0..10 {
+            step(&mut app);
+        }
+        assert!(health(&app, enemy) < 1000.0, "area damage lands");
+        assert!(status_of(&app, enemy, "spell_block").is_some());
+        // A unit spell on an ally is not hostile: it lands and the block stays.
+        cast_unit_spell(&mut app, caster, ally, 4);
+        assert!(status_of(&app, ally, "test_stun").is_some());
+        assert!(status_of(&app, ally, "spell_block").is_some());
+    }
+
+    #[test]
+    fn reflect_recasts_on_original_caster_once() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(unit_spell(0.0));
+        let caster = spawn_caster(&mut app, KIT);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        give_status(
+            &mut app,
+            target,
+            crate::status::StatusEffect::spell_reflect(30.0),
+        );
+        let mut reflects = 0;
+        request(&mut app, caster, 3, CastTarget::Unit(target));
+        for _ in 0..8 {
+            step(&mut app);
+            reflects +=
+                current_messages::<crate::abilities::effects::SpellReflectEvent>(&app).len();
+        }
+        assert_eq!(reflects, 1);
+        assert!(
+            status_of(&app, target, "test_stun").is_some(),
+            "Lotus style: the original still lands"
+        );
+        assert!(
+            status_of(&app, caster, "test_stun").is_some(),
+            "and it is recast on the original caster"
+        );
+        assert!(
+            status_of(&app, target, "spell_reflect").is_some(),
+            "not consumed"
+        );
+    }
+
+    #[test]
+    fn two_reflectors_do_not_ping_pong() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(unit_spell(0.0));
+        let caster = spawn_caster(&mut app, KIT);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        for unit in [caster, target] {
+            give_status(
+                &mut app,
+                unit,
+                crate::status::StatusEffect::spell_reflect(30.0),
+            );
+        }
+        let mut reflects = 0;
+        request(&mut app, caster, 3, CastTarget::Unit(target));
+        for _ in 0..20 {
+            step(&mut app);
+            reflects +=
+                current_messages::<crate::abilities::effects::SpellReflectEvent>(&app).len();
+        }
+        assert_eq!(reflects, 1, "the reflected cast is not reflected again");
+        assert!(status_of(&app, caster, "test_stun").is_some());
+    }
+
+    #[test]
+    fn reflected_cast_fires_no_cast_triggers_or_cooldown() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(unit_spell(8.0));
+        let caster = spawn_caster(&mut app, KIT);
+        let reflector = spawn_caster(&mut app, KIT);
+        app.world_mut()
+            .entity_mut(reflector)
+            .insert((Team::Dire, Transform::from_xyz(80.0, 0.0, 0.0)));
+        give_status(
+            &mut app,
+            reflector,
+            crate::status::StatusEffect::spell_reflect(30.0),
+        );
+        let mut casts = 0;
+        request(&mut app, caster, 3, CastTarget::Unit(reflector));
+        for _ in 0..8 {
+            step(&mut app);
+            casts += current_messages::<AbilityCastEvent>(&app).len();
+        }
+        assert_eq!(
+            casts, 1,
+            "only the original cast; the reflection is no cast"
+        );
+        assert!(
+            status_of(&app, caster, "test_stun").is_some(),
+            "it was reflected"
+        );
+        let slot = &app.world().get::<AbilityLoadout>(reflector).unwrap().slots[3];
+        assert_eq!(
+            slot.cooldown.remaining, 0.0,
+            "the reflector pays no cooldown"
+        );
+        let slot = &app.world().get::<AbilityLoadout>(caster).unwrap().slots[3];
+        assert!(slot.cooldown.remaining > 0.0, "the caster does");
+    }
+
+    #[test]
+    fn item_and_ability_sources_both_blockable() {
+        // Ability.
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(unit_spell(0.0));
+        let caster = spawn_caster(&mut app, KIT);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        give_status(
+            &mut app,
+            target,
+            crate::status::StatusEffect::spell_block(30.0),
+        );
+        cast_unit_spell(&mut app, caster, target, 4);
+        assert!(status_of(&app, target, "spell_block").is_none());
+        assert!(status_of(&app, target, "test_stun").is_none());
+
+        // Item with a unit-target active.
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([parity_damage_item(100.0)]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        give_status(
+            &mut app,
+            target,
+            crate::status::StatusEffect::spell_block(30.0),
+        );
+        request_item(&mut app, caster, 0, CastTarget::Unit(target));
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        assert_eq!(health(&app, target), 1000.0, "the item spell was blocked");
+        assert!(
+            status_of(&app, target, "spell_block").is_none(),
+            "and spent the block"
+        );
+    }
+
+    #[test]
+    fn reflected_item_spell_hits_original_caster_once_with_no_cooldown() {
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([parity_damage_item(100.0)]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        give_status(
+            &mut app,
+            target,
+            crate::status::StatusEffect::spell_reflect(30.0),
+        );
+        // A reflector on both sides: the recast must not bounce back.
+        give_status(
+            &mut app,
+            caster,
+            crate::status::StatusEffect::spell_reflect(30.0),
+        );
+        let before = health(&app, caster);
+        let mut reflects = 0;
+        request_item(&mut app, caster, 0, CastTarget::Unit(target));
+        for _ in 0..12 {
+            step(&mut app);
+            reflects +=
+                current_messages::<crate::abilities::effects::SpellReflectEvent>(&app).len();
+        }
+        assert_eq!(reflects, 1, "reflected once, never ping-pongs");
+        assert!(health(&app, target) < 1000.0, "the original still lands");
+        assert!(
+            health(&app, caster) < before,
+            "the reflected item spell hits the original caster"
+        );
+    }
+
     #[test]
     fn mini_stun_spares_a_longer_foreign_stun() {
         let mut app = test_app();
@@ -8046,7 +8626,6 @@ mod tests {
             definition::StatusBuildContext {
                 move_speed: 0.0,
                 agility: 0.0,
-                fear_source: None,
                 source: None,
                 point: Vec3::ZERO,
                 base_attack_damage: 0.0,
@@ -8068,6 +8647,49 @@ mod tests {
             ends,
             vec![false],
             "the channel was interrupted, not completed"
+        );
+    }
+
+    /// A stun that expires within the frame it lands in is still seen by the interrupt
+    /// checks, because production orders `tick_status_effects` after `tick_activations`.
+    #[test]
+    fn sub_frame_stun_still_interrupts_channel() {
+        let mut app = test_app();
+        // Mirror the production ordering: the status ticker runs after the activation tick.
+        app.add_systems(
+            Update,
+            crate::status::tick_status_effects
+                .after(tick_activations)
+                .before(reactive_triggers::status_triggers),
+        );
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(channelled_heal());
+        let channeller = spawn_caster(&mut app, KIT);
+        request(&mut app, channeller, 3, CastTarget::None);
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        // Shorter than one 0.05s frame: it is gone after this frame's status tick.
+        app.world_mut()
+            .get_mut::<StatusEffects>(channeller)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::stunned(0.01));
+        step(&mut app);
+        let ends: Vec<_> = app
+            .world()
+            .resource::<Messages<ActionChannelEndEvent>>()
+            .iter_current_update_messages()
+            .map(|e| e.completed)
+            .collect();
+        assert_eq!(ends, vec![false], "interrupted despite the stun expiring");
+        assert!(
+            !app.world()
+                .get::<StatusEffects>(channeller)
+                .unwrap()
+                .is_stunned(),
+            "the stun has expired"
         );
     }
 
@@ -9653,5 +10275,135 @@ mod tests {
             2,
             "a hit without a normal release spends nothing"
         );
+    }
+
+    // --- Break: ability passives off, items untouched ---
+
+    const PASSIVE_KIT: [AbilityId; 4] = [
+        AbilityId::StoneSkin,
+        AbilityId::Dash,
+        AbilityId::Bolt,
+        AbilityId::Nova,
+    ];
+
+    fn passive_def(entries: Vec<AbilityEffectEntry>) -> AbilityDefinition {
+        let mut def = AbilityDefinition::new(AbilityId::StoneSkin)
+            .behavior(definition::AbilityBehavior::Passive);
+        def.effects = entries;
+        def
+    }
+
+    fn set_broken(app: &mut App, unit: Entity, broken: bool) {
+        let mut statuses = app.world_mut().get_mut::<StatusEffects>(unit).unwrap();
+        statuses.effects.retain(|e| e.id != "break");
+        if broken {
+            statuses
+                .effects
+                .push(crate::status::StatusEffect::broken(60.0));
+        }
+    }
+
+    #[test]
+    fn break_suppresses_on_attack_hit_passive() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(passive_def(vec![entry(
+                AbilityTrigger::OnAttackHit,
+                EffectTarget::TriggerUnit,
+                fixed_magical_damage(100.0),
+            )]));
+        let caster = spawn_caster(&mut app, PASSIVE_KIT);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+
+        write_attack_hit(&mut app, caster, target);
+        step(&mut app);
+        assert_eq!(health(&app, target), 900.0, "the passive procs normally");
+
+        set_broken(&mut app, caster, true);
+        write_attack_hit(&mut app, caster, target);
+        step(&mut app);
+        assert_eq!(health(&app, target), 900.0, "broken: no proc");
+
+        set_broken(&mut app, caster, false);
+        write_attack_hit(&mut app, caster, target);
+        step(&mut app);
+        assert_eq!(
+            health(&app, target),
+            800.0,
+            "procs again once the break ends"
+        );
+    }
+
+    #[test]
+    fn break_does_not_suppress_active_abilities_or_cast_phase_effects() {
+        let mut app = test_app();
+        // An active ability that also reacts to attack hits is not a passive.
+        app.world_mut().resource_mut::<AbilityDefinitions>().insert(
+            AbilityDefinition::new(AbilityId::StoneSkin)
+                .behavior(definition::AbilityBehavior::Active)
+                .on(
+                    AbilityTrigger::OnAttackHit,
+                    EffectTarget::TriggerUnit,
+                    fixed_magical_damage(100.0),
+                ),
+        );
+        let caster = spawn_caster(&mut app, PASSIVE_KIT);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        set_broken(&mut app, caster, true);
+        write_attack_hit(&mut app, caster, target);
+        step(&mut app);
+        assert_eq!(health(&app, target), 900.0);
+    }
+
+    #[test]
+    fn break_drops_while_condition_status() {
+        use definition::Condition;
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(passive_def(vec![while_entry(
+                Condition::HealthBelow { percent: 50 },
+                "berserk",
+            )]));
+        let caster = spawn_caster(&mut app, PASSIVE_KIT);
+        let base = armor(&app, caster);
+        set_health(&mut app, caster, 100.0);
+        step(&mut app);
+        assert!(has_status(&app, caster, "berserk"));
+        assert_eq!(armor(&app, caster), base + 10.0);
+
+        set_broken(&mut app, caster, true);
+        step(&mut app);
+        assert!(!has_status(&app, caster, "berserk"), "held status dropped");
+        assert_eq!(armor(&app, caster), base, "and its stat reverted");
+
+        set_broken(&mut app, caster, false);
+        step(&mut app);
+        assert!(has_status(&app, caster, "berserk"), "restored after break");
+        assert_eq!(armor(&app, caster), base + 10.0);
+    }
+
+    #[test]
+    fn break_does_not_affect_item_passives() {
+        use definition::Condition;
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            while_entry(Condition::HealthBelow { percent: 50 }, "berserk"),
+            entry(
+                AbilityTrigger::OnAttackHit,
+                EffectTarget::TriggerUnit,
+                fixed_magical_damage(100.0),
+            ),
+        ])]);
+        let unit = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        set_broken(&mut app, unit, true);
+        set_health(&mut app, unit, 100.0);
+        write_attack_hit(&mut app, unit, target);
+        step(&mut app);
+        step(&mut app);
+        assert!(has_status(&app, unit, "berserk"), "item bonus still held");
+        assert_eq!(health(&app, target), 900.0, "item proc still fires");
     }
 }

@@ -21,7 +21,7 @@ use crate::navigation::{
     DynamicBlocker, MobileFilter, NavGrid, NavPath, NavSteering, flat, ground, plan_paths,
     sync_nav_grid,
 };
-use crate::status::{LeashAnchor, StatusEffects};
+use crate::status::{Compulsion, LeashAnchor, StatusEffects};
 
 /// Ordering of the simulation's order → AI → navigation/locomotion stages.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
@@ -38,8 +38,21 @@ pub enum SimSet {
 const ARRIVE_DIST: f32 = 6.0;
 /// Consecutive stuck windows before a unit near its goal accepts where it is.
 const GIVE_UP_STUCK: u32 = 4;
+/// How far from itself a fleeing unit aims its `MoveTarget` (it never arrives).
+pub const FLEE_DISTANCE: f32 = 900.0;
+/// A hypnotized unit stops once the gap between the two bodies is this small.
+const CONTACT_SLACK: f32 = 10.0;
 /// How far ahead stationary units are considered by avoidance (plus radii).
 const AVOID_LOOKAHEAD: f32 = 140.0;
+
+/// Unit direction a fleeing unit at `pos` runs in: straight away from `source`; with no
+/// usable source (despawned, or on top of it) it keeps its current heading `forward`.
+pub fn flee_direction(pos: Vec2, source: Option<Vec2>, forward: Vec2) -> Vec2 {
+    source
+        .map(|other| (pos - other).normalize_or_zero())
+        .filter(|d| d.length_squared() > 1e-6)
+        .unwrap_or_else(|| forward.normalize_or(Vec2::X))
+}
 
 pub struct MovementPlugin;
 
@@ -137,24 +150,22 @@ pub fn apply_move_targets(
             ObstacleShape::Circle { .. } => None,
         })
         .collect();
-    let mut fear_origin: HashMap<Entity, Vec2> = HashMap::new();
-    let snaps: Vec<UnitSnap> = units
-        .p1()
-        .iter()
-        .filter(|(_, _, c, statuses, _, forced)| {
-            // Forced movers phase through units while they travel.
-            c.0 > 0.0 && !forced && !statuses.is_some_and(|s| s.is_phased())
-        })
-        .map(|(entity, tf, c, _, moving, _)| {
-            fear_origin.insert(entity, flat(tf.translation));
-            UnitSnap {
+    // Where every unit is, phased or forced ones included: compulsions steer by the source's
+    // real position, not by whether it takes part in avoidance.
+    let mut unit_info: HashMap<Entity, (Vec2, f32)> = HashMap::new();
+    let mut snaps: Vec<UnitSnap> = Vec::new();
+    for (entity, tf, c, statuses, moving, forced) in units.p1().iter() {
+        unit_info.insert(entity, (flat(tf.translation), c.0));
+        // Forced movers phase through units while they travel.
+        if c.0 > 0.0 && !forced && !statuses.is_some_and(|s| s.is_phased()) {
+            snaps.push(UnitSnap {
                 entity,
                 pos: flat(tf.translation),
                 radius: c.0,
                 stationary: !moving,
-            }
-        })
-        .collect();
+            });
+        }
+    }
 
     for (entity, mut transform, stats, target, radius, statuses, mut path, mut steering) in
         &mut units.p0()
@@ -172,25 +183,30 @@ pub fn apply_move_targets(
         let pos = flat(transform.translation);
         let step = move_speed * dt;
 
-        // Fear: each frame steer toward a point away from the source (`MoveTarget`-like order).
-        let fear_waypoint = if statuses.is_some_and(|s| s.is_feared()) {
-            let flee_dir = statuses
-                .and_then(|s| s.fear_flee_source())
-                .and_then(|src| fear_origin.get(&src).copied())
-                .map(|other| (pos - other).normalize_or_zero())
-                .filter(|d| d.length_squared() > 1e-6)
-                .unwrap_or_else(|| {
-                    let flat_fwd = flat(*transform.forward());
-                    -flat_fwd.normalize_or(Vec2::X)
-                });
-            Some(ground(pos + flee_dir.normalize() * 900.0))
-        } else {
-            None
+        // Compulsion (fear, hypnosis): each frame steer by the source's live position instead of
+        // the planned path. `enforce_compulsions` keeps a `MoveTarget` on the unit.
+        let compelled_waypoint = match statuses.and_then(|s| s.compulsion()) {
+            Some(Compulsion::Flee { from }) => {
+                let source = from.and_then(|e| unit_info.get(&e)).map(|(p, _)| *p);
+                let dir = flee_direction(pos, source, flat(*transform.forward()));
+                Some(ground(pos + dir * FLEE_DISTANCE))
+            }
+            Some(Compulsion::Approach { toward }) => match unit_info.get(&toward) {
+                Some(&(source_pos, source_r)) => {
+                    if pos.distance(source_pos) <= unit_r + source_r + CONTACT_SLACK {
+                        // In contact: stay put (the order is kept, the compulsion stays on).
+                        continue;
+                    }
+                    Some(ground(source_pos))
+                }
+                None => None,
+            },
+            _ => None,
         };
-        let feared = fear_waypoint.is_some();
+        let compelled = compelled_waypoint.is_some();
 
         // Steer at the current waypoint; without a plan yet, head straight for the order.
-        let (waypoint, is_final) = if let Some(wp) = fear_waypoint {
+        let (waypoint, is_final) = if let Some(wp) = compelled_waypoint {
             // Keep `is_final` false so proximity to the flee point doesn't drop `MoveTarget`.
             (wp, false)
         } else {
@@ -229,7 +245,7 @@ pub fn apply_move_targets(
         let waypoint = flat(waypoint);
         let to_waypoint = waypoint - pos;
         let distance = to_waypoint.length();
-        if !feared && is_final && distance < 4.0 {
+        if !compelled && is_final && distance < 4.0 {
             commands.entity(entity).remove::<MoveTarget>();
             continue;
         }
@@ -294,7 +310,7 @@ pub fn apply_move_targets(
         next3 = separate_from_circles(next3, unit_r, circles);
         next3 = separate_from_aabbs(next3, unit_r, aabbs);
 
-        let goal = if feared {
+        let goal = if compelled {
             target.position
         } else {
             path.as_deref().map_or(target.position, |p| p.goal)
@@ -319,7 +335,7 @@ pub fn apply_move_targets(
             }
         }
 
-        if !feared
+        if !compelled
             && is_final
             && flat_distance(transform.translation, ground(waypoint)) < ARRIVE_DIST
         {

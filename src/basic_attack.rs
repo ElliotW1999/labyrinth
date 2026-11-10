@@ -27,7 +27,7 @@ use crate::dimensions::{area_contains, bounds_of, edge_distance, within_range};
 use crate::facing::turn_toward;
 use crate::resources::SharedAssets;
 use crate::scale;
-use crate::status::{StatusEffects, is_untargetable};
+use crate::status::{Compulsion, StatusEffects, TargetIntent, is_targetable, is_untargetable};
 
 /// Melee hits forgive a target stepping slightly away during the windup.
 /// Upper bound (seconds) for a hero's attack point and attack backswing.
@@ -157,7 +157,9 @@ pub fn request_basic_attacks(
     let dt = time.delta_secs();
     let target_snapshots: Vec<_> = targets
         .iter()
-        .filter(|(e, _, _, hp, _)| hp.is_alive() && !is_untargetable(&statuses_of, *e))
+        .filter(|(e, _, _, hp, _)| {
+            hp.is_alive() && is_targetable(&statuses_of, *e, TargetIntent::Attack)
+        })
         .map(|(e, t, team, _, radius)| (e, t.translation(), *team, bounds_of(radius)))
         .collect();
 
@@ -189,19 +191,25 @@ pub fn request_basic_attacks(
 
         let origin = transform.translation;
         let self_bound = bounds_of(attacker_bound);
-        let chosen = current_target
-            .and_then(|AttackTarget(id)| {
+        // Taunted: the taunter is the only possible target, whatever else is ordered or near.
+        let taunter = match statuses.and_then(|s| s.compulsion()) {
+            Some(Compulsion::Attack { target }) => Some(target),
+            _ => None,
+        };
+        let chosen = taunter
+            .or(current_target.map(|AttackTarget(id)| *id))
+            .and_then(|id| {
                 target_snapshots
                     .iter()
                     .find(|(e, pos, target_team, radius)| {
-                        *e == *id
+                        *e == id
                             && *target_team == team.enemy()
                             && within_range(origin, self_bound, *pos, *radius, stats.attack_range)
                     })
                     .copied()
             })
             .or_else(|| {
-                if is_player {
+                if is_player || taunter.is_some() {
                     return None;
                 }
                 target_snapshots
@@ -340,7 +348,7 @@ pub fn release_extra_attacks(
         let target_ok = targets.get(request.target).is_ok_and(|(target_team, hp)| {
             *target_team == team.enemy()
                 && hp.is_alive()
-                && !is_untargetable(&statuses_of, request.target)
+                && is_targetable(&statuses_of, request.target, TargetIntent::Attack)
         });
         if !target_ok {
             continue;
@@ -376,7 +384,7 @@ pub fn resolve_attack_releases(
             .filter(|(_, target_team, health, _)| {
                 **target_team == team.enemy()
                     && health.is_alive()
-                    && !is_untargetable(&statuses_of, release.target)
+                    && is_targetable(&statuses_of, release.target, TargetIntent::Attack)
             });
 
         if stats.is_melee() {
@@ -487,7 +495,7 @@ pub fn advance_attacks_in_flight(
             let target_origin = tf.translation();
             let vertical = (attack.position.y - aim_point(target_origin).y).abs();
             health.is_alive()
-                && !is_untargetable(&statuses_of, attack.target)
+                && is_targetable(&statuses_of, attack.target, TargetIntent::Attack)
                 && vertical < scale::body(2.5)
                 && area_contains(
                     attack.position,
@@ -569,7 +577,7 @@ pub fn resolve_basic_attack_impacts(
         };
         if *team != impact.attacker_team.enemy()
             || !health.is_alive()
-            || defender_status.is_some_and(|s| s.is_untargetable())
+            || defender_status.is_some_and(|s| s.rejects(TargetIntent::Attack))
         {
             continue;
         }
@@ -1106,6 +1114,75 @@ mod tests {
             step(&mut world, &mut schedule);
         }
         assert!(hp(&world, target) < 1000.0);
+    }
+
+    #[test]
+    fn attack_immune_target_not_acquired_and_swing_cancelled() {
+        let (mut world, mut schedule) = world_with_pipeline();
+        let target_pos = Vec3::new(100.0, 0.0, 0.0);
+        let target = spawn_unit(&mut world, Team::Dire, target_pos, passive_stats());
+        world.entity_mut(target).insert(StatusEffects {
+            effects: vec![crate::status::StatusEffect::attack_immunity(30.0)],
+        });
+        // An ordered attack, and a seeker that would auto-acquire the nearest enemy.
+        let ordered = spawn_attacker(&mut world, scale::MELEE_ATTACK_RANGE, target, target_pos);
+        let seeker = spawn_unit(
+            &mut world,
+            Team::Radiant,
+            Vec3::new(0.0, 0.0, 40.0),
+            CombatStats::simple(50.0, scale::MELEE_ATTACK_RANGE, 1.0, 0.0, 0.0, 300.0),
+        );
+        run_frames(&mut world, &mut schedule, 20);
+        assert_eq!(hp(&world, target), 1000.0, "attacks cannot target it");
+        assert!(world.get::<AttackSwing>(ordered).is_none());
+        assert!(world.get::<AttackSwing>(seeker).is_none());
+
+        // Immunity gained mid-swing: the release finds no valid target and deals nothing.
+        world
+            .get_mut::<StatusEffects>(target)
+            .unwrap()
+            .effects
+            .clear();
+        world.entity_mut(ordered).insert(AttackTarget(target));
+        for _ in 0..10 {
+            step(&mut world, &mut schedule);
+            if world.get::<AttackSwing>(ordered).is_some() {
+                break;
+            }
+        }
+        assert!(
+            world.get::<AttackSwing>(ordered).is_some(),
+            "a swing is under way"
+        );
+        world.entity_mut(target).insert(StatusEffects {
+            effects: vec![crate::status::StatusEffect::attack_immunity(30.0)],
+        });
+        run_frames(&mut world, &mut schedule, 20);
+        assert_eq!(hp(&world, target), 1000.0, "the swing was cancelled");
+
+        // Once it ends the same attackers connect again.
+        world
+            .get_mut::<StatusEffects>(target)
+            .unwrap()
+            .effects
+            .clear();
+        world.entity_mut(ordered).insert(AttackTarget(target));
+        // The cooldown tick is not part of this schedule: the cancelled swing armed it.
+        world.get_mut::<AttackCooldown>(ordered).unwrap().0 = 0.0;
+        run_frames(&mut world, &mut schedule, 20);
+        assert!(hp(&world, target) < 1000.0);
+    }
+
+    #[test]
+    fn ethereal_attacker_cannot_attack() {
+        let (mut world, mut schedule) = world_with_pipeline();
+        let (attacker, target) = melee_duel(&mut world);
+        world.entity_mut(attacker).insert(StatusEffects {
+            effects: vec![crate::status::StatusEffect::ethereal(30.0, 40.0, false)],
+        });
+        run_frames(&mut world, &mut schedule, 20);
+        assert_eq!(hp(&world, target), 1000.0, "ethereal units are disarmed");
+        assert!(world.get::<AttackSwing>(attacker).is_none());
     }
 
     fn run_frames(world: &mut World, schedule: &mut Schedule, frames: usize) {

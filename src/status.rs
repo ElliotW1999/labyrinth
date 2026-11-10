@@ -18,9 +18,101 @@ impl Plugin for StatusPlugin {
                 Update,
                 tick_status_effects
                     .before(crate::combat::apply_damage_events)
-                    .before(crate::vitals::sync_status_resource_caps),
+                    .before(crate::vitals::sync_status_resource_caps)
+                    // Interrupt checks must see a stun before it expires: a stun shorter than
+                    // one frame still cancels a channel, cast point or attack swing.
+                    .after(crate::actions::tick_activations)
+                    .after(crate::basic_attack::tick_attack_swings),
             );
     }
+}
+
+/// Which kinds of action a unit is blocked from, as a small bit set. Derived from status flags
+/// by [`StatusEffect::blocks`] / [`StatusEffects::blocks`]; every "can this unit act" check
+/// reads it, so the disable matrix lives in one place.
+///
+/// | flag | MOVE | ATTACK | CAST | ITEMS | ORDERS | PASSIVES |
+/// |---|---|---|---|---|---|---|
+/// | stunned, asleep | x | x | x | x | | |
+/// | rooted | x | | | | | |
+/// | silenced | | | x | | | |
+/// | muted | | | | x | | |
+/// | disarmed | | x | | | | |
+/// | breaks_passives | | | | | | x |
+/// | compulsion Flee / Approach | | x | x | x | x | |
+/// | compulsion Attack (taunt) | | | x | x | x | |
+///
+/// `ORDERS` drops player and AI orders; `PASSIVES` suppresses ability passives.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ActionBlocks(u8);
+
+#[allow(dead_code)]
+impl ActionBlocks {
+    pub const NONE: Self = Self(0);
+    pub const MOVE: Self = Self(1);
+    pub const ATTACK: Self = Self(1 << 1);
+    pub const CAST: Self = Self(1 << 2);
+    pub const ITEMS: Self = Self(1 << 3);
+    /// Player and AI orders are dropped (compulsions).
+    pub const ORDERS: Self = Self(1 << 4);
+    /// Ability passives are suppressed (break). Item passives are not (see D2 of the plan).
+    pub const PASSIVES: Self = Self(1 << 5);
+
+    /// Whether every bit of `other` is set.
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+}
+
+/// Which damage types a status makes its holder immune to, as a small bit set.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DamageTypeMask(u8);
+
+#[allow(dead_code)]
+impl DamageTypeMask {
+    pub const NONE: Self = Self(0);
+    pub const PHYSICAL: Self = Self(1);
+    pub const MAGICAL: Self = Self(1 << 1);
+    pub const PURE: Self = Self(1 << 2);
+    pub const ALL: Self = Self(0b111);
+
+    /// Whether every bit of `other` is set.
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// The single-bit mask of one damage type.
+    pub const fn of(damage_type: DamageType) -> Self {
+        match damage_type {
+            DamageType::Physical => Self::PHYSICAL,
+            DamageType::Magical => Self::MAGICAL,
+            DamageType::Pure => Self::PURE,
+        }
+    }
+}
+
+/// Why a unit is being picked as a target; each intent rejects a different set of statuses
+/// (see [`StatusEffects::rejects`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetIntent {
+    /// Any unit pick or area membership test: only `untargetable` units are skipped.
+    Any,
+    /// A basic attack (including auto-acquisition): also skips attack-immune units.
+    Attack,
+    /// A hostile unit-target spell: also skips spell-immune units.
+    HostileSpell,
 }
 
 /// Generic buff / debuff container on heroes (and potentially other units later).
@@ -72,6 +164,19 @@ pub enum LeashAnchor {
 pub struct Leash {
     pub anchor: LeashAnchor,
     pub radius: f32,
+}
+
+/// What a status forces its holder to do, enforced by `ai::enforce_compulsions` (the only
+/// order writer for compelled units) and `movement::apply_move_targets`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Compulsion {
+    /// Run away from `from` (fear). With no source (or a despawned one) the unit runs straight
+    /// ahead along its facing.
+    Flee { from: Option<Entity> },
+    /// Walk to `toward` and stop at contact (hypnosis).
+    Approach { toward: Entity },
+    /// Basic attack only `target` (taunt).
+    Attack { target: Entity },
 }
 
 #[derive(Debug, Clone)]
@@ -154,7 +259,27 @@ pub struct StatusEffect {
     pub dot_source: Option<Entity>,
     /// Added to [`ShieldPool`] on apply; removed on expire.
     pub shield_amount: f32,
-    pub damage_immune: bool,
+    /// Damage types the holder takes no damage from while active.
+    pub immune_damage: DamageTypeMask,
+    /// Nobody else may pick the holder as a unit target and area effects skip it.
+    pub untargetable: bool,
+    /// Basic attacks cannot target the holder ([`TargetIntent::Attack`]).
+    pub attack_immune: bool,
+    /// Hostile unit-target spells cannot target the holder ([`TargetIntent::HostileSpell`]).
+    pub spell_immune: bool,
+    /// Drawn for nobody (banished out of the world), whatever the vision.
+    pub hidden: bool,
+    /// Concealed from enemies (no attack or hostile spell may pick the holder, and fog hides it
+    /// even inside vision) unless some live [`StatusEffect::revealed`] is present.
+    pub invisible: bool,
+    /// True sight: while any live effect has this set, the holder's invisibility is void.
+    pub revealed: bool,
+    /// With `invisible`: the status is removed when the holder attacks or fires an action.
+    pub invis_breaks_on_action: bool,
+    /// Negates the next hostile unit-target spell that lands on the holder, then is consumed.
+    pub spell_block: bool,
+    /// Reflects hostile unit-target spells back at their caster (the original still lands).
+    pub spell_reflect: bool,
     /// When true, skip collision with creeps and heroes (buildings/trees still block).
     pub ignore_unit_collision: bool,
     /// When true, this unit claims more separation against overlapping creeps/heroes.
@@ -167,12 +292,16 @@ pub struct StatusEffect {
     pub asleep: bool,
     pub invulnerable: bool,
     pub debuff_immune: bool,
+    /// Ability passives (stats and triggers) are suppressed while active (break, hex).
+    pub breaks_passives: bool,
+    /// Caps the holder's walking speed (`0` = no cap). The lowest live cap applies.
+    pub move_speed_cap: f32,
     /// Ignores trees and other ground obstacles while moving (buildings still block).
     pub flying: bool,
     /// Confines the unit to a circle (region restriction or tether).
     pub leash: Option<Leash>,
-    /// Forced retreat from this entity while feared (`None` if source despawned).
-    pub fear_source: Option<Entity>,
+    /// Forced behaviour (fear, taunt, hypnosis) enforced by `ai::enforce_compulsions`.
+    pub compulsion: Option<Compulsion>,
     /// Applied by a reaction or held by a condition: expires and is removed silently (it
     /// never fires status triggers).
     pub reactive: bool,
@@ -192,6 +321,50 @@ impl StatusEffect {
             Some(source) => crate::components::CleaveSource::Effect(source),
             None => crate::components::CleaveSource::Status(self.id),
         }
+    }
+
+    /// What this single status blocks, ignoring its duration.
+    pub fn blocks(&self) -> ActionBlocks {
+        let mut blocks = ActionBlocks::NONE;
+        if self.stunned || self.asleep {
+            blocks = blocks
+                .union(ActionBlocks::MOVE)
+                .union(ActionBlocks::ATTACK)
+                .union(ActionBlocks::CAST)
+                .union(ActionBlocks::ITEMS);
+        }
+        if self.rooted {
+            blocks = blocks.union(ActionBlocks::MOVE);
+        }
+        if self.silenced {
+            blocks = blocks.union(ActionBlocks::CAST);
+        }
+        if self.muted {
+            blocks = blocks.union(ActionBlocks::ITEMS);
+        }
+        if self.disarmed {
+            blocks = blocks.union(ActionBlocks::ATTACK);
+        }
+        if self.breaks_passives {
+            blocks = blocks.union(ActionBlocks::PASSIVES);
+        }
+        match self.compulsion {
+            Some(Compulsion::Flee { .. } | Compulsion::Approach { .. }) => {
+                blocks = blocks
+                    .union(ActionBlocks::ATTACK)
+                    .union(ActionBlocks::CAST)
+                    .union(ActionBlocks::ITEMS)
+                    .union(ActionBlocks::ORDERS);
+            }
+            Some(Compulsion::Attack { .. }) => {
+                blocks = blocks
+                    .union(ActionBlocks::CAST)
+                    .union(ActionBlocks::ITEMS)
+                    .union(ActionBlocks::ORDERS);
+            }
+            None => {}
+        }
+        blocks
     }
 
     pub fn buff(id: &'static str, duration: f32) -> Self {
@@ -236,7 +409,16 @@ impl StatusEffect {
             dot_damage_type: DamageType::Magical,
             dot_source: None,
             shield_amount: 0.0,
-            damage_immune: false,
+            immune_damage: DamageTypeMask::NONE,
+            untargetable: false,
+            attack_immune: false,
+            spell_immune: false,
+            hidden: false,
+            invisible: false,
+            revealed: false,
+            invis_breaks_on_action: false,
+            spell_block: false,
+            spell_reflect: false,
             ignore_unit_collision: false,
             force_unit_push: false,
             silenced: false,
@@ -247,9 +429,11 @@ impl StatusEffect {
             asleep: false,
             invulnerable: false,
             debuff_immune: false,
+            breaks_passives: false,
+            move_speed_cap: 0.0,
             flying: false,
             leash: None,
-            fear_source: None,
+            compulsion: None,
             reactive: false,
         }
     }
@@ -449,12 +633,77 @@ impl StatusEffect {
         }
     }
 
+    /// Blocks new debuffs and purges existing ones on application. Not a spell immunity:
+    /// magic damage and hostile spells still land (see [`Self::spell_immunity`]).
     pub fn debuff_immunity(duration: f32) -> Self {
         Self {
             debuff_immune: true,
             dispel_type: DispelType::None,
             undispellable: true,
-            ..Self::buff("spell_immunity", duration)
+            ..Self::buff("debuff_immunity", duration)
+        }
+    }
+
+    /// Debuff immunity plus: hostile unit-target spells cannot pick the holder and magical
+    /// damage is ignored. Area spells still reach it but deal no magic damage.
+    pub fn spell_immunity(duration: f32) -> Self {
+        Self {
+            id: "spell_immunity",
+            spell_immune: true,
+            immune_damage: DamageTypeMask::MAGICAL,
+            ..Self::debuff_immunity(duration)
+        }
+    }
+
+    /// Basic attacks cannot target the holder.
+    pub fn attack_immunity(duration: f32) -> Self {
+        Self {
+            attack_immune: true,
+            ..Self::buff("attack_immunity", duration)
+        }
+    }
+
+    /// Disarmed, immune to physical damage and to being attacked, and more vulnerable to
+    /// magic: `magic_amp_percent` (0..90) is the extra magic damage taken against a target with
+    /// no magic resistance, applied as a magic resistance reduction. `hostile` picks the
+    /// debuff kind (blocked by debuff immunity) over the buff kind (self / ally cast).
+    pub fn ethereal(duration: f32, magic_amp_percent: f32, hostile: bool) -> Self {
+        let amp = (magic_amp_percent / 100.0).clamp(0.0, 0.9);
+        // `mitigate` gives factor 1 - 0.06r / (1 + 0.06|r|); r = -amp / (0.06 (1 - amp)) makes
+        // that 1 + amp at zero base resistance.
+        let resist_points = amp / (0.06 * (1.0 - amp));
+        Self {
+            disarmed: true,
+            attack_immune: true,
+            immune_damage: DamageTypeMask::PHYSICAL,
+            magic_resist: -resist_points,
+            kind: Self::kind_for_hostility(hostile),
+            ..Self::buff("ethereal", duration)
+        }
+    }
+
+    /// Removed from the world: stunned, invulnerable, untargetable, hidden and phased. Not
+    /// dispellable; only expiry or an explicit `remove_status banish` ends it. `hostile`
+    /// picks the debuff kind over the buff kind, as for [`Self::cyclone`].
+    pub fn banish(duration: f32, hostile: bool) -> Self {
+        Self {
+            stunned: true,
+            invulnerable: true,
+            untargetable: true,
+            hidden: true,
+            ignore_unit_collision: true,
+            kind: Self::kind_for_hostility(hostile),
+            dispel_type: DispelType::None,
+            undispellable: true,
+            ..Self::buff("banish", duration)
+        }
+    }
+
+    fn kind_for_hostility(hostile: bool) -> StatusKind {
+        if hostile {
+            StatusKind::Debuff
+        } else {
+            StatusKind::Buff
         }
     }
 
@@ -488,11 +737,8 @@ impl StatusEffect {
         Self {
             stunned: true,
             invulnerable: true,
-            kind: if hostile {
-                StatusKind::Debuff
-            } else {
-                StatusKind::Buff
-            },
+            untargetable: true,
+            kind: Self::kind_for_hostility(hostile),
             dispel_type: DispelType::None,
             undispellable: true,
             ..Self::buff("cyclone", duration)
@@ -506,21 +752,84 @@ impl StatusEffect {
         }
     }
 
+    /// Runs away from `source`, and cannot attack, cast, use items or take orders.
     pub fn fear(duration: f32, source: Option<Entity>) -> Self {
         Self {
-            fear_source: source,
+            compulsion: Some(Compulsion::Flee { from: source }),
             dispel_type: DispelType::Basic,
             ..Self::debuff("fear", duration)
         }
     }
 
-    /// Full disable: silence + disarm + mute (items only), per catalog “composite hex”.
+    /// Forced to basic attack `source` only; cannot cast, use items or take orders.
+    pub fn taunted(duration: f32, source: Entity) -> Self {
+        Self {
+            compulsion: Some(Compulsion::Attack { target: source }),
+            ..Self::debuff("taunt", duration)
+        }
+    }
+
+    /// Forced to walk to `source` and stop at contact; cannot attack, cast, use items or take
+    /// orders.
+    pub fn hypnotized(duration: f32, source: Entity) -> Self {
+        Self {
+            compulsion: Some(Compulsion::Approach { toward: source }),
+            ..Self::debuff("hypnosis", duration)
+        }
+    }
+
+    /// Concealed from enemies until revealed; with `breaks_on_action` it ends when the holder
+    /// attacks or casts.
+    pub fn invisibility(duration: f32, breaks_on_action: bool) -> Self {
+        Self {
+            invisible: true,
+            invis_breaks_on_action: breaks_on_action,
+            ..Self::buff("invisibility", duration)
+        }
+    }
+
+    /// True sight: voids the holder's invisibility.
+    pub fn reveal(duration: f32) -> Self {
+        Self {
+            revealed: true,
+            ..Self::debuff("reveal", duration)
+        }
+    }
+
+    /// Negates the next hostile unit-target spell, then is consumed.
+    pub fn spell_block(duration: f32) -> Self {
+        Self {
+            spell_block: true,
+            ..Self::buff("spell_block", duration)
+        }
+    }
+
+    /// Reflects hostile unit-target spells at their caster (Lotus style: the original lands too).
+    pub fn spell_reflect(duration: f32) -> Self {
+        Self {
+            spell_reflect: true,
+            ..Self::buff("spell_reflect", duration)
+        }
+    }
+
+    /// Only ability passives are suppressed (stats and triggers); items keep working.
+    pub fn broken(duration: f32) -> Self {
+        Self {
+            breaks_passives: true,
+            ..Self::debuff("break", duration)
+        }
+    }
+
+    /// Full disable: silence + disarm + mute (items only) + break, and walking speed capped
+    /// at [`crate::scale::HEX_MOVE_SPEED`].
     pub fn hexed(duration: f32) -> Self {
         Self {
             id: "hex",
             silenced: true,
             disarmed: true,
             muted: true,
+            breaks_passives: true,
+            move_speed_cap: crate::scale::HEX_MOVE_SPEED,
             dispel_type: DispelType::Strong,
             ..Self::debuff("hex", duration)
         }
@@ -618,10 +927,7 @@ impl StatusEffects {
             .any(|e| e.force_unit_push && e.remaining > 0.0)
     }
 
-    pub fn is_silenced(&self) -> bool {
-        self.effects.iter().any(|e| e.silenced && e.remaining > 0.0)
-    }
-
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn is_stunned(&self) -> bool {
         self.effects.iter().any(|e| e.stunned && e.remaining > 0.0)
     }
@@ -630,33 +936,50 @@ impl StatusEffects {
         self.effects.iter().any(|e| e.asleep && e.remaining > 0.0)
     }
 
+    /// Union of what every live status blocks.
+    pub fn blocks(&self) -> ActionBlocks {
+        self.effects
+            .iter()
+            .filter(|e| e.remaining > 0.0)
+            .fold(ActionBlocks::NONE, |acc, e| acc.union(e.blocks()))
+    }
+
+    /// Cannot move (root, stun, sleep).
     pub fn is_rooted(&self) -> bool {
-        self.effects
-            .iter()
-            .any(|e| (e.rooted || e.stunned || e.asleep) && e.remaining > 0.0)
+        self.blocks().contains(ActionBlocks::MOVE)
     }
 
+    /// Cannot basic attack (disarm, stun, sleep).
     pub fn is_disarmed(&self) -> bool {
-        self.effects
-            .iter()
-            .any(|e| (e.disarmed || e.stunned || e.asleep) && e.remaining > 0.0)
+        self.blocks().contains(ActionBlocks::ATTACK)
     }
 
-    pub fn is_muted(&self) -> bool {
-        self.effects.iter().any(|e| e.muted && e.remaining > 0.0)
+    /// Cannot use items (mute, stun, sleep).
+    pub fn blocks_items(&self) -> bool {
+        self.blocks().contains(ActionBlocks::ITEMS)
     }
 
-    pub fn is_feared(&self) -> bool {
+    /// The forced behaviour in effect: the most recently applied live compulsion wins.
+    pub fn compulsion(&self) -> Option<Compulsion> {
         self.effects
             .iter()
-            .any(|e| e.id == "fear" && e.remaining > 0.0)
+            .rev()
+            .filter(|e| e.remaining > 0.0)
+            .find_map(|e| e.compulsion)
     }
 
-    pub fn fear_flee_source(&self) -> Option<Entity> {
+    /// Ability passives are suppressed (break, hex).
+    pub fn breaks_passives(&self) -> bool {
+        self.blocks().contains(ActionBlocks::PASSIVES)
+    }
+
+    /// The lowest live walking speed cap (`None` = uncapped).
+    pub fn move_speed_cap(&self) -> Option<f32> {
         self.effects
             .iter()
-            .filter(|e| e.id == "fear" && e.remaining > 0.0)
-            .find_map(|e| e.fear_source)
+            .filter(|e| e.remaining > 0.0 && e.move_speed_cap > 0.0)
+            .map(|e| e.move_speed_cap)
+            .min_by(f32::total_cmp)
     }
 
     pub fn blind_miss_chance(&self) -> f32 {
@@ -694,10 +1017,12 @@ impl StatusEffects {
         self.has_debuff_immunity()
     }
 
-    pub fn has_damage_immunity(&self) -> bool {
+    /// Whether a live status makes the holder immune to `damage_type`.
+    pub fn is_immune_to(&self, damage_type: DamageType) -> bool {
+        let wanted = DamageTypeMask::of(damage_type);
         self.effects
             .iter()
-            .any(|e| e.damage_immune && e.remaining > 0.0)
+            .any(|e| e.remaining > 0.0 && e.immune_damage.contains(wanted))
     }
 
     pub fn is_invulnerable(&self) -> bool {
@@ -711,10 +1036,52 @@ impl StatusEffects {
         self.effects.iter().any(|e| e.id == id && e.remaining > 0.0)
     }
 
-    /// In a cyclone: no other unit can pick it as a unit target (basic attacks, unit
-    /// casts, auto-acquire, homing projectiles) and area effects skip it.
+    /// Held out of play (cyclone, banish): no other unit can pick it as a unit target (basic
+    /// attacks, unit casts, auto-acquire, homing projectiles) and area effects skip it.
     pub fn is_untargetable(&self) -> bool {
-        self.has_status("cyclone")
+        self.effects
+            .iter()
+            .any(|e| e.untargetable && e.remaining > 0.0)
+    }
+
+    /// Invisible and not revealed: enemies cannot pick it and fog hides it.
+    pub fn is_concealed(&self) -> bool {
+        self.effects
+            .iter()
+            .any(|e| e.invisible && e.remaining > 0.0)
+            && !self.effects.iter().any(|e| e.revealed && e.remaining > 0.0)
+    }
+
+    /// Whether a live effect reflects hostile unit-target spells.
+    pub fn has_spell_reflect(&self) -> bool {
+        self.effects
+            .iter()
+            .any(|e| e.spell_reflect && e.remaining > 0.0)
+    }
+
+    /// Whether a unit pick made with `intent` must skip this holder.
+    pub fn rejects(&self, intent: TargetIntent) -> bool {
+        self.is_untargetable()
+            || match intent {
+                TargetIntent::Any => false,
+                TargetIntent::Attack => {
+                    self.effects
+                        .iter()
+                        .any(|e| e.attack_immune && e.remaining > 0.0)
+                        || self.is_concealed()
+                }
+                TargetIntent::HostileSpell => {
+                    self.effects
+                        .iter()
+                        .any(|e| e.spell_immune && e.remaining > 0.0)
+                        || self.is_concealed()
+                }
+            }
+    }
+
+    /// Drawn for nobody (banish).
+    pub fn is_hidden(&self) -> bool {
+        self.effects.iter().any(|e| e.hidden && e.remaining > 0.0)
     }
 
     pub fn can_move(&self) -> bool {
@@ -726,16 +1093,28 @@ impl StatusEffects {
     }
 
     pub fn can_cast(&self) -> bool {
-        !self.is_silenced() && !self.is_stunned() && !self.is_asleep()
+        !self.blocks().contains(ActionBlocks::CAST)
     }
 }
 
-/// Whether `entity` is held out of play (cyclone) and so cannot be picked as a target.
-/// The one check behind every "can this unit be targeted" filter.
+/// Whether `entity` is held out of play (cyclone, banish) and so cannot be picked as a target.
+/// The `Any` form of [`is_targetable`], used by area filters.
 pub fn is_untargetable(statuses: &Query<&StatusEffects>, entity: Entity) -> bool {
     statuses
         .get(entity)
         .is_ok_and(|statuses| statuses.is_untargetable())
+}
+
+/// Whether `entity` may be picked as a unit target for `intent`. The one check behind every
+/// "can this unit be targeted" filter that is not an area test.
+pub fn is_targetable(
+    statuses: &Query<&StatusEffects>,
+    entity: Entity,
+    intent: TargetIntent,
+) -> bool {
+    !statuses
+        .get(entity)
+        .is_ok_and(|statuses| statuses.rejects(intent))
 }
 
 /// Whether `effect` is removed by a dispel of `strength` on `kind`.
@@ -1176,6 +1555,49 @@ pub fn consume_attack_charges(
     }
 }
 
+/// An invisible holder that attacks (non-extra release) or fires an activation loses every
+/// `invis_breaks_on_action` invisibility. Writes [`StatusChange::Remove`] events only.
+pub fn break_invisibility(
+    mut releases: MessageReader<crate::basic_attack::BasicAttackReleaseEvent>,
+    mut fired: MessageReader<crate::actions::ActionFiredEvent>,
+    holders: Query<&StatusEffects>,
+    mut changes: MessageWriter<StatusEffectEvent>,
+) {
+    let actors: Vec<Entity> = releases
+        .read()
+        .filter(|r| !r.extra)
+        .map(|r| r.attacker)
+        .chain(fired.read().map(|f| f.caster))
+        .collect();
+    let mut done: Vec<Entity> = Vec::new();
+    for actor in actors {
+        if done.contains(&actor) {
+            continue;
+        }
+        let Ok(statuses) = holders.get(actor) else {
+            continue;
+        };
+        let mut ids: Vec<&'static str> = statuses
+            .effects
+            .iter()
+            .filter(|e| e.invisible && e.invis_breaks_on_action && e.remaining > 0.0)
+            .map(|e| e.id)
+            .collect();
+        ids.dedup();
+        if ids.is_empty() {
+            continue;
+        }
+        done.push(actor);
+        for id in ids {
+            changes.write(StatusEffectEvent::new(
+                Some(actor),
+                actor,
+                StatusChange::Remove(id),
+            ));
+        }
+    }
+}
+
 pub fn apply_status_effect_events(
     mut commands: Commands,
     mut events: MessageReader<StatusEffectEvent>,
@@ -1345,6 +1767,292 @@ mod tests {
     use crate::components::CleaveSource;
     use bevy::ecs::system::RunSystemOnce;
 
+    fn live(effect: StatusEffect) -> StatusEffects {
+        StatusEffects {
+            effects: vec![effect],
+        }
+    }
+
+    #[test]
+    fn cyclone_untargetable_via_field() {
+        let cyclone = live(StatusEffect::cyclone(2.0, true));
+        assert!(cyclone.effects[0].untargetable);
+        assert!(cyclone.is_untargetable());
+        for intent in [
+            TargetIntent::Any,
+            TargetIntent::Attack,
+            TargetIntent::HostileSpell,
+        ] {
+            assert!(cyclone.rejects(intent), "{intent:?}");
+        }
+        // The check reads the field, not the status id.
+        let by_field = live(StatusEffect {
+            untargetable: true,
+            ..StatusEffect::buff("anything", 2.0)
+        });
+        assert!(by_field.is_untargetable());
+        let by_id = live(StatusEffect {
+            untargetable: false,
+            ..StatusEffect::cyclone(2.0, true)
+        });
+        assert!(!by_id.is_untargetable());
+        let mut expired = StatusEffect::cyclone(2.0, true);
+        expired.remaining = 0.0;
+        assert!(!live(expired).is_untargetable());
+    }
+
+    #[test]
+    fn target_intent_rejects_by_immunity() {
+        let attack = live(StatusEffect::attack_immunity(2.0));
+        assert!(attack.rejects(TargetIntent::Attack));
+        assert!(!attack.rejects(TargetIntent::Any));
+        assert!(!attack.rejects(TargetIntent::HostileSpell));
+        let spell = live(StatusEffect::spell_immunity(2.0));
+        assert!(spell.rejects(TargetIntent::HostileSpell));
+        assert!(!spell.rejects(TargetIntent::Any));
+        assert!(!spell.rejects(TargetIntent::Attack));
+        // Ethereal is attack immune, not spell immune.
+        let ethereal = live(StatusEffect::ethereal(2.0, 40.0, true));
+        assert!(ethereal.rejects(TargetIntent::Attack));
+        assert!(!ethereal.rejects(TargetIntent::HostileSpell));
+    }
+
+    #[test]
+    fn damage_mask_contains() {
+        use DamageTypeMask as M;
+        assert!(M::ALL.contains(M::PHYSICAL) && M::ALL.contains(M::MAGICAL));
+        assert!(M::ALL.contains(M::PURE));
+        assert!(!M::PHYSICAL.contains(M::MAGICAL));
+        assert!(M::NONE.is_empty() && !M::NONE.contains(M::PHYSICAL));
+        assert!(M::PHYSICAL.union(M::MAGICAL).contains(M::MAGICAL));
+        assert_eq!(M::of(DamageType::Pure), M::PURE);
+        let ethereal = live(StatusEffect::ethereal(2.0, 40.0, true));
+        assert!(ethereal.is_immune_to(DamageType::Physical));
+        assert!(!ethereal.is_immune_to(DamageType::Magical));
+        assert!(!ethereal.is_immune_to(DamageType::Pure));
+    }
+
+    #[test]
+    fn spell_immunity_rejects_debuffs_and_magic_only() {
+        let mut stats = CombatStats::simple(10.0, 100.0, 1.0, 0.0, 0.0, 300.0);
+        let mut statuses = StatusEffects::default();
+        assert!(apply_status(
+            &mut statuses,
+            &mut stats,
+            StatusEffect::spell_immunity(5.0),
+            0.0
+        ));
+        let immunity = &statuses.effects[0];
+        assert_eq!(immunity.id, "spell_immunity");
+        assert!(immunity.undispellable && immunity.kind == StatusKind::Buff);
+        assert!(!apply_status(
+            &mut statuses,
+            &mut stats,
+            StatusEffect::stunned(2.0),
+            0.0
+        ));
+        assert!(statuses.is_immune_to(DamageType::Magical));
+        assert!(!statuses.is_immune_to(DamageType::Physical));
+        assert!(!statuses.is_immune_to(DamageType::Pure));
+        // Debuff immunity is a different status: no spell or damage immunity.
+        let plain = live(StatusEffect::debuff_immunity(5.0));
+        assert_eq!(plain.effects[0].id, "debuff_immunity");
+        assert!(plain.has_debuff_immunity());
+        assert!(!plain.rejects(TargetIntent::HostileSpell));
+        assert!(!plain.is_immune_to(DamageType::Magical));
+    }
+
+    #[test]
+    fn banished_unit_is_untargetable_invulnerable_and_phased() {
+        let banished = live(StatusEffect::banish(3.0, true));
+        assert!(banished.is_untargetable() && banished.is_invulnerable());
+        assert!(banished.is_phased() && banished.is_hidden());
+        assert!(banished.is_stunned());
+        assert!(
+            banished.blocks().contains(
+                ActionBlocks::MOVE
+                    .union(ActionBlocks::ATTACK)
+                    .union(ActionBlocks::CAST)
+                    .union(ActionBlocks::ITEMS)
+            )
+        );
+        let effect = &banished.effects[0];
+        assert!(effect.undispellable && effect.dispel_type == DispelType::None);
+        assert!(!status_dispel_matches(
+            effect,
+            StatusKind::Debuff,
+            DispelStrength::Strong
+        ));
+        assert_eq!(effect.kind, StatusKind::Debuff);
+        assert_eq!(StatusEffect::banish(3.0, false).kind, StatusKind::Buff);
+    }
+
+    #[test]
+    fn blocks_matrix_matches_documented_table() {
+        use ActionBlocks as B;
+        let all = B::MOVE.union(B::ATTACK).union(B::CAST).union(B::ITEMS);
+        let src = Entity::PLACEHOLDER;
+        let compelled = B::ATTACK.union(B::CAST).union(B::ITEMS).union(B::ORDERS);
+        let cases: [(StatusEffect, B); 12] = [
+            (StatusEffect::stunned(1.0), all),
+            (StatusEffect::sleep(1.0), all),
+            (StatusEffect::rooted(1.0), B::MOVE),
+            (StatusEffect::silenced(1.0), B::CAST),
+            (StatusEffect::mute(1.0), B::ITEMS),
+            (StatusEffect::disarmed(1.0), B::ATTACK),
+            (
+                StatusEffect::hexed(1.0),
+                B::CAST.union(B::ITEMS).union(B::ATTACK).union(B::PASSIVES),
+            ),
+            (StatusEffect::broken(1.0), B::PASSIVES),
+            (StatusEffect::fear(1.0, Some(src)), compelled),
+            (StatusEffect::hypnotized(1.0, src), compelled),
+            (
+                StatusEffect::taunted(1.0, src),
+                B::CAST.union(B::ITEMS).union(B::ORDERS),
+            ),
+            (StatusEffect::buff("plain", 1.0), B::NONE),
+        ];
+        for (effect, expected) in cases {
+            assert_eq!(effect.blocks(), expected, "{}", effect.id);
+            let live = StatusEffects {
+                effects: vec![effect.clone()],
+            };
+            assert_eq!(live.blocks(), expected, "{}", effect.id);
+            assert_eq!(
+                live.is_rooted(),
+                expected.contains(B::MOVE),
+                "{}",
+                effect.id
+            );
+            assert_eq!(
+                live.is_disarmed(),
+                expected.contains(B::ATTACK),
+                "{}",
+                effect.id
+            );
+            assert_eq!(
+                live.can_cast(),
+                !expected.contains(B::CAST),
+                "{}",
+                effect.id
+            );
+            assert_eq!(
+                live.blocks_items(),
+                expected.contains(B::ITEMS),
+                "{}",
+                effect.id
+            );
+        }
+        // Stun and sleep leave orders and passives alone; expired effects block nothing; effects
+        // union.
+        assert!(!all.contains(B::ORDERS) && !all.contains(B::PASSIVES));
+        let mut expired = StatusEffect::stunned(1.0);
+        expired.remaining = 0.0;
+        let mixed = StatusEffects {
+            effects: vec![expired, StatusEffect::rooted(1.0), StatusEffect::mute(1.0)],
+        };
+        assert_eq!(mixed.blocks(), B::MOVE.union(B::ITEMS));
+    }
+
+    #[test]
+    fn newest_live_compulsion_wins_and_expired_ones_are_ignored() {
+        let (a, b) = (
+            Entity::from_raw_u32(1).unwrap(),
+            Entity::from_raw_u32(2).unwrap(),
+        );
+        assert_eq!(StatusEffects::default().compulsion(), None);
+        let mut expired = StatusEffect::fear(1.0, Some(a));
+        expired.remaining = 0.0;
+        let statuses = StatusEffects {
+            effects: vec![
+                StatusEffect::fear(1.0, Some(a)),
+                StatusEffect::taunted(1.0, b),
+                expired,
+            ],
+        };
+        assert_eq!(
+            statuses.compulsion(),
+            Some(Compulsion::Attack { target: b }),
+            "the later live one wins"
+        );
+        assert_eq!(
+            StatusEffect::hypnotized(1.0, a).compulsion,
+            Some(Compulsion::Approach { toward: a })
+        );
+    }
+
+    #[test]
+    fn hexed_unit_capped_move_speed_and_broken() {
+        let mut stats = CombatStats::simple(10.0, 8.0, 1.0, 2.0, 1.0, 500.0);
+        let none = StatusEffects::default();
+        assert_eq!(stats.effective_move_speed(Some(&none)), 500.0);
+
+        let hexed = StatusEffects {
+            effects: vec![StatusEffect::hexed(2.0)],
+        };
+        assert!(hexed.breaks_passives());
+        assert_eq!(hexed.move_speed_cap(), Some(crate::scale::HEX_MOVE_SPEED));
+        assert_eq!(
+            stats.effective_move_speed(Some(&hexed)),
+            crate::scale::HEX_MOVE_SPEED
+        );
+
+        // A haste bonus does not lift the cap; the lowest cap wins; a slower unit is not sped up.
+        let haste = StatusEffect {
+            move_speed: 200.0,
+            ..StatusEffect::buff("haste", 5.0)
+        };
+        stats.move_speed += 200.0;
+        let both = StatusEffects {
+            effects: vec![haste, StatusEffect::hexed(2.0)],
+        };
+        assert_eq!(
+            stats.effective_move_speed(Some(&both)),
+            crate::scale::HEX_MOVE_SPEED
+        );
+        let tighter = StatusEffects {
+            effects: vec![
+                StatusEffect {
+                    move_speed_cap: 90.0,
+                    ..StatusEffect::debuff("tight", 2.0)
+                },
+                StatusEffect::hexed(2.0),
+            ],
+        };
+        assert_eq!(tighter.move_speed_cap(), Some(90.0));
+        let slow_unit = CombatStats::simple(10.0, 8.0, 1.0, 2.0, 1.0, 120.0);
+        assert_eq!(slow_unit.effective_move_speed(Some(&hexed)), 120.0);
+
+        // An expired hex caps nothing and breaks nothing.
+        let mut gone = StatusEffect::hexed(2.0);
+        gone.remaining = 0.0;
+        let expired = StatusEffects {
+            effects: vec![gone],
+        };
+        assert_eq!(expired.move_speed_cap(), None);
+        assert!(!expired.breaks_passives());
+        // Break alone neither caps nor disables anything else.
+        let broken = StatusEffects {
+            effects: vec![StatusEffect::broken(2.0)],
+        };
+        assert!(broken.breaks_passives() && broken.can_cast() && broken.can_attack());
+        assert_eq!(broken.move_speed_cap(), None);
+    }
+
+    #[test]
+    fn sleep_blocks_items() {
+        let asleep = StatusEffects {
+            effects: vec![StatusEffect::sleep(2.0)],
+        };
+        assert!(asleep.blocks_items());
+        assert!(crate::actions::DisableRule::MuteOrStun.blocks(Some(&asleep)));
+        let silenced = StatusEffects {
+            effects: vec![StatusEffect::silenced(2.0)],
+        };
+        assert!(!crate::actions::DisableRule::MuteOrStun.blocks(Some(&silenced)));
+    }
+
     #[test]
     fn status_buff_applies_and_expires_modifiers() {
         let mut statuses = StatusEffects::default();
@@ -1383,7 +2091,6 @@ mod tests {
             StatusBuildContext {
                 move_speed: current_speed,
                 agility: 0.0,
-                fear_source: None,
                 source: None,
                 point: Vec3::ZERO,
                 base_attack_damage: 0.0,
@@ -1645,7 +2352,6 @@ mod tests {
             StatusBuildContext {
                 move_speed: 0.0,
                 agility: 0.0,
-                fear_source: None,
                 source: None,
                 point: Vec3::ZERO,
                 base_attack_damage: 0.0,
@@ -1813,7 +2519,7 @@ mod tests {
             false,
         );
         let events = lifecycle_frame(&mut app, 0.01);
-        assert_eq!(events, [("stun", Dispelled), ("spell_immunity", Applied)]);
+        assert_eq!(events, [("stun", Dispelled), ("debuff_immunity", Applied)]);
 
         // Sleep breaks on damage.
         let sleeper = lifecycle_unit(&mut app);
@@ -3537,6 +4243,127 @@ mod tests {
         }
     }
 
+    mod invisibility {
+        use super::*;
+        use crate::actions::{ActionFiredEvent, ActionId, ActionSource};
+        use crate::basic_attack::BasicAttackReleaseEvent;
+        use crate::components::CastTarget;
+
+        fn app() -> App {
+            let mut app = App::new();
+            app.init_resource::<Time>()
+                .add_message::<StatusEffectEvent>()
+                .add_message::<StatusLifecycleEvent>()
+                .add_message::<DamageEvent>()
+                .add_message::<crate::combat::DamageAppliedEvent>()
+                .add_message::<BasicAttackReleaseEvent>()
+                .add_message::<ActionFiredEvent>()
+                .add_systems(
+                    Update,
+                    (break_invisibility, apply_status_effect_events).chain(),
+                );
+            app
+        }
+
+        fn unit(app: &mut App, effects: Vec<StatusEffect>) -> Entity {
+            app.world_mut()
+                .spawn((
+                    StatusEffects { effects },
+                    CombatStats::simple(10.0, 8.0, 1.0, 0.0, 0.0, 10.0),
+                    HeroAttributes::starter(),
+                    Health::new(500.0),
+                ))
+                .id()
+        }
+
+        fn invisible(app: &App, unit: Entity) -> bool {
+            app.world()
+                .get::<StatusEffects>(unit)
+                .unwrap()
+                .is_concealed()
+        }
+
+        #[test]
+        fn revealed_invisible_is_not_concealed() {
+            let mut statuses = StatusEffects {
+                effects: vec![StatusEffect::invisibility(5.0, true)],
+            };
+            assert!(statuses.is_concealed());
+            assert!(statuses.rejects(TargetIntent::Attack));
+            assert!(statuses.rejects(TargetIntent::HostileSpell));
+            assert!(!statuses.rejects(TargetIntent::Any), "areas still hit it");
+            statuses.effects.push(StatusEffect::reveal(5.0));
+            assert!(!statuses.is_concealed());
+            assert!(!statuses.rejects(TargetIntent::Attack));
+            // An expired reveal no longer voids it.
+            statuses.effects[1].remaining = 0.0;
+            assert!(statuses.is_concealed());
+            assert!(!StatusEffects::default().is_concealed());
+        }
+
+        #[test]
+        fn attack_release_breaks_invisibility() {
+            let mut app = app();
+            let unit = unit(&mut app, vec![StatusEffect::invisibility(30.0, true)]);
+            let other = unit_with_nothing(&mut app);
+            app.world_mut().write_message(BasicAttackReleaseEvent {
+                attacker: other,
+                target: unit,
+                damage: 1.0,
+                extra: false,
+            });
+            app.update();
+            assert!(
+                invisible(&app, unit),
+                "another unit's attack changes nothing"
+            );
+            // Extra attacks are not the holder's own action.
+            app.world_mut().write_message(BasicAttackReleaseEvent {
+                attacker: unit,
+                target: other,
+                damage: 1.0,
+                extra: true,
+            });
+            app.update();
+            assert!(invisible(&app, unit));
+            app.world_mut().write_message(BasicAttackReleaseEvent {
+                attacker: unit,
+                target: other,
+                damage: 1.0,
+                extra: false,
+            });
+            app.update();
+            assert!(!invisible(&app, unit));
+        }
+
+        fn unit_with_nothing(app: &mut App) -> Entity {
+            unit(app, vec![])
+        }
+
+        fn fire(app: &mut App, caster: Entity) {
+            app.world_mut().write_message(ActionFiredEvent {
+                caster,
+                source: ActionSource::Ability(0),
+                action: ActionId::Ability(crate::components::AbilityId::Bolt),
+                level: 1,
+                target: CastTarget::None,
+                aim: Vec3::ZERO,
+            });
+            app.update();
+        }
+
+        #[test]
+        fn cast_breaks_invisibility_unless_flagged() {
+            let mut app = app();
+            let breaks = unit(&mut app, vec![StatusEffect::invisibility(30.0, true)]);
+            let keeps = unit(&mut app, vec![StatusEffect::invisibility(30.0, false)]);
+            fire(&mut app, breaks);
+            fire(&mut app, keeps);
+            assert!(!invisible(&app, breaks));
+            assert!(invisible(&app, keeps), "breaks_on_action false survives");
+        }
+    }
+
     mod stacking {
         use super::*;
 
@@ -3652,6 +4479,163 @@ mod tests {
             frame(&mut app, 0.0);
             stack(&mut app, target, 8.0);
             assert_eq!(stacks(&app, target), 1);
+        }
+    }
+    mod new_status_gaps {
+        use super::*;
+
+        fn app() -> App {
+            let mut app = App::new();
+            app.add_message::<StatusEffectEvent>()
+                .add_message::<StatusLifecycleEvent>()
+                .add_systems(Update, apply_status_effect_events);
+            app
+        }
+
+        fn unit(app: &mut App) -> Entity {
+            app.world_mut()
+                .spawn((
+                    StatusEffects::default(),
+                    CombatStats::simple(10.0, 8.0, 1.0, 0.0, 0.0, 10.0),
+                    HeroAttributes::starter(),
+                ))
+                .id()
+        }
+
+        fn send(app: &mut App, source: Option<Entity>, target: Entity, change: StatusChange) {
+            app.world_mut()
+                .write_message(StatusEffectEvent::new(source, target, change));
+            app.update();
+        }
+
+        fn has(app: &App, unit: Entity, id: &str) -> bool {
+            app.world()
+                .get::<StatusEffects>(unit)
+                .unwrap()
+                .effects
+                .iter()
+                .any(|e| e.id == id)
+        }
+
+        fn remaining(app: &App, unit: Entity, id: &str) -> Option<f32> {
+            app.world()
+                .get::<StatusEffects>(unit)
+                .unwrap()
+                .effects
+                .iter()
+                .find(|e| e.id == id)
+                .map(|e| e.remaining)
+        }
+
+        #[test]
+        fn basic_dispel_removes_reveal_taunt_and_fear() {
+            let mut app = app();
+            let source = unit(&mut app);
+            let victim = unit(&mut app);
+            for effect in [
+                StatusEffect::reveal(5.0),
+                StatusEffect::taunted(5.0, source),
+                StatusEffect::fear(5.0, Some(source)),
+            ] {
+                send(&mut app, Some(source), victim, StatusChange::Apply(effect));
+            }
+            assert!(has(&app, victim, "reveal") && has(&app, victim, "taunt"));
+            assert!(has(&app, victim, "fear"));
+            send(
+                &mut app,
+                None,
+                victim,
+                StatusChange::Dispel {
+                    kind: StatusKind::Debuff,
+                    strength: DispelStrength::Basic,
+                },
+            );
+            for id in ["reveal", "taunt", "fear"] {
+                assert!(!has(&app, victim, id), "{id} survived a basic dispel");
+            }
+            assert!(
+                !app.world()
+                    .get::<StatusEffects>(victim)
+                    .unwrap()
+                    .is_asleep(),
+                "sanity"
+            );
+        }
+
+        #[test]
+        fn banish_and_spell_immunity_survive_strong_dispels() {
+            let mut app = app();
+            let source = unit(&mut app);
+            let banished = unit(&mut app);
+            let immune = unit(&mut app);
+            send(
+                &mut app,
+                Some(source),
+                banished,
+                StatusChange::Apply(StatusEffect::banish(5.0, true)),
+            );
+            send(
+                &mut app,
+                Some(immune),
+                immune,
+                StatusChange::Apply(StatusEffect::spell_immunity(5.0)),
+            );
+            for (target, kind) in [(banished, StatusKind::Debuff), (immune, StatusKind::Buff)] {
+                for strength in [DispelStrength::Basic, DispelStrength::Strong] {
+                    send(
+                        &mut app,
+                        None,
+                        target,
+                        StatusChange::Dispel { kind, strength },
+                    );
+                }
+            }
+            assert!(has(&app, banished, "banish"));
+            assert!(has(&app, immune, "spell_immunity"));
+        }
+
+        #[test]
+        fn status_resistance_shortens_taunt_fear_hypnosis_and_reveal() {
+            let mut app = app();
+            let enemy = unit(&mut app);
+            let holder = unit(&mut app);
+            send(
+                &mut app,
+                Some(holder),
+                holder,
+                StatusChange::Apply(StatusEffect::status_resistance("res", 0.5, 20.0)),
+            );
+            for effect in [
+                StatusEffect::taunted(4.0, enemy),
+                StatusEffect::fear(4.0, Some(enemy)),
+                StatusEffect::hypnotized(4.0, enemy),
+                StatusEffect::reveal(4.0),
+            ] {
+                let id = effect.id;
+                send(&mut app, Some(enemy), holder, StatusChange::Apply(effect));
+                assert_eq!(remaining(&app, holder, id), Some(2.0), "{id}");
+            }
+        }
+
+        #[test]
+        fn stun_overlapping_sleep_survives_damage_wake() {
+            let mut statuses = StatusEffects {
+                effects: vec![StatusEffect::sleep(5.0), StatusEffect::stunned(5.0)],
+            };
+            let mut stats = CombatStats::simple(10.0, 8.0, 1.0, 0.0, 0.0, 10.0);
+            let removed = wake_from_sleep(&mut statuses, &mut stats, 0.0, None);
+            assert_eq!(removed.len(), 1);
+            assert!(!statuses.is_asleep());
+            assert!(statuses.is_stunned(), "the stun outlives the sleep");
+            let blocks = statuses.blocks();
+            for flag in [
+                ActionBlocks::MOVE,
+                ActionBlocks::ATTACK,
+                ActionBlocks::CAST,
+                ActionBlocks::ITEMS,
+            ] {
+                assert!(blocks.contains(flag));
+            }
         }
     }
 }

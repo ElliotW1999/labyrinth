@@ -77,7 +77,7 @@ pub enum DisableRule {
     /// Abilities: silence, stun or sleep (hex counts as silence). Mute alone does not
     /// block abilities.
     SilenceOrStun,
-    /// Items: stun or mute. Silence and sleep do not block items.
+    /// Items: stun, sleep or mute. Silence alone does not block items.
     MuteOrStun,
 }
 
@@ -85,7 +85,7 @@ impl DisableRule {
     pub fn blocks(self, statuses: Option<&StatusEffects>) -> bool {
         statuses.is_some_and(|s| match self {
             DisableRule::SilenceOrStun => !s.can_cast(),
-            DisableRule::MuteOrStun => s.is_stunned() || s.is_muted(),
+            DisableRule::MuteOrStun => s.blocks_items(),
         })
     }
 }

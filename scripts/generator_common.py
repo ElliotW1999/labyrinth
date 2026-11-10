@@ -185,7 +185,19 @@ STATUSES = {
     "sleep": ("StatusSpec::Sleep", "sleep", False),
     "invulnerable": ("StatusSpec::Invulnerable", "invulnerable", True),
     "hex": ("StatusSpec::Hex", "hex", False),
+    # Ability passives (stats and triggers) are suppressed; item passives keep working.
+    "break": ("StatusSpec::Break", "break", False),
+    # Invisibility: concealed from enemies. `amount=0` keeps it when the holder attacks or casts
+    # (default: it breaks). Reveal (true sight) voids it.
+    "invisibility": (None, "invisibility", True),
+    "reveal": ("StatusSpec::Reveal", "reveal", False),
+    # Negates the next hostile unit-target spell; reflect also sends it back (original lands).
+    "spell_block": ("StatusSpec::SpellBlock", "spell_block", True),
+    "spell_reflect": ("StatusSpec::SpellReflect", "spell_reflect", True),
     "fear": ("StatusSpec::Fear", "fear", False),
+    # Taunt and hypnosis force the target towards the caster (see `Compulsion`).
+    "taunt": ("StatusSpec::Taunt", "taunt", False),
+    "hypnosis": ("StatusSpec::Hypnosis", "hypnosis", False),
     "slow": (None, "slow", False),
     "attack_speed_slow": (None, "attack_speed_slow", False),
     "turn_rate_slow": (None, "turn_rate_slow", False),
@@ -199,8 +211,17 @@ STATUSES = {
     "true_strike": ("StatusSpec::TrueStrike", "true_strike", True),
     "phased": ("StatusSpec::Phased", "phased", True),
     "forceful": ("StatusSpec::Forceful", "forceful", True),
-    "debuff_immunity": ("StatusSpec::DebuffImmunity", "spell_immunity", True),
-    "spell_immunity": ("StatusSpec::DebuffImmunity", "spell_immunity", True),
+    # Blocks new debuffs and purges existing ones; magic damage and spells still land.
+    "debuff_immunity": ("StatusSpec::DebuffImmunity", "debuff_immunity", True),
+    # Debuff immunity + hostile unit-target spells cannot pick the holder + no magic damage.
+    "spell_immunity": ("StatusSpec::SpellImmunity", "spell_immunity", True),
+    # Basic attacks cannot target the holder.
+    "attack_immunity": ("StatusSpec::AttackImmunity", "attack_immunity", True),
+    # Ethereal and banish are debuffs on enemies and buffs on allies / the caster (the kind
+    # follows hostility), so they default to an enemy target like other debuffs.
+    # ethereal: amount (or value) = extra magic damage taken, percent 0..90.
+    "ethereal": (None, "ethereal", False),
+    "banish": ("StatusSpec::Banish", "banish", False),
     "shield": (None, "shield", True),
     "burn": (None, "burn", False),
     "heal_over_time": (None, "heal_over_time", True),
@@ -1751,6 +1772,21 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             spec = f"StatusSpec::{variant} {{ percent: {rank_value(percent)} }}"
             if amount:
                 _unused(e, report, "value")
+        elif effect_id == "ethereal":
+            percent = amount or value
+            if not percent:
+                report.error(row.file, row.line, "amount", "", "required: ethereal magic damage amp percent (e.g. 40)")
+                return None
+            if any(not 0 <= p <= 90 for p in percent):
+                report.error(row.file, row.line, "amount" if amount else "value", row.get("amount") or row.get("value"), "ethereal magic amp percent must be within 0..90")
+                return None
+            spec = f"StatusSpec::Ethereal {{ magic_amp_percent: {rank_value(percent)} }}"
+            if amount:
+                _unused(e, report, "value")
+        elif effect_id == "invisibility":
+            breaks = not (amount and all(a == 0 for a in amount))
+            spec = f"StatusSpec::Invisibility {{ breaks_on_action: {'true' if breaks else 'false'} }}"
+            _unused(e, report, "value")
         elif effect_id == "blind":
             miss = amount or value
             if not miss:

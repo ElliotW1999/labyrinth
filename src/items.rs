@@ -2961,6 +2961,7 @@ mod tests {
             .add_message::<crate::actions::ActionChannelEndEvent>()
             .add_message::<AbilityTriggerEvent>()
             .add_message::<crate::abilities::effects::SpellHitEvent>()
+            .add_message::<crate::abilities::effects::SpellReflectEvent>()
             .add_message::<crate::abilities::zones::SpawnZoneEvent>()
             .add_message::<crate::abilities::reactive_triggers::CooldownReadyEvent>()
             .add_message::<HealEvent>()
@@ -3740,6 +3741,18 @@ mod tests {
         let (fired, health) = channel_with_status(Some(StatusEffect::stunned(5.0)));
         assert_eq!(fired, vec![AbilityTrigger::OnChannelInterrupted]);
         assert_eq!(health, 550.0);
+    }
+
+    #[test]
+    fn asleep_unit_cannot_use_item() {
+        let (fired, health) = channel_with_status(Some(StatusEffect::sleep(5.0)));
+        assert_eq!(fired, vec![AbilityTrigger::OnChannelInterrupted]);
+        assert_eq!(health, 550.0, "sleep interrupts an item channel");
+        assert!(
+            crate::actions::DisableRule::MuteOrStun.blocks(Some(&StatusEffects {
+                effects: vec![StatusEffect::sleep(5.0)],
+            }))
+        );
     }
 
     fn radius_entry(trigger: AbilityTrigger, radius: AreaRadius) -> AbilityEffectEntry {
