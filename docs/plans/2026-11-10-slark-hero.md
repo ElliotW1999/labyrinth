@@ -1,6 +1,6 @@
 # Slark hero: implementation spec
 
-Status: **draft. Awaiting user approval.** Build nothing beyond the gaps that get approved. If implementation shows that something else is needed, stop and ask.
+Status: **approved 2026-11-10 with amendments (see §13).** Build nothing beyond the approved gaps. If implementation shows that something else is needed, stop and ask.
 
 Related plans:
 - `docs/plans/2026-11-09-ursa-hero.md`: the model for this spec. It covers the scratch-CSV HeroGenerator flow, G1 (a no-target dash goes along the facing), G7 (a refused dash reports `OnMovementEnd` in place), the `OWNER_ID_STATUSES` list, and the precedent for adding a field to every `StatusSpec::Modifier` site (G2 `attack_charges`).
@@ -333,3 +333,14 @@ Environment: the earlier hero work needed the Bevy system libraries (`pkg-config
 - **U14.** Shadow Dance rank 4 is extrapolated: duration 4.75, cooldown 20, +50% move speed, +160 regen.
 - **U15.** The move-speed bonus is measured against speed without status deltas (items included). It adds to slows and has no upper speed cap.
 - **U16.** The Dark Pact `aoe_radius` ring is drawn at cast time (cosmetic), as well as the zone's ring at the first pulse.
+
+## 13. User decisions (2026-11-10)
+
+- **G1–G6 approved. G7 (HUD grouping of same-id statuses) approved**, so build it.
+- **U13 → targeting-only, not the plan's default.** Shadow Dance must **not** use the engine's full `untargetable` flag. Amended G5:
+  - The CSV keyword stays `apply_status,untargetable`. It builds a new targeting-only status, e.g. `StatusSpec::Untargetable` → a Buff `untargetable` that rejects `TargetIntent::Attack` and `TargetIntent::HostileSpell` from other units.
+  - **Area effects (enemy and ally) still hit Slark.** Dash contact still counts him. Homing projectiles already in flight still land. Attackers drop him as an attack target, and enemies cannot start a unit-targeted cast or attack on him.
+  - His own caster-targeted effects and friendly unit-targeted spells keep working.
+  - Reuse the existing `attack_immune` / `spell_immune` machinery only if its semantics match exactly. Otherwise add a minimal flag next to `untargetable` in `StatusEffect`, read only by `rejects(..)`. Do **not** change cyclone/banish, which keep full `untargetable`.
+  - Amended tests: `targeting_only_untargetable_rejects_attacks_and_enemy_spells`, `targeting_only_untargetable_still_hit_by_areas`, `attackers_drop_an_untargetable_target`, `holder_still_runs_own_caster_effects`, `cyclone_still_fully_untargetable` (regression).
+- **All other open decisions keep the plan's defaults** (U1–U12, U14–U16). This includes no Dark Pact self-damage, a Basic dispel, the 0.75 s Pounce, leash radius 325, and no extra Essence Shift damage row.
