@@ -234,6 +234,10 @@ pub struct StatusEffect {
     /// instance by this status's id.
     pub cleave_source: Option<crate::abilities::effects::EffectSource>,
     pub heal_per_sec: f32,
+    /// Fraction of the holder's current max health healed per second, on top of
+    /// `heal_per_sec` (0.02 = 2% of max health per second). The healer's amp is folded in
+    /// when the status is applied, like `heal_per_sec`.
+    pub heal_max_health_fraction: f32,
     /// Timed resource modifier, summed when read (see [`crate::vitals::resource_stat`]).
     pub resource: Option<(crate::vitals::ResourceStat, f32)>,
     /// Fraction (0..1) of healing received that is negated. The strongest one applies.
@@ -414,6 +418,7 @@ impl StatusEffect {
             cleave_distance: 0.0,
             cleave_source: None,
             heal_per_sec: 0.0,
+            heal_max_health_fraction: 0.0,
             resource: None,
             heal_reduction: 0.0,
             damage_reduction: 0.0,
@@ -1324,9 +1329,11 @@ pub fn tick_status_effects(
         let mut i = 0;
         while i < statuses.effects.len() {
             let effect = &mut statuses.effects[i];
-            if effect.heal_per_sec > 0.0 {
-                // The healer's amp was folded into `heal_per_sec` when the status was applied.
-                crate::vitals::apply_heal(&mut health, effect.heal_per_sec * dt, hot_factor);
+            if effect.heal_per_sec > 0.0 || effect.heal_max_health_fraction > 0.0 {
+                // The healer's amp was folded into both parts when the status was applied; the
+                // percentage reads the holder's max health afresh every tick.
+                let per_sec = effect.heal_per_sec + effect.heal_max_health_fraction * health.max;
+                crate::vitals::apply_heal(&mut health, per_sec * dt, hot_factor);
             }
             if effect.damage_per_sec > 0.0 {
                 damage.write(DamageEvent::dot(
@@ -3768,6 +3775,58 @@ mod tests {
                     .effects
                     .is_empty()
             );
+        }
+
+        #[test]
+        fn hot_max_health_percent_reads_current_max_each_tick() {
+            let mut app = app();
+            let unit = wounded(&mut app);
+            let max = app.world().get::<Health>(unit).unwrap().max;
+            send(
+                &mut app,
+                unit,
+                StatusChange::Apply(StatusEffect {
+                    heal_per_sec: 10.0,
+                    heal_max_health_fraction: 0.05,
+                    ..StatusEffect::buff("heal_over_time", 10.0)
+                }),
+            );
+            step(&mut app, 0.0);
+            let before = app.world().get::<Health>(unit).unwrap().current;
+            step(&mut app, 1.0);
+            let after_one = app.world().get::<Health>(unit).unwrap().current;
+            assert!(
+                (after_one - before - (10.0 + 0.05 * max)).abs() < 1e-2,
+                "flat + 5% of {max}: {before} -> {after_one}"
+            );
+            // The percentage follows a changed max health on the very next tick.
+            app.world_mut().get_mut::<Health>(unit).unwrap().max = max * 2.0;
+            step(&mut app, 1.0);
+            let after_two = app.world().get::<Health>(unit).unwrap().current;
+            assert!(
+                (after_two - after_one - (10.0 + 0.05 * max * 2.0)).abs() < 1e-2,
+                "{after_one} -> {after_two}"
+            );
+        }
+
+        #[test]
+        fn hot_percent_alone_heals_without_a_flat_part() {
+            let mut app = app();
+            let unit = wounded(&mut app);
+            let max = app.world().get::<Health>(unit).unwrap().max;
+            send(
+                &mut app,
+                unit,
+                StatusChange::Apply(StatusEffect {
+                    heal_max_health_fraction: 0.1,
+                    ..StatusEffect::buff("heal_over_time", 10.0)
+                }),
+            );
+            step(&mut app, 0.0);
+            let before = app.world().get::<Health>(unit).unwrap().current;
+            step(&mut app, 1.0);
+            let after = app.world().get::<Health>(unit).unwrap().current;
+            assert!((after - before - 0.1 * max).abs() < 1e-2);
         }
 
         #[test]

@@ -1167,8 +1167,10 @@ pub(crate) fn build_status_effect(
     if built.carries_cleave() {
         built.cleave_source = Some(origin);
     }
-    if built.heal_per_sec > 0.0 {
-        built.heal_per_sec *= (1.0 + healer_amp).max(0.0);
+    if built.heal_per_sec > 0.0 || built.heal_max_health_fraction > 0.0 {
+        let amp = (1.0 + healer_amp).max(0.0);
+        built.heal_per_sec *= amp;
+        built.heal_max_health_fraction *= amp;
     }
     built
 }

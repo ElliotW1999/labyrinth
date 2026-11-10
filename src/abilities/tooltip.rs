@@ -440,10 +440,20 @@ fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
             };
             vec![row(label, amount), seconds_row("Burn duration", duration)]
         }
-        StatusSpec::HealOverTime { hps } => vec![
-            row("Heal per second", hps),
-            seconds_row("Heal duration", duration),
-        ],
+        StatusSpec::HealOverTime {
+            hps,
+            max_health_pct,
+        } => {
+            let mut rows = Vec::new();
+            if hps != RankValue::ZERO {
+                rows.push(row("Heal per second", hps));
+            }
+            if max_health_pct != RankValue::ZERO {
+                rows.push(row("Heal % max health per second", max_health_pct));
+            }
+            rows.push(seconds_row("Heal duration", duration));
+            rows
+        }
         StatusSpec::Evasion { percent } => vec![
             row("Evasion %", percent),
             seconds_row("Evasion duration", duration),

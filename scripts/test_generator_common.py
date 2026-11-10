@@ -673,13 +673,49 @@ class ResourceEffectTests(unittest.TestCase):
         self.assertEqual(report.errors[0].field, "value")
 
 
+class HealOverTimePercentTests(unittest.TestCase):
+    @staticmethod
+    def _hot(levels: int = 1, **cells: str):
+        effect, ctx = _effect("apply_status", "heal_over_time", target="caster", duration="4", **cells)
+        ctx.levels = levels
+        report = Report()
+        return effect_to_rust(effect, ctx, report), report
+
+    def test_flat_and_percent_parts_fill_their_fields(self) -> None:
+        result, report = self._hot(value="40", amount="2.5")
+        self.assertEqual(report.errors, [])
+        self.assertIn("hps: RankValue::fixed(40.0), max_health_pct: RankValue::fixed(2.5)", result[2])
+        # Level lists work on both parts.
+        result, report = self._hot(levels=2, value="40|45", amount="1.5|2.5")
+        self.assertEqual(report.errors, [])
+        self.assertIn("RankValue::from_level_1(40.0, 5.0)", result[2])
+        self.assertIn("RankValue::from_level_1(1.5, 1.0)", result[2])
+
+    def test_percent_alone_is_enough(self) -> None:
+        result, report = self._hot(amount="3")
+        self.assertEqual(report.errors, [])
+        self.assertIn("hps: RankValue::ZERO, max_health_pct: RankValue::fixed(3.0)", result[2])
+
+    def test_percent_is_within_zero_and_one_hundred(self) -> None:
+        for bad in ("-1", "101"):
+            result, report = self._hot(value="10", amount=bad)
+            self.assertIsNone(result, bad)
+            self.assertTrue(any("0..100" in e.message for e in report.errors), bad)
+
+    def test_one_of_value_or_amount_must_be_above_zero(self) -> None:
+        for cells in ({}, {"value": "0"}, {"amount": "0"}, {"value": "0", "amount": "0"}):
+            result, report = self._hot(**cells)
+            self.assertIsNone(result, cells)
+            self.assertTrue(report.errors, cells)
+
+
 class HealStatusTests(unittest.TestCase):
     def test_heal_statuses_heal_over_time(self) -> None:
         report = Report()
         effect, ctx = _effect("apply_status", "heal_over_time", target="caster", value="25", duration="6")
         result = effect_to_rust(effect, ctx, report)
         self.assertFalse(report.errors)
-        self.assertIn("StatusSpec::HealOverTime { hps: RankValue::fixed(25.0) }", result[2])
+        self.assertIn("StatusSpec::HealOverTime { hps: RankValue::fixed(25.0), max_health_pct: RankValue::ZERO }", result[2])
 
         report = Report()
         effect, ctx = _effect("apply_status", "heal_over_time", target="caster", duration="6")

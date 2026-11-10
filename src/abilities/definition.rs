@@ -485,9 +485,11 @@ pub enum StatusSpec {
     TurnRateBonus {
         percent: RankValue,
     },
-    /// Heals `hps` health per second; the caster's heal amp is folded in on application.
+    /// Heals `hps` health per second plus `max_health_pct` percent (0..=100) of the holder's max
+    /// health per second; the caster's heal amp is folded into both parts on application.
     HealOverTime {
         hps: RankValue,
+        max_health_pct: RankValue,
     },
     /// `percent` (0–100) of healing received is negated; the strongest reduction applies.
     HealReduction {
@@ -757,9 +759,13 @@ impl StatusSpec {
                 dispel_type: DispelType::Basic,
                 ..StatusEffect::buff("turn_rate_bonus", duration)
             },
-            StatusSpec::HealOverTime { hps } => {
-                StatusEffect::heal_over_time(hps.at(rank), duration)
-            }
+            StatusSpec::HealOverTime {
+                hps,
+                max_health_pct,
+            } => StatusEffect {
+                heal_max_health_fraction: (max_health_pct.at(rank) / 100.0).clamp(0.0, 1.0),
+                ..StatusEffect::heal_over_time(hps.at(rank), duration)
+            },
             StatusSpec::HealReduction { percent } => {
                 StatusEffect::heal_reduction((percent.at(rank) / 100.0).clamp(0.0, 1.0), duration)
             }

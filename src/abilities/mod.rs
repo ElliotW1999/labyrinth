@@ -3793,6 +3793,7 @@ mod tests {
                 AbilityEffect::ApplyStatus {
                     status: StatusSpec::HealOverTime {
                         hps: RankValue::fixed(40.0),
+                        max_health_pct: RankValue::ZERO,
                     },
                     duration: RankValue::fixed(5.0),
                 },
@@ -3818,6 +3819,51 @@ mod tests {
             .find(|e| e.id == "heal_over_time")
             .expect("heal over time applied");
         assert!((hot.heal_per_sec - 60.0).abs() < 1e-3, "40 hps x 1.5");
+    }
+
+    #[test]
+    fn healer_amp_scales_both_parts() {
+        let ability = AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::Unit, RankValue::fixed(500.0), RankValue::ZERO)
+            .costs(RankValue::ZERO, RankValue::ZERO)
+            .timing(0.0, 0.0)
+            .team(definition::TargetTeam::Ally)
+            .on(
+                AbilityTrigger::OnCast,
+                EffectTarget::CastTarget,
+                AbilityEffect::ApplyStatus {
+                    status: StatusSpec::HealOverTime {
+                        hps: RankValue::fixed(40.0),
+                        max_health_pct: RankValue::fixed(4.0),
+                    },
+                    duration: RankValue::fixed(5.0),
+                },
+            );
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(ability);
+        let caster = spawn_caster(&mut app, KIT);
+        app.world_mut()
+            .get_mut::<CombatStats>(caster)
+            .unwrap()
+            .heal_amp = 0.5;
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(80.0, 0.0, 0.0));
+        request(&mut app, caster, 3, CastTarget::Unit(ally));
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        let statuses = app.world().get::<StatusEffects>(ally).unwrap();
+        let hot = statuses
+            .effects
+            .iter()
+            .find(|e| e.id == "heal_over_time")
+            .expect("heal over time applied");
+        assert!((hot.heal_per_sec - 60.0).abs() < 1e-3, "40 hps x 1.5");
+        assert!(
+            (hot.heal_max_health_fraction - 0.06).abs() < 1e-6,
+            "4% x 1.5"
+        );
     }
 
     #[test]

@@ -1773,13 +1773,23 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             spec = f"StatusSpec::Leash {{ radius: {rank_value(value)}, anchor: LeashAnchorKind::{anchor} }}"
             _unused(e, report, "amount")
         elif effect_id == "heal_over_time":
-            if not _require(e, "value", report, "health restored per second"):
+            # `value` = flat health per second, `amount` = percent (0..100) of the holder's max
+            # health per second; at least one must be above 0.
+            if not value and not amount:
+                report.error(row.file, row.line, "value", "", "required: health restored per second (value) and/or percent of max health per second (amount)")
                 return None
-            if any(v <= 0 for v in value):
-                report.error(row.file, row.line, "value", row.get("value"), "heal_over_time per-second amount must be above 0")
+            if value and any(v < 0 for v in value):
+                report.error(row.file, row.line, "value", row.get("value"), "heal_over_time per-second amount cannot be negative")
                 return None
-            spec = f"StatusSpec::HealOverTime {{ hps: {rank_value(value)} }}"
-            _unused(e, report, "amount")
+            if amount and any(not 0 <= a <= 100 for a in amount):
+                report.error(row.file, row.line, "amount", row.get("amount"), "heal_over_time max-health percent must be within 0..100")
+                return None
+            if not any(v > 0 for v in value or []) and not any(a > 0 for a in amount or []):
+                report.error(row.file, row.line, "amount", row.get("amount"), "heal_over_time needs a per-second amount (value) or a max-health percent (amount) above 0")
+                return None
+            hps = rank_value(value) if value else "RankValue::ZERO"
+            pct = rank_value(amount) if amount else "RankValue::ZERO"
+            spec = f"StatusSpec::HealOverTime {{ hps: {hps}, max_health_pct: {pct} }}"
         elif effect_id == "heal_reduction":
             percent = amount or value
             if not percent:
