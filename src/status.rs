@@ -3413,6 +3413,36 @@ mod tests {
         }
 
         #[test]
+        fn timed_intelligence_adds_damage_to_int_primary_hero_but_no_magic_resist() {
+            let mut app = app();
+            let hero = hero(&mut app);
+            app.world_mut()
+                .get_mut::<HeroAttributes>(hero)
+                .unwrap()
+                .primary = Some(crate::abilities::definition::Attribute::Intelligence);
+            let read = |app: &App| {
+                let stats = app.world().get::<CombatStats>(hero).unwrap();
+                (stats.attack_damage, stats.magic_resist)
+            };
+            let (damage, resist) = read(&app);
+            send(
+                &mut app,
+                hero,
+                StatusChange::Apply(modifier("t_int", ResourceStat::Intelligence, 7.0, 2.0)),
+            );
+            step(&mut app, 0.0);
+            step(&mut app, 0.0);
+            let (up_damage, up_resist) = read(&app);
+            assert!((up_damage - (damage + 7.0)).abs() < 1e-4);
+            assert!((up_resist - resist).abs() < 1e-6, "INT gives no MR");
+            step(&mut app, 2.5);
+            step(&mut app, 0.0);
+            let (down_damage, down_resist) = read(&app);
+            assert!((down_damage - damage).abs() < 1e-4);
+            assert!((down_resist - resist).abs() < 1e-6);
+        }
+
+        #[test]
         fn timed_strength_changes_max_health_like_items() {
             let mut app = app();
             let hero = hero(&mut app);

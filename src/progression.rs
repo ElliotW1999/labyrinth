@@ -334,6 +334,32 @@ mod tests {
     }
 
     #[test]
+    fn primary_attribute_bonus_survives_level_up_and_reverts_exactly() {
+        use crate::abilities::definition::Attribute;
+        let (mut attrs, mut health, mut mana, mut stats) =
+            attribute_fixture(Some(Attribute::Strength));
+        let start = stats.attack_damage;
+        // A +10 Strength bonus is applied, the hero levels up, then the bonus is removed.
+        let before = attrs;
+        attrs.strength += 10.0;
+        HeroAttributes::apply_delta(&before, &attrs, &mut health, &mut mana, &mut stats);
+        assert!((stats.attack_damage - (start + 10.0)).abs() < 1e-4);
+        let before = attrs;
+        attrs.level_up();
+        HeroAttributes::apply_delta(&before, &attrs, &mut health, &mut mana, &mut stats);
+        let before = attrs;
+        attrs.strength -= 10.0;
+        HeroAttributes::apply_delta(&before, &attrs, &mut health, &mut mana, &mut stats);
+        let expected = start + attrs.str_per_level;
+        assert!(
+            (stats.attack_damage - expected).abs() < 1e-3,
+            "damage {} vs {expected}",
+            stats.attack_damage
+        );
+        assert!((stats.attack_damage - (30.0 + attrs.strength)).abs() < 1e-3);
+    }
+
+    #[test]
     fn spawned_hero_damage_includes_five_levels_of_primary_growth() {
         use crate::heroes::HeroId;
         use crate::resources::SharedAssets;
