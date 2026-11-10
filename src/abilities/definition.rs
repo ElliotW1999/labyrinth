@@ -519,6 +519,8 @@ pub enum StatusSpec {
         kind: StatusKind,
         stat: ResourceStat,
         amount: RankValue,
+        /// Independent instances: see [`StatusSpec::Modifier::independent`].
+        independent: bool,
     },
     Modifier {
         id: &'static str,
@@ -547,6 +549,9 @@ pub enum StatusSpec {
         /// Whole basic attacks (released, hit or miss) the status lasts for; ZERO = not
         /// charge-limited. It still ends on its duration.
         attack_charges: RankValue,
+        /// Every application becomes its own instance with its own timer instead of
+        /// refreshing the same-id one (`stat_modifier` effect ids with `:independent`).
+        independent: bool,
     },
 }
 
@@ -598,6 +603,7 @@ impl StatusSpec {
             cleave_end_radius: RankValue::ZERO,
             cleave_distance: RankValue::ZERO,
             attack_charges: RankValue::ZERO,
+            independent: false,
         }
     }
 
@@ -766,7 +772,11 @@ impl StatusSpec {
                 kind,
                 stat,
                 amount,
-            } => StatusEffect::resource_modifier(id, kind, stat, amount.at(rank), duration),
+                independent,
+            } => StatusEffect {
+                independent,
+                ..StatusEffect::resource_modifier(id, kind, stat, amount.at(rank), duration)
+            },
             StatusSpec::Modifier {
                 id,
                 kind,
@@ -783,6 +793,7 @@ impl StatusSpec {
                 cleave_end_radius,
                 cleave_distance,
                 attack_charges,
+                independent,
             } => {
                 let base = match kind {
                     StatusKind::Buff => StatusEffect::buff(id, duration),
@@ -802,6 +813,7 @@ impl StatusSpec {
                     cleave_end_radius: cleave_end_radius.at(rank),
                     cleave_distance: cleave_distance.at(rank),
                     attack_charges: attack_charges.at(rank).round().max(0.0) as u32,
+                    independent,
                     ..base
                 }
             }

@@ -881,6 +881,41 @@ class SlowStatusTests(unittest.TestCase):
         self.assertIn("<owner>_slow", report.errors[0].message)
 
 
+class IndependentModifierTests(unittest.TestCase):
+    def test_suffix_marks_flat_and_resource_modifiers_independent(self) -> None:
+        for stat, spec in (("attack_damage", "StatusSpec::Modifier"), ("agility", "StatusSpec::ResourceModifier")):
+            report = Report()
+            effect, ctx = _effect("stat_modifier", f"{stat}:independent", value="3", duration="10")
+            result = effect_to_rust(effect, ctx, report)
+            self.assertFalse(report.errors, stat)
+            self.assertIn(spec, result[2])
+            self.assertIn(f'id: "tester_{stat}"', result[2])
+            self.assertIn("independent: true", result[2])
+            self.assertEqual(held_status_id(effect), f"tester_{stat}")
+
+    def test_plain_modifiers_are_not_independent(self) -> None:
+        for stat in ("attack_damage", "agility"):
+            report = Report()
+            effect, ctx = _effect("stat_modifier", stat, value="3", duration="10")
+            result = effect_to_rust(effect, ctx, report)
+            self.assertFalse(report.errors)
+            self.assertIn("independent: false", result[2])
+            self.assertNotIn("independent: true", result[2])
+
+    def test_suffix_is_rejected_on_passive_and_while_rows(self) -> None:
+        for trigger, kind in (("passive", "item"), ("while:moving", "item"), ("while_toggled", "ability")):
+            report = Report()
+            effect, ctx = _effect("stat_modifier", "armor:independent", target="caster", trigger=trigger, kind=kind, value="5")
+            self.assertIsNone(effect_to_rust(effect, ctx, report), trigger)
+            self.assertTrue(any(":independent only applies" in err.message for err in report.errors), trigger)
+
+    def test_unknown_suffix_is_rejected(self) -> None:
+        report = Report()
+        effect, ctx = _effect("stat_modifier", "armor:forever", value="3", duration="10")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertTrue(any("unknown stat_modifier suffix" in err.message for err in report.errors))
+
+
 class AttributeStatModifierTests(unittest.TestCase):
     def test_timed_attributes_map_to_resource_modifiers(self) -> None:
         for stat, variant in (

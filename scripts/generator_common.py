@@ -239,6 +239,9 @@ STATUSES = {
     "mana_shield": (None, "mana_shield", True),
 }
 
+# `stat_modifier` effect-id suffix: each application keeps its own status instance and timer.
+INDEPENDENT_SUFFIX = "independent"
+
 # Statuses whose runtime id is `<owner>_<name>` (the keyword alone is not a status id).
 OWNER_ID_STATUSES = ("damage_reduction", "status_resistance", "stacks", "move_speed_bonus")
 
@@ -1364,7 +1367,7 @@ def held_status_id(e: EffectRow) -> str | None:
     if e.effect_type == "apply_status" and effect_id in STATUSES:
         return STATUSES[effect_id][1]
     if e.effect_type == "stat_modifier" and effect_id:
-        return f"{e.owner}_{effect_id}"
+        return f"{e.owner}_{effect_id.partition(':')[0]}"
     return None
 
 
@@ -1592,6 +1595,18 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
     effect_id = row.get("effect_id").lower()
     beneficial = False
     t = e.effect_type
+    # `stat_modifier` ids may carry the `:independent` suffix (every application keeps its own
+    # timer instead of refreshing the same-id status).
+    independent = False
+    if t == "stat_modifier" and ":" in effect_id:
+        effect_id, _, suffix = effect_id.partition(":")
+        if suffix != INDEPENDENT_SUFFIX:
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), f"unknown stat_modifier suffix ':{suffix}'; the only suffix is ':{INDEPENDENT_SUFFIX}'")
+            return None
+        if e.trigger in ("passive", "while", "while_toggled"):
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), f":{INDEPENDENT_SUFFIX} only applies to timed stat modifiers (not passive, while or while_toggled)")
+            return None
+        independent = True
     if t == "damage":
         ok = _require(e, "value", report, "damage amount")
         ok &= _require(e, "damage_type", report, "physical, magical, or pure")
@@ -1949,7 +1964,8 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
                 kind = "Buff" if beneficial else "Debuff"
                 effect = (
                     f'AbilityEffect::ApplyStatus {{ status: StatusSpec::ResourceModifier {{ id: "{ctx.owner_id}_{effect_id}", '
-                    f"kind: StatusKind::{kind}, stat: {RESOURCE_STATS[effect_id]}, amount: {rank_value(value)} }}, "
+                    f"kind: StatusKind::{kind}, stat: {RESOURCE_STATS[effect_id]}, amount: {rank_value(value)}, "
+                    f"independent: {'true' if independent else 'false'} }}, "
                     f"duration: {rank_value(duration)} }}"
                 )
             else:
@@ -1961,6 +1977,7 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
                     report.error(row.file, row.line, "amount", row.get("amount"), "attack charges must be whole numbers of at least 1")
                     return None
                 fields["attack_charges"] = rank_value(amount) if amount else "RankValue::ZERO"
+                fields["independent"] = "true" if independent else "false"
                 body = ", ".join(f"{k}: {v}" for k, v in fields.items())
                 effect = (
                     f'AbilityEffect::ApplyStatus {{ status: StatusSpec::Modifier {{ id: "{ctx.owner_id}_{effect_id}", '

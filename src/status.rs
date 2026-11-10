@@ -267,6 +267,10 @@ pub struct StatusEffect {
     pub immune_damage: DamageTypeMask,
     /// Nobody else may pick the holder as a unit target and area effects skip it.
     pub untargetable: bool,
+    /// Applications of this id never replace each other: every one keeps its own instance and
+    /// timer ([`apply_status`] skips the same-id refresh). Removal by id, dispel and debuff
+    /// immunity still remove every matching instance.
+    pub independent: bool,
     /// Targeting only: basic attacks and hostile unit-target spells cannot pick the holder
     /// ([`TargetIntent::Attack`], [`TargetIntent::HostileSpell`]), but area effects, dash contact
     /// and projectiles already in flight still reach it. Unlike [`Self::untargetable`] it
@@ -421,6 +425,7 @@ impl StatusEffect {
             shield_amount: 0.0,
             immune_damage: DamageTypeMask::NONE,
             untargetable: false,
+            independent: false,
             targeting_blocked: false,
             attack_immune: false,
             spell_immune: false,
@@ -1431,8 +1436,10 @@ pub fn apply_status(
     if effect.kind == StatusKind::Debuff && statuses.has_debuff_immunity() {
         return false;
     }
-    // Refresh same-id effects by replacing.
-    if let Some(existing) = statuses.effects.iter().position(|e| e.id == effect.id) {
+    // Refresh same-id effects by replacing, unless each application is its own instance.
+    if !effect.independent
+        && let Some(existing) = statuses.effects.iter().position(|e| e.id == effect.id)
+    {
         let old = statuses.effects.remove(existing);
         subtract_status_stat_delta(&old, stats, agility);
         if effect.stacks > 0 {
@@ -3029,6 +3036,155 @@ mod tests {
             );
             step(&mut app, 0.0);
             assert_eq!(hp(&app, u), (0.0, 1500.0));
+        }
+    }
+
+    mod independent_instances {
+        use super::*;
+        use std::time::Duration;
+
+        fn app() -> App {
+            let mut app = App::new();
+            app.init_resource::<Time>()
+                .add_message::<StatusEffectEvent>()
+                .add_message::<StatusLifecycleEvent>()
+                .add_message::<DamageEvent>()
+                .add_message::<crate::combat::DamageAppliedEvent>()
+                .add_systems(
+                    Update,
+                    (apply_status_effect_events, tick_status_effects).chain(),
+                );
+            app
+        }
+
+        fn unit(app: &mut App) -> Entity {
+            app.world_mut()
+                .spawn((
+                    StatusEffects::default(),
+                    CombatStats::simple(50.0, 0.0, 1.0, 0.0, 0.0, 300.0),
+                    Health {
+                        current: 100.0,
+                        max: 100.0,
+                        regen_per_sec: 0.0,
+                    },
+                ))
+                .id()
+        }
+
+        fn drain(independent: bool, secs: f32) -> StatusEffect {
+            StatusEffect {
+                attack_damage: -1.0,
+                independent,
+                ..StatusEffect::debuff("shift_attack_damage", secs)
+            }
+        }
+
+        fn send(app: &mut App, target: Entity, change: StatusChange) {
+            app.world_mut().write_message(StatusEffectEvent {
+                reactive: false,
+                source: None,
+                target,
+                change,
+            });
+        }
+
+        fn step(app: &mut App, secs: f32) {
+            app.world_mut()
+                .resource_mut::<Time>()
+                .advance_by(Duration::from_secs_f32(secs));
+            app.update();
+        }
+
+        fn damage(app: &App, e: Entity) -> f32 {
+            app.world().get::<CombatStats>(e).unwrap().attack_damage
+        }
+
+        fn instances(app: &App, e: Entity) -> usize {
+            app.world()
+                .get::<StatusEffects>(e)
+                .unwrap()
+                .effects
+                .iter()
+                .filter(|s| s.id == "shift_attack_damage")
+                .count()
+        }
+
+        #[test]
+        fn independent_instances_coexist_and_expire_separately() {
+            let mut app = app();
+            let u = unit(&mut app);
+            send(&mut app, u, StatusChange::Apply(drain(true, 10.0)));
+            step(&mut app, 0.0);
+            step(&mut app, 5.0);
+            send(&mut app, u, StatusChange::Apply(drain(true, 10.0)));
+            step(&mut app, 0.0);
+            assert_eq!(instances(&app, u), 2);
+            // The first one ends at t = 10, the second at t = 15.
+            step(&mut app, 5.05);
+            assert_eq!(instances(&app, u), 1);
+            assert!((damage(&app, u) - 49.0).abs() < 1e-4);
+            step(&mut app, 5.0);
+            assert_eq!(instances(&app, u), 0);
+            assert!((damage(&app, u) - 50.0).abs() < 1e-4);
+        }
+
+        #[test]
+        fn independent_attack_damage_sums_and_reverts_exactly() {
+            let mut app = app();
+            let u = unit(&mut app);
+            for _ in 0..7 {
+                send(&mut app, u, StatusChange::Apply(drain(true, 4.0)));
+            }
+            step(&mut app, 0.0);
+            assert_eq!(instances(&app, u), 7);
+            assert!((damage(&app, u) - 43.0).abs() < 1e-4);
+            step(&mut app, 4.5);
+            assert_eq!(instances(&app, u), 0);
+            assert_eq!(damage(&app, u), 50.0);
+        }
+
+        #[test]
+        fn remove_by_id_and_dispel_remove_every_instance() {
+            let mut app = app();
+            let u = unit(&mut app);
+            for _ in 0..3 {
+                send(&mut app, u, StatusChange::Apply(drain(true, 30.0)));
+            }
+            step(&mut app, 0.0);
+            assert_eq!(instances(&app, u), 3);
+            send(&mut app, u, StatusChange::Remove("shift_attack_damage"));
+            step(&mut app, 0.0);
+            assert_eq!(instances(&app, u), 0);
+            assert_eq!(damage(&app, u), 50.0);
+
+            for _ in 0..3 {
+                send(&mut app, u, StatusChange::Apply(drain(true, 30.0)));
+            }
+            step(&mut app, 0.0);
+            assert_eq!(instances(&app, u), 3);
+            send(
+                &mut app,
+                u,
+                StatusChange::Dispel {
+                    kind: StatusKind::Debuff,
+                    strength: DispelStrength::Basic,
+                },
+            );
+            step(&mut app, 0.0);
+            assert_eq!(instances(&app, u), 0);
+            assert_eq!(damage(&app, u), 50.0);
+        }
+
+        #[test]
+        fn non_independent_modifier_still_refreshes() {
+            let mut app = app();
+            let u = unit(&mut app);
+            for _ in 0..3 {
+                send(&mut app, u, StatusChange::Apply(drain(false, 30.0)));
+            }
+            step(&mut app, 0.0);
+            assert_eq!(instances(&app, u), 1);
+            assert!((damage(&app, u) - 49.0).abs() < 1e-4);
         }
     }
 

@@ -3040,6 +3040,7 @@ mod tests {
             cleave_end_radius: RankValue::ZERO,
             cleave_distance: RankValue::ZERO,
             attack_charges: RankValue::ZERO,
+            independent: false,
         };
         let mut app = test_app();
         let toggle = AbilityDefinition::new(AbilityId::Overcharge)
@@ -6549,6 +6550,7 @@ mod tests {
                     cleave_end_radius: RankValue::ZERO,
                     cleave_distance: RankValue::ZERO,
                     attack_charges: RankValue::ZERO,
+                    independent: false,
                 },
                 duration: RankValue::ZERO,
             },
@@ -7327,6 +7329,7 @@ mod tests {
             cleave_end_radius: RankValue::ZERO,
             cleave_distance: RankValue::ZERO,
             attack_charges: RankValue::ZERO,
+            independent: false,
         }
     }
 
