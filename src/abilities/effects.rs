@@ -19,6 +19,7 @@ use super::definition::{
     EffectScaling, EffectTarget, StatusBuildContext, TargetTeam,
 };
 use super::mechanics::{ChainCandidate, chain_hops};
+use super::passive::passive_suppressed;
 use super::zones::SpawnZoneEvent;
 use crate::actions::{ActionId, team_allows};
 use crate::basic_attack::ExtraAttackEvent;
@@ -1139,12 +1140,24 @@ pub fn resolve_ability_triggers(
     defs: Res<AbilityDefinitions>,
     mut runner: EffectRunner,
     mut spell_hits: MessageWriter<SpellHitEvent>,
+    statuses: Query<&StatusEffects>,
 ) {
     // First in, first out: gates append derived contexts behind everything already queued,
     // so the order (and the RNG draw order) is fixed by message order.
     let mut queue: VecDeque<TriggerContext> =
         triggers.read().map(|event| event.0.clone()).collect();
     while let Some(ctx) = queue.pop_front() {
+        // A broken owner's ability passives do nothing: root contexts (straight from a
+        // dispatcher) that are not part of a cast are dropped, so a context derived from a
+        // live cast and the cast-phase contexts of active abilities are never affected.
+        if ctx.depth == 0
+            && !ctx.trigger.is_cast_phase()
+            && statuses
+                .get(ctx.caster)
+                .is_ok_and(|s| passive_suppressed(ctx.source, &defs, s))
+        {
+            continue;
+        }
         let Some(params) = source_params(ctx.source, &defs, ctx.rank) else {
             continue;
         };

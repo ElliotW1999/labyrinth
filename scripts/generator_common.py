@@ -185,6 +185,8 @@ STATUSES = {
     "sleep": ("StatusSpec::Sleep", "sleep", False),
     "invulnerable": ("StatusSpec::Invulnerable", "invulnerable", True),
     "hex": ("StatusSpec::Hex", "hex", False),
+    # Ability passives (stats and triggers) are suppressed; item passives keep working.
+    "break": ("StatusSpec::Break", "break", False),
     "fear": ("StatusSpec::Fear", "fear", False),
     "slow": (None, "slow", False),
     "attack_speed_slow": (None, "attack_speed_slow", False),

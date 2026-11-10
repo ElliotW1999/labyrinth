@@ -354,7 +354,8 @@ impl CombatStats {
 
     /// Move speed used for walking: the stat with every status modifier applied, but
     /// never below [`crate::scale::MIN_MOVE_SPEED`] so stacked slows cannot silently
-    /// root a unit. There is no upper cap. Units whose base speed is zero (wards and
+    /// root a unit. There is no upper cap except a status cap (hex, see
+    /// [`crate::status::StatusEffects::move_speed_cap`]). Units whose base speed is zero (wards and
     /// other stationary units) stay stationary whatever bonuses they receive.
     pub fn effective_move_speed(&self, statuses: Option<&crate::status::StatusEffects>) -> f32 {
         let from_statuses: f32 =
@@ -363,7 +364,11 @@ impl CombatStats {
         if base <= 0.0 {
             return 0.0;
         }
-        self.move_speed.max(crate::scale::MIN_MOVE_SPEED)
+        let speed = self.move_speed.max(crate::scale::MIN_MOVE_SPEED);
+        match statuses.and_then(|s| s.move_speed_cap()) {
+            Some(cap) => speed.min(cap),
+            None => speed,
+        }
     }
 
     /// Turn rate after stacking status bonuses and slow on top of the hero/creep base in

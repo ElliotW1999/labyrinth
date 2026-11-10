@@ -14,7 +14,7 @@ use super::effects::{
     AbilityTriggerEvent, EffectSource, SpellHitEvent, StatusMeta, TriggerContext,
 };
 use super::effects::{base_attack_damage, build_status_effect};
-use super::passive::reconcile_held_status;
+use super::passive::{passive_suppressed, reconcile_held_status};
 use crate::combat::flat_distance;
 use crate::combat::{DamageAppliedEvent, DamageKind};
 use crate::components::{AbilityLoadout, BoundRadius, CombatStats, Health, HeroAttributes, Team};
@@ -268,7 +268,10 @@ pub(crate) fn sync_conditional_statuses(
                 let AbilityTrigger::While(condition) = trigger else {
                     continue;
                 };
-                let wanted = alive && eval_condition(condition, &view, &units, &untargetable);
+                // A broken owner loses its ability passives' held statuses, like the stats.
+                let wanted = alive
+                    && !passive_suppressed(source, &defs, statuses)
+                    && eval_condition(condition, &view, &units, &untargetable);
                 let Some(params) = super::effects::source_params(source, &defs, rank) else {
                     continue;
                 };

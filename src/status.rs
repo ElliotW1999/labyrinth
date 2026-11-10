@@ -39,7 +39,9 @@ impl Plugin for StatusPlugin {
 /// | muted | | | | x |
 /// | disarmed | | x | | |
 ///
-/// `ORDERS` and `PASSIVES` are reserved for compulsions and break.
+/// | breaks_passives | | | | | | PASSIVES |
+///
+/// `ORDERS` is reserved for compulsions; `PASSIVES` suppresses ability passives.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ActionBlocks(u8);
 
@@ -52,7 +54,7 @@ impl ActionBlocks {
     pub const ITEMS: Self = Self(1 << 3);
     /// Player and AI orders are dropped (compulsions).
     pub const ORDERS: Self = Self(1 << 4);
-    /// Ability passives are suppressed (break).
+    /// Ability passives are suppressed (break). Item passives are not (see D2 of the plan).
     pub const PASSIVES: Self = Self(1 << 5);
 
     /// Whether every bit of `other` is set.
@@ -265,6 +267,10 @@ pub struct StatusEffect {
     pub asleep: bool,
     pub invulnerable: bool,
     pub debuff_immune: bool,
+    /// Ability passives (stats and triggers) are suppressed while active (break, hex).
+    pub breaks_passives: bool,
+    /// Caps the holder's walking speed (`0` = no cap). The lowest live cap applies.
+    pub move_speed_cap: f32,
     /// Ignores trees and other ground obstacles while moving (buildings still block).
     pub flying: bool,
     /// Confines the unit to a circle (region restriction or tether).
@@ -313,6 +319,9 @@ impl StatusEffect {
         }
         if self.disarmed {
             blocks = blocks.union(ActionBlocks::ATTACK);
+        }
+        if self.breaks_passives {
+            blocks = blocks.union(ActionBlocks::PASSIVES);
         }
         blocks
     }
@@ -374,6 +383,8 @@ impl StatusEffect {
             asleep: false,
             invulnerable: false,
             debuff_immune: false,
+            breaks_passives: false,
+            move_speed_cap: 0.0,
             flying: false,
             leash: None,
             fear_source: None,
@@ -703,13 +714,24 @@ impl StatusEffect {
         }
     }
 
-    /// Full disable: silence + disarm + mute (items only), per catalog “composite hex”.
+    /// Only ability passives are suppressed (stats and triggers); items keep working.
+    pub fn broken(duration: f32) -> Self {
+        Self {
+            breaks_passives: true,
+            ..Self::debuff("break", duration)
+        }
+    }
+
+    /// Full disable: silence + disarm + mute (items only) + break, and walking speed capped
+    /// at [`crate::scale::HEX_MOVE_SPEED`].
     pub fn hexed(duration: f32) -> Self {
         Self {
             id: "hex",
             silenced: true,
             disarmed: true,
             muted: true,
+            breaks_passives: true,
+            move_speed_cap: crate::scale::HEX_MOVE_SPEED,
             dispel_type: DispelType::Strong,
             ..Self::debuff("hex", duration)
         }
@@ -850,6 +872,20 @@ impl StatusEffects {
             .iter()
             .filter(|e| e.id == "fear" && e.remaining > 0.0)
             .find_map(|e| e.fear_source)
+    }
+
+    /// Ability passives are suppressed (break, hex).
+    pub fn breaks_passives(&self) -> bool {
+        self.blocks().contains(ActionBlocks::PASSIVES)
+    }
+
+    /// The lowest live walking speed cap (`None` = uncapped).
+    pub fn move_speed_cap(&self) -> Option<f32> {
+        self.effects
+            .iter()
+            .filter(|e| e.remaining > 0.0 && e.move_speed_cap > 0.0)
+            .map(|e| e.move_speed_cap)
+            .min_by(f32::total_cmp)
     }
 
     pub fn blind_miss_chance(&self) -> f32 {
@@ -1699,7 +1735,7 @@ mod tests {
     fn blocks_matrix_matches_documented_table() {
         use ActionBlocks as B;
         let all = B::MOVE.union(B::ATTACK).union(B::CAST).union(B::ITEMS);
-        let cases: [(StatusEffect, B); 8] = [
+        let cases: [(StatusEffect, B); 9] = [
             (StatusEffect::stunned(1.0), all),
             (StatusEffect::sleep(1.0), all),
             (StatusEffect::rooted(1.0), B::MOVE),
@@ -1708,8 +1744,9 @@ mod tests {
             (StatusEffect::disarmed(1.0), B::ATTACK),
             (
                 StatusEffect::hexed(1.0),
-                B::CAST.union(B::ITEMS).union(B::ATTACK),
+                B::CAST.union(B::ITEMS).union(B::ATTACK).union(B::PASSIVES),
             ),
+            (StatusEffect::broken(1.0), B::PASSIVES),
             (StatusEffect::buff("plain", 1.0), B::NONE),
         ];
         for (effect, expected) in cases {
@@ -1751,6 +1788,64 @@ mod tests {
             effects: vec![expired, StatusEffect::rooted(1.0), StatusEffect::mute(1.0)],
         };
         assert_eq!(mixed.blocks(), B::MOVE.union(B::ITEMS));
+    }
+
+    #[test]
+    fn hexed_unit_capped_move_speed_and_broken() {
+        let mut stats = CombatStats::simple(10.0, 8.0, 1.0, 2.0, 1.0, 500.0);
+        let none = StatusEffects::default();
+        assert_eq!(stats.effective_move_speed(Some(&none)), 500.0);
+
+        let hexed = StatusEffects {
+            effects: vec![StatusEffect::hexed(2.0)],
+        };
+        assert!(hexed.breaks_passives());
+        assert_eq!(hexed.move_speed_cap(), Some(crate::scale::HEX_MOVE_SPEED));
+        assert_eq!(
+            stats.effective_move_speed(Some(&hexed)),
+            crate::scale::HEX_MOVE_SPEED
+        );
+
+        // A haste bonus does not lift the cap; the lowest cap wins; a slower unit is not sped up.
+        let haste = StatusEffect {
+            move_speed: 200.0,
+            ..StatusEffect::buff("haste", 5.0)
+        };
+        stats.move_speed += 200.0;
+        let both = StatusEffects {
+            effects: vec![haste, StatusEffect::hexed(2.0)],
+        };
+        assert_eq!(
+            stats.effective_move_speed(Some(&both)),
+            crate::scale::HEX_MOVE_SPEED
+        );
+        let tighter = StatusEffects {
+            effects: vec![
+                StatusEffect {
+                    move_speed_cap: 90.0,
+                    ..StatusEffect::debuff("tight", 2.0)
+                },
+                StatusEffect::hexed(2.0),
+            ],
+        };
+        assert_eq!(tighter.move_speed_cap(), Some(90.0));
+        let slow_unit = CombatStats::simple(10.0, 8.0, 1.0, 2.0, 1.0, 120.0);
+        assert_eq!(slow_unit.effective_move_speed(Some(&hexed)), 120.0);
+
+        // An expired hex caps nothing and breaks nothing.
+        let mut gone = StatusEffect::hexed(2.0);
+        gone.remaining = 0.0;
+        let expired = StatusEffects {
+            effects: vec![gone],
+        };
+        assert_eq!(expired.move_speed_cap(), None);
+        assert!(!expired.breaks_passives());
+        // Break alone neither caps nor disables anything else.
+        let broken = StatusEffects {
+            effects: vec![StatusEffect::broken(2.0)],
+        };
+        assert!(broken.breaks_passives() && broken.can_cast() && broken.can_attack());
+        assert_eq!(broken.move_speed_cap(), None);
     }
 
     #[test]

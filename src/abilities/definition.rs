@@ -410,8 +410,11 @@ pub enum StatusSpec {
     Sleep,
     /// No damage from any source.
     Invulnerable,
-    /// Composite silence + disarm + mute (items).
+    /// Composite silence + disarm + mute (items) + break, with walking speed capped at
+    /// `scale::HEX_MOVE_SPEED`.
     Hex,
+    /// Ability passives (stats and triggers) are suppressed. Item passives are not.
+    Break,
     /// Percent chance (0–100) that basic attacks miss.
     Blind {
         miss_chance_percent: RankValue,
@@ -630,6 +633,7 @@ impl StatusSpec {
             StatusSpec::Sleep => StatusEffect::sleep(duration),
             StatusSpec::Invulnerable => StatusEffect::invulnerable(duration),
             StatusSpec::Hex => StatusEffect::hexed(duration),
+            StatusSpec::Break => StatusEffect::broken(duration),
             StatusSpec::Blind {
                 miss_chance_percent,
             } => StatusEffect::blind(

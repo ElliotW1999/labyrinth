@@ -672,6 +672,7 @@ fn status_name(status: StatusSpec) -> &'static str {
         StatusSpec::Sleep => "Sleep",
         StatusSpec::Invulnerable => "Invulnerable",
         StatusSpec::Hex => "Hex",
+        StatusSpec::Break => "Break",
         StatusSpec::Blind { .. } => "Blind",
         StatusSpec::Evasion { .. } => "Evasion",
         StatusSpec::Accuracy { .. } => "Accuracy",

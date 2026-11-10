@@ -9844,4 +9844,134 @@ mod tests {
             "a hit without a normal release spends nothing"
         );
     }
+
+    // --- Break: ability passives off, items untouched ---
+
+    const PASSIVE_KIT: [AbilityId; 4] = [
+        AbilityId::StoneSkin,
+        AbilityId::Dash,
+        AbilityId::Bolt,
+        AbilityId::Nova,
+    ];
+
+    fn passive_def(entries: Vec<AbilityEffectEntry>) -> AbilityDefinition {
+        let mut def = AbilityDefinition::new(AbilityId::StoneSkin)
+            .behavior(definition::AbilityBehavior::Passive);
+        def.effects = entries;
+        def
+    }
+
+    fn set_broken(app: &mut App, unit: Entity, broken: bool) {
+        let mut statuses = app.world_mut().get_mut::<StatusEffects>(unit).unwrap();
+        statuses.effects.retain(|e| e.id != "break");
+        if broken {
+            statuses
+                .effects
+                .push(crate::status::StatusEffect::broken(60.0));
+        }
+    }
+
+    #[test]
+    fn break_suppresses_on_attack_hit_passive() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(passive_def(vec![entry(
+                AbilityTrigger::OnAttackHit,
+                EffectTarget::TriggerUnit,
+                fixed_magical_damage(100.0),
+            )]));
+        let caster = spawn_caster(&mut app, PASSIVE_KIT);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+
+        write_attack_hit(&mut app, caster, target);
+        step(&mut app);
+        assert_eq!(health(&app, target), 900.0, "the passive procs normally");
+
+        set_broken(&mut app, caster, true);
+        write_attack_hit(&mut app, caster, target);
+        step(&mut app);
+        assert_eq!(health(&app, target), 900.0, "broken: no proc");
+
+        set_broken(&mut app, caster, false);
+        write_attack_hit(&mut app, caster, target);
+        step(&mut app);
+        assert_eq!(
+            health(&app, target),
+            800.0,
+            "procs again once the break ends"
+        );
+    }
+
+    #[test]
+    fn break_does_not_suppress_active_abilities_or_cast_phase_effects() {
+        let mut app = test_app();
+        // An active ability that also reacts to attack hits is not a passive.
+        app.world_mut().resource_mut::<AbilityDefinitions>().insert(
+            AbilityDefinition::new(AbilityId::StoneSkin)
+                .behavior(definition::AbilityBehavior::Active)
+                .on(
+                    AbilityTrigger::OnAttackHit,
+                    EffectTarget::TriggerUnit,
+                    fixed_magical_damage(100.0),
+                ),
+        );
+        let caster = spawn_caster(&mut app, PASSIVE_KIT);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        set_broken(&mut app, caster, true);
+        write_attack_hit(&mut app, caster, target);
+        step(&mut app);
+        assert_eq!(health(&app, target), 900.0);
+    }
+
+    #[test]
+    fn break_drops_while_condition_status() {
+        use definition::Condition;
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(passive_def(vec![while_entry(
+                Condition::HealthBelow { percent: 50 },
+                "berserk",
+            )]));
+        let caster = spawn_caster(&mut app, PASSIVE_KIT);
+        let base = armor(&app, caster);
+        set_health(&mut app, caster, 100.0);
+        step(&mut app);
+        assert!(has_status(&app, caster, "berserk"));
+        assert_eq!(armor(&app, caster), base + 10.0);
+
+        set_broken(&mut app, caster, true);
+        step(&mut app);
+        assert!(!has_status(&app, caster, "berserk"), "held status dropped");
+        assert_eq!(armor(&app, caster), base, "and its stat reverted");
+
+        set_broken(&mut app, caster, false);
+        step(&mut app);
+        assert!(has_status(&app, caster, "berserk"), "restored after break");
+        assert_eq!(armor(&app, caster), base + 10.0);
+    }
+
+    #[test]
+    fn break_does_not_affect_item_passives() {
+        use definition::Condition;
+        let mut app = test_app();
+        let _defs = install_test_item_definitions([item_with_effects(vec![
+            while_entry(Condition::HealthBelow { percent: 50 }, "berserk"),
+            entry(
+                AbilityTrigger::OnAttackHit,
+                EffectTarget::TriggerUnit,
+                fixed_magical_damage(100.0),
+            ),
+        ])]);
+        let unit = spawn_item_holder(&mut app, Team::Radiant, Vec3::ZERO);
+        let target = spawn_unit(&mut app, Team::Dire, Vec3::new(80.0, 0.0, 0.0));
+        set_broken(&mut app, unit, true);
+        set_health(&mut app, unit, 100.0);
+        write_attack_hit(&mut app, unit, target);
+        step(&mut app);
+        step(&mut app);
+        assert!(has_status(&app, unit, "berserk"), "item bonus still held");
+        assert_eq!(health(&app, target), 900.0, "item proc still fires");
+    }
 }
