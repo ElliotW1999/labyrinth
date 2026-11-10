@@ -3384,6 +3384,131 @@ mod tests {
             assert!(w.get::<AppliedStatusAttributes>(unit).is_none());
         }
 
+        fn independent_agility(secs: f32) -> StatusEffect {
+            StatusEffect {
+                independent: true,
+                ..modifier("es_agility", ResourceStat::Agility, 3.0, secs)
+            }
+        }
+
+        #[test]
+        fn independent_same_id_agility_stacks_expire_one_by_one_without_drift() {
+            let mut app = app();
+            let hero = hero(&mut app);
+            let base = snapshot(&app, hero);
+            send(
+                &mut app,
+                hero,
+                StatusChange::Apply(independent_agility(4.0)),
+            );
+            step(&mut app, 0.0);
+            step(&mut app, 2.0);
+            send(
+                &mut app,
+                hero,
+                StatusChange::Apply(independent_agility(4.0)),
+            );
+            send(
+                &mut app,
+                hero,
+                StatusChange::Apply(independent_agility(4.0)),
+            );
+            step(&mut app, 0.0);
+            step(&mut app, 0.0);
+            assert_eq!(snapshot(&app, hero).0.agility, base.0.agility + 9.0);
+            // The first stack ends at t = 4, the other two at t = 6.
+            step(&mut app, 2.1);
+            step(&mut app, 0.0);
+            let mid = snapshot(&app, hero);
+            assert_eq!(mid.0.agility, base.0.agility + 6.0);
+            assert!((mid.3 - (base.3 + 6.0 * HeroAttributes::ARMOR_PER_AGI)).abs() < 1e-4);
+            step(&mut app, 2.0);
+            step(&mut app, 0.0);
+            let down = snapshot(&app, hero);
+            assert_eq!(down.0.agility, base.0.agility);
+            assert!((down.3 - base.3).abs() < 1e-4);
+            assert!((down.5 - base.5).abs() < 1e-5);
+        }
+
+        #[test]
+        fn many_stack_churn_leaves_no_attribute_drift() {
+            let mut app = app();
+            let hero = hero(&mut app);
+            let base = snapshot(&app, hero);
+            for _ in 0..40 {
+                send(
+                    &mut app,
+                    hero,
+                    StatusChange::Apply(independent_agility(1.1)),
+                );
+                step(&mut app, 0.3);
+            }
+            step(&mut app, 2.0);
+            step(&mut app, 0.0);
+            let down = snapshot(&app, hero);
+            assert!((down.0.agility - base.0.agility).abs() < 1e-3);
+            assert!((down.3 - base.3).abs() < 1e-3);
+            assert!((down.5 - base.5).abs() < 1e-3);
+        }
+
+        #[test]
+        fn level_up_during_a_timed_attribute_keeps_both_parts_on_expiry() {
+            let mut app = app();
+            let hero = hero(&mut app);
+            let base = snapshot(&app, hero);
+            send(
+                &mut app,
+                hero,
+                StatusChange::Apply(modifier("t_agility", ResourceStat::Agility, 5.0, 2.0)),
+            );
+            step(&mut app, 0.0);
+            step(&mut app, 0.0);
+            // A level-up folds its own gain through `apply_delta`, as progression does.
+            {
+                let w = app.world_mut();
+                let mut attrs = *w.get::<HeroAttributes>(hero).unwrap();
+                let before = attrs;
+                attrs.level_up();
+                let mut health = *w.get::<Health>(hero).unwrap();
+                let mut mana = *w.get::<Mana>(hero).unwrap();
+                let mut stats = *w.get::<CombatStats>(hero).unwrap();
+                HeroAttributes::apply_delta(&before, &attrs, &mut health, &mut mana, &mut stats);
+                *w.get_mut::<HeroAttributes>(hero).unwrap() = attrs;
+                *w.get_mut::<Health>(hero).unwrap() = health;
+                *w.get_mut::<Mana>(hero).unwrap() = mana;
+                *w.get_mut::<CombatStats>(hero).unwrap() = stats;
+            }
+            let leveled = *app.world().get::<HeroAttributes>(hero).unwrap();
+            step(&mut app, 2.5);
+            step(&mut app, 0.0);
+            let after = snapshot(&app, hero);
+            assert!(
+                (after.0.agility - leveled.agility + 5.0).abs() < 1e-4,
+                "only the status part is removed"
+            );
+            assert!(after.0.agility > base.0.agility);
+        }
+
+        #[test]
+        fn dead_holder_attribute_status_still_reverts() {
+            let mut app = app();
+            let hero = hero(&mut app);
+            let base = snapshot(&app, hero);
+            send(
+                &mut app,
+                hero,
+                StatusChange::Apply(modifier("t_strength", ResourceStat::Strength, 10.0, 2.0)),
+            );
+            step(&mut app, 0.0);
+            step(&mut app, 0.0);
+            app.world_mut().get_mut::<Health>(hero).unwrap().current = 0.0;
+            step(&mut app, 2.5);
+            step(&mut app, 0.0);
+            let down = snapshot(&app, hero);
+            assert_eq!(down.0.strength, base.0.strength);
+            assert!((down.1 - base.1).abs() < 1e-3);
+        }
+
         #[test]
         fn two_instances_add() {
             let mut app = app();

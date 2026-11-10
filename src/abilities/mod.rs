@@ -10820,6 +10820,82 @@ mod tests {
         );
     }
 
+    /// A Dire Slark standing at `pos`, which has cast Shadow Dance and is now untargetable.
+    fn dancing_dire_slark(app: &mut App, pos: Vec3) -> Entity {
+        let dancer = spawn_caster(app, SLARK);
+        app.world_mut()
+            .entity_mut(dancer)
+            .insert((Team::Dire, Transform::from_translation(pos)));
+        request(app, dancer, 3, CastTarget::None);
+        run_seconds(app, 0.3);
+        assert!(
+            status_of(app, dancer, "untargetable").is_some(),
+            "the dancer is untargetable"
+        );
+        dancer
+    }
+
+    #[test]
+    fn pounce_contact_still_hits_a_shadow_dancing_enemy() {
+        let mut app = slark_app();
+        let caster = spawn_caster(&mut app, SLARK);
+        // On the leap's path (he faces -Z); the dancer is not the full untargetable kind.
+        let dancer = dancing_dire_slark(&mut app, Vec3::new(0.0, 0.0, -300.0));
+        let plain = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, -400.0));
+        let before = health(&app, dancer);
+        request(&mut app, caster, 1, CastTarget::None);
+        run_seconds(&mut app, 1.3);
+        assert_eq!(
+            health(&app, dancer),
+            before - 100.0,
+            "dash contact counts a targeting-only untargetable unit"
+        );
+        assert_eq!(health(&app, plain), 900.0, "and a plain unit as before");
+    }
+
+    #[test]
+    fn pounce_leash_still_grabs_a_shadow_dancing_enemy_at_the_landing_point() {
+        let mut app = slark_app();
+        let caster = spawn_caster(&mut app, SLARK);
+        let dancer = dancing_dire_slark(&mut app, Vec3::new(0.0, 0.0, -650.0));
+        request(&mut app, caster, 1, CastTarget::None);
+        run_seconds(&mut app, 1.3);
+        assert!(
+            status_of(&app, dancer, "leash").is_some(),
+            "the landing area reaches the dancer"
+        );
+    }
+
+    #[test]
+    fn dark_pact_pulses_still_drain_a_shadow_dancing_enemy() {
+        let mut app = slark_app();
+        let caster = spawn_caster(&mut app, SLARK);
+        let dancer = dancing_dire_slark(&mut app, Vec3::new(200.0, 0.0, 0.0));
+        let before = health(&app, dancer);
+        request(&mut app, caster, 0, CastTarget::None);
+        run_seconds(&mut app, 3.0);
+        assert!(
+            health(&app, dancer) < before,
+            "areas still hit a targeting-only untargetable unit"
+        );
+    }
+
+    #[test]
+    fn dark_pact_dispel_leaves_shadow_dance_and_agility_buffs() {
+        let mut app = slark_app();
+        let caster = spawn_slark(&mut app);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        request(&mut app, caster, 3, CastTarget::None);
+        run_seconds(&mut app, 0.2);
+        write_attack_hit(&mut app, caster, enemy);
+        run_seconds(&mut app, 0.1);
+        request(&mut app, caster, 0, CastTarget::None);
+        run_seconds(&mut app, 2.0);
+        assert!(status_of(&app, caster, "untargetable").is_some());
+        assert!(status_of(&app, caster, "shadow_dance_move_speed_bonus").is_some());
+        assert_eq!(instances(&app, caster, "essence_shift_agility"), 1);
+    }
+
     #[test]
     fn dark_pact_never_damages_slark() {
         let mut app = slark_app();
