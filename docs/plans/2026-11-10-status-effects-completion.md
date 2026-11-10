@@ -1,7 +1,7 @@
 # Status effects completion: audit and implementation plan
 
 **Date:** 2026-11-10
-**Status:** Draft — awaiting approval of open decisions (section 7)
+**Status:** Approved 2026-11-10 — scope steps 1-6 (see section 7 resolutions)
 **Builds on:** `docs/plans/2026-11-06-status-effects-catalog.md` (its matrix is out of date; this plan replaces its "Mechanic matrix" and "Implementation status"), `docs/plans/2026-11-07-movement-mechanics.md` (leash, fear, forced movement), `docs/architecture/composition.md` (layers, invariants I1-I11, section 5 gameplay-rule matrix).
 
 ---
@@ -243,7 +243,12 @@ After generator changes, regenerate (`python3 scripts/AbilityGenerator.py`, `Ite
 - `docs/plans/2026-11-06-status-effects-catalog.md`: header note pointing here; matrix superseded.
 - Doc comments: `DisableRule`, `StatusSpec` variants, `fog.rs` module doc.
 
-## 7. Open decisions
+## 7. Decisions (resolved 2026-11-10)
+
+Resolved: D1 = sleep blocks items; D2 = Break affects ability passives only; D3 = Lotus-style reflection; D4 = keep Basic dispel defaults; D5 = Banish undispellable; D6/D7/D8 = out of scope (deferred). Step 7 is deferred.
+
+Original questions:
+
 
 - **D1:** Sleep blocks item use? Recommended: yes.
 - **D2:** Break suppresses item passives? Recommended: no (abilities only).
