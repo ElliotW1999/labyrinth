@@ -664,6 +664,7 @@ fn status_name(status: StatusSpec) -> &'static str {
         StatusSpec::DebuffImmunity => "Debuff immunity",
         StatusSpec::SpellImmunity => "Spell immunity",
         StatusSpec::AttackImmunity => "Attack immunity",
+        StatusSpec::Untargetable => "Untargetable",
         StatusSpec::Ethereal { .. } => "Ethereal",
         StatusSpec::Banish => "Banish",
         StatusSpec::Shield { .. } => "Shield",

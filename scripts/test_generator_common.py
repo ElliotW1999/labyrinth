@@ -881,12 +881,24 @@ class SlowStatusTests(unittest.TestCase):
         self.assertIn("<owner>_slow", report.errors[0].message)
 
 
+class UntargetableStatusTests(unittest.TestCase):
+    def test_untargetable_keyword_is_a_self_buff_status(self) -> None:
+        report = Report()
+        effect, ctx = _effect("apply_status", "untargetable", duration="4")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors)
+        self.assertIn("status: StatusSpec::Untargetable,", result[2])
+        self.assertEqual(runtime_status_id("untargetable"), "untargetable")
+        self.assertEqual(held_status_id(effect), "untargetable")
+
+
 class ImmunityStatusTests(unittest.TestCase):
     def test_composite_immunity_keywords_map_to_their_specs(self) -> None:
         for keyword, spec in (
             ("debuff_immunity", "StatusSpec::DebuffImmunity"),
             ("spell_immunity", "StatusSpec::SpellImmunity"),
             ("attack_immunity", "StatusSpec::AttackImmunity"),
+            ("untargetable", "StatusSpec::Untargetable"),
             ("banish", "StatusSpec::Banish"),
             ("break", "StatusSpec::Break"),
             ("taunt", "StatusSpec::Taunt"),

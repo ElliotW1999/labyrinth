@@ -263,6 +263,11 @@ pub struct StatusEffect {
     pub immune_damage: DamageTypeMask,
     /// Nobody else may pick the holder as a unit target and area effects skip it.
     pub untargetable: bool,
+    /// Targeting only: basic attacks and hostile unit-target spells cannot pick the holder
+    /// ([`TargetIntent::Attack`], [`TargetIntent::HostileSpell`]), but area effects, dash contact
+    /// and projectiles already in flight still reach it. Unlike [`Self::untargetable`] it
+    /// removes the holder from nothing but unit picks. Read only by [`StatusEffects::rejects`].
+    pub targeting_blocked: bool,
     /// Basic attacks cannot target the holder ([`TargetIntent::Attack`]).
     pub attack_immune: bool,
     /// Hostile unit-target spells cannot target the holder ([`TargetIntent::HostileSpell`]).
@@ -411,6 +416,7 @@ impl StatusEffect {
             shield_amount: 0.0,
             immune_damage: DamageTypeMask::NONE,
             untargetable: false,
+            targeting_blocked: false,
             attack_immune: false,
             spell_immune: false,
             hidden: false,
@@ -652,6 +658,15 @@ impl StatusEffect {
             spell_immune: true,
             immune_damage: DamageTypeMask::MAGICAL,
             ..Self::debuff_immunity(duration)
+        }
+    }
+
+    /// Cannot be picked by attacks or hostile unit-target spells. Area effects, dash contact and
+    /// in-flight projectiles still reach the holder (see [`StatusEffect::targeting_blocked`]).
+    pub fn untargetable(duration: f32) -> Self {
+        Self {
+            targeting_blocked: true,
+            ..Self::buff("untargetable", duration)
         }
     }
 
@@ -1059,6 +1074,14 @@ impl StatusEffects {
             .any(|e| e.spell_reflect && e.remaining > 0.0)
     }
 
+    /// Whether a live effect blocks attacks and hostile spells from picking the holder, while
+    /// leaving area effects alone (see [`StatusEffect::targeting_blocked`]).
+    fn is_targeting_blocked(&self) -> bool {
+        self.effects
+            .iter()
+            .any(|e| e.targeting_blocked && e.remaining > 0.0)
+    }
+
     /// Whether a unit pick made with `intent` must skip this holder.
     pub fn rejects(&self, intent: TargetIntent) -> bool {
         self.is_untargetable()
@@ -1068,12 +1091,14 @@ impl StatusEffects {
                     self.effects
                         .iter()
                         .any(|e| e.attack_immune && e.remaining > 0.0)
+                        || self.is_targeting_blocked()
                         || self.is_concealed()
                 }
                 TargetIntent::HostileSpell => {
                     self.effects
                         .iter()
                         .any(|e| e.spell_immune && e.remaining > 0.0)
+                        || self.is_targeting_blocked()
                         || self.is_concealed()
                 }
             }
@@ -1799,6 +1824,33 @@ mod tests {
         let mut expired = StatusEffect::cyclone(2.0, true);
         expired.remaining = 0.0;
         assert!(!live(expired).is_untargetable());
+    }
+
+    #[test]
+    fn targeting_only_untargetable_rejects_attacks_and_enemy_spells() {
+        let dance = live(StatusEffect::untargetable(2.0));
+        assert!(dance.effects[0].targeting_blocked);
+        assert!(dance.rejects(TargetIntent::Attack));
+        assert!(dance.rejects(TargetIntent::HostileSpell));
+        assert!(!dance.rejects(TargetIntent::Any), "areas still hit it");
+        // It is not the full flag, which dash contact and homing projectiles read.
+        assert!(!dance.is_untargetable());
+        assert!(!dance.effects[0].untargetable);
+        // It ends with the status.
+        let mut expired = StatusEffect::untargetable(2.0);
+        expired.remaining = 0.0;
+        assert!(!live(expired).rejects(TargetIntent::Attack));
+    }
+
+    #[test]
+    fn cyclone_still_fully_untargetable() {
+        let cyclone = live(StatusEffect::cyclone(2.0, true));
+        assert!(cyclone.is_untargetable());
+        assert!(!cyclone.effects[0].targeting_blocked);
+        assert!(cyclone.rejects(TargetIntent::Any));
+        let banish = live(StatusEffect::banish(2.0, true));
+        assert!(banish.is_untargetable());
+        assert!(banish.rejects(TargetIntent::Any));
     }
 
     #[test]

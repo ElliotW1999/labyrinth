@@ -8180,6 +8180,60 @@ mod tests {
     }
 
     #[test]
+    fn targeting_only_untargetable_still_hit_by_areas() {
+        let mut app = test_app();
+        let caster = spawn_caster(&mut app, KIT);
+        let dancer = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        app.world_mut()
+            .get_mut::<StatusEffects>(dancer)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::untargetable(30.0));
+        request(&mut app, caster, 0, CastTarget::None);
+        for _ in 0..10 {
+            step(&mut app);
+        }
+        assert!(
+            app.world().get::<Health>(dancer).unwrap().current < 1000.0,
+            "an area still damages a targeting-only untargetable unit"
+        );
+
+        // A unit-target spell cannot pick it.
+        let before = app.world().get::<Mana>(caster).unwrap().current;
+        for _ in 0..60 {
+            step(&mut app);
+        }
+        request(&mut app, caster, 1, CastTarget::Unit(dancer));
+        for _ in 0..12 {
+            step(&mut app);
+        }
+        assert!(app.world().get::<Activation>(caster).is_none());
+        assert!(app.world().get::<Mana>(caster).unwrap().current >= before);
+    }
+
+    #[test]
+    fn holder_still_runs_own_caster_effects() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(apply_status_ability(StatusSpec::Untargetable, 5.0));
+        let caster = spawn_caster(&mut app, KIT);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        // Cast on itself: the status lands on the caster.
+        request(&mut app, caster, 3, CastTarget::Unit(caster));
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        assert!(status_of(&app, caster, "untargetable").is_some());
+        // The holder still casts its own area ability and damages enemies.
+        request(&mut app, caster, 0, CastTarget::None);
+        for _ in 0..10 {
+            step(&mut app);
+        }
+        assert!(app.world().get::<Health>(enemy).unwrap().current < 1000.0);
+    }
+
+    #[test]
     fn area_damage_hits_invisible_unit() {
         let mut app = test_app();
         let caster = spawn_caster(&mut app, KIT);

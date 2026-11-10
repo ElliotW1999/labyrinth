@@ -382,6 +382,10 @@ pub enum StatusSpec {
     SpellImmunity,
     /// Basic attacks cannot target the holder.
     AttackImmunity,
+    /// Targeting only: attacks and hostile unit-target spells cannot pick the holder, but area
+    /// effects, dash contact and in-flight projectiles still reach it. Not cyclone's full
+    /// untargetable.
+    Untargetable,
     /// Disarmed; immune to physical damage and to being attacked; takes `magic_amp_percent`
     /// (0-90) extra magic damage. Buff or debuff by hostility.
     Ethereal {
@@ -624,6 +628,7 @@ impl StatusSpec {
             StatusSpec::DebuffImmunity => StatusEffect::debuff_immunity(duration),
             StatusSpec::SpellImmunity => StatusEffect::spell_immunity(duration),
             StatusSpec::AttackImmunity => StatusEffect::attack_immunity(duration),
+            StatusSpec::Untargetable => StatusEffect::untargetable(duration),
             // A hostile cast is a debuff; the runner re-sets the kind from the real relation.
             StatusSpec::Ethereal { magic_amp_percent } => {
                 StatusEffect::ethereal(duration, magic_amp_percent.at(rank), true)

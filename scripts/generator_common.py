@@ -217,6 +217,9 @@ STATUSES = {
     "spell_immunity": ("StatusSpec::SpellImmunity", "spell_immunity", True),
     # Basic attacks cannot target the holder.
     "attack_immunity": ("StatusSpec::AttackImmunity", "attack_immunity", True),
+    # Targeting only: attacks and hostile unit-target spells cannot pick the holder; area effects,
+    # dash contact and in-flight projectiles still reach it (cyclone/banish stay fully untargetable).
+    "untargetable": ("StatusSpec::Untargetable", "untargetable", True),
     # Ethereal and banish are debuffs on enemies and buffs on allies / the caster (the kind
     # follows hostility), so they default to an enemy target like other debuffs.
     # ethereal: amount (or value) = extra magic damage taken, percent 0..90.
