@@ -383,3 +383,58 @@ Environment: install the Bevy system libraries with apt if they are missing (as 
 - **U10. Call Down.** One impact at 2 s, not Dota's two missiles. The area is fixed at the cast point, and the slow is `<owner>_slow` (60%, 4 s), refreshed by a recast.
 - **U11. Ranks.** D2 half steps: Q dmg 29/32/35, cd 5.25/5/4.75; W dmg 405/450/495, stun 2.125/2.25/2.375, cd 22.5/22/21.5, mana 125/130/135; R rank 4: 575 damage, 50 cd, 275 mana.
 - **U12.** The three projectile columns are abilities-only for now. Item support is a follow-up, as was done for `cast_range_buffer`.
+
+---
+
+## 13. Implementation notes (2026-11-11)
+
+Built exactly G1-G4 plus the data, in the §5 order, one commit per step. Defaults applied: U1 Flak Cannon 10 s, U2 acceleration 14.285714 u/s^2, U4 Flak ranks 4/5/6/7/8/8/9; every other open decision used its recommended default.
+
+### What was built, and where
+
+| Step | Surface | Where |
+|---|---|---|
+| G1 | `PerformAttack.max_targets: RankValue`; generator `amount` rank list of whole numbers, `perform_attack` area always `AreaCenter::Caster` | `definition.rs`, `effects.rs`, `tooltip.rs`, `generator_common.py` |
+| G2 | `StatusSpec::AttackCharges { id, charges }`, `apply_status,attack_charges` (id `<owner>_attack_charges`), tooltip rows | `definition.rs`, `tooltip.rs`, `generator_common.py` (no `status.rs` rule change) |
+| G3 | `AbilityEffect::PickRandom { count, then }`, `CombatRng::index`, `pick_random` effect type (feeder, not a `GATE_TYPES` member) | `definition.rs`, `effects.rs`, `combat.rs`, `tooltip.rs`, `generator_common.py` |
+| G4 | `components::ProjectileSeek`, `AbilityMechanic::Projectile.seek`, `SpawnProjectileEvent.seek`, retarget / delay / acceleration in `fly_projectiles`, `SEEKING_PROJECTILE_MAX_LIFETIME` (15 s), three ability columns | `components.rs`, `definition.rs`, `mechanics.rs`, `combat.rs`, `tooltip.rs`, `generator_common.py`, `AbilityGenerator.py` |
+| Data | Gyrocopter hero (HeroGenerator on a scratch CSV, `--dry-run` first), 4 abilities (AbilityGenerator: 4 additions, ranks 7/7/7/4) | `data/`, `data/examples/`, `heroes.rs`, `components.rs`, `generated.rs` |
+| Docs | README, `composition.md` (§1, §2, §3, §5 spell landing, new §6.18) | |
+
+### Deviations and judgement calls
+
+1. **`apply_projectile_hits` got a one-line guard** (not in §4 G4, which keeps seeking only in `fly_projectiles`): a seeking missile whose `delay` is still above 0 is skipped. Without it, a target already inside the contact radius at launch would be struck during the delay, so "waits 0.5 s" would not hold. Hit detection is otherwise unchanged. Test: `seeking_projectile_cannot_hit_during_delay`.
+2. **A dead-but-not-despawned target is abandoned at once when nothing can replace it.** The pre-existing code only ended at the last known position when the target entity was gone, so a corpse that lingered a frame would be chased. For seeking missiles with no candidate, `fly_projectiles` now converts to the last-known-position ending immediately (`abandon`). Non-seeking projectiles are untouched (`non_seeking_projectile_unchanged`).
+3. **"Untargetable" for retargeting means `is_untargetable`** (cyclone, banish), as in chain, zone and skillshot contact. The targeting-only `untargetable` status (Shadow Dance) does not block a retarget, consistent with "in-flight projectiles still reach it". The test uses `StatusEffect::cyclone`.
+4. **The delay frame does not carry over leftover time**: the frame in which the delay runs out still does not move. At 20 Hz this is at most one frame (0.05 s).
+5. **Seek columns on items are an error, not a silent ignore** (U12 says abilities only). `ItemGenerator` always emits `seek: None`; the existing item projectile test string was updated for it. `item_catalog.rs` has no projectile items, so there is no generated item diff.
+6. **`seek` is dropped for skillshots at the mechanic** (`seek.filter(|_| !skillshot)`) and in `spawn_spell_bolt` for projectiles without a target, so the component only ever rides on a homing missile. The generator already rejects the columns for non-`targeted` types.
+7. **`fly_projectiles` and `tick_lifetimes` became `pub(crate)`** so the Gyrocopter integration tests can run the real projectile pipeline (`gyro_app`).
+8. **Tooltips** (not specified beyond the G-sections): "Missile: waits Ds, then seeks at S (+A/s^2); retargets within R", "Strikes N random target(s)", and "Attacks" / "Duration" rows for the charges status.
+9. **Invalid examples.** The `value 0` pick_random row in `data/examples/invalid/ability_effects.csv` is also reported for its missing consumer; `PickRandomTests` isolates each case. The attack_charges, seek and pick_random invalid rows are in `data/examples/invalid/`.
+10. **Generated `components.rs` is unformatted by the generators**; `cargo fmt` was run after every generator run, so the committed diff is only the new variants.
+11. **README hero row**: HeroGenerator writes "(stubs - implement later)"; it was removed by hand in the docs step as planned.
+
+### Behaviour notes for reviewers
+
+- A retargeted missile rewrites `ProjectilePayload.cast_target` (U6), so spell block, spell immunity and reflection judge the new target. Test: `homing_missile_retarget_obeys_spell_landing_rules`.
+- Rocket Barrage is `zone (depth 1) -> pick_random (depth 1) -> damage (depth 2)`, within `MAX_TRIGGER_DEPTH`. Test: `pick_random_respects_depth_cap` and the 30-rocket integration test.
+- Flak Cannon counts a charge on every non-extra release, including attacks on buildings; buildings are valid extra targets (U8).
+- Not replicated: projectiles and `StatusEffects` exist on the sim authority only (existing limitation).
+
+### Verification (all run on this branch after the last code change)
+
+| Command | Result |
+|---|---|
+| `cargo fmt --check` | clean |
+| `cargo build` | ok (existing dead-code warnings only) |
+| `cargo test` | 871 passed, 0 failed |
+| `python3 scripts/AbilityGenerator.py --check` | validated 38 abilities, 98 effect rows |
+| `python3 scripts/ItemGenerator.py --check` | validated 60 items, 85 effect rows |
+| `AbilityGenerator.py data/examples/... --check` | validated 51 abilities, 124 effect rows |
+| `ItemGenerator.py data/examples/... --check` | validated 28 items, 56 effect rows |
+| `python3 -m unittest test_generator_common` (in `scripts/`) | 250 tests, OK |
+| `HeroGenerator.py data/heroes.example.csv --dry-run` | Gyrocopter already present: "Nothing to add" |
+| `git diff --stat src/abilities/generated.rs src/item_catalog.rs` | `generated.rs` only: `seek: None` on the 6 projectile sites, the `ProjectileSeek` import and the 4 Gyrocopter blocks; `item_catalog.rs` unchanged |
+
+Remaining limitations: Dota's destroyable missile, its pre-flight vision, a second Call Down missile and the building filter on Flak Cannon are not built (U7, U8, U10). Seek columns are abilities-only (U12).
