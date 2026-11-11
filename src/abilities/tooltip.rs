@@ -401,6 +401,7 @@ fn effect_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
         | AbilityEffect::RequireStatus { .. }
         | AbilityEffect::Counter { .. }
         | AbilityEffect::Chain { .. }
+        | AbilityEffect::PickRandom { .. }
         | AbilityEffect::Zone { .. }
         | AbilityEffect::Orbit { .. }
         | AbilityEffect::Accumulate { .. }
@@ -610,6 +611,10 @@ fn effect_text_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
         AbilityEffect::Counter { every, .. } => {
             vec![text_row(format!("Every {every} attacks"))]
         }
+        AbilityEffect::PickRandom { count, .. } => vec![text_row(match count {
+            1 => "Strikes 1 random target".to_string(),
+            n => format!("Strikes {n} random targets"),
+        })],
         AbilityEffect::Chain { jumps, falloff, .. } => vec![text_row(format!(
             "Chains up to {jumps} times, {}% per jump",
             fmt_num(falloff * 100.0)

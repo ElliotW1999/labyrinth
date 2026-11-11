@@ -1117,6 +1117,14 @@ pub enum AbilityEffect {
         team: TargetTeam,
         then: AbilityTrigger,
     },
+    /// Mechanic gate: picks `count` distinct random units out of the resolved targets (alive
+    /// ones only) and re-fires this context under `then` once per pick (trigger unit = the
+    /// pick, point = its position, no affected units). An empty pool fires nothing. Emits no
+    /// gameplay messages.
+    PickRandom {
+        count: u32,
+        then: AbilityTrigger,
+    },
     /// Mechanic gate: spawns a persistent area at the trigger point (the aim for `OnCast`).
     /// After `delay` seconds, and then every `interval` seconds for `duration` seconds in
     /// total (`floor(duration / interval)` ticks), it re-fires this context under `then`
@@ -1194,6 +1202,7 @@ impl AbilityEffect {
                 | Self::Counter { .. }
                 | Self::Accumulate { .. }
                 | Self::Chain { .. }
+                | Self::PickRandom { .. }
                 | Self::Zone { .. }
                 | Self::Orbit { .. }
                 | Self::PassiveStat { .. }

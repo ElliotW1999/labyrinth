@@ -16,6 +16,8 @@ from generator_common import (  # noqa: E402
     Report,
     Row,
     ABILITY_TRIGGERS,
+    CUSTOM_TRIGGER_FEEDERS,
+    GATE_TYPES,
     GLOBAL_CAST_RANGE,
     ITEM_TRIGGERS,
     NOT_EMITTED_TRIGGERS,
@@ -644,6 +646,60 @@ class AttackChargesStatusTests(unittest.TestCase):
     def test_runtime_status_id_accepts_owner_id(self) -> None:
         self.assertEqual(runtime_status_id("flak_cannon_attack_charges"), "flak_cannon_attack_charges")
         self.assertIsNone(runtime_status_id("attack_charges"))
+
+
+class PickRandomTests(unittest.TestCase):
+    def _convert(self, effect_id="on_pick", target="affected_units", trigger="on_tick", owner_triggers=("on_pick",), **cells):
+        report = Report()
+        effect, ctx = _effect("pick_random", effect_id, target=target, trigger=trigger, **cells)
+        ctx.owner_triggers = set(owner_triggers) if owner_triggers is not None else None
+        return effect_to_rust(effect, ctx, report), report
+
+    def test_emits_pick_random_gate(self) -> None:
+        result, report = self._convert()
+        self.assertFalse(report.errors, report.errors)
+        self.assertEqual(result[1], "EffectTarget::AffectedUnits")
+        self.assertEqual(result[2], 'AbilityEffect::PickRandom { count: 1, then: AbilityTrigger::Custom("on_pick") }')
+
+    def test_value_is_the_pick_count(self) -> None:
+        result, report = self._convert(value="3")
+        self.assertIn("count: 3,", result[2])
+        result, report = self._convert(target="units_in_radius", trigger="on_cast", value="2", radius="400")
+        self.assertFalse(report.errors, report.errors)
+        self.assertIn("count: 2,", result[2])
+        self.assertIn("EffectTarget::UnitsInRadius", result[1])
+
+    def test_invalid_rows_are_rejected(self) -> None:
+        for kwargs, field in (
+            ({"value": "0"}, "value"),
+            ({"value": "1.5"}, "value"),
+            ({"value": "1|2"}, "value"),
+            ({"target": "caster"}, "effect_target"),
+            ({"target": "trigger_unit"}, "effect_target"),
+            ({"effect_id": "on_tick"}, "effect_id"),  # its own trigger
+            ({"effect_id": "on_cast"}, "effect_id"),  # built-in
+            ({"effect_id": ""}, "effect_id"),
+            ({"effect_id": "on_nobody", "owner_triggers": ("on_pick",)}, "effect_id"),  # no consumer
+        ):
+            result, report = self._convert(**kwargs)
+            self.assertIsNone(result, kwargs)
+            self.assertEqual(report.errors[0].field, field, kwargs)
+
+    def test_it_feeds_custom_triggers_but_is_not_a_self_gate(self) -> None:
+        self.assertIn("pick_random", CUSTOM_TRIGGER_FEEDERS)
+        self.assertNotIn("pick_random", GATE_TYPES)
+
+    def test_fed_trigger_rows_load_end_to_end(self) -> None:
+        abilities, report = load_test_ability(
+            effects=[
+                {"effect_index": "0", "trigger": "on_cast", "effect_target": "caster", "effect_type": "attached_zone", "effect_id": "on_tick", "value": "0.1", "duration": "3", "radius": "400"},
+                {"effect_index": "1", "trigger": "on_tick", "effect_target": "affected_units", "effect_type": "pick_random", "effect_id": "on_hit"},
+                {"effect_index": "2", "trigger": "on_hit", "effect_target": "trigger_unit", "effect_type": "damage", "value": "10", "damage_type": "magical"},
+            ]
+        )
+        self.assertFalse(report.errors, report.errors)
+        self.assertFalse([w for w in report.warnings if "never fired" in w.message], report.warnings)
+        self.assertEqual(len(abilities[0].effects), 3)
 
 
 class ResourceEffectTests(unittest.TestCase):

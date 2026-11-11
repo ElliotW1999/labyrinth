@@ -317,6 +317,12 @@ impl CombatRng {
         }
         self.next_f32() < chance
     }
+
+    /// A uniform index in `0..len` (`len` must be above 0).
+    pub fn index(&mut self, len: usize) -> usize {
+        debug_assert!(len > 0, "CombatRng::index needs a non-empty range");
+        ((self.next_f32() * len as f32) as usize).min(len.saturating_sub(1))
+    }
 }
 
 #[derive(Resource, Debug, Clone, Copy, Default)]

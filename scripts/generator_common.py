@@ -91,7 +91,7 @@ GATE_TYPES = ("proc", "pseudo_proc", "counter", "accumulate", "require_status")
 # Every effect type that fires a custom trigger: the gates plus the Chain mechanic gate (one
 # derived context per hop) and the Zone mechanic gate (one per tick). Used for reachability and
 # reaction propagation.
-CUSTOM_TRIGGER_FEEDERS = (*GATE_TYPES, "chain", "zone", "attached_zone", "orbit")
+CUSTOM_TRIGGER_FEEDERS = (*GATE_TYPES, "chain", "pick_random", "zone", "attached_zone", "orbit")
 # Triggers whose resolved target is the unit that caused them (the `attacker` target).
 ATTACKER_TRIGGERS = ("on_damage_taken", "on_death")
 
@@ -167,6 +167,9 @@ EFFECT_TYPES = {
     "require_status",
     # Mechanic gate: jump from the start unit to nearby units, re-firing a custom trigger per hop.
     "chain",
+    # Mechanic gate: picks `value` (default 1) distinct random units out of the target pool and
+    # re-fires a custom trigger once per pick, with the pick as the trigger unit.
+    "pick_random",
     # Mechanic gate: a delayed, persistent area that re-fires a custom trigger on every tick with the
     # units inside as the affected units.
     "zone",
@@ -2193,6 +2196,31 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             f"falloff: {f32(amount[0] / 100)}, team: TargetTeam::{chain_team}, "
             f'then: AbilityTrigger::Custom("{effect_id}") }}'
         )
+    elif t == "pick_random":
+        if not _require(e, "effect_id", report, "the custom trigger to fire per pick (on_<name>)"):
+            return None
+        if not CUSTOM_TRIGGER_PATTERN.match(effect_id) or effect_id in ABILITY_TRIGGERS or effect_id in ITEM_TRIGGERS:
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), "must be a custom on_<name> trigger, not a built-in trigger")
+            return None
+        if effect_id == e.trigger:
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), "a pick_random cannot fire its own trigger")
+            return None
+        if e.target not in ("affected_units", "units_in_radius"):
+            report.error(row.file, row.line, "effect_target", e.target, "pick_random chooses from a pool of units; use affected_units or units_in_radius")
+            return None
+        if ctx.owner_triggers is not None and effect_id not in ctx.owner_triggers:
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), f"no row of {e.owner!r} uses trigger {effect_id}, so this pick_random would do nothing")
+            return None
+        if not no_scaling():
+            return None
+        picks = 1
+        if value:
+            if len(value) != 1 or not float(value[0]).is_integer() or value[0] < 1:
+                report.error(row.file, row.line, "value", row.get("value"), "pick_random needs a single integer number of picks of at least 1 (blank = 1)")
+                return None
+            picks = int(value[0])
+        _unused(e, report, "damage_type", "duration", "amount")
+        effect = f'AbilityEffect::PickRandom {{ count: {picks}, then: AbilityTrigger::Custom("{effect_id}") }}'
     elif t in ("zone", "attached_zone"):
         # `attached_zone` is a `zone` that is re-centred on its caster before every tick.
         if not _require(e, "effect_id", report, "the custom trigger to fire per tick (on_<name>)"):

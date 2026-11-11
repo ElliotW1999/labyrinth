@@ -1060,6 +1060,32 @@ impl EffectRunner<'_, '_> {
                     }
                 }
             }
+            AbilityEffect::PickRandom { count, then } => {
+                if !self.gate_open(ctx) {
+                    return;
+                }
+                let mut pool: Vec<(Entity, Vec3)> = targets
+                    .into_iter()
+                    .filter_map(|e| {
+                        let (_, tf, _, health, _) = self.units.get(e).ok()?;
+                        health.is_alive().then_some((e, tf.translation))
+                    })
+                    .collect();
+                // Partial Fisher-Yates: `picks` distinct members, drawn in message order so a
+                // seeded `CombatRng` gives a reproducible result.
+                let picks = (count as usize).min(pool.len());
+                for i in 0..picks {
+                    let j = i + self.rng.index(pool.len() - i);
+                    pool.swap(i, j);
+                    let (unit, position) = pool[i];
+                    self.derived.push(
+                        ctx.derived(then)
+                            .trigger_unit(Some(unit))
+                            .at(position)
+                            .affected(Vec::new()),
+                    );
+                }
+            }
             AbilityEffect::Zone {
                 radius,
                 team,

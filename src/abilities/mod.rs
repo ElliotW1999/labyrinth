@@ -7553,6 +7553,7 @@ mod tests {
                 team: TargetTeam::Enemy,
                 then,
             },
+            AbilityEffect::PickRandom { count: 1, then },
         ];
         for gate in gates {
             assert!(!gate.acts_on_targets(), "{gate:?}");
@@ -9361,6 +9362,250 @@ mod tests {
         app.world_mut().write_message(AbilityTriggerEvent(shallow));
         step(&mut app);
         assert_eq!(zone_count(&mut app), 1);
+    }
+
+    // ---- random picks (AbilityEffect::PickRandom) ----
+
+    const PICK_HIT: AbilityTrigger = AbilityTrigger::Custom("on_pick_hit");
+
+    /// A zone on the caster whose every tick strikes `count` random enemies inside it.
+    fn pick_ability(count: u32, duration: f32) -> AbilityDefinition {
+        AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::NoTarget, RankValue::ZERO, RankValue::ZERO)
+            .costs(RankValue::ZERO, RankValue::ZERO)
+            .timing(0.0, 0.0)
+            .on(
+                AbilityTrigger::OnCast,
+                EffectTarget::Caster,
+                zone_effect(TargetTeam::Enemy, 0.0, duration, 1.0),
+            )
+            .on(
+                ZONE_TICK,
+                EffectTarget::AffectedUnits,
+                AbilityEffect::PickRandom {
+                    count,
+                    then: PICK_HIT,
+                },
+            )
+            .on(
+                PICK_HIT,
+                EffectTarget::TriggerUnit,
+                fixed_magical_damage(10.0),
+            )
+    }
+
+    /// Runs the pick ability and returns the targets struck in each frame that struck any.
+    fn run_picks(app: &mut App, count: u32, duration: f32) -> Vec<Vec<Entity>> {
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(pick_ability(count, duration));
+        let caster = spawn_caster(app, KIT);
+        request(app, caster, 3, CastTarget::None);
+        let mut frames = Vec::new();
+        for _ in 0..((duration + 1.0) / 0.05) as usize {
+            step(app);
+            let hit: Vec<Entity> = current_messages::<DamageEvent>(app)
+                .iter()
+                .map(|d| d.target)
+                .collect();
+            if !hit.is_empty() {
+                frames.push(hit);
+            }
+        }
+        frames
+    }
+
+    #[test]
+    fn pick_random_fires_once_per_tick_on_one_pool_member() {
+        let mut app = test_app();
+        let pool = [
+            spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0)),
+            spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, 150.0)),
+            spawn_unit(&mut app, Team::Dire, Vec3::new(-120.0, 0.0, 0.0)),
+        ];
+        let outside = spawn_unit(&mut app, Team::Dire, Vec3::new(900.0, 0.0, 0.0));
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(50.0, 0.0, 0.0));
+        let frames = run_picks(&mut app, 1, 3.0);
+        assert_eq!(frames.len(), 3, "one strike per tick, three ticks");
+        for hit in &frames {
+            assert_eq!(hit.len(), 1);
+            assert!(pool.contains(&hit[0]));
+            assert!(hit[0] != outside && hit[0] != ally);
+        }
+    }
+
+    #[test]
+    fn pick_random_with_empty_pool_fires_nothing() {
+        let mut app = test_app();
+        spawn_unit(&mut app, Team::Dire, Vec3::new(900.0, 0.0, 0.0));
+        spawn_unit(&mut app, Team::Radiant, Vec3::new(50.0, 0.0, 0.0));
+        assert!(run_picks(&mut app, 1, 3.0).is_empty());
+    }
+
+    #[test]
+    fn pick_random_count_caps_at_pool_and_is_distinct() {
+        let mut app = test_app();
+        for x in [100.0, 150.0, 200.0] {
+            spawn_unit(&mut app, Team::Dire, Vec3::new(x, 0.0, 0.0));
+        }
+        for frame in run_picks(&mut app, 2, 3.0) {
+            assert_eq!(frame.len(), 2);
+            assert_ne!(frame[0], frame[1], "picks are distinct");
+        }
+        let mut app = test_app();
+        for x in [100.0, 150.0] {
+            spawn_unit(&mut app, Team::Dire, Vec3::new(x, 0.0, 0.0));
+        }
+        for frame in run_picks(&mut app, 5, 3.0) {
+            assert_eq!(frame.len(), 2, "capped at the pool size");
+            assert_ne!(frame[0], frame[1]);
+        }
+    }
+
+    #[test]
+    fn pick_random_is_deterministic_for_a_seed() {
+        let run = |seed: u64| {
+            let mut app = test_app();
+            app.world_mut().resource_mut::<CombatRng>().seed(seed);
+            let pool: Vec<Entity> = (0..4)
+                .map(|i| {
+                    spawn_unit(
+                        &mut app,
+                        Team::Dire,
+                        Vec3::new(60.0 + 40.0 * i as f32, 0.0, 0.0),
+                    )
+                })
+                .collect();
+            run_picks(&mut app, 1, 20.0)
+                .iter()
+                .map(|hit| pool.iter().position(|e| *e == hit[0]).unwrap())
+                .collect::<Vec<_>>()
+        };
+        let (a, b) = (run(7), run(7));
+        assert_eq!(a.len(), 20);
+        assert_eq!(a, b, "same seed, same picks");
+        assert!(
+            a.iter().any(|i| *i != a[0]),
+            "the picks vary across ticks, not always the same unit"
+        );
+        assert_ne!(a, run(99), "another seed picks differently");
+    }
+
+    #[test]
+    fn pick_random_respects_depth_cap() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(pick_ability(1, 1.0));
+        let caster = spawn_caster(&mut app, KIT);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        let tick_at = |depth: u8| {
+            let mut ctx = TriggerContext::new(
+                ZONE_TICK,
+                EffectSource::Ability(AbilityId::Bulwark),
+                caster,
+                Team::Radiant,
+                1,
+                Vec3::ZERO,
+                Vec3::ZERO,
+            );
+            ctx.depth = depth;
+            ctx.affected_units = vec![enemy];
+            AbilityTriggerEvent(ctx)
+        };
+        app.world_mut()
+            .write_message(tick_at(effects::MAX_TRIGGER_DEPTH));
+        step(&mut app);
+        step(&mut app);
+        assert!(current_messages::<DamageEvent>(&app).is_empty());
+
+        // A zone tick sits at depth 1, one hop below the cap, and still strikes.
+        app.world_mut()
+            .write_message(tick_at(effects::MAX_TRIGGER_DEPTH - 1));
+        let mut struck = 0;
+        for _ in 0..3 {
+            step(&mut app);
+            struck += current_messages::<DamageEvent>(&app).len();
+        }
+        assert_eq!(struck, 1);
+    }
+
+    #[test]
+    fn item_and_ability_pick_random_alike() {
+        let rows = |trigger| -> Vec<AbilityEffectEntry> {
+            vec![
+                AbilityEffectEntry {
+                    trigger,
+                    target: EffectTarget::UnitsInRadius {
+                        center: definition::AreaCenter::Caster,
+                        radius: AreaRadius::Fixed(RankValue::fixed(500.0)),
+                        team: TargetTeam::Enemy,
+                    },
+                    effect: AbilityEffect::PickRandom {
+                        count: 1,
+                        then: PICK_HIT,
+                    },
+                },
+                AbilityEffectEntry {
+                    trigger: PICK_HIT,
+                    target: EffectTarget::TriggerUnit,
+                    effect: fixed_magical_damage(10.0),
+                },
+            ]
+        };
+
+        // Ability.
+        let mut app = test_app();
+        let mut ability = AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::NoTarget, RankValue::ZERO, RankValue::ZERO)
+            .costs(RankValue::ZERO, RankValue::ZERO)
+            .timing(0.0, 0.0);
+        for entry in rows(AbilityTrigger::OnCast) {
+            ability = ability.on(entry.trigger, entry.target, entry.effect);
+        }
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(ability);
+        let caster = spawn_caster(&mut app, KIT);
+        let pool = [
+            spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0)),
+            spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, 200.0)),
+        ];
+        request(&mut app, caster, 3, CastTarget::None);
+        let mut ability_hits = Vec::new();
+        for _ in 0..6 {
+            step(&mut app);
+            ability_hits.extend(current_messages::<DamageEvent>(&app));
+        }
+
+        // Item.
+        let mut app = test_app();
+        let effects: &'static [AbilityEffectEntry] =
+            Box::leak(rows(AbilityTrigger::OnUse).into_boxed_slice());
+        let _defs = install_test_item_definitions([item_with(
+            effects,
+            TargetType::NoTarget,
+            TargetTeam::Enemy,
+            0.0,
+        )]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let item_pool = [
+            spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0)),
+            spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, 200.0)),
+        ];
+        request_item(&mut app, caster, 0, CastTarget::None);
+        let mut item_hits = Vec::new();
+        for _ in 0..6 {
+            step(&mut app);
+            item_hits.extend(current_messages::<DamageEvent>(&app));
+        }
+
+        assert_eq!(ability_hits.len(), 1);
+        assert_eq!(item_hits.len(), 1);
+        assert!(pool.contains(&ability_hits[0].target));
+        assert!(item_pool.contains(&item_hits[0].target));
+        assert_eq!(ability_hits[0].amount, item_hits[0].amount);
     }
 
     fn move_unit(app: &mut App, unit: Entity, to: Vec3) {
