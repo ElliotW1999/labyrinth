@@ -314,7 +314,8 @@ ITEM_ACTIVATION_OPTIONAL = (
     "projectile_end_radius",
     "projectile_origin_offset",
 )
-# Effect-polarity teams (`units_in_radius` defaults); "self" areas still mean allies.
+# Ability target teams. For `units_in_radius`, enemy/both abilities use these directly and
+# ally/self abilities follow effect polarity instead (harmful rows pick enemies).
 TARGET_TEAMS = {"enemy": "Enemy", "ally": "Ally", "both": "Any", "self": "Ally"}
 # Activation team rule (`TargetTeam` of the action).
 ACTION_TEAMS = {**TARGET_TEAMS, "self": "SelfOnly"}
@@ -989,7 +990,7 @@ class EffectContext:
     levels: int | None
     #: `units_in_radius` center for each trigger.
     center_for: dict[str, str]
-    #: Default `units_in_radius` team for abilities (None → derive from effect polarity).
+    #: Ability target team for `units_in_radius` ("Enemy"/"Any" win; otherwise effect polarity).
     team: str | None = None
     #: Ability aoe_radius > 0 (lets units_in_radius fall back to `AreaRadius::Ability`).
     has_aoe: bool = False
@@ -2272,7 +2273,9 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             where = "the ability has no aoe_radius" if ctx.kind == "ability" else "items have no aoe_radius"
             report.error(row.file, row.line, "radius", "", f"required for units_in_radius ({where})")
             return None
-        team = ctx.team or ("Ally" if beneficial else "Enemy")
+        # Enemy/both abilities keep their team; ally/self abilities follow effect polarity, so a
+        # harmful area (damage, stun, knockback) hits enemies and a beneficial one hits allies.
+        team = ctx.team if ctx.team in ("Enemy", "Any") else ("Ally" if beneficial else "Enemy")
         center = ctx.center_for.get(e.trigger, "TriggerPoint")
         target = (
             f"EffectTarget::UnitsInRadius {{ center: AreaCenter::{center}, "

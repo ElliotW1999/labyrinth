@@ -781,6 +781,28 @@ class HealStatusTests(unittest.TestCase):
         self.assertEqual(report.errors[0].field, "effect_type")
 
 
+class AreaPolarityTests(unittest.TestCase):
+    def _area(self, effect_type, effect_id, team, **cells):
+        report = Report()
+        effect, ctx = _effect(effect_type, effect_id, target="units_in_radius", **cells)
+        ctx.team, ctx.has_aoe = team, True
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors, report.errors)
+        return result[1]
+
+    def test_ally_ability_damage_area_hits_enemies(self) -> None:
+        self.assertIn("team: TargetTeam::Enemy", self._area("damage", "", "Ally", value="90", damage_type="pure"))
+
+    def test_ally_ability_heal_area_hits_allies(self) -> None:
+        self.assertIn("team: TargetTeam::Ally", self._area("heal", "", "Ally", value="90"))
+
+    def test_enemy_ability_heal_area_is_unchanged(self) -> None:
+        self.assertIn("team: TargetTeam::Enemy", self._area("heal", "", "Enemy", value="90"))
+
+    def test_self_ability_stun_area_hits_enemies(self) -> None:
+        self.assertIn("team: TargetTeam::Enemy", self._area("apply_status", "stun", "Ally", duration="1"))
+
+
 class ZoneTests(unittest.TestCase):
     GOOD = {"value": "1", "duration": "10", "amount": "1.2"}
 
