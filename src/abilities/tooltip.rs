@@ -527,6 +527,10 @@ fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
             row("Damage per mana", damage_per_mana),
             seconds_row("Mana shield duration", duration),
         ],
+        StatusSpec::TemporaryMana { amount } => vec![
+            row("Temporary mana", amount),
+            seconds_row("Temporary mana duration", duration),
+        ],
         StatusSpec::ResourceModifier { stat, amount, .. } => vec![
             row(crate::vitals::stat_label(stat), amount),
             seconds_row("Duration", duration),
@@ -772,6 +776,7 @@ fn status_name(status: StatusSpec) -> &'static str {
         StatusSpec::Ethereal { .. } => "Ethereal",
         StatusSpec::Banish => "Banish",
         StatusSpec::Shield { .. } => "Shield",
+        StatusSpec::TemporaryMana { .. } => "Temporary mana",
         StatusSpec::Burn { .. } => "Burn",
         StatusSpec::Mute => "Mute",
         StatusSpec::Sleep => "Sleep",

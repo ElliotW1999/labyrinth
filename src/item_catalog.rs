@@ -81,6 +81,8 @@ pub fn definition(id: ItemId) -> &'static ItemDefinition {
         ItemId::VoodooMask => &VOODOO_MASK,
         ItemId::MorbidMask => &MORBID_MASK,
         ItemId::GhostScepter => &GHOST_SCEPTER,
+        ItemId::SoulRing => &SOUL_RING,
+        ItemId::RecipeSoulRing => &RECIPE_SOUL_RING,
     }
 }
 
@@ -2333,3 +2335,97 @@ static GHOST_SCEPTER: ItemDefinition = ItemDefinition {
     mechanics: &[],
 };
 // </item:ghost_scepter>
+
+// <item:soul_ring>
+static SOUL_RING: ItemDefinition = ItemDefinition {
+    id: ItemId::SoulRing,
+    name: "Soul Ring",
+    short_label: "SR",
+    item_type: ItemType::Accessories,
+    cost: 700,
+    sell_value: 350,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 25.0,
+    activation: ItemActivation {
+        target_type: TargetType::NoTarget,
+        target_team: TargetTeam::Any,
+        cast_range: 0.0,
+        cast_time: 0.0,
+        channel_time: 0.0,
+        mana_cost: 0.0,
+    },
+    components: &[
+        ItemId::GauntletsOfStrength,
+        ItemId::GauntletsOfStrength,
+        ItemId::RingOfProtection,
+        ItemId::RecipeSoulRing,
+    ],
+    color: [0.372, 0.415, 0.426],
+    description: "+6 Strength, +2 Armor. Active: pay 150 HP for 150 temporary mana for 10s (raises max mana by any excess)",
+    effects: &[
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::Attribute(Attribute::Strength),
+                amount: RankValue::fixed(6.0),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::Armor,
+                amount: RankValue::fixed(2.0),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::OnUse,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::SpendResource {
+                resource: ResourceKind::Health,
+                amount: RankValue::fixed(150.0),
+                convert_to: None,
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::OnUse,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::ApplyStatus {
+                status: StatusSpec::TemporaryMana {
+                    amount: RankValue::fixed(150.0),
+                },
+                duration: RankValue::fixed(10.0),
+            },
+        },
+    ],
+    mechanics: &[],
+};
+// </item:soul_ring>
+
+// <item:recipe_soul_ring>
+static RECIPE_SOUL_RING: ItemDefinition = ItemDefinition {
+    id: ItemId::RecipeSoulRing,
+    name: "Recipe: Soul Ring",
+    short_label: "R-SR",
+    item_type: ItemType::Recipe,
+    cost: 245,
+    sell_value: 122,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    activation: ItemActivation::INSTANT,
+    components: &[],
+    color: [0.702, 0.794, 0.257],
+    description: "Combines with components into Soul Ring",
+    effects: &[],
+    mechanics: &[],
+};
+// </item:recipe_soul_ring>

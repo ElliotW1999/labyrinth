@@ -1547,6 +1547,37 @@ class ImmunityStatusTests(unittest.TestCase):
         self.assertIn("0..90", report.errors[0].message)
 
 
+class TemporaryManaStatusTests(unittest.TestCase):
+    def test_emits_the_status_with_value_or_amount(self) -> None:
+        for cells in ({"value": "150"}, {"amount": "150"}):
+            report = Report()
+            effect, ctx = _effect("apply_status", "temporary_mana", target="owner", trigger="on_use", kind="item", duration="10", **cells)
+            result = effect_to_rust(effect, ctx, report)
+            self.assertFalse(report.errors, cells)
+            self.assertIn("StatusSpec::TemporaryMana { amount:", result[2])
+            self.assertEqual(runtime_status_id("temporary_mana"), "temporary_mana")
+
+    def test_rejects_missing_or_non_positive_amount_and_missing_duration(self) -> None:
+        cases = [
+            ({"duration": "10"}, "required"),
+            ({"value": "0", "duration": "10"}, "above 0"),
+            ({"value": "-5", "duration": "10"}, "above 0"),
+            ({"value": "150"}, "duration"),
+        ]
+        for cells, message in cases:
+            report = Report()
+            effect, ctx = _effect("apply_status", "temporary_mana", target="owner", trigger="on_use", kind="item", **cells)
+            self.assertIsNone(effect_to_rust(effect, ctx, report), cells)
+            self.assertIn(message, report.errors[0].message, cells)
+
+    def test_cannot_be_held_by_while_triggers(self) -> None:
+        for trigger in ("while:moving", "while_toggled"):
+            report = Report()
+            effect, ctx = _effect("apply_status", "temporary_mana", target="owner", trigger=trigger, value="150")
+            self.assertIsNone(effect_to_rust(effect, ctx, report), trigger)
+            self.assertTrue(report.errors, trigger)
+
+
 class DamageReductionStatusTests(unittest.TestCase):
     def test_generated_damage_reduction_carries_a_per_owner_id(self) -> None:
         report = Report()

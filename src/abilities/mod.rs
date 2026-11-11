@@ -143,6 +143,7 @@ impl Plugin for AbilitiesPlugin {
                         apply_status_effect_events,
                         crate::vitals::sync_status_resource_caps,
                         crate::vitals::sync_status_attributes,
+                        crate::vitals::sync_temporary_mana,
                         // Before the AI and navigation stages, so the orders it drops
                         // are gone before they are replanned or re-issued.
                         apply_teleport_events.before(crate::movement::SimSet::Ai),
@@ -805,6 +806,7 @@ mod tests {
                         apply_status_effect_events,
                         crate::vitals::sync_status_resource_caps,
                         crate::vitals::sync_status_attributes,
+                        crate::vitals::sync_temporary_mana,
                     )
                         .chain(),
                     apply_teleport_events,
@@ -1335,6 +1337,81 @@ mod tests {
             .cooldown
             .remaining;
         assert!((cooldown - 22.0).abs() < 0.5, "{cooldown}");
+    }
+
+    /// A Soul Ring owner with the given vitals, ready to use slot 0.
+    fn soul_ring_owner(health: f32, mana: (f32, f32)) -> (App, Entity) {
+        let mut app = qop_app();
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::SoulRing);
+        {
+            let mut entity = app.world_mut().entity_mut(caster);
+            *entity.get_mut::<Health>().unwrap() = Health {
+                current: health,
+                max: 500.0,
+                regen_per_sec: 0.0,
+            };
+            *entity.get_mut::<Mana>().unwrap() = Mana {
+                current: mana.0,
+                max: mana.1,
+                regen_per_sec: 0.0,
+            };
+        }
+        (app, caster)
+    }
+
+    fn vitals_of(app: &App, caster: Entity) -> (f32, f32, f32) {
+        let health = app.world().get::<Health>(caster).unwrap().current;
+        let mana = app.world().get::<Mana>(caster).unwrap();
+        (health, mana.current, mana.max)
+    }
+
+    #[test]
+    fn soul_ring_spends_health_and_grants_temporary_mana_for_ten_seconds() {
+        let (mut app, caster) = soul_ring_owner(500.0, (450.0, 500.0));
+        request_item(&mut app, caster, 0, CastTarget::None);
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        assert_eq!(vitals_of(&app, caster), (350.0, 600.0, 600.0));
+        let cooldown = app.world().get::<Inventory>(caster).unwrap().slots[0]
+            .unwrap()
+            .cooldown
+            .remaining;
+        assert!((cooldown - 25.0).abs() < 0.5, "{cooldown}");
+        // The bonus runs out after 10 seconds: unspent mana and the overflow go.
+        for _ in 0..205 {
+            step(&mut app);
+        }
+        assert_eq!(vitals_of(&app, caster), (350.0, 450.0, 500.0));
+    }
+
+    #[test]
+    fn soul_ring_cannot_kill_but_still_grants_mana() {
+        let (mut app, caster) = soul_ring_owner(100.0, (100.0, 500.0));
+        request_item(&mut app, caster, 0, CastTarget::None);
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        let (health, mana, max) = vitals_of(&app, caster);
+        assert_eq!(health, 1.0, "the cost floors health at 1");
+        assert_eq!((mana, max), (250.0, 500.0));
+        assert!(app.world().get::<Health>(caster).unwrap().is_alive());
+    }
+
+    #[test]
+    fn soul_ring_cost_is_not_damage() {
+        let (mut app, caster) = soul_ring_owner(500.0, (450.0, 500.0));
+        request_item(&mut app, caster, 0, CastTarget::None);
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        let applied = app
+            .world()
+            .resource::<Messages<crate::combat::DamageAppliedEvent>>()
+            .iter_current_update_messages()
+            .count();
+        assert_eq!(applied, 0, "spending health fires no damage facts");
     }
 
     #[test]

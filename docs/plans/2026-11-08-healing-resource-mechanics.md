@@ -324,7 +324,7 @@ Units follow the existing conventions: passive amps are fractions (like `spell_a
 
 1. Every health increase goes through `vitals::apply_heal`. `grep -n "current + " src` should find no other heal site, apart from the max-change helper.
 2. Every health decrease from damage goes through `apply_damage_events`. The one non-damage decrease is a self-spend in `apply_resource_drain_events`.
-3. Timed resource modifiers are summed when read, never stored into `CombatStats`. The single exception is max HP/mana, which only `sync_status_resource_caps` reconciles.
+3. Timed resource modifiers are summed when read, never stored into `CombatStats`. The exceptions are max HP/mana, which only `sync_status_resource_caps` reconciles, and the `temporary_mana` status (Soul Ring), which only `sync_temporary_mana` reconciles: it adds the granted mana (and any max-mana overflow) to `Mana` and removes exactly the unspent bonus and the overflow when the grant ends, never more than was unspent (spent mana is never taken back).
 4. Every leech heal is applied in the same frame as its damage, after the damage batch. No new `AbilityTrigger` is emitted.
 5. Cleanup-plan invariants hold: a single executor, the chain positions above, and generated code changed only by regeneration.
 

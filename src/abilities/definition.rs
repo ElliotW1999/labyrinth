@@ -408,6 +408,11 @@ pub enum StatusSpec {
     Shield {
         amount: RankValue,
     },
+    /// `amount` bonus mana (spent first; unspent bonus and any max-mana overflow are removed
+    /// when the status ends). Undispellable, one instance per application.
+    TemporaryMana {
+        amount: RankValue,
+    },
     /// Periodic damage while active. `amount` is damage per second when `tick_interval` is 0
     /// (continuous), otherwise damage per tick, one tick every `tick_interval` seconds. `id` is
     /// the status id: hand-written burns use `"burn"`, generated ones `<owner>_burn` so
@@ -704,6 +709,9 @@ impl StatusSpec {
             }
             StatusSpec::Banish => StatusEffect::banish(duration, true),
             StatusSpec::Shield { amount } => StatusEffect::shield(amount.at(rank), duration),
+            StatusSpec::TemporaryMana { amount } => {
+                StatusEffect::temporary_mana(amount.at(rank), duration)
+            }
             StatusSpec::Burn {
                 id,
                 amount,

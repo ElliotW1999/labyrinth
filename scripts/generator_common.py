@@ -249,6 +249,9 @@ STATUSES = {
     "ethereal": (None, "ethereal", False),
     "banish": ("StatusSpec::Banish", "banish", False),
     "shield": (None, "shield", True),
+    # Bonus mana for `duration` (amount or value > 0), spent before regular mana; unspent bonus
+    # and any max-mana overflow are removed when it ends. Undispellable, one instance per use.
+    "temporary_mana": (None, "temporary_mana", True),
     "burn": (None, "burn", False),
     "heal_over_time": (None, "heal_over_time", True),
     "heal_reduction": (None, "heal_reduction", False),
@@ -1772,6 +1775,23 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
                 return None
             spec = f"StatusSpec::Shield {{ amount: {rank_value(pool)} }}"
             _unused(e, report, "value")
+        elif effect_id == "temporary_mana":
+            if e.trigger in ("passive", "while", "while_toggled"):
+                report.error(row.file, row.line, "trigger", e.trigger, "temporary_mana is a timed grant; it cannot be held by passive, while or while_toggled")
+                return None
+            pool = amount or value
+            if not pool:
+                report.error(row.file, row.line, "value", "", "required: temporary mana granted (above 0)")
+                return None
+            if any(p <= 0 for p in pool):
+                report.error(row.file, row.line, "amount" if amount else "value", row.get("amount") or row.get("value"), "temporary mana must be above 0")
+                return None
+            if any(d <= 0 for d in duration):
+                report.error(row.file, row.line, "duration", row.get("duration"), "temporary_mana needs a duration above 0")
+                return None
+            spec = f"StatusSpec::TemporaryMana {{ amount: {rank_value(pool)} }}"
+            if amount:
+                _unused(e, report, "value")
         elif effect_id == "burn":
             if not value:
                 report.error(row.file, row.line, "value", "", "required: burn damage (per second, or per tick when amount sets a tick interval)")

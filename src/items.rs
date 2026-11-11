@@ -280,6 +280,8 @@ pub enum ItemId {
     VoodooMask,
     MorbidMask,
     GhostScepter,
+    SoulRing,
+    RecipeSoulRing,
     // </item_generator:item_enum>
 }
 
@@ -610,6 +612,8 @@ impl ItemId {
             ItemId::VoodooMask,
             ItemId::MorbidMask,
             ItemId::GhostScepter,
+            ItemId::SoulRing,
+            ItemId::RecipeSoulRing,
             // </item_generator:item_all>
         ]
     }
@@ -2780,6 +2784,124 @@ mod tests {
 
     fn owned(inv: &Inventory) -> Vec<ItemId> {
         inv.slots.iter().flatten().map(|item| item.id).collect()
+    }
+
+    /// A hero at the shop with an undo log, for tests that only care about trades.
+    struct Shopper {
+        wallet: PlayerWallet,
+        inv: Inventory,
+        health: Health,
+        mana: Mana,
+        stats: CombatStats,
+        attrs: HeroAttributes,
+        log: ShopUndoLog,
+    }
+
+    impl Shopper {
+        fn new() -> Self {
+            let (wallet, inv, health, mana, stats, attrs) = fresh_hero();
+            Self {
+                wallet,
+                inv,
+                health,
+                mana,
+                stats,
+                attrs,
+                log: ShopUndoLog::default(),
+            }
+        }
+
+        fn buy(&mut self, item: ItemId) -> bool {
+            record_purchase(
+                &mut self.log,
+                &mut self.wallet,
+                &mut self.inv,
+                &mut self.health,
+                &mut self.mana,
+                &mut self.stats,
+                &mut self.attrs,
+                item,
+                true,
+            )
+        }
+
+        fn sell(&mut self, slot: usize) -> bool {
+            record_sale(
+                &mut self.log,
+                &mut self.wallet,
+                &mut self.inv,
+                &mut self.health,
+                &mut self.mana,
+                &mut self.stats,
+                &mut self.attrs,
+                slot,
+                true,
+            )
+        }
+
+        fn undo(&mut self) -> bool {
+            try_undo_last(
+                &mut self.log,
+                &mut self.wallet,
+                &mut self.inv,
+                &mut self.health,
+                &mut self.mana,
+                &mut self.stats,
+                &mut self.attrs,
+            )
+        }
+
+        fn owned(&self) -> Vec<ItemId> {
+            owned(&self.inv)
+        }
+    }
+
+    #[test]
+    fn soul_ring_needs_two_gauntlets_and_a_ring_and_undo_is_exact() {
+        let mut shop = Shopper::new();
+        let base_armor = shop.stats.armor;
+        let base_str = shop.attrs.strength;
+        for item in [
+            ItemId::GauntletsOfStrength,
+            ItemId::RingOfProtection,
+            ItemId::RecipeSoulRing,
+        ] {
+            assert!(shop.buy(item));
+        }
+        assert!(
+            !shop.owned().contains(&ItemId::SoulRing),
+            "one gauntlets is not enough"
+        );
+        assert!(shop.buy(ItemId::GauntletsOfStrength));
+        assert_eq!(shop.owned(), vec![ItemId::SoulRing]);
+        assert_eq!(shop.wallet.gold, 2000 - 140 - 140 - 175 - 245);
+        assert_eq!(shop.stats.armor, base_armor + 2.0);
+        assert_eq!(shop.attrs.strength, base_str + 6.0);
+
+        assert!(shop.undo());
+        let mut back = shop.owned();
+        back.sort_by_key(|id| id.name());
+        assert_eq!(
+            back,
+            vec![
+                ItemId::GauntletsOfStrength,
+                ItemId::RecipeSoulRing,
+                ItemId::RingOfProtection,
+            ]
+        );
+        // Back to the state before the last buy: exactly what three plain buys give.
+        let mut reference = Shopper::new();
+        for item in [
+            ItemId::GauntletsOfStrength,
+            ItemId::RingOfProtection,
+            ItemId::RecipeSoulRing,
+        ] {
+            assert!(reference.buy(item));
+        }
+        assert_eq!(shop.wallet.gold, reference.wallet.gold);
+        assert_eq!(shop.stats.armor, reference.stats.armor);
+        assert_eq!(shop.attrs.strength, reference.attrs.strength);
+        assert_eq!(shop.health.max, reference.health.max);
     }
 
     #[test]
