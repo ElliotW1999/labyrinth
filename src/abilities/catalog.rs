@@ -99,6 +99,7 @@ const PROJECTILE: AbilityMechanic = AbilityMechanic::Projectile {
     first_hit: false,
     end_radius: None,
     origin_offset: None,
+    seek: None,
 };
 
 const fn damage(

@@ -13,7 +13,7 @@ use super::definition::{
     LeashAnchorKind, PassiveStat, RankValue, StatusFilter, StatusSpec, TargetTeam, TargetType,
 };
 #[allow(unused_imports)]
-use crate::components::{AbilityId, DamageType};
+use crate::components::{AbilityId, DamageType, ProjectileSeek};
 #[allow(unused_imports)]
 use crate::scale;
 #[allow(unused_imports)]
@@ -134,6 +134,7 @@ fn arcane_lance() -> AbilityDefinition {
             first_hit: false,
             end_radius: None,
             origin_offset: None,
+            seek: None,
         })
         .on(
             AbilityTrigger::OnProjectileHit,
@@ -335,6 +336,7 @@ fn shadow_strike() -> AbilityDefinition {
             first_hit: false,
             end_radius: None,
             origin_offset: None,
+            seek: None,
         })
         .on(
             AbilityTrigger::OnProjectileHit,
@@ -454,6 +456,7 @@ fn sonic_wave() -> AbilityDefinition {
             first_hit: false,
             end_radius: Some(RankValue::fixed(450.0)),
             origin_offset: None,
+            seek: None,
         })
         .on(
             AbilityTrigger::OnProjectileHit,
@@ -507,6 +510,7 @@ fn magnus_shockwave() -> AbilityDefinition {
             first_hit: false,
             end_radius: None,
             origin_offset: Some(RankValue::fixed(48.0)),
+            seek: None,
         })
         .on(
             AbilityTrigger::OnProjectileHit,
@@ -979,6 +983,7 @@ fn assassinate() -> AbilityDefinition {
             first_hit: false,
             end_radius: None,
             origin_offset: None,
+            seek: None,
         })
         .on(
             AbilityTrigger::OnProjectileHit,
@@ -1522,6 +1527,7 @@ fn splinter_blast() -> AbilityDefinition {
             first_hit: false,
             end_radius: None,
             origin_offset: None,
+            seek: None,
         })
         .on(
             AbilityTrigger::OnProjectileHit,

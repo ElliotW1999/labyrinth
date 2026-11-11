@@ -65,6 +65,29 @@ pub fn ability_tooltip_bits(def: &AbilityDefinition, learned_rank: u32) -> Vec<T
         {
             push_value(&mut bits, "End radius", *end_radius, max_rank, learned_rank);
         }
+        if let AbilityMechanic::Projectile {
+            speed,
+            seek: Some(seek),
+            ..
+        } = mechanic
+        {
+            let speed = speed.unwrap_or(crate::combat::SPELL_PROJECTILE_SPEED);
+            let mut line = format!(
+                "Missile: waits {}s, then seeks at {}",
+                fmt_num(seek.delay),
+                fmt_num(speed)
+            );
+            if seek.acceleration > 0.0 {
+                line.push_str(&format!(" (+{}/s\u{b2})", fmt_num(seek.acceleration)));
+            }
+            if seek.retarget_radius > 0.0 {
+                line.push_str(&format!(
+                    "; retargets within {}",
+                    fmt_num(seek.retarget_radius)
+                ));
+            }
+            plain(&mut bits, line + "\n");
+        }
     }
     push_value(&mut bits, "Cooldown", def.cooldown, max_rank, learned_rank);
     push_value(&mut bits, "Mana", def.mana_cost, max_rank, learned_rank);
@@ -856,6 +879,37 @@ mod tests {
             values.push((bit.text.clone(), bit.tone == TipTone::Learned));
         }
         values
+    }
+
+    #[test]
+    fn seeking_missile_is_described() {
+        use crate::abilities::definition::{AbilityMechanic, AreaRadius, TargetType};
+        use crate::components::ProjectileSeek;
+        let def = AbilityDefinition::new(AbilityId::SeismicSlam)
+            .targeting(TargetType::Unit, RankValue::fixed(1050.0), RankValue::ZERO)
+            .mechanic(AbilityMechanic::Projectile {
+                splash_radius: AreaRadius::Ability,
+                speed: Some(500.0),
+                skillshot: false,
+                first_hit: false,
+                end_radius: None,
+                origin_offset: None,
+                seek: Some(ProjectileSeek {
+                    delay: 0.5,
+                    acceleration: 14.285714,
+                    retarget_radius: 700.0,
+                }),
+            });
+        let text: String = ability_tooltip_bits(&def, 1)
+            .iter()
+            .map(|bit| bit.text.as_str())
+            .collect();
+        assert!(
+            text.contains(
+                "Missile: waits 0.5s, then seeks at 500 (+14.3/s\u{b2}); retargets within 700"
+            ),
+            "{text}"
+        );
     }
 
     #[test]

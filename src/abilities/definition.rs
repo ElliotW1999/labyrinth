@@ -6,6 +6,7 @@ use bevy::prelude::{Entity, Vec2, Vec3};
 
 use crate::components::AbilityId;
 use crate::components::DamageType;
+use crate::components::ProjectileSeek;
 use crate::status::{DamageShare, DispelType, Leash, LeashAnchor, StatusEffect, StatusKind};
 use crate::vitals::{ManaShield, ResourceKind, ResourceStat};
 
@@ -1246,6 +1247,10 @@ pub enum AbilityMechanic {
         /// Skillshots only: the wave starts this far in front of the caster (towards the aim)
         /// instead of at the caster's centre, and still flies the full cast range from there.
         origin_offset: Option<RankValue>,
+        /// Homing projectiles only: launch delay, acceleration and retargeting when the
+        /// target dies. `None` is a plain homing bolt (fixed speed, no delay, ends at the
+        /// last known position).
+        seek: Option<ProjectileSeek>,
     },
     /// One homing spell projectile per living, targetable unit of `team` inside the ability's
     /// `aoe_radius` around `center` (the caster is never one). Each projectile carries the

@@ -1053,6 +1053,20 @@ pub struct Projectile {
     pub splash_radius: f32,
 }
 
+/// Seeking rules of a homing spell projectile, used both as the mechanic's data and as the
+/// component that [`crate::combat::fly_projectiles`] reads and ticks. All three are constants.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Default)]
+pub struct ProjectileSeek {
+    /// Seconds the projectile waits at its launch point (facing the target) before flying.
+    /// Counts down in place once the projectile exists.
+    pub delay: f32,
+    /// Units per second squared added to the speed once the delay is over.
+    pub acceleration: f32,
+    /// When the target dies or despawns, retarget the nearest living, targetable enemy within
+    /// this distance (centre to edge) of the projectile. 0 = never retarget.
+    pub retarget_radius: f32,
+}
+
 #[derive(Component, Debug, Clone, Copy)]
 pub struct ProjectileHome {
     pub target: Entity,

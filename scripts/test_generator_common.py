@@ -1998,6 +1998,89 @@ class ChainEffectTests(unittest.TestCase):
         self.assertFalse(report.warnings)
 
 
+class ProjectileSeekTests(unittest.TestCase):
+    def _spec(self, kind: str = "ability", **overrides: str):
+        cells = {
+            "target_type": "unit",
+            "target_team": "enemy",
+            "cast_range": "1050",
+            "projectile_type": "targeted",
+            "projectile_speed": "500",
+            "projectile_delay": "0.5",
+            "projectile_acceleration": "14.285714",
+            "projectile_retarget_radius": "700",
+        }
+        cells.update(overrides)
+        report = Report()
+        spec = parse_activation_spec(row(cells), kind=kind, has_active_effects=True, report=report, levels=kind == "ability")
+        if spec is not None:
+            validate_activation(row(cells), spec, kind=kind, ability_type="active", report=report)
+        return spec, report
+
+    def test_seek_columns_emit_a_seek_block(self) -> None:
+        spec, report = self._spec()
+        self.assertFalse(report.errors, report.errors)
+        self.assertEqual(spec.seek, (0.5, 14.285714, 700.0))
+        rust = projectile_mechanic_rust(spec.projectile_type, 500.0, None, None, spec.seek)
+        self.assertIn(
+            "seek: Some(ProjectileSeek { delay: 0.5, acceleration: 14.285714, retarget_radius: 700.0 })",
+            rust,
+        )
+        self.assertIn("speed: Some(500.0)", rust)
+
+    def test_any_single_column_makes_a_seeker_and_missing_ones_are_zero(self) -> None:
+        spec, report = self._spec(projectile_delay="", projectile_acceleration="")
+        self.assertFalse(report.errors, report.errors)
+        self.assertEqual(spec.seek, (0.0, 0.0, 700.0))
+        spec, report = self._spec(projectile_delay="1", projectile_acceleration="", projectile_retarget_radius="")
+        self.assertFalse(report.errors, report.errors)
+        self.assertEqual(spec.seek, (1.0, 0.0, 0.0))
+
+    def test_no_seek_columns_emit_seek_none(self) -> None:
+        spec, report = self._spec(projectile_delay="", projectile_acceleration="", projectile_retarget_radius="")
+        self.assertFalse(report.errors, report.errors)
+        self.assertIsNone(spec.seek)
+        self.assertIn("seek: None", projectile_mechanic_rust("targeted", None))
+        self.assertIn("seek: None", projectile_mechanic_rust("skillshot", None, None, None, None))
+
+    def test_rejected_without_a_homing_projectile(self) -> None:
+        for column, value in (("projectile_delay", "0.5"), ("projectile_acceleration", "5"), ("projectile_retarget_radius", "300")):
+            for overrides in ({"projectile_type": "none", "projectile_speed": ""}, {"projectile_type": "skillshot", "target_type": "point"}):
+                _, report = self._spec(**{"projectile_delay": "", "projectile_acceleration": "", "projectile_retarget_radius": "", column: value, **overrides})
+                self.assertTrue(report.errors, (column, overrides))
+                self.assertEqual(report.errors[0].field, column)
+
+    def test_negative_delay_acceleration_and_zero_retarget_radius_are_rejected(self) -> None:
+        for column, value in (
+            ("projectile_delay", "-0.1"),
+            ("projectile_acceleration", "-1"),
+            ("projectile_retarget_radius", "0"),
+            ("projectile_retarget_radius", "-5"),
+        ):
+            _, report = self._spec(**{column: value})
+            self.assertTrue(report.errors, (column, value))
+            self.assertEqual(report.errors[0].field, column)
+
+    def test_columns_are_constants_not_level_lists(self) -> None:
+        _, report = self._spec(projectile_delay="0.5|0.4")
+        self.assertTrue(report.errors)
+
+    def test_items_do_not_support_seek_columns_yet(self) -> None:
+        _, report = self._spec(kind="item", cast_range="600")
+        self.assertTrue(any(e.field == "projectile_delay" for e in report.errors))
+
+    def test_ability_loads_end_to_end(self) -> None:
+        abilities, report = load_test_ability(
+            {
+                "target_type": "unit", "cast_range": "1050", "projectile_type": "targeted", "projectile_speed": "500",
+                "projectile_delay": "0.5", "projectile_acceleration": "14.285714", "projectile_retarget_radius": "700",
+            },
+            [{"trigger": "on_projectile_hit", "effect_target": "trigger_unit", "effect_type": "damage", "value": "90", "damage_type": "magical"}],
+        )
+        self.assertFalse(report.errors, report.errors)
+        self.assertEqual(abilities[0].projectile_seek, (0.5, 14.285714, 700.0))
+
+
 class ItemProjectileTests(unittest.TestCase):
     ITEM_HEADER = "id,name,item_type,cost,sell_value,tier,rarity,stackable,max_stack,consumable,max_charges,description,cooldown,target_type,target_team,cast_range,projectile_type,projectile_speed\n"
     EFFECT_HEADER = "item_id,effect_index,trigger,effect_target,effect_type,effect_id,value,damage_type,duration,radius,amount,scaling_type,scaling_value\n"
@@ -2024,7 +2107,7 @@ class ItemProjectileTests(unittest.TestCase):
         self.assertFalse([w for w in report.warnings if w.field == "projectile_type"])
         rendered = module.item_static(items[0])
         self.assertIn(
-            "mechanics: &[AbilityMechanic::Projectile { splash_radius: AreaRadius::Ability, speed: Some(1200.0), skillshot: false, first_hit: false, end_radius: None, origin_offset: None }],",
+            "mechanics: &[AbilityMechanic::Projectile { splash_radius: AreaRadius::Ability, speed: Some(1200.0), skillshot: false, first_hit: false, end_radius: None, origin_offset: None, seek: None }],",
             rendered,
         )
         self.assertIn("AbilityTrigger::OnProjectileHit", rendered)
@@ -2499,7 +2582,8 @@ ABILITY_COLUMNS_FOR_TESTS = (
     "id,name,slot,ability_type,target_type,target_team,cast_range,aoe_radius,cast_time,"
     "channel_time,cooldown,mana_cost,max_charges,charge_restore_time,projectile_type,"
     "projectile_speed,description,cast_backswing,max_rank,toggle_mana_per_sec,"
-    "projectile_end_radius,projectile_origin_offset,cast_range_buffer"
+    "projectile_end_radius,projectile_origin_offset,cast_range_buffer,"
+    "projectile_delay,projectile_acceleration,projectile_retarget_radius"
 ).split(",")
 EFFECT_COLUMNS_FOR_TESTS = (
     "ability_id,effect_index,trigger,effect_target,effect_type,effect_id,value,damage_type,"

@@ -1078,6 +1078,7 @@ mod tests {
                 first_hit: false,
                 end_radius: None,
                 origin_offset: None,
+                seek: None,
             })
     }
 
@@ -3255,6 +3256,7 @@ mod tests {
             first_hit: false,
             end_radius: None,
             origin_offset: None,
+            seek: None,
         }];
         let effects: &'static [AbilityEffectEntry] = Box::leak(entries.into_boxed_slice());
         ItemDefinition {
@@ -3352,6 +3354,7 @@ mod tests {
                 first_hit: false,
                 end_radius: None,
                 origin_offset: None,
+                seek: None,
             })
             .on(
                 AbilityTrigger::OnProjectileHit,
@@ -7856,6 +7859,7 @@ mod tests {
                 first_hit: false,
                 end_radius: None,
                 origin_offset: origin_offset.map(RankValue::fixed),
+                seek: None,
             })
     }
 
@@ -8701,6 +8705,7 @@ mod tests {
                 first_hit: false,
                 end_radius: None,
                 origin_offset: None,
+                seek: None,
             })
             .on(
                 AbilityTrigger::OnProjectileHit,

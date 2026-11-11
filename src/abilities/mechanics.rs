@@ -208,6 +208,7 @@ impl MechanicRunner<'_, '_> {
                 first_hit,
                 end_radius,
                 origin_offset,
+                seek,
             } => {
                 let unit = ctx
                     .unit_target
@@ -236,6 +237,8 @@ impl MechanicRunner<'_, '_> {
                         .filter(|_| *skillshot)
                         .map(|width| width.at(ctx.rank)),
                     skillshot_max_hits: (*skillshot && *first_hit).then_some(1),
+                    // Only a homing projectile seeks; a skillshot ignores the block.
+                    seek: seek.filter(|_| !skillshot),
                     splash_radius: if *skillshot {
                         0.0
                     } else {
@@ -322,6 +325,7 @@ impl MechanicRunner<'_, '_> {
                 skillshot_width: None,
                 skillshot_end_width: None,
                 skillshot_max_hits: None,
+                seek: None,
                 splash_radius: 0.0,
                 payload: ProjectilePayload {
                     caster: ctx.caster,

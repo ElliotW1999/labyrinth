@@ -13,7 +13,7 @@ use crate::basic_attack::{
 use crate::components::{
     AttackCooldown, BoundRadius, CombatStats, Creep, DamageType, GoldBounty, Health,
     HeroAttributes, HeroProgress, Lane, Lifetime, Mana, PlayerHero, PlayerWallet, Projectile,
-    ProjectileHome, ProjectileStyle, ShieldPool, Team, XpBounty,
+    ProjectileHome, ProjectileSeek, ProjectileStyle, ShieldPool, Team, XpBounty,
 };
 use crate::dimensions::{area_contains, bounds_of};
 use crate::progression::add_xp;
@@ -612,37 +612,115 @@ fn tick_attack_cooldowns(time: Res<Time>, mut query: Query<&mut AttackCooldown>)
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn fly_projectiles(
     time: Res<Time>,
     mut projectiles: Query<(
         Entity,
         &mut Transform,
-        &Projectile,
+        &mut Projectile,
         Option<&mut ProjectileHome>,
         Option<&GroundBoltAim>,
+        Option<&mut ProjectileSeek>,
+        Option<&mut ProjectilePayload>,
     )>,
     homes: Query<&GlobalTransform, Without<Projectile>>,
+    units: Query<
+        (
+            Entity,
+            &GlobalTransform,
+            &Team,
+            &Health,
+            Option<&BoundRadius>,
+        ),
+        Without<Projectile>,
+    >,
+    statuses_of: Query<&StatusEffects>,
     mut commands: Commands,
 ) {
     let dt = time.delta_secs();
-    for (entity, mut transform, projectile, mut home, ground_aim) in &mut projectiles {
+    for (entity, mut transform, mut projectile, mut home, ground_aim, mut seek, mut payload) in
+        &mut projectiles
+    {
+        // Seeking: a target that died or despawned is replaced by the nearest living,
+        // targetable enemy within the retarget radius of the missile. With none, the missile
+        // finishes at the last known position like any homing projectile.
+        let mut abandon = false;
+        if let (Some(seek), Some(home)) = (seek.as_deref(), home.as_deref_mut()) {
+            let alive = units
+                .get(home.target)
+                .is_ok_and(|(_, _, _, health, _)| health.is_alive());
+            if !alive {
+                let here = transform.translation;
+                let replacement = (seek.retarget_radius > 0.0)
+                    .then(|| {
+                        units
+                            .iter()
+                            .filter(|(unit, unit_tf, team, health, bound)| {
+                                **team != projectile.team
+                                    && health.is_alive()
+                                    && !is_untargetable(&statuses_of, *unit)
+                                    && area_contains(
+                                        here,
+                                        seek.retarget_radius,
+                                        unit_tf.translation(),
+                                        bounds_of(*bound),
+                                    )
+                            })
+                            .min_by(|a, b| {
+                                flat_distance(here, a.1.translation())
+                                    .total_cmp(&flat_distance(here, b.1.translation()))
+                                    .then(a.0.cmp(&b.0))
+                            })
+                    })
+                    .flatten();
+                match replacement {
+                    Some((unit, unit_tf, ..)) => {
+                        home.target = unit;
+                        home.last_pos = unit_tf.translation() + Vec3::Y * scale::body(1.0);
+                        // The new target is the one the spell lands on (spell block, spell
+                        // immunity and reflection are judged against it).
+                        if let Some(payload) = payload.as_deref_mut() {
+                            payload.cast_target = Some(unit);
+                        }
+                    }
+                    None => abandon = true,
+                }
+            }
+        }
+
         let mut destination = transform.translation + *transform.forward() * projectile.speed;
 
         if let Some(ref mut home) = home {
-            if let Ok(target_tf) = homes.get(home.target) {
-                home.last_pos = target_tf.translation() + Vec3::Y * scale::body(1.0);
-                destination = home.last_pos;
-            } else {
-                // Target died or despawned — finish at last known location.
-                let last = home.last_pos;
-                commands.entity(entity).remove::<ProjectileHome>();
-                commands
-                    .entity(entity)
-                    .insert(GroundBoltAim { position: last });
-                destination = Vec3::new(last.x, transform.translation.y, last.z);
+            match homes.get(home.target) {
+                Ok(target_tf) if !abandon => {
+                    home.last_pos = target_tf.translation() + Vec3::Y * scale::body(1.0);
+                    destination = home.last_pos;
+                }
+                _ => {
+                    // Target died or despawned — finish at last known location.
+                    let last = home.last_pos;
+                    commands.entity(entity).remove::<ProjectileHome>();
+                    commands
+                        .entity(entity)
+                        .insert(GroundBoltAim { position: last });
+                    destination = Vec3::new(last.x, transform.translation.y, last.z);
+                }
             }
         } else if let Some(aim) = ground_aim {
             destination = Vec3::new(aim.position.x, transform.translation.y, aim.position.z);
+        }
+
+        if let Some(seek) = seek.as_deref_mut() {
+            if seek.delay > 0.0 {
+                // Waiting at the launch point, turned towards the target.
+                seek.delay = (seek.delay - dt).max(0.0);
+                if let Ok(dir) = Dir3::new(destination - transform.translation) {
+                    transform.look_to(dir, Vec3::Y);
+                }
+                continue;
+            }
+            projectile.speed += seek.acceleration * dt;
         }
 
         let to = destination - transform.translation;
@@ -720,11 +798,17 @@ pub struct SpawnProjectileEvent {
     pub skillshot_end_width: Option<f32>,
     /// Skillshots only: the projectile ends once it has struck this many enemies.
     pub skillshot_max_hits: Option<u32>,
+    /// Homing projectiles only: delay, acceleration and retargeting (see [`ProjectileSeek`]).
+    pub seek: Option<ProjectileSeek>,
     pub splash_radius: f32,
     pub payload: ProjectilePayload,
 }
 
 pub const SPELL_PROJECTILE_SPEED: f32 = scale::u(34.0);
+
+/// How long a seeking projectile may live (a delayed, slow missile can chase for a while).
+/// Past it the missile fizzles without a trigger.
+pub const SEEKING_PROJECTILE_MAX_LIFETIME: f32 = 15.0;
 
 /// Piercing projectile: reports each enemy it passes once.
 #[derive(Component, Debug, Clone, Default)]
@@ -830,11 +914,18 @@ pub fn apply_projectile_hits(
         Option<&ProjectileHome>,
         Option<&GroundBoltImpact>,
         Option<&ProjectileReachedTarget>,
+        Option<&ProjectileSeek>,
     )>,
     units: Query<(Entity, &Transform, &Team, &Health, Option<&BoundRadius>)>,
     statuses_of: Query<&StatusEffects>,
 ) {
-    for (proj_entity, proj_tf, projectile, payload, home, ground_impact, reached) in &projectiles {
+    for (proj_entity, proj_tf, projectile, payload, home, ground_impact, reached, seek) in
+        &projectiles
+    {
+        // A seeking missile still waiting at its launch point cannot strike anything yet.
+        if seek.is_some_and(|seek| seek.delay > 0.0) {
+            continue;
+        }
         let impact = proj_tf.translation;
         let mut despawn = false;
         let mut primary_hit: Option<Entity> = None;
@@ -1078,6 +1169,17 @@ fn sync_attack_range_ring(
     }
 }
 
+/// How long a homing spell bolt may live: its estimated flight plus a margin, at least 2.5 s;
+/// a seeking missile may wait, accelerate and chase, so it gets
+/// [`SEEKING_PROJECTILE_MAX_LIFETIME`].
+fn spell_bolt_lifetime(travel: f32, seeking: bool) -> f32 {
+    if seeking {
+        SEEKING_PROJECTILE_MAX_LIFETIME
+    } else {
+        travel.max(2.5)
+    }
+}
+
 fn spawn_spell_bolt(
     commands: &mut Commands,
     assets: &SharedAssets,
@@ -1092,11 +1194,15 @@ fn spawn_spell_bolt(
         skillshot_width,
         skillshot_end_width,
         skillshot_max_hits,
+        seek,
         splash_radius,
         payload,
     } = *request;
     let speed = speed.unwrap_or(SPELL_PROJECTILE_SPEED).max(1.0);
     let travel = flat_distance(origin, target_pos) / speed + 0.25;
+    // A seeking missile can wait, accelerate and chase new targets: give it a longer life.
+    let seek = seek.filter(|_| target.is_some());
+    let max_life = spell_bolt_lifetime(travel, seek.is_some());
     let start = origin + Vec3::Y * scale::body(1.2);
     let aim = (target_pos + Vec3::Y * scale::body(1.0)) - start;
     let mut transform = Transform::from_translation(start);
@@ -1113,12 +1219,12 @@ fn spawn_spell_bolt(
             speed,
             team,
             radius: scale::body(0.85),
-            lifetime: travel.max(2.5),
+            lifetime: max_life,
             splash_radius,
         },
         payload,
         ProjectileStyle::SpellBolt,
-        Lifetime(travel.max(2.5)),
+        Lifetime(max_life),
     ));
 
     if let Some(target) = target {
@@ -1126,6 +1232,9 @@ fn spawn_spell_bolt(
             target,
             last_pos: target_pos + Vec3::Y * scale::body(1.0),
         });
+        if let Some(seek) = seek {
+            entity.insert(seek);
+        }
     } else {
         entity.insert((
             Lifetime(travel),
@@ -2589,6 +2698,316 @@ mod tests {
             app.update();
             assert_eq!(taken(&app, target), 0.0);
             assert!((taken(&app, partner) - 100.0).abs() < 1e-3);
+        }
+    }
+
+    mod seeking {
+        use super::*;
+        use std::time::Duration;
+
+        const DT: f32 = 0.05;
+
+        fn world() -> World {
+            let mut world = World::new();
+            world.init_resource::<Time>();
+            world.init_resource::<Messages<ProjectileHitEvent>>();
+            world
+        }
+
+        fn unit(world: &mut World, team: Team, x: f32) -> Entity {
+            let at = Transform::from_xyz(x, 0.0, 0.0);
+            world
+                .spawn((at, GlobalTransform::from(at), team, Health::new(500.0)))
+                .id()
+        }
+
+        fn kill(world: &mut World, unit: Entity) {
+            world.get_mut::<Health>(unit).unwrap().current = 0.0;
+        }
+
+        fn move_to(world: &mut World, unit: Entity, x: f32) {
+            let at = Transform::from_xyz(x, 0.0, 0.0);
+            *world.get_mut::<Transform>(unit).unwrap() = at;
+            *world.get_mut::<GlobalTransform>(unit).unwrap() = GlobalTransform::from(at);
+        }
+
+        fn missile(
+            world: &mut World,
+            target: Entity,
+            seek: Option<ProjectileSeek>,
+            lifetime: f32,
+        ) -> Entity {
+            let caster = unit(world, Team::Radiant, -5000.0);
+            let mut entity = world.spawn((
+                Transform::from_xyz(0.0, scale::body(1.0), 0.0),
+                Projectile {
+                    speed: 500.0,
+                    team: Team::Radiant,
+                    radius: scale::body(0.85),
+                    lifetime,
+                    splash_radius: 0.0,
+                },
+                ProjectilePayload {
+                    caster,
+                    source: EffectSource::Ability(AbilityId::Bolt),
+                    rank: 1,
+                    cast_target: Some(target),
+                    aim: Vec3::ZERO,
+                    reflected: false,
+                },
+                ProjectileHome {
+                    target,
+                    last_pos: Vec3::new(0.0, scale::body(1.0), 0.0),
+                },
+                Lifetime(lifetime),
+            ));
+            if let Some(seek) = seek {
+                entity.insert(seek);
+            }
+            entity.id()
+        }
+
+        fn seek(delay: f32, acceleration: f32, retarget_radius: f32) -> ProjectileSeek {
+            ProjectileSeek {
+                delay,
+                acceleration,
+                retarget_radius,
+            }
+        }
+
+        /// One frame of the projectile pipeline.
+        fn step(world: &mut World, dt: f32) {
+            world
+                .resource_mut::<Time>()
+                .advance_by(Duration::from_secs_f32(dt));
+            world.run_system_once(fly_projectiles).unwrap();
+            world.run_system_once(apply_projectile_hits).unwrap();
+            world.run_system_once(tick_lifetimes).unwrap();
+        }
+
+        fn run_until_hit(world: &mut World, frames: usize, dt: f32) -> Vec<ProjectileHitEvent> {
+            for _ in 0..frames {
+                step(world, dt);
+                if !hits(world).is_empty() {
+                    break;
+                }
+            }
+            hits(world)
+        }
+
+        fn hits(world: &World) -> Vec<ProjectileHitEvent> {
+            world
+                .resource::<Messages<ProjectileHitEvent>>()
+                .iter_current_update_messages()
+                .cloned()
+                .collect()
+        }
+
+        fn x_of(world: &World, entity: Entity) -> f32 {
+            world.get::<Transform>(entity).unwrap().translation.x
+        }
+
+        #[test]
+        fn seeking_projectile_holds_position_during_delay() {
+            let mut world = world();
+            let target = unit(&mut world, Team::Dire, 2000.0);
+            let m = missile(&mut world, target, Some(seek(0.5, 0.0, 0.0)), 15.0);
+            for _ in 0..9 {
+                step(&mut world, DT);
+            }
+            assert_eq!(x_of(&world, m), 0.0, "still waiting after 0.45 s");
+            // Facing the target while it waits.
+            let forward = *world.get::<Transform>(m).unwrap().forward();
+            assert!(forward.x > 0.99, "faces the target, got {forward:?}");
+            for _ in 0..11 {
+                step(&mut world, DT);
+            }
+            assert!(x_of(&world, m) > 100.0, "flying after the delay");
+        }
+
+        #[test]
+        fn seeking_projectile_cannot_hit_during_delay() {
+            // The target stands inside the missile's contact radius at launch.
+            let mut world = world();
+            let target = unit(&mut world, Team::Dire, 0.0);
+            missile(&mut world, target, Some(seek(0.5, 0.0, 0.0)), 15.0);
+            for _ in 0..5 {
+                step(&mut world, DT);
+            }
+            assert!(hits(&world).is_empty());
+            let hit = run_until_hit(&mut world, 20, DT);
+            assert_eq!(hit.len(), 1);
+            assert_eq!(hit[0].primary, Some(target));
+        }
+
+        #[test]
+        fn seeking_projectile_accelerates_after_delay() {
+            let mut world = world();
+            let target = unit(&mut world, Team::Dire, 100_000.0);
+            let m = missile(&mut world, target, Some(seek(0.22, 100.0, 0.0)), 15.0);
+            for _ in 0..20 {
+                step(&mut world, DT);
+            }
+            // Frames 1-5 wait (the delay runs out in frame 5); frames 6-20 accelerate.
+            let speed = world.get::<Projectile>(m).unwrap().speed;
+            let expected = 500.0 + 100.0 * DT * 15.0;
+            assert!(
+                (speed - expected).abs() < 1e-2,
+                "speed {speed}, expected {expected}"
+            );
+        }
+
+        #[test]
+        fn seeking_projectile_retargets_nearest_enemy_within_radius_on_target_death() {
+            let mut world = world();
+            let target = unit(&mut world, Team::Dire, 1000.0);
+            let far = unit(&mut world, Team::Dire, 500.0);
+            let near = unit(&mut world, Team::Dire, 300.0);
+            let m = missile(&mut world, target, Some(seek(0.0, 0.0, 700.0)), 15.0);
+            step(&mut world, DT);
+            kill(&mut world, target);
+            step(&mut world, DT);
+            let home = world.get::<ProjectileHome>(m).unwrap();
+            assert_eq!(home.target, near, "the nearest enemy to the missile");
+            let payload = world.get::<ProjectilePayload>(m).unwrap();
+            assert_eq!(payload.cast_target, Some(near), "the spell lands on it");
+
+            let hit = run_until_hit(&mut world, 60, DT);
+            assert_eq!(hit.len(), 1, "one hit event for the whole flight");
+            assert_eq!(hit[0].primary, Some(near));
+            assert_eq!(hit[0].payload.cast_target, Some(near));
+            assert!(world.get::<Health>(far).unwrap().is_alive());
+        }
+
+        #[test]
+        fn seeking_projectile_retargets_when_target_despawns() {
+            let mut world = world();
+            let target = unit(&mut world, Team::Dire, 1000.0);
+            let other = unit(&mut world, Team::Dire, 400.0);
+            let m = missile(&mut world, target, Some(seek(0.0, 0.0, 700.0)), 15.0);
+            world.despawn(target);
+            step(&mut world, DT);
+            assert_eq!(world.get::<ProjectileHome>(m).unwrap().target, other);
+        }
+
+        #[test]
+        fn seeking_projectile_ignores_allies_untargetable_and_out_of_radius_on_retarget() {
+            let mut world = world();
+            let target = unit(&mut world, Team::Dire, 1000.0);
+            unit(&mut world, Team::Radiant, 50.0);
+            let dead = unit(&mut world, Team::Dire, 40.0);
+            kill(&mut world, dead);
+            let hidden = unit(&mut world, Team::Dire, 60.0);
+            world
+                .entity_mut(hidden)
+                .insert(StatusEffects::default())
+                .get_mut::<StatusEffects>()
+                .unwrap()
+                .effects
+                .push(crate::status::StatusEffect::cyclone(5.0, true));
+            let _outside = unit(&mut world, Team::Dire, 2000.0);
+            let m = missile(&mut world, target, Some(seek(0.0, 0.0, 700.0)), 15.0);
+            kill(&mut world, target);
+            step(&mut world, DT);
+            assert!(
+                world.get::<ProjectileHome>(m).is_none(),
+                "nobody to retarget"
+            );
+
+            let hit = run_until_hit(&mut world, 80, 0.1);
+            assert_eq!(hit.len(), 1);
+            assert_eq!(hit[0].primary, None);
+        }
+
+        #[test]
+        fn seeking_projectile_without_candidate_ends_as_impact() {
+            let mut world = world();
+            let target = unit(&mut world, Team::Dire, 800.0);
+            missile(&mut world, target, Some(seek(0.0, 0.0, 700.0)), 15.0);
+            step(&mut world, DT);
+            kill(&mut world, target);
+            let hit = run_until_hit(&mut world, 80, 0.1);
+            assert_eq!(hit.len(), 1);
+            assert_eq!(hit[0].primary, None, "ends as an impact, not a unit strike");
+            assert!(
+                (hit[0].impact.x - 800.0).abs() < 60.0,
+                "at the last known position, got {}",
+                hit[0].impact.x
+            );
+        }
+
+        #[test]
+        fn seeking_projectile_without_retarget_radius_keeps_last_known_behaviour() {
+            let mut world = world();
+            let target = unit(&mut world, Team::Dire, 800.0);
+            let bystander = unit(&mut world, Team::Dire, 200.0);
+            missile(&mut world, target, Some(seek(0.0, 0.0, 0.0)), 15.0);
+            kill(&mut world, target);
+            let hit = run_until_hit(&mut world, 80, 0.1);
+            assert_eq!(hit.len(), 1);
+            assert_eq!(hit[0].primary, None);
+            assert_ne!(hit[0].primary, Some(bystander));
+        }
+
+        #[test]
+        fn seeking_projectile_survives_beyond_default_lifetime() {
+            let mut world = world();
+            let target = unit(&mut world, Team::Dire, 600.0);
+            // A runaway target: the missile (500 + ramp) only closes at about 200 per second.
+            let m = missile(
+                &mut world,
+                target,
+                Some(seek(0.5, 14.285714, 700.0)),
+                SEEKING_PROJECTILE_MAX_LIFETIME,
+            );
+            let mut x = 600.0;
+            let mut elapsed = 0.0;
+            let mut hit = Vec::new();
+            while elapsed < 12.0 && hit.is_empty() {
+                x += 300.0 * DT;
+                move_to(&mut world, target, x);
+                step(&mut world, DT);
+                elapsed += DT;
+                hit = hits(&world);
+            }
+            assert_eq!(hit.len(), 1, "the chase ended in a strike");
+            assert_eq!(hit[0].primary, Some(target));
+            assert!(
+                elapsed > 3.0,
+                "a chase longer than the default 2.5 s lifetime"
+            );
+            let _ = m;
+        }
+
+        #[test]
+        fn seeking_lifetime_is_longer_than_the_default() {
+            assert_eq!(spell_bolt_lifetime(0.4, false), 2.5);
+            assert_eq!(spell_bolt_lifetime(6.0, false), 6.0);
+            assert_eq!(
+                spell_bolt_lifetime(0.4, true),
+                SEEKING_PROJECTILE_MAX_LIFETIME
+            );
+        }
+
+        #[test]
+        fn non_seeking_projectile_unchanged() {
+            let mut world = world();
+            let target = unit(&mut world, Team::Dire, 1000.0);
+            let bystander = unit(&mut world, Team::Dire, 300.0);
+            let m = missile(&mut world, target, None, 2.5);
+            step(&mut world, DT);
+            // No delay: it already moved, at the fixed speed.
+            assert!((x_of(&world, m) - 25.0).abs() < 1e-3);
+            for _ in 0..5 {
+                step(&mut world, DT);
+            }
+            assert_eq!(world.get::<Projectile>(m).unwrap().speed, 500.0);
+            // Target dies: no retargeting, the missile finishes at the last known position.
+            kill(&mut world, target);
+            let hit = run_until_hit(&mut world, 60, 0.1);
+            assert_eq!(hit.len(), 1);
+            assert_eq!(hit[0].primary, None);
+            assert!(world.get::<Health>(bystander).unwrap().is_alive());
         }
     }
 }

@@ -315,6 +315,9 @@ PROJECTILE_TYPES = ("none", "targeted", "targeted_each", "skillshot", "skillshot
 # Skillshots fly the cast range; `skillshot_single` stops at the first enemy it strikes (a hook).
 SKILLSHOT_TYPES = ("skillshot", "skillshot_single")
 
+# Optional ability columns for seeking homing projectiles (projectile_type targeted only).
+SEEK_COLUMNS = ("projectile_delay", "projectile_acceleration", "projectile_retarget_radius")
+
 # Optional activation columns on items.csv (not part of ITEM_COLUMNS required tuple).
 ITEM_ACTIVATION_OPTIONAL = (
     "charge_restore_time",
@@ -678,6 +681,19 @@ class ActivationSpec:
     projectile_end_radius: list[float] | None = None
     # Skillshots only: how far in front of the caster (per rank) the wave starts.
     projectile_origin_offset: list[float] | None = None
+    # Seeking (targeted projectiles of abilities only): launch delay in seconds, acceleration in
+    # units/s^2 and the retarget radius. Setting any of them emits a `ProjectileSeek` block.
+    projectile_delay: float | None = None
+    projectile_acceleration: float | None = None
+    projectile_retarget_radius: float | None = None
+
+    @property
+    def seek(self) -> tuple[float, float, float] | None:
+        """(delay, acceleration, retarget radius) when any seek column is set, else None."""
+        values = (self.projectile_delay, self.projectile_acceleration, self.projectile_retarget_radius)
+        if all(v is None for v in values):
+            return None
+        return tuple(v or 0.0 for v in values)  # type: ignore[return-value]
 
     def has_cast_range(self, kind: str) -> bool:
         if kind == "ability":
@@ -733,6 +749,13 @@ def parse_activation_spec(
     speed = parse_scalar(row, "projectile_speed", report, minimum=1)
     end_radius = parse_number(row, "projectile_end_radius", report, levels=levels, minimum=0)
     origin_offset = parse_number(row, "projectile_origin_offset", report, levels=levels, minimum=0)
+    delay = parse_scalar(row, "projectile_delay", report, minimum=0)
+    acceleration = parse_scalar(row, "projectile_acceleration", report, minimum=0)
+    retarget_radius = parse_scalar(row, "projectile_retarget_radius", report, minimum=0)
+    if kind == "item":
+        for column in SEEK_COLUMNS:
+            if row.get(column):
+                report.error(row.file, row.line, column, row.get(column), "seeking projectile columns are ability-only for now; leave blank on items")
 
     if kind == "ability" and None in (target_type, target_team):
         return None
@@ -756,6 +779,9 @@ def parse_activation_spec(
         projectile_speed=speed,
         projectile_end_radius=end_radius,
         projectile_origin_offset=origin_offset,
+        projectile_delay=delay if kind == "ability" else None,
+        projectile_acceleration=acceleration if kind == "ability" else None,
+        projectile_retarget_radius=retarget_radius if kind == "ability" else None,
     )
 
 
@@ -814,6 +840,12 @@ def validate_activation(
         elif kind == "item":
             err("projectile_origin_offset", "item skillshots start at the user; leave projectile_origin_offset blank")
 
+    for column in SEEK_COLUMNS:
+        if row.get(column) and spec.projectile_type != "targeted":
+            err(column, f"only homing projectiles seek; projectile_type is {spec.projectile_type} (needs targeted)")
+    if spec.projectile_retarget_radius is not None and spec.projectile_retarget_radius <= 0:
+        err("projectile_retarget_radius", "projectile_retarget_radius must be above 0 (leave it blank to never retarget)")
+
     if spec.target_team == "self" and spec.target_type not in ("self", "no_target"):
         err("target_team", f"target_team self requires target_type self or no_target (got {spec.target_type})")
     if spec.target_type == "self" and spec.target_team != "self":
@@ -844,17 +876,28 @@ def projectile_mechanic_rust(
     projectile_speed: float | None,
     end_radius: list[float] | None = None,
     origin_offset: list[float] | None = None,
+    seek: tuple[float, float, float] | None = None,
 ) -> str:
-    """`AbilityMechanic::Projectile { ... }` for a non-"none" projectile_type (abilities and items)."""
+    """`AbilityMechanic::Projectile { ... }` for a non-"none" projectile_type (abilities and items).
+
+    `seek` is (delay, acceleration, retarget radius) for a seeking homing projectile."""
     speed = f"Some({f32(projectile_speed)})" if projectile_speed else "None"
     skillshot = "true" if projectile_type in SKILLSHOT_TYPES else "false"
     first_hit = "true" if projectile_type == "skillshot_single" else "false"
     end = f"Some({rank_value(end_radius)})" if end_radius else "None"
     offset = f"Some({rank_value(origin_offset)})" if origin_offset else "None"
+    if seek is None:
+        seek_rs = "None"
+    else:
+        delay, acceleration, radius = seek
+        seek_rs = (
+            f"Some(ProjectileSeek {{ delay: {f32(delay)}, acceleration: {f32(acceleration)}, "
+            f"retarget_radius: {f32(radius)} }})"
+        )
     return (
         "AbilityMechanic::Projectile { "
         f"splash_radius: AreaRadius::Ability, speed: {speed}, skillshot: {skillshot}, "
-        f"first_hit: {first_hit}, end_radius: {end}, origin_offset: {offset} }}"
+        f"first_hit: {first_hit}, end_radius: {end}, origin_offset: {offset}, seek: {seek_rs} }}"
     )
 
 
