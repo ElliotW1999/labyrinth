@@ -1,0 +1,5 @@
+# Limitations
+
+### Limitations
+
+Not yet expressible without engine changes: **autocast**; **cooldown reduction / reset**; **hero / creep / building** target masks; **channel ticks** (`on_channel_tick` is defined but the shared pipeline does not emit it — custom mechanics only); delayed effects other than a `zone`'s opening delay; cooldown floors other than explicit level lists; an internal-cooldown gate for reactive passives; aura statuses applied to other units; applier-side status triggers ("when I debuff someone"); cooldown-ready on charge restore; and `on_expire` (declared, never emitted — use `on_status_removed`). A reaction cannot cancel the lethal hit (reactions resolve a frame later). Item charges are spent when the item fires and refill with the next unit of the stack; they never regenerate over time the way ability charges do, and `ItemGenerator` rejects a `charge_restore_time` on items. An instant item (no cast point and no channel) fires without joining the command queue, so Shift does not queue it.
