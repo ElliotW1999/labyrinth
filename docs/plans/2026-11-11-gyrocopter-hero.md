@@ -1,6 +1,6 @@
 # Gyrocopter hero: implementation spec
 
-Status: **draft for approval (2026-11-11).** Build only gaps G1–G4. If implementation shows that anything else is needed, stop and ask.
+Status: **approved (2026-11-11)** — U1 10 s, U2 literal 14.285714 u/s², U4 8/8/9; all other defaults accepted. Build only gaps G1–G4. If implementation shows that anything else is needed, stop and ask.
 
 Related plans and docs:
 - `docs/plans/2026-11-11-shadowheart-hero.md`: the template for this plan. It covers the scratch-CSV HeroGenerator flow, D2 half-step ranks, the area polarity rule and the allowed-generated-diff discipline.
