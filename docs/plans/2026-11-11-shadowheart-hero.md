@@ -1,6 +1,6 @@
 # Shadowheart hero: implementation spec
 
-Status: **draft for approval.** Build only the gaps listed here (G1–G5). If implementation shows that anything else is needed, stop and ask.
+Status: **approved 2026-11-11 with amendments (see §13, which overrides earlier sections).** Build only the gaps listed here (G1–G5). If implementation shows that anything else is needed, stop and ask.
 
 Related plans and docs:
 - `docs/plans/2026-11-10-winter-wyvern-and-attribute-damage.md` (this plan's template). It covers the Variant B back-solve with primary-attribute damage (P1), the flat 27.5% hero MR (A1), half-step rank extrapolation (D2), the `require_status` `:suffix` precedent, `StatusBuildContext.cast_target` (G6) and `OWNER_ID_STATUSES`.
@@ -418,3 +418,39 @@ Environment: install the Bevy system libraries with apt if they are missing (as 
 - **U14. R cast animation.** Not given; uses 0 / 0.
 - **U15.** `convert_on_death` is a Basic-dispellable buff. An enemy `dispel,buff` ends Sharran Conversion early.
 - **U16. Ranks.** Half-step extrapolation (D2), including mana 142.5/150/157.5 and R rank 4 (10 s, 250 mana, 75 s).
+
+## 13. Approval amendments (2026-11-11; these override §2–§12 where they conflict)
+
+- **A1. Warding Bond duration (U1): 10 s fixed at every rank.** In §7 the `duration` of every `warding_bond` row is `10`. In the §9 test, rename `warding_bond_buffs_both_and_reverts_after_15s` to `..._after_10s`.
+- **A2. Warding Bond sharing (U2): duplicate, not split.** This replaces the G3 design.
+  - The target takes **100%** of its damage, as normal. Its own `health_delta` is **not** reduced.
+  - The caster (the status source, the partner) also receives a **copy of the incoming damage before mitigation**: the same `amount` the event carried before the target's armor, MR, block, shields or damage reduction, and the **same `damage_type`**.
+  - The partner's own mitigation then applies to that copy: armor for physical, rating and percent MR for magical, none for pure, plus its own damage reduction, shields and invulnerability.
+  - The copy is a new `DamageEvent` with:
+    - `source` = the original source, `target` = the partner;
+    - `damage_type` = the original type, `amount` = the original pre-mitigation amount;
+    - `kind: Generic`, `is_spell: false`, `applies_block: false`, `pierces_shields: false`;
+    - `reflects: false`, `drain_ratio: 0`, `reactive: true`.
+  - So the copy is never re-shared (no loops), fires no damage triggers, and grants no lifesteal or drain. It lands one frame later, like reflect.
+  - The copy is emitted only when the event actually lands on the target: the target is alive and not invulnerable. If the target's shield soaked the damage, the copy is still emitted.
+  - The partner must be alive and must not be the target. U3 and U4 still hold (no distance break, so the shared damage can kill the caster; reactive damage is never shared). U5's "share after mana shield" no longer applies, because the target's damage is untouched.
+  - The CSV `amount` stays: it is now the percent of the incoming damage that is duplicated. Warding Bond uses `100`. The tooltip row becomes "Damage duplicated to caster %".
+  - §4 G3 tests become:
+    - `damage_share_duplicates_pre_mitigation_damage_to_partner_with_its_own_mitigation`. Example: physical 100 on a target with armor A and a partner with armor B; each takes `100 × its own armor factor`.
+    - `damage_share_keeps_magical_type_for_partner_mr`
+    - `damage_share_skips_dead_partner`
+    - `damage_share_partner_invulnerable_takes_nothing`
+    - `reactive_damage_is_not_shared`
+    - `mutual_shares_do_not_loop`
+    - `self_sourced_share_is_noop`
+    - `invulnerable_target_emits_no_copy`
+  - §9's `warding_bond_shares_half_of_target_damage_with_caster` becomes `warding_bond_duplicates_target_damage_to_caster`: a magical 100 on the target, where each unit takes 100 × its own MR factor, and the caster's copy arrives one frame later.
+- **A3. Spirit geometry (U8): approved as recommended.** Orbit radius 180, hit radius 80, reach 260.
+- **A4. Converted creeps (U12): 30 s lifetime.**
+  - `spawn_converted_creeps` adds `Lifetime` (30 s, a constant `CONVERTED_CREEP_LIFETIME_SECS` in `units.rs`) to each converted creep.
+  - `tick_lifetimes` despawns the creep without a bounty when the lifetime expires. If the creep is killed before then, normal bounties apply.
+  - A converted creep is itself a `Creep`. If it dies near an enemy `convert_on_death` holder, it may be converted back. That is allowed, and the new copy gets a fresh lifetime.
+  - Add the sim test `converted_creep_expires_after_30s_without_bounty`.
+  - The tooltip says "rise again as allies for 30s".
+  - In §6, the description becomes: "For a short time, enemy creeps that die near Shadowheart rise again as her allies at full health for 30 seconds".
+- **A5.** The data descriptions for Warding Bond (§6) say: "both gain armor and magic resistance, and all damage the ally takes is also dealt to Shadowheart".
