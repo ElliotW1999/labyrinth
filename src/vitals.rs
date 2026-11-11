@@ -359,6 +359,7 @@ pub struct AppliedTemporaryMana {
 ///
 /// Must run after `apply_status_effect_events` and `tick_status_effects` (scheduled right
 /// after [`sync_status_attributes`]). Dead units are skipped.
+#[allow(clippy::type_complexity)]
 pub fn sync_temporary_mana(
     mut commands: Commands,
     mut units: Query<(

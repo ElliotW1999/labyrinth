@@ -1320,6 +1320,7 @@ fn desired_toggle_passives(inv: &Inventory) -> ItemPassives {
 /// attributes never kills a living hero: its health is floored at 1.
 ///
 /// Runs right after `resolve_item_uses`. Dead heroes are skipped (reconciled on respawn).
+#[allow(clippy::type_complexity)]
 pub fn sync_item_attribute_toggles(
     mut commands: Commands,
     mut heroes: Query<(
