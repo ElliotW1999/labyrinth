@@ -3541,6 +3541,48 @@ mod tests {
         }
 
         #[test]
+        fn grant_at_empty_mana_adds_bonus_without_raising_max_and_expiry_leaves_zero() {
+            let mut app = app();
+            let u = unit(&mut app, 0.0, 500.0);
+            grant(&mut app, u, 150.0, 10.0);
+            step(&mut app, 0.1);
+            assert_eq!(mana(&app, u), (150.0, 500.0));
+            step(&mut app, 10.0);
+            assert_eq!(mana(&app, u), (0.0, 500.0), "never negative");
+        }
+
+        #[test]
+        fn regenerated_mana_is_not_taken_back_at_expiry() {
+            let mut app = app();
+            let u = unit(&mut app, 450.0, 500.0);
+            grant(&mut app, u, 150.0, 10.0);
+            step(&mut app, 0.1);
+            spend(&mut app, u, 150.0);
+            step(&mut app, 0.1);
+            // Regeneration refills the 150 spent; that is regular mana, not the bonus.
+            spend(&mut app, u, -100.0);
+            step(&mut app, 0.1);
+            step(&mut app, 10.0);
+            let (current, max) = mana(&app, u);
+            assert_eq!(max, 500.0);
+            assert_eq!(current, 500.0, "regenerated mana stays, clamped to max");
+        }
+
+        #[test]
+        fn dead_holder_is_skipped_and_reconciles_once_alive_again() {
+            let mut app = app();
+            let u = unit(&mut app, 450.0, 500.0);
+            grant(&mut app, u, 150.0, 10.0);
+            step(&mut app, 0.1);
+            app.world_mut().get_mut::<Health>(u).unwrap().current = 0.0;
+            step(&mut app, 10.0);
+            assert_eq!(mana(&app, u), (600.0, 600.0), "skipped while dead");
+            app.world_mut().get_mut::<Health>(u).unwrap().current = 100.0;
+            step(&mut app, 0.1);
+            assert_eq!(mana(&app, u), (450.0, 500.0));
+        }
+
+        #[test]
         fn dispels_cannot_remove_it() {
             let mut app = app();
             let u = unit(&mut app, 450.0, 500.0);
