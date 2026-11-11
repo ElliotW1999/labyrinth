@@ -61,3 +61,4 @@ recipe_falcon,Recipe: Falcon Blade,recipe,250,125,,,FALSE,,FALSE,,,47,,,0.492675
 blink_dagger,Blink Dagger,utility,2250,1125,2,epic,false,,false,,Teleport a short distance,BD,15,,0.45,0.35,0.85,,point,,800,,,,,
 voodoo_mask,Voodoo Mask,miscellaneous,650,325,,,FALSE,,FALSE,,15% Spell Lifesteal,VM,,,,,,,,,,,,,,
 morbid_mask,Morbid Mask,miscellaneous,900,450,,,FALSE,,FALSE,,18% Lifesteal,MM,,,,,,,,,,,,,,
+ghost_scepter,Ghost Scepter,miscellaneous,1500,750,,,FALSE,,FALSE,,"+5 All Attributes. Active: Ethereal for 4s (immune to physical damage and attacks, disarmed, takes 30% more magical damage)",GS,22,,,,,,,,,,,,,,

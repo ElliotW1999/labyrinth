@@ -80,6 +80,7 @@ pub fn definition(id: ItemId) -> &'static ItemDefinition {
         ItemId::BlinkDagger => &BLINK_DAGGER,
         ItemId::VoodooMask => &VOODOO_MASK,
         ItemId::MorbidMask => &MORBID_MASK,
+        ItemId::GhostScepter => &GHOST_SCEPTER,
     }
 }
 
@@ -2267,3 +2268,68 @@ static MORBID_MASK: ItemDefinition = ItemDefinition {
     mechanics: &[],
 };
 // </item:morbid_mask>
+
+// <item:ghost_scepter>
+static GHOST_SCEPTER: ItemDefinition = ItemDefinition {
+    id: ItemId::GhostScepter,
+    name: "Ghost Scepter",
+    short_label: "GS",
+    item_type: ItemType::Miscellaneous,
+    cost: 1500,
+    sell_value: 750,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 22.0,
+    activation: ItemActivation {
+        target_type: TargetType::NoTarget,
+        target_team: TargetTeam::Any,
+        cast_range: 0.0,
+        cast_time: 0.0,
+        channel_time: 0.0,
+        mana_cost: 0.0,
+    },
+    components: &[],
+    color: [0.466, 0.535, 0.81],
+    description: "+5 All Attributes. Active: Ethereal for 4s (immune to physical damage and attacks, disarmed, takes 30% more magical damage)",
+    effects: &[
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::Attribute(Attribute::Strength),
+                amount: RankValue::fixed(5.0),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::Attribute(Attribute::Agility),
+                amount: RankValue::fixed(5.0),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::Attribute(Attribute::Intelligence),
+                amount: RankValue::fixed(5.0),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::OnUse,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::ApplyStatus {
+                status: StatusSpec::Ethereal {
+                    magic_amp_percent: RankValue::fixed(30.0),
+                },
+                duration: RankValue::fixed(4.0),
+            },
+        },
+    ],
+    mechanics: &[],
+};
+// </item:ghost_scepter>

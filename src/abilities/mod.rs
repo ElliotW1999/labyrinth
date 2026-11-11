@@ -1301,6 +1301,43 @@ mod tests {
     }
 
     #[test]
+    fn ghost_scepter_makes_the_owner_ethereal_as_a_buff() {
+        use crate::status::{StatusKind, TargetIntent};
+        let mut app = test_app();
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::GhostScepter);
+        request_item(&mut app, caster, 0, CastTarget::None);
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        let statuses = app.world().get::<StatusEffects>(caster).unwrap();
+        let ethereal = statuses
+            .effects
+            .iter()
+            .find(|e| e.id == "ethereal")
+            .expect("ethereal applied to the owner");
+        assert_eq!(ethereal.kind, StatusKind::Buff);
+        assert!(
+            (ethereal.remaining - 4.0).abs() < 1e-3,
+            "{}",
+            ethereal.remaining
+        );
+        assert!(statuses.is_immune_to(DamageType::Physical));
+        assert!(!statuses.is_immune_to(DamageType::Magical));
+        assert!(!statuses.can_attack(), "ethereal units are disarmed");
+        assert!(
+            statuses.rejects(TargetIntent::Attack),
+            "and cannot be attacked"
+        );
+        assert!((statuses.magic_damage_factor() - 1.3).abs() < 1e-5);
+        let cooldown = app.world().get::<Inventory>(caster).unwrap().slots[0]
+            .unwrap()
+            .cooldown
+            .remaining;
+        assert!((cooldown - 22.0).abs() < 0.5, "{cooldown}");
+    }
+
+    #[test]
     fn item_on_attack_hit_resolves_in_the_same_frame() {
         let mut app = test_app();
         let _defs = install_test_item_definitions([attack_hit_heal_item()]);

@@ -279,6 +279,7 @@ pub enum ItemId {
     BlinkDagger,
     VoodooMask,
     MorbidMask,
+    GhostScepter,
     // </item_generator:item_enum>
 }
 
@@ -608,6 +609,7 @@ impl ItemId {
             ItemId::BlinkDagger,
             ItemId::VoodooMask,
             ItemId::MorbidMask,
+            ItemId::GhostScepter,
             // </item_generator:item_all>
         ]
     }
@@ -2708,6 +2710,40 @@ mod tests {
         assert!((stats.lifesteal - base).abs() < 1e-5);
         assert!((stats.spell_lifesteal - base_spell).abs() < 1e-5);
         assert_eq!(wallet.gold, 2000 - 900 - 650 + 450 + 325);
+    }
+
+    #[test]
+    fn ghost_scepter_catalog_values_and_attribute_bonus() {
+        let def = ItemId::GhostScepter.definition();
+        assert_eq!((def.cost, def.sell_value, def.cooldown), (1500, 750, 22.0));
+        assert!(ItemId::GhostScepter.has_active());
+        let (mut wallet, mut inv, mut health, mut mana, mut stats, mut attrs) = fresh_hero();
+        let base = attrs;
+        assert!(try_buy_item(
+            &mut wallet,
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            &mut attrs,
+            ItemId::GhostScepter,
+            true,
+        ));
+        assert_eq!(attrs.strength, base.strength + 5.0);
+        assert_eq!(attrs.agility, base.agility + 5.0);
+        assert_eq!(attrs.intelligence, base.intelligence + 5.0);
+        assert!(try_sell_item(
+            &mut wallet,
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            &mut attrs,
+            0,
+            true,
+        ));
+        assert_eq!(attrs.strength, base.strength);
+        assert_eq!(wallet.gold, 2000 - 1500 + 750);
     }
 
     #[test]

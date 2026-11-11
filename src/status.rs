@@ -757,19 +757,17 @@ impl StatusEffect {
     }
 
     /// Disarmed, immune to physical damage and to being attacked, and more vulnerable to
-    /// magic: `magic_amp_percent` (0..90) is the extra magic damage taken against a target with
-    /// no magic resistance, applied as a magic resistance reduction. `hostile` picks the
-    /// debuff kind (blocked by debuff immunity) over the buff kind (self / ally cast).
+    /// magic: `magic_amp_percent` (0..90) is the extra magic damage taken, exactly, on top of
+    /// the holder's own resistance (a negative percent magic resistance, so it multiplies
+    /// with the rating). `hostile` picks the debuff kind (blocked by debuff immunity) over
+    /// the buff kind (self / ally cast).
     pub fn ethereal(duration: f32, magic_amp_percent: f32, hostile: bool) -> Self {
         let amp = (magic_amp_percent / 100.0).clamp(0.0, 0.9);
-        // `mitigate` gives factor 1 - 0.06r / (1 + 0.06|r|); r = -amp / (0.06 (1 - amp)) makes
-        // that 1 + amp at zero base resistance.
-        let resist_points = amp / (0.06 * (1.0 - amp));
         Self {
             disarmed: true,
             attack_immune: true,
             immune_damage: DamageTypeMask::PHYSICAL,
-            magic_resist: -resist_points,
+            magic_resist_fraction: -amp,
             kind: Self::kind_for_hostility(hostile),
             ..Self::buff("ethereal", duration)
         }
@@ -966,13 +964,14 @@ impl StatusEffects {
             .product()
     }
 
-    /// Product of `(1 - f)` over every active percent magic resistance: the factor applied to
-    /// magical damage taken after mitigation (1.0 = none).
+    /// Product of `(1 - f)` over every active percent magic resistance (negative `f` is a
+    /// vulnerability, e.g. Ethereal): the factor applied to magical damage taken after
+    /// mitigation (1.0 = none).
     pub fn magic_damage_factor(&self) -> f32 {
         self.effects
             .iter()
-            .filter(|e| e.remaining > 0.0 && e.magic_resist_fraction > 0.0)
-            .map(|e| 1.0 - e.magic_resist_fraction.clamp(0.0, 1.0))
+            .filter(|e| e.remaining > 0.0 && e.magic_resist_fraction != 0.0)
+            .map(|e| 1.0 - e.magic_resist_fraction.clamp(-0.9, 1.0))
             .product()
     }
 
