@@ -249,6 +249,8 @@ STATUSES = {
     "heal_block": ("StatusSpec::HealBlock", "heal_block", False),
     # Per-owner ids (`<owner>_damage_reduction`), like slow and burn.
     "damage_reduction": (None, "damage_reduction", True),
+    # Percent magic resistance (amount/value = 1..100), multiplicative with the rating.
+    "magic_resistance": (None, "magic_resistance", True),
     "stacks": (None, "stacks", False),
     "status_resistance": (None, "status_resistance", True),
     "mana_shield": (None, "mana_shield", True),
@@ -258,7 +260,7 @@ STATUSES = {
 INDEPENDENT_SUFFIX = "independent"
 
 # Statuses whose runtime id is `<owner>_<name>` (the keyword alone is not a status id).
-OWNER_ID_STATUSES = ("damage_reduction", "status_resistance", "stacks", "move_speed_bonus", "attack_point")
+OWNER_ID_STATUSES = ("damage_reduction", "magic_resistance", "status_resistance", "stacks", "move_speed_bonus", "attack_point")
 
 # Triggers whose context carries the cast's unit target (see TriggerContext::cast_target).
 CAST_TARGET_TRIGGERS = ("on_cast", "on_projectile_hit")
@@ -1829,7 +1831,7 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
                 return None
             _unused(e, report, "value", "amount")
             spec = f'StatusSpec::Stacks {{ id: "{ctx.owner_id}_stacks" }}'
-        elif effect_id in ("damage_reduction", "status_resistance"):
+        elif effect_id in ("damage_reduction", "magic_resistance", "status_resistance"):
             percent = amount or value
             if not percent:
                 report.error(row.file, row.line, "amount", "", f"required: {effect_id} percentage (e.g. 80)")

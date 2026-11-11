@@ -251,6 +251,9 @@ pub struct StatusEffect {
     /// Decremented by [`StatusChange::ConsumeAttackCharge`]; the status ends at zero.
     pub attack_charges: u32,
     /// Stack count of a stacking status (`0` = not a stacking status). Applying the same id
+    /// Percent magic resistance as a fraction (0..1): magical damage taken is scaled by
+    /// `1 - fraction` after the unit's own magic-resist rating; fractions multiply.
+    pub magic_resist_fraction: f32,
     /// again adds the old count to the new one and refreshes the duration.
     pub stacks: u32,
     /// Prevents all healing while active.
@@ -431,6 +434,7 @@ impl StatusEffect {
             dot_interval: 0.0,
             dot_per_tick: 0.0,
             dot_timer: 0.0,
+            magic_resist_fraction: 0.0,
             dot_ticks_left: 0,
             dot_damage_type: DamageType::Magical,
             dot_source: None,
@@ -516,6 +520,15 @@ impl StatusEffect {
 
     /// Multiply the remaining duration by `factor`; a ticking burn keeps only the ticks that
     /// still fit.
+    /// `fraction` (0..1) less magical damage is taken, multiplying with the magic-resist rating
+    /// and with other percent sources (a buff).
+    pub fn magic_resistance(id: &'static str, fraction: f32, duration: f32) -> Self {
+        Self {
+            magic_resist_fraction: fraction.clamp(0.0, 1.0),
+            ..Self::buff(id, duration)
+        }
+    }
+
     fn scale_duration(&mut self, factor: f32) {
         self.remaining *= factor;
         if self.dot_interval > 0.0 {
@@ -939,6 +952,16 @@ impl StatusEffects {
             .filter(|e| e.remaining > 0.0)
             .filter_map(|e| e.mana_shield)
             .max_by(|a, b| a.absorb.total_cmp(&b.absorb))
+    }
+
+    /// Product of `(1 - f)` over every active percent magic resistance: the factor applied to
+    /// magical damage taken after mitigation (1.0 = none).
+    pub fn magic_damage_factor(&self) -> f32 {
+        self.effects
+            .iter()
+            .filter(|e| e.remaining > 0.0 && e.magic_resist_fraction > 0.0)
+            .map(|e| 1.0 - e.magic_resist_fraction.clamp(0.0, 1.0))
+            .product()
     }
 
     /// Sum of every active timed modifier for `stat`.

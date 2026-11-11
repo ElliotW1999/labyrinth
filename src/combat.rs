@@ -471,7 +471,14 @@ pub fn apply_damage_events(
             damage_immune,
             event.applies_block,
             event.pierces_shields,
-            statuses.as_ref().map_or(1.0, |s| s.damage_taken_factor()),
+            statuses.as_ref().map_or(1.0, |s| {
+                let magic = if event.damage_type == DamageType::Magical {
+                    s.magic_damage_factor()
+                } else {
+                    1.0
+                };
+                s.damage_taken_factor() * magic
+            }),
         );
         if resolved.shield_absorbed > 0.0 {
             if let Some(st) = statuses.as_deref_mut() {
@@ -2145,6 +2152,85 @@ mod tests {
                 1.0
             );
             assert!((taken(&mut world, t, DamageType::Pure) - 100.0).abs() < 1e-3);
+        }
+    }
+
+    mod magic_resistance {
+        use super::*;
+        use crate::status::StatusEffect;
+
+        const HERO_MR: f32 = 6.321839; // 27.5%
+
+        fn target_with(magic_resist: f32, effects: Vec<StatusEffect>) -> (World, Entity) {
+            let mut world = World::new();
+            world.init_resource::<Messages<DamageEvent>>();
+            world.init_resource::<Messages<DamageAppliedEvent>>();
+            world.init_resource::<Messages<crate::status::StatusLifecycleEvent>>();
+            world.init_resource::<CombatRng>();
+            let mut statuses = StatusEffects::default();
+            statuses.effects = effects;
+            let target = world
+                .spawn((
+                    Health::new(1000.0),
+                    CombatStats::simple(0.0, 0.0, 1.0, 0.0, magic_resist, 0.0),
+                    statuses,
+                ))
+                .id();
+            (world, target)
+        }
+
+        fn taken(world: &mut World, target: Entity, damage_type: DamageType) -> f32 {
+            let before = world.get::<Health>(target).unwrap().current;
+            world.write_message(DamageEvent::new(target, 100.0, damage_type));
+            world.run_system_once(apply_damage_events).unwrap();
+            before - world.get::<Health>(target).unwrap().current
+        }
+
+        #[test]
+        fn magic_resistance_multiplies_with_rating_mr() {
+            let (mut world, t) = target_with(HERO_MR, vec![]);
+            assert!((taken(&mut world, t, DamageType::Magical) - 72.5).abs() < 0.01);
+            let (mut world, t) =
+                target_with(HERO_MR, vec![StatusEffect::magic_resistance("a", 0.2, 5.0)]);
+            // 100 x 0.725 x 0.8 = 58.
+            assert!((taken(&mut world, t, DamageType::Magical) - 58.0).abs() < 0.01);
+        }
+
+        #[test]
+        fn two_magic_resistance_sources_multiply() {
+            let (mut world, t) = target_with(
+                0.0,
+                vec![
+                    StatusEffect::magic_resistance("a", 0.5, 5.0),
+                    StatusEffect::magic_resistance("b", 0.5, 5.0),
+                ],
+            );
+            let statuses = world.get::<StatusEffects>(t).unwrap();
+            assert!((statuses.magic_damage_factor() - 0.25).abs() < 1e-6);
+            assert!((taken(&mut world, t, DamageType::Magical) - 25.0).abs() < 1e-3);
+        }
+
+        #[test]
+        fn magic_resistance_ignores_physical_and_pure() {
+            for damage_type in [DamageType::Physical, DamageType::Pure] {
+                let (mut world, t) =
+                    target_with(0.0, vec![StatusEffect::magic_resistance("a", 0.5, 5.0)]);
+                assert!(
+                    (taken(&mut world, t, damage_type) - 100.0).abs() < 1e-3,
+                    "{damage_type:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn magic_resistance_ends_on_expiry() {
+            let (mut world, t) =
+                target_with(0.0, vec![StatusEffect::magic_resistance("a", 0.5, 0.0)]);
+            assert_eq!(
+                world.get::<StatusEffects>(t).unwrap().magic_damage_factor(),
+                1.0
+            );
+            assert!((taken(&mut world, t, DamageType::Magical) - 100.0).abs() < 1e-3);
         }
     }
 }

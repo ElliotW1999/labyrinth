@@ -803,6 +803,36 @@ class AreaPolarityTests(unittest.TestCase):
         self.assertIn("team: TargetTeam::Enemy", self._area("apply_status", "stun", "Ally", duration="1"))
 
 
+class MagicResistanceStatusTests(unittest.TestCase):
+    def _status(self, effect_type="apply_status", **cells):
+        report = Report()
+        effect, ctx = _effect(effect_type, "magic_resistance", target="caster", **cells)
+        ctx.levels = 4
+        return effect_to_rust(effect, ctx, report), report
+
+    def test_percent_from_amount_emits_owner_id(self) -> None:
+        result, report = self._status(amount="5|10|15|20", duration="10")
+        self.assertIsNotNone(result, report.errors)
+        self.assertIn('StatusSpec::MagicResistance { id: "tester_magic_resistance"', result[2])
+        self.assertIn("percent: RankValue", result[2])
+
+    def test_value_is_accepted_and_range_is_checked(self) -> None:
+        result, _ = self._status(value="25", duration="10")
+        self.assertIsNotNone(result)
+        for bad in ("0", "101", "-5"):
+            result, report = self._status(amount=bad, duration="10")
+            self.assertIsNone(result, bad)
+            self.assertEqual(report.errors[0].field, "amount")
+        result, report = self._status(duration="10")
+        self.assertIsNone(result)
+
+    def test_remove_status_is_rejected_with_owner_id_hint(self) -> None:
+        report = Report()
+        effect, ctx = _effect("remove_status", "magic_resistance", target="caster")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertIn("<owner>_magic_resistance", report.errors[0].message)
+
+
 class ZoneTests(unittest.TestCase):
     GOOD = {"value": "1", "duration": "10", "amount": "1.2"}
 

@@ -520,6 +520,12 @@ pub enum StatusSpec {
         id: &'static str,
         percent: RankValue,
     },
+    /// `percent` (0-100) less magical damage is taken, multiplying with the magic-resist rating
+    /// and other percent sources (a buff). `id` is `<owner>_magic_resistance`.
+    MagicResistance {
+        id: &'static str,
+        percent: RankValue,
+    },
     /// `percent` (0-100) is cut from the duration of hostile debuffs that land on the holder
     /// while it lasts (a buff). `id` is `<owner>_status_resistance`; resistances multiply.
     StatusResistance {
@@ -794,6 +800,11 @@ impl StatusSpec {
             StatusSpec::HealBlock => StatusEffect::heal_block(duration),
             StatusSpec::Stacks { id } => StatusEffect::stack(id, duration),
             StatusSpec::StatusResistance { id, percent } => StatusEffect::status_resistance(
+                id,
+                (percent.at(rank) / 100.0).clamp(0.0, 1.0),
+                duration,
+            ),
+            StatusSpec::MagicResistance { id, percent } => StatusEffect::magic_resistance(
                 id,
                 (percent.at(rank) / 100.0).clamp(0.0, 1.0),
                 duration,
