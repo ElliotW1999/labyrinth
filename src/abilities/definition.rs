@@ -6,7 +6,7 @@ use bevy::prelude::{Entity, Vec2, Vec3};
 
 use crate::components::AbilityId;
 use crate::components::DamageType;
-use crate::status::{DispelType, Leash, LeashAnchor, StatusEffect, StatusKind};
+use crate::status::{DamageShare, DispelType, Leash, LeashAnchor, StatusEffect, StatusKind};
 use crate::vitals::{ManaShield, ResourceKind, ResourceStat};
 
 /// Upper bound (seconds) for an ability's cast point (the aim before it fires).
@@ -532,6 +532,13 @@ pub enum StatusSpec {
         id: &'static str,
         percent: RankValue,
     },
+    /// Bonds the holder to the unit that applied the status: `percent` (0-100) of every
+    /// (non-reactive) hit the holder takes is also dealt to that unit, as a copy of the
+    /// pre-mitigation damage with the same damage type that the unit then mitigates itself.
+    /// The holder still takes the full hit. A buff with the id `damage_share`.
+    DamageShare {
+        percent: RankValue,
+    },
     /// Diverts `absorb_percent` (0–100) of post-mitigation damage to mana, at
     /// `damage_per_mana` damage per point of mana.
     ManaShield {
@@ -814,6 +821,16 @@ impl StatusSpec {
                 (percent.at(rank) / 100.0).clamp(0.0, 1.0),
                 duration,
             ),
+            StatusSpec::DamageShare { percent } => match ctx.source {
+                Some(partner) => StatusEffect::damage_share(
+                    DamageShare {
+                        partner,
+                        fraction: (percent.at(rank) / 100.0).clamp(0.0, 1.0),
+                    },
+                    duration,
+                ),
+                None => StatusEffect::buff("damage_share", duration),
+            },
             StatusSpec::ManaShield {
                 absorb_percent,
                 damage_per_mana,

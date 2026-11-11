@@ -833,6 +833,34 @@ class MagicResistanceStatusTests(unittest.TestCase):
         self.assertIn("<owner>_magic_resistance", report.errors[0].message)
 
 
+class DamageShareStatusTests(unittest.TestCase):
+    def _status(self, target="cast_target", **cells):
+        report = Report()
+        effect, ctx = _effect("apply_status", "damage_share", target=target, **cells)
+        ctx.levels = 4
+        return effect_to_rust(effect, ctx, report), report
+
+    def test_percent_from_amount_or_value(self) -> None:
+        result, report = self._status(amount="100", duration="10")
+        self.assertIsNotNone(result, report.errors)
+        self.assertIn("StatusSpec::DamageShare { percent: RankValue::fixed(100.0) }", result[2])
+        self.assertEqual(result[1], "EffectTarget::CastTarget")
+        result, _ = self._status(value="50", duration="10")
+        self.assertIsNotNone(result)
+
+    def test_invalid_percent_and_self_targets_are_rejected(self) -> None:
+        for name, cells, field in (
+            ("zero", {"amount": "0"}, "amount"),
+            ("above 100", {"amount": "150"}, "amount"),
+            ("missing", {}, "amount"),
+            ("caster target", {"amount": "100", "target": "caster"}, "effect_target"),
+            ("owner target", {"amount": "100", "target": "owner"}, "effect_target"),
+        ):
+            result, report = self._status(duration="10", **cells)
+            self.assertIsNone(result, name)
+            self.assertEqual(report.errors[0].field, field, name)
+
+
 class ZoneTests(unittest.TestCase):
     GOOD = {"value": "1", "duration": "10", "amount": "1.2"}
 

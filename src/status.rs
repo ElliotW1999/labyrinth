@@ -116,6 +116,13 @@ pub enum TargetIntent {
 }
 
 /// Generic buff / debuff container on heroes (and potentially other units later).
+/// A damage bond: `fraction` (0..=1) of the damage the holder takes is duplicated to `partner`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DamageShare {
+    pub partner: Entity,
+    pub fraction: f32,
+}
+
 #[derive(Component, Debug, Clone, Default)]
 pub struct StatusEffects {
     pub effects: Vec<StatusEffect>,
@@ -244,6 +251,9 @@ pub struct StatusEffect {
     pub heal_reduction: f32,
     /// Fraction (0..1) of incoming damage removed after mitigation; reductions multiply.
     pub damage_reduction: f32,
+    /// Percent magic resistance as a fraction (0..1): magical damage taken is scaled by
+    /// `1 - fraction` after the unit's own magic-resist rating; fractions multiply.
+    pub magic_resist_fraction: f32,
     /// Fraction (0..1) by which the durations of new hostile debuffs are shortened;
     /// resistances multiply. Read by [`apply_status_effect_events`] when a debuff lands.
     pub status_resistance: f32,
@@ -251,15 +261,14 @@ pub struct StatusEffect {
     /// Decremented by [`StatusChange::ConsumeAttackCharge`]; the status ends at zero.
     pub attack_charges: u32,
     /// Stack count of a stacking status (`0` = not a stacking status). Applying the same id
-    /// Percent magic resistance as a fraction (0..1): magical damage taken is scaled by
-    /// `1 - fraction` after the unit's own magic-resist rating; fractions multiply.
-    pub magic_resist_fraction: f32,
     /// again adds the old count to the new one and refreshes the duration.
     pub stacks: u32,
     /// Prevents all healing while active.
     pub heal_blocked: bool,
     /// Diverts incoming damage to mana while active.
     pub mana_shield: Option<crate::vitals::ManaShield>,
+    /// Duplicates part of the damage the holder takes to another unit (the bond's source).
+    pub damage_share: Option<DamageShare>,
     pub damage_per_sec: f32,
     /// Ticking burn: seconds between ticks (`0` = no ticking; see [`StatusEffect::burn_ticking`]).
     pub dot_interval: f32,
@@ -425,16 +434,17 @@ impl StatusEffect {
             resource: None,
             heal_reduction: 0.0,
             damage_reduction: 0.0,
+            magic_resist_fraction: 0.0,
             status_resistance: 0.0,
             attack_charges: 0,
             stacks: 0,
             heal_blocked: false,
             mana_shield: None,
+            damage_share: None,
             damage_per_sec: 0.0,
             dot_interval: 0.0,
             dot_per_tick: 0.0,
             dot_timer: 0.0,
-            magic_resist_fraction: 0.0,
             dot_ticks_left: 0,
             dot_damage_type: DamageType::Magical,
             dot_source: None,
@@ -510,6 +520,15 @@ impl StatusEffect {
         }
     }
 
+    /// `fraction` (0..1) less magical damage is taken, multiplying with the magic-resist rating
+    /// and with other percent sources (a buff).
+    pub fn magic_resistance(id: &'static str, fraction: f32, duration: f32) -> Self {
+        Self {
+            magic_resist_fraction: fraction.clamp(0.0, 1.0),
+            ..Self::buff(id, duration)
+        }
+    }
+
     /// `fraction` (0..1) of the duration of new hostile debuffs is cut (a buff).
     pub fn status_resistance(id: &'static str, fraction: f32, duration: f32) -> Self {
         Self {
@@ -520,15 +539,6 @@ impl StatusEffect {
 
     /// Multiply the remaining duration by `factor`; a ticking burn keeps only the ticks that
     /// still fit.
-    /// `fraction` (0..1) less magical damage is taken, multiplying with the magic-resist rating
-    /// and with other percent sources (a buff).
-    pub fn magic_resistance(id: &'static str, fraction: f32, duration: f32) -> Self {
-        Self {
-            magic_resist_fraction: fraction.clamp(0.0, 1.0),
-            ..Self::buff(id, duration)
-        }
-    }
-
     fn scale_duration(&mut self, factor: f32) {
         self.remaining *= factor;
         if self.dot_interval > 0.0 {
@@ -566,6 +576,15 @@ impl StatusEffect {
         Self {
             mana_shield: Some(shield),
             ..Self::buff("mana_shield", duration)
+        }
+    }
+
+    /// A bond (a buff, id `damage_share`): `fraction` of the damage the holder takes is also
+    /// dealt to `partner`.
+    pub fn damage_share(share: DamageShare, duration: f32) -> Self {
+        Self {
+            damage_share: Some(share),
+            ..Self::buff("damage_share", duration)
         }
     }
 
@@ -935,6 +954,16 @@ impl StatusEffects {
             .product()
     }
 
+    /// Product of `(1 - f)` over every active percent magic resistance: the factor applied to
+    /// magical damage taken after mitigation (1.0 = none).
+    pub fn magic_damage_factor(&self) -> f32 {
+        self.effects
+            .iter()
+            .filter(|e| e.remaining > 0.0 && e.magic_resist_fraction > 0.0)
+            .map(|e| 1.0 - e.magic_resist_fraction.clamp(0.0, 1.0))
+            .product()
+    }
+
     /// Product of `(1 - r)` over every active status resistance: the factor applied to the
     /// duration of a hostile debuff as it lands (1.0 = none).
     pub fn status_resistance_factor(&self) -> f32 {
@@ -954,14 +983,12 @@ impl StatusEffects {
             .max_by(|a, b| a.absorb.total_cmp(&b.absorb))
     }
 
-    /// Product of `(1 - f)` over every active percent magic resistance: the factor applied to
-    /// magical damage taken after mitigation (1.0 = none).
-    pub fn magic_damage_factor(&self) -> f32 {
+    /// The first live damage bond on the holder, if any.
+    pub fn damage_share(&self) -> Option<DamageShare> {
         self.effects
             .iter()
-            .filter(|e| e.remaining > 0.0 && e.magic_resist_fraction > 0.0)
-            .map(|e| 1.0 - e.magic_resist_fraction.clamp(0.0, 1.0))
-            .product()
+            .filter(|e| e.remaining > 0.0)
+            .find_map(|e| e.damage_share)
     }
 
     /// Sum of every active timed modifier for `stat`.

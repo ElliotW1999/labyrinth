@@ -254,6 +254,8 @@ STATUSES = {
     "stacks": (None, "stacks", False),
     "status_resistance": (None, "status_resistance", True),
     "mana_shield": (None, "mana_shield", True),
+    # Duplicates `amount` percent of the holder's incoming damage to the unit that applied it.
+    "damage_share": (None, "damage_share", True),
 }
 
 # `stat_modifier` effect-id suffix: each application keeps its own status instance and timer.
@@ -1841,6 +1843,20 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
                 return None
             variant = "".join(part.capitalize() for part in effect_id.split("_"))
             spec = f'StatusSpec::{variant} {{ id: "{ctx.owner_id}_{effect_id}", percent: {rank_value(percent)} }}'
+            if amount:
+                _unused(e, report, "value")
+        elif effect_id == "damage_share":
+            percent = amount or value
+            if not percent:
+                report.error(row.file, row.line, "amount", "", "required: percent of the holder's incoming damage duplicated to the caster (e.g. 100)")
+                return None
+            if any(not 0 < p <= 100 for p in percent):
+                report.error(row.file, row.line, "amount" if amount else "value", row.get("amount") or row.get("value"), "damage_share percentage must be above 0 and at most 100")
+                return None
+            if e.target in ("caster", "owner"):
+                report.error(row.file, row.line, "effect_target", e.target, "damage_share bonds the target to the caster; sharing with oneself does nothing (use cast_target, trigger_unit, affected_units or units_in_radius)")
+                return None
+            spec = f"StatusSpec::DamageShare {{ percent: {rank_value(percent)} }}"
             if amount:
                 _unused(e, report, "value")
         elif effect_id == "mana_shield":

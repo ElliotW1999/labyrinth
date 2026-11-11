@@ -414,6 +414,8 @@ pub fn apply_damage_events(
     )>,
 ) {
     let mut reflected = Vec::new();
+    // Bond copies (`damage_share`), written next to the reflected damage.
+    let mut shared = Vec::new();
     // (source, health to give back); applied after the whole batch, same frame.
     let mut leeches: Vec<(Entity, f32)> = Vec::new();
     for event in damage.p0().read() {
@@ -530,6 +532,38 @@ pub fn apply_damage_events(
             }
         }
 
+        // Damage share: the target took the full hit above; its bond partner also receives a
+        // copy of the incoming damage before mitigation (same type), which the partner then
+        // mitigates itself. Reactive damage is never shared, so bonds cannot loop. A dead
+        // partner drops the copy when it is processed (next frame, like reflect).
+        if !event.reactive {
+            if let Some(share) = statuses.as_ref().and_then(|s| s.damage_share()) {
+                if share.partner != event.target && share.fraction > 0.0 {
+                    // Outgoing amps are in `outgoing`; the copy re-applies the physical one
+                    // itself, so pass the raw amount for physical to apply it exactly once.
+                    let pre_mitigation = if event.damage_type == DamageType::Physical {
+                        event.amount
+                    } else {
+                        outgoing
+                    };
+                    shared.push(DamageEvent {
+                        source: event.source,
+                        target: share.partner,
+                        amount: pre_mitigation * share.fraction,
+                        damage_type: event.damage_type,
+                        kind: DamageKind::Generic,
+                        crit: false,
+                        is_spell: false,
+                        applies_block: false,
+                        pierces_shields: false,
+                        reflects: false,
+                        drain_ratio: 0.0,
+                        reactive: true,
+                    });
+                }
+            }
+        }
+
         if event.reflects && resolved.health_delta > 0.0 && damage_reflect > 0.0 {
             if let Some(source) = event.source {
                 let amount = resolved.health_delta * damage_reflect;
@@ -557,7 +591,7 @@ pub fn apply_damage_events(
             apply_heal(&mut health, amount, factor);
         }
     }
-    for event in reflected {
+    for event in reflected.into_iter().chain(shared) {
         damage.p1().write(event);
     }
 }
@@ -2231,6 +2265,219 @@ mod tests {
                 1.0
             );
             assert!((taken(&mut world, t, DamageType::Magical) - 100.0).abs() < 1e-3);
+        }
+    }
+
+    mod damage_share {
+        use super::*;
+        use crate::status::{DamageShare, StatusEffect};
+
+        fn app() -> App {
+            let mut app = App::new();
+            app.add_message::<DamageEvent>();
+            app.add_message::<DamageAppliedEvent>();
+            app.add_message::<crate::status::StatusLifecycleEvent>();
+            app.init_resource::<CombatRng>();
+            app.add_systems(Update, apply_damage_events);
+            app
+        }
+
+        fn unit(
+            app: &mut App,
+            armor: f32,
+            magic_resist: f32,
+            effects: Vec<StatusEffect>,
+        ) -> Entity {
+            let mut statuses = StatusEffects::default();
+            statuses.effects = effects;
+            app.world_mut()
+                .spawn((
+                    Health::new(1000.0),
+                    CombatStats::simple(0.0, 0.0, 1.0, armor, magic_resist, 0.0),
+                    statuses,
+                ))
+                .id()
+        }
+
+        fn bond(partner: Entity, fraction: f32) -> StatusEffect {
+            StatusEffect::damage_share(DamageShare { partner, fraction }, 10.0)
+        }
+
+        /// A target bonded to a fresh partner (`target_armor` / `partner_armor`).
+        fn pair(app: &mut App, target_mr: f32, partner_mr: f32, fraction: f32) -> (Entity, Entity) {
+            let partner = unit(app, 10.0, partner_mr, vec![]);
+            let target = unit(app, 0.0, target_mr, vec![bond(partner, fraction)]);
+            (target, partner)
+        }
+
+        fn taken(app: &App, e: Entity) -> f32 {
+            1000.0 - app.world().get::<Health>(e).unwrap().current
+        }
+
+        fn hit(app: &mut App, target: Entity, amount: f32, damage_type: DamageType) {
+            app.world_mut()
+                .write_message(DamageEvent::new(target, amount, damage_type));
+        }
+
+        #[test]
+        fn damage_share_duplicates_pre_mitigation_damage_to_partner_with_its_own_mitigation() {
+            let mut app = app();
+            let partner = unit(&mut app, 5.0, 0.0, vec![]);
+            let target = unit(&mut app, 10.0, 0.0, vec![bond(partner, 1.0)]);
+            hit(&mut app, target, 100.0, DamageType::Physical);
+            app.update();
+            // The target takes its normal hit now; the copy has not landed yet.
+            let stats = CombatStats::simple(0.0, 0.0, 1.0, 10.0, 0.0, 0.0);
+            assert!(
+                (taken(&app, target) - apply_damage(100.0, DamageType::Physical, &stats)).abs()
+                    < 1e-3
+            );
+            assert_eq!(taken(&app, partner), 0.0);
+            app.update();
+            let stats = CombatStats::simple(0.0, 0.0, 1.0, 5.0, 0.0, 0.0);
+            assert!(
+                (taken(&app, partner) - apply_damage(100.0, DamageType::Physical, &stats)).abs()
+                    < 1e-3
+            );
+            // The target was not reduced further.
+            let stats = CombatStats::simple(0.0, 0.0, 1.0, 10.0, 0.0, 0.0);
+            assert!(
+                (taken(&app, target) - apply_damage(100.0, DamageType::Physical, &stats)).abs()
+                    < 1e-3
+            );
+        }
+
+        #[test]
+        fn damage_share_keeps_magical_type_for_partner_mr() {
+            let mut app = app();
+            let (target, partner) = pair(&mut app, 0.0, 6.321839, 1.0);
+            hit(&mut app, target, 100.0, DamageType::Magical);
+            app.update();
+            app.update();
+            assert!((taken(&app, target) - 100.0).abs() < 1e-3);
+            assert!((taken(&app, partner) - 72.5).abs() < 0.01);
+        }
+
+        #[test]
+        fn damage_share_percent_scales_the_copy_and_pure_ignores_armor() {
+            let mut app = app();
+            let (target, partner) = pair(&mut app, 0.0, 0.0, 0.5);
+            hit(&mut app, target, 100.0, DamageType::Pure);
+            app.update();
+            app.update();
+            assert!((taken(&app, target) - 100.0).abs() < 1e-3);
+            assert!((taken(&app, partner) - 50.0).abs() < 1e-3);
+        }
+
+        #[test]
+        fn damage_share_skips_dead_partner() {
+            let mut app = app();
+            let (target, partner) = pair(&mut app, 0.0, 0.0, 1.0);
+            app.world_mut().get_mut::<Health>(partner).unwrap().current = 0.0;
+            hit(&mut app, target, 100.0, DamageType::Pure);
+            app.update();
+            app.update();
+            assert!((taken(&app, target) - 100.0).abs() < 1e-3);
+            assert_eq!(app.world().get::<Health>(partner).unwrap().current, 0.0);
+            // A despawned partner is just as harmless.
+            app.world_mut().despawn(partner);
+            hit(&mut app, target, 100.0, DamageType::Pure);
+            app.update();
+            app.update();
+            assert!((taken(&app, target) - 200.0).abs() < 1e-3);
+        }
+
+        #[test]
+        fn damage_share_partner_invulnerable_takes_nothing() {
+            let mut app = app();
+            let (target, partner) = pair(&mut app, 0.0, 0.0, 1.0);
+            app.world_mut()
+                .get_mut::<StatusEffects>(partner)
+                .unwrap()
+                .effects
+                .push(StatusEffect::invulnerable(5.0));
+            hit(&mut app, target, 100.0, DamageType::Pure);
+            app.update();
+            app.update();
+            assert!((taken(&app, target) - 100.0).abs() < 1e-3);
+            assert_eq!(taken(&app, partner), 0.0);
+        }
+
+        #[test]
+        fn reactive_damage_is_not_shared() {
+            let mut app = app();
+            let (target, partner) = pair(&mut app, 0.0, 0.0, 1.0);
+            let mut event = DamageEvent::new(target, 100.0, DamageType::Pure);
+            event.reactive = true;
+            app.world_mut().write_message(event);
+            app.update();
+            app.update();
+            assert!((taken(&app, target) - 100.0).abs() < 1e-3);
+            assert_eq!(taken(&app, partner), 0.0);
+        }
+
+        #[test]
+        fn mutual_shares_do_not_loop() {
+            let mut app = app();
+            let a = unit(&mut app, 0.0, 0.0, vec![]);
+            let b = unit(&mut app, 0.0, 0.0, vec![bond(a, 1.0)]);
+            app.world_mut()
+                .get_mut::<StatusEffects>(a)
+                .unwrap()
+                .effects
+                .push(bond(b, 1.0));
+            hit(&mut app, a, 100.0, DamageType::Pure);
+            for _ in 0..6 {
+                app.update();
+            }
+            assert!((taken(&app, a) - 100.0).abs() < 1e-3);
+            assert!((taken(&app, b) - 100.0).abs() < 1e-3);
+        }
+
+        #[test]
+        fn self_sourced_share_is_noop() {
+            let mut app = app();
+            let target = unit(&mut app, 0.0, 0.0, vec![]);
+            app.world_mut()
+                .get_mut::<StatusEffects>(target)
+                .unwrap()
+                .effects
+                .push(bond(target, 1.0));
+            hit(&mut app, target, 100.0, DamageType::Pure);
+            for _ in 0..3 {
+                app.update();
+            }
+            assert!((taken(&app, target) - 100.0).abs() < 1e-3);
+        }
+
+        #[test]
+        fn invulnerable_target_emits_no_copy() {
+            let mut app = app();
+            let (target, partner) = pair(&mut app, 0.0, 0.0, 1.0);
+            app.world_mut()
+                .get_mut::<StatusEffects>(target)
+                .unwrap()
+                .effects
+                .push(StatusEffect::invulnerable(5.0));
+            hit(&mut app, target, 100.0, DamageType::Pure);
+            app.update();
+            app.update();
+            assert_eq!(taken(&app, target), 0.0);
+            assert_eq!(taken(&app, partner), 0.0);
+        }
+
+        #[test]
+        fn shield_soaked_damage_still_emits_the_copy() {
+            let mut app = app();
+            let (target, partner) = pair(&mut app, 0.0, 0.0, 1.0);
+            app.world_mut()
+                .entity_mut(target)
+                .insert(ShieldPool { amount: 500.0 });
+            hit(&mut app, target, 100.0, DamageType::Pure);
+            app.update();
+            app.update();
+            assert_eq!(taken(&app, target), 0.0);
+            assert!((taken(&app, partner) - 100.0).abs() < 1e-3);
         }
     }
 }
