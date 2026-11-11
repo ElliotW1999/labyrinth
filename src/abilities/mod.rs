@@ -1638,7 +1638,7 @@ mod tests {
     fn perform_attack(max_targets: u32, exclude_trigger_unit: bool) -> AbilityEffect {
         AbilityEffect::PerformAttack {
             damage_ratio: RankValue::fixed(0.7),
-            max_targets,
+            max_targets: RankValue::fixed(max_targets as f32),
             exclude_trigger_unit,
         }
     }
@@ -1675,6 +1675,49 @@ mod tests {
                 damage_ratio: 0.7,
             }]
         );
+    }
+
+    #[test]
+    fn perform_attack_max_targets_scales_with_rank() {
+        let ability = AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::NoTarget, RankValue::ZERO, RankValue::ZERO)
+            .costs(RankValue::ZERO, RankValue::ZERO)
+            .timing(0.0, 0.0)
+            .on(
+                AbilityTrigger::OnCast,
+                EffectTarget::UnitsInRadius {
+                    center: definition::AreaCenter::Caster,
+                    radius: AreaRadius::Fixed(RankValue::fixed(600.0)),
+                    team: TargetTeam::Enemy,
+                },
+                AbilityEffect::PerformAttack {
+                    damage_ratio: RankValue::fixed(1.0),
+                    max_targets: RankValue::levels(&[1.0, 2.0, 3.0]),
+                    exclude_trigger_unit: false,
+                },
+            );
+        for (rank, expected) in [(1, 1), (2, 2), (3, 3)] {
+            let mut app = test_app();
+            app.world_mut()
+                .resource_mut::<AbilityDefinitions>()
+                .insert(ability.clone());
+            let caster = spawn_caster(&mut app, KIT);
+            set_rank(&mut app, caster, 3, rank);
+            for i in 0..4 {
+                spawn_unit(
+                    &mut app,
+                    Team::Dire,
+                    Vec3::new(100.0 + 50.0 * i as f32, 0.0, 0.0),
+                );
+            }
+            request(&mut app, caster, 3, CastTarget::None);
+            let mut count = 0;
+            for _ in 0..6 {
+                step(&mut app);
+                count += extra_attack_events(&app).len();
+            }
+            assert_eq!(count, expected, "rank {rank}");
+        }
     }
 
     #[test]
@@ -1834,7 +1877,7 @@ mod tests {
                 target: EffectTarget::TriggerUnit,
                 effect: AbilityEffect::PerformAttack {
                     damage_ratio: RankValue::fixed(ratio),
-                    max_targets: 0,
+                    max_targets: RankValue::ZERO,
                     exclude_trigger_unit: false,
                 },
             },

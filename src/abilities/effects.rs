@@ -957,8 +957,9 @@ impl EffectRunner<'_, '_> {
                     })
                     .collect();
                 chosen.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+                let max_targets = max_targets.at(rank).round() as usize;
                 if max_targets > 0 {
-                    chosen.truncate(max_targets as usize);
+                    chosen.truncate(max_targets);
                 }
                 for (_, target) in chosen {
                     self.extra_attacks.write(ExtraAttackEvent {

@@ -1154,11 +1154,11 @@ pub enum AbilityEffect {
     /// the caster's attack damage, ignoring cooldown, swing and range (instant attack, double
     /// attack, multi-target attack). The caster itself is never a target, nor the trigger unit
     /// when `exclude_trigger_unit` is set; at most `max_targets` are attacked, nearest first
-    /// (0 = all). Does nothing under a trigger caused by an extra attack, so extra attacks
-    /// never chain, nor under a reaction (damage- or status-class trigger).
+    /// (rank-scaled, rounded; 0 = all). Does nothing under a trigger caused by an extra attack,
+    /// so extra attacks never chain, nor under a reaction (damage- or status-class trigger).
     PerformAttack {
         damage_ratio: RankValue,
-        max_targets: u32,
+        max_targets: RankValue,
         exclude_trigger_unit: bool,
     },
     /// Escape hatch: runs the system registered under `id` with

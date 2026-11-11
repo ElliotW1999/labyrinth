@@ -2304,12 +2304,12 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
         if any(p <= 0 for p in percent):
             report.error(row.file, row.line, "value", row.get("value"), "perform_attack damage percent must be above 0")
             return None
-        max_targets = 0
+        max_targets = "RankValue::ZERO"
         if amount:
-            if len(amount) != 1 or not float(amount[0]).is_integer() or amount[0] < 0:
-                report.error(row.file, row.line, "amount", row.get("amount"), "max targets must be a single integer of at least 0 (0 = all)")
+            if any(not float(a).is_integer() or a < 0 for a in amount):
+                report.error(row.file, row.line, "amount", row.get("amount"), "max targets must be whole numbers of at least 0 (0 = all), one per rank")
                 return None
-            max_targets = int(amount[0])
+            max_targets = rank_value(amount)
         _unused(e, report, "damage_type", "duration")
         effect = (
             f"AbilityEffect::PerformAttack {{ damage_ratio: {rank_value([p / 100 for p in percent])}, "
@@ -2372,7 +2372,9 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
         # Enemy/both abilities keep their team; ally/self abilities follow effect polarity, so a
         # harmful area (damage, stun, knockback) hits enemies and a beneficial one hits allies.
         team = ctx.team if ctx.team in ("Enemy", "Any") else ("Ally" if beneficial else "Enemy")
-        center = ctx.center_for.get(e.trigger, "TriggerPoint")
+        # Extra attacks launch from the attacker and the runner ranks candidates by distance from
+        # it, so a `perform_attack` search area is always centred on the caster.
+        center = "Caster" if t == "perform_attack" else ctx.center_for.get(e.trigger, "TriggerPoint")
         target = (
             f"EffectTarget::UnitsInRadius {{ center: AreaCenter::{center}, "
             f"radius: {radius_rs}, team: TargetTeam::{team} }}"

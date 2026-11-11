@@ -591,7 +591,7 @@ fn effect_text_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
             max_targets,
             ..
         } => {
-            let hits = match max_targets {
+            let hits = match max_targets.at(1).round() as u32 {
                 0 => "Attacks every target".to_string(),
                 1 => "Attacks once".to_string(),
                 n => format!("Attacks up to {n} targets"),

@@ -571,6 +571,37 @@ def _effect(
     return effect, ctx
 
 
+class PerformAttackTests(unittest.TestCase):
+    def test_rank_list_amount_and_caster_centre(self) -> None:
+        report = Report()
+        effect, ctx = _effect("perform_attack", "exclude_trigger_unit", target="units_in_radius", trigger="on_attack", kind="item", amount="1|2|3", radius="500")
+        ctx.levels = 3
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors, report.errors)
+        self.assertIn("max_targets: RankValue::from_level_1(1.0, 1.0)", result[2])
+        self.assertIn("center: AreaCenter::Caster", result[1])
+        # A gate-fed custom trigger is centred on the caster too.
+        report = Report()
+        effect, ctx = _effect("perform_attack", "", target="units_in_radius", trigger="on_split", kind="item", radius="500")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors, report.errors)
+        self.assertIn("center: AreaCenter::Caster", result[1])
+        # Other effects keep the trigger point.
+        report = Report()
+        effect, ctx = _effect("damage", "", target="units_in_radius", trigger="on_attack", kind="item", value="10", damage_type="magical", radius="500")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertIn("center: AreaCenter::TriggerPoint", result[1])
+
+    def test_non_integer_amount_is_rejected(self) -> None:
+        for amount in ("1.5", "1|2.5|3", "-1"):
+            report = Report()
+            effect, ctx = _effect("perform_attack", "", target="cast_target", amount=amount)
+            ctx.levels = 3 if "|" in amount else 1
+            self.assertIsNone(effect_to_rust(effect, ctx, report), amount)
+            self.assertEqual(report.errors[0].field, "amount")
+
+
+
 class ResourceEffectTests(unittest.TestCase):
     def test_resource_effects_health_drain(self) -> None:
         report = Report()
@@ -1722,13 +1753,13 @@ class AttackModifierTests(unittest.TestCase):
     def test_perform_attack_columns(self) -> None:
         report = Report()
         effect, ctx = _effect("perform_attack", "", target="cast_target")
-        self.assertIn("damage_ratio: RankValue::fixed(1.0), max_targets: 0, exclude_trigger_unit: false", effect_to_rust(effect, ctx, report)[2])
+        self.assertIn("damage_ratio: RankValue::fixed(1.0), max_targets: RankValue::ZERO, exclude_trigger_unit: false", effect_to_rust(effect, ctx, report)[2])
 
         report = Report()
         effect, ctx = _effect("perform_attack", "exclude_trigger_unit", target="trigger_unit", trigger="on_attack", kind="item", value="70", amount="2")
         result = effect_to_rust(effect, ctx, report)
         self.assertFalse(report.errors)
-        self.assertIn("damage_ratio: RankValue::fixed(0.7), max_targets: 2, exclude_trigger_unit: true", result[2])
+        self.assertIn("damage_ratio: RankValue::fixed(0.7), max_targets: RankValue::fixed(2.0), exclude_trigger_unit: true", result[2])
 
         for cells in ({"effect_id": "bogus"}, {"value": "0"}, {"amount": "1.5"}, {"amount": "-1"}):
             report = Report()
