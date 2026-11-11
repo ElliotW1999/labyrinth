@@ -78,6 +78,8 @@ pub fn definition(id: ItemId) -> &'static ItemDefinition {
         ItemId::FalconBlade => &FALCON_BLADE,
         ItemId::RecipeFalcon => &RECIPE_FALCON,
         ItemId::BlinkDagger => &BLINK_DAGGER,
+        ItemId::VoodooMask => &VOODOO_MASK,
+        ItemId::MorbidMask => &MORBID_MASK,
     }
 }
 
@@ -2205,3 +2207,63 @@ static BLINK_DAGGER: ItemDefinition = ItemDefinition {
     mechanics: &[],
 };
 // </item:blink_dagger>
+
+// <item:voodoo_mask>
+static VOODOO_MASK: ItemDefinition = ItemDefinition {
+    id: ItemId::VoodooMask,
+    name: "Voodoo Mask",
+    short_label: "VM",
+    item_type: ItemType::Miscellaneous,
+    cost: 650,
+    sell_value: 325,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    activation: ItemActivation::INSTANT,
+    components: &[],
+    color: [0.721, 0.725, 0.518],
+    description: "15% Spell Lifesteal",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::SpellLifesteal,
+            amount: RankValue::fixed(0.15),
+        },
+    }],
+    mechanics: &[],
+};
+// </item:voodoo_mask>
+
+// <item:morbid_mask>
+static MORBID_MASK: ItemDefinition = ItemDefinition {
+    id: ItemId::MorbidMask,
+    name: "Morbid Mask",
+    short_label: "MM",
+    item_type: ItemType::Miscellaneous,
+    cost: 900,
+    sell_value: 450,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    activation: ItemActivation::INSTANT,
+    components: &[],
+    color: [0.622, 0.594, 0.518],
+    description: "18% Lifesteal",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::Lifesteal,
+            amount: RankValue::fixed(0.18),
+        },
+    }],
+    mechanics: &[],
+};
+// </item:morbid_mask>

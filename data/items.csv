@@ -59,3 +59,5 @@ recipe_bracer,Recipe: Bracer,recipe,210,105,,,FALSE,,FALSE,,,45,,,0.358461084,0.
 falcon_blade,Falcon Blade,accessories,1125,562,,,FALSE,,FALSE,,,46,,blades_of_attack;fluffy_hat;sages_mask;recipe_falcon,0.566989158,0.680867166,0.011772641,,,,,,,,,
 recipe_falcon,Recipe: Falcon Blade,recipe,250,125,,,FALSE,,FALSE,,,47,,,0.492675267,0.399693131,0.109166338,,,,,,,,,
 blink_dagger,Blink Dagger,utility,2250,1125,2,epic,false,,false,,Teleport a short distance,BD,15,,0.45,0.35,0.85,,point,,800,,,,,
+voodoo_mask,Voodoo Mask,miscellaneous,650,325,,,FALSE,,FALSE,,15% Spell Lifesteal,VM,,,,,,,,,,,,,,
+morbid_mask,Morbid Mask,miscellaneous,900,450,,,FALSE,,FALSE,,18% Lifesteal,MM,,,,,,,,,,,,,,

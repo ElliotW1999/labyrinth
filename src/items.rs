@@ -277,6 +277,8 @@ pub enum ItemId {
     FalconBlade,
     RecipeFalcon,
     BlinkDagger,
+    VoodooMask,
+    MorbidMask,
     // </item_generator:item_enum>
 }
 
@@ -604,6 +606,8 @@ impl ItemId {
             ItemId::FalconBlade,
             ItemId::RecipeFalcon,
             ItemId::BlinkDagger,
+            ItemId::VoodooMask,
+            ItemId::MorbidMask,
             // </item_generator:item_all>
         ]
     }
@@ -917,10 +921,23 @@ fn passive_stat_lines(passives: &ItemPassives) -> Vec<String> {
             PassiveStat::Attribute(Attribute::Intelligence),
         ),
     ];
-    rows.into_iter()
+    let mut lines: Vec<String> = rows
+        .into_iter()
         .filter(|(value, _)| value.abs() >= 0.05)
         .map(|(value, stat)| format!("{:+.0} {}", value, tooltip::passive_name(stat)))
-        .collect()
+        .collect();
+    // Lifesteal stats are fractions; show them as percentages like the descriptions do.
+    let percent_rows = [
+        (passives.lifesteal, PassiveStat::Lifesteal),
+        (passives.spell_lifesteal, PassiveStat::SpellLifesteal),
+    ];
+    lines.extend(
+        percent_rows
+            .into_iter()
+            .filter(|(value, _)| value.abs() >= 0.0005)
+            .map(|(value, stat)| format!("{:+.0}% {}", value * 100.0, tooltip::passive_name(stat))),
+    );
+    lines
 }
 
 /// Tooltip lines for one non-passive effect entry, from the same describer abilities
@@ -2645,6 +2662,52 @@ mod tests {
         let vial = ItemId::VialOfLight.tooltip_body();
         assert!(vial.contains("Use: Heal 180"), "{vial}");
         assert!(vial.contains("Cooldown: 40s"));
+    }
+
+    #[test]
+    fn lifesteal_tooltip_lines_are_percentages() {
+        let morbid = ItemId::MorbidMask.tooltip_body();
+        assert!(morbid.contains("+18% Lifesteal"), "{morbid}");
+        let voodoo = ItemId::VoodooMask.tooltip_body();
+        assert!(voodoo.contains("+15% Spell lifesteal"), "{voodoo}");
+        assert!(!voodoo.contains("+0 "), "{voodoo}");
+    }
+
+    #[test]
+    fn masks_grant_lifesteal_and_sale_reverts_it() {
+        let (mut wallet, mut inv, mut health, mut mana, mut stats, mut attrs) = fresh_hero();
+        let base = stats.lifesteal;
+        let base_spell = stats.spell_lifesteal;
+        for item in [ItemId::MorbidMask, ItemId::VoodooMask] {
+            assert!(try_buy_item(
+                &mut wallet,
+                &mut inv,
+                &mut health,
+                &mut mana,
+                &mut stats,
+                &mut attrs,
+                item,
+                true,
+            ));
+        }
+        assert_eq!(wallet.gold, 2000 - 900 - 650);
+        assert!((stats.lifesteal - base - 0.18).abs() < 1e-5);
+        assert!((stats.spell_lifesteal - base_spell - 0.15).abs() < 1e-5);
+        for slot in 0..2 {
+            assert!(try_sell_item(
+                &mut wallet,
+                &mut inv,
+                &mut health,
+                &mut mana,
+                &mut stats,
+                &mut attrs,
+                slot,
+                true,
+            ));
+        }
+        assert!((stats.lifesteal - base).abs() < 1e-5);
+        assert!((stats.spell_lifesteal - base_spell).abs() < 1e-5);
+        assert_eq!(wallet.gold, 2000 - 900 - 650 + 450 + 325);
     }
 
     #[test]
