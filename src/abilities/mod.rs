@@ -12150,4 +12150,275 @@ mod tests {
             "and its attack speed with it"
         );
     }
+
+    // ---- Shadowheart ----
+
+    const SHADOWHEART: [AbilityId; 4] = [
+        AbilityId::Purification,
+        AbilityId::WardingBond,
+        AbilityId::SpiritGuardians,
+        AbilityId::SharranConversion,
+    ];
+
+    const HERO_MAGIC_RESIST: f32 = 6.321839; // 27.5%
+
+    fn damaged_health(app: &App, unit: Entity) -> f32 {
+        1000.0 - health(app, unit)
+    }
+
+    #[test]
+    fn purification_heals_ally_and_pure_damages_enemies_around_it() {
+        let mut app = qop_app();
+        let caster = spawn_caster(&mut app, SHADOWHEART);
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(500.0, 0.0, 0.0));
+        let bystander = spawn_unit(&mut app, Team::Radiant, Vec3::new(500.0, 0.0, 200.0));
+        let near_ally = spawn_unit(&mut app, Team::Dire, Vec3::new(750.0, 0.0, 0.0));
+        let near_caster = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, 150.0));
+        // Armor and magic resistance must not matter: the damage is pure.
+        {
+            let mut stats = app.world_mut().get_mut::<CombatStats>(near_ally).unwrap();
+            stats.armor = 40.0;
+            stats.magic_resist = 40.0;
+        }
+        set_health(&mut app, ally, 500.0);
+        request(&mut app, caster, 0, CastTarget::Unit(ally));
+        run_seconds(&mut app, 0.6);
+
+        assert_eq!(health(&app, ally), 590.0, "healed 90, never damaged");
+        assert_eq!(damaged_health(&app, near_ally), 90.0, "250 from the ally");
+        assert_eq!(health(&app, near_caster), 1000.0, "400 from the ally");
+        assert_eq!(health(&app, bystander), 1000.0, "allies are not damaged");
+        assert_eq!(health(&app, caster), 1000.0);
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 910.0);
+    }
+
+    #[test]
+    fn purification_self_cast_heals_and_damages_around_caster() {
+        let mut app = qop_app();
+        let caster = spawn_caster(&mut app, SHADOWHEART);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(200.0, 0.0, 0.0));
+        let far = spawn_unit(&mut app, Team::Dire, Vec3::new(400.0, 0.0, 0.0));
+        set_health(&mut app, caster, 500.0);
+        request(&mut app, caster, 0, CastTarget::Unit(caster));
+        run_seconds(&mut app, 0.6);
+        assert_eq!(health(&app, caster), 590.0);
+        assert_eq!(damaged_health(&app, enemy), 90.0);
+        assert_eq!(health(&app, far), 1000.0);
+    }
+
+    #[test]
+    fn warding_bond_buffs_both_and_reverts_after_10s() {
+        let mut app = qop_app();
+        let caster = spawn_caster(&mut app, SHADOWHEART);
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(300.0, 0.0, 0.0));
+        let armor_before = (stats_of(&app, caster).armor, stats_of(&app, ally).armor);
+        request(&mut app, caster, 1, CastTarget::Unit(ally));
+        run_seconds(&mut app, 0.6);
+
+        for unit in [caster, ally] {
+            assert_eq!(stats_of(&app, unit).armor, 1.0, "rank 1: +1 armor");
+            assert!(has_status(&app, unit, "warding_bond_armor"));
+            let statuses = app.world().get::<StatusEffects>(unit).unwrap();
+            assert!(
+                (statuses.magic_damage_factor() - 0.95).abs() < 1e-6,
+                "+5% MR"
+            );
+        }
+        assert!(has_status(&app, ally, "damage_share"));
+        assert!(
+            !has_status(&app, caster, "damage_share"),
+            "only the ally is bonded"
+        );
+        let share = status_of(&app, ally, "damage_share").unwrap();
+        assert!((share.remaining - 10.0).abs() <= 0.7, "{}", share.remaining);
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 910.0);
+
+        run_seconds(&mut app, 10.0);
+        for unit in [caster, ally] {
+            assert!(
+                app.world()
+                    .get::<StatusEffects>(unit)
+                    .unwrap()
+                    .effects
+                    .is_empty()
+            );
+        }
+        assert_eq!(stats_of(&app, caster).armor, armor_before.0);
+        assert_eq!(stats_of(&app, ally).armor, armor_before.1);
+    }
+
+    #[test]
+    fn warding_bond_duplicates_target_damage_to_caster() {
+        let mut app = qop_app();
+        let caster = spawn_caster(&mut app, SHADOWHEART);
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(300.0, 0.0, 0.0));
+        app.world_mut()
+            .get_mut::<CombatStats>(caster)
+            .unwrap()
+            .magic_resist = HERO_MAGIC_RESIST;
+        request(&mut app, caster, 1, CastTarget::Unit(ally));
+        run_seconds(&mut app, 0.6);
+
+        app.world_mut()
+            .write_message(DamageEvent::new(ally, 100.0, DamageType::Magical));
+        step(&mut app);
+        // The ally has 0 MR + the bond's 5%: 100 x 0.95. The caster's copy has not landed.
+        assert!((damaged_health(&app, ally) - 95.0).abs() < 0.01);
+        assert_eq!(health(&app, caster), 1000.0);
+        step(&mut app);
+        // One frame later the caster took the same 100 through its own 27.5% and 5%.
+        assert!((damaged_health(&app, caster) - 100.0 * 0.725 * 0.95).abs() < 0.01);
+        assert!(
+            (damaged_health(&app, ally) - 95.0).abs() < 0.01,
+            "not reduced"
+        );
+        run_seconds(&mut app, 0.5);
+        assert!(
+            (damaged_health(&app, caster) - 68.875).abs() < 0.01,
+            "only once"
+        );
+    }
+
+    #[test]
+    fn warding_bond_self_cast_buffs_once_without_share() {
+        let mut app = qop_app();
+        let caster = spawn_caster(&mut app, SHADOWHEART);
+        request(&mut app, caster, 1, CastTarget::Unit(caster));
+        run_seconds(&mut app, 0.6);
+        let statuses = app.world().get::<StatusEffects>(caster).unwrap();
+        assert_eq!(
+            statuses
+                .effects
+                .iter()
+                .filter(|e| e.id == "warding_bond_armor")
+                .count(),
+            1
+        );
+        assert_eq!(stats_of(&app, caster).armor, 1.0, "applied once, not twice");
+        assert!((statuses.magic_damage_factor() - 0.95).abs() < 1e-6);
+
+        app.world_mut()
+            .write_message(DamageEvent::new(caster, 100.0, DamageType::Magical));
+        run_seconds(&mut app, 0.5);
+        assert!(
+            (damaged_health(&app, caster) - 95.0).abs() < 0.01,
+            "no copy of its own damage"
+        );
+    }
+
+    /// Spirit Guardians with a stationary enemy on the orbit path (180 east of the caster,
+    /// which faces -Z); the enemy's armor and magic resistance are high to show the damage
+    /// is pure.
+    fn guardians_app() -> (App, Entity, Entity) {
+        let mut app = qop_app();
+        let caster = spawn_caster(&mut app, SHADOWHEART);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(180.0, 0.0, 0.0));
+        {
+            let mut stats = app.world_mut().get_mut::<CombatStats>(enemy).unwrap();
+            stats.armor = 50.0;
+            stats.magic_resist = 50.0;
+        }
+        (app, caster, enemy)
+    }
+
+    fn live_orbits(app: &mut App) -> Vec<(f32, Vec3)> {
+        app.world_mut()
+            .query::<(&orbits::AbilityOrbit, &Transform)>()
+            .iter(app.world())
+            .map(|(orbit, tf)| (orbit.elapsed, tf.translation))
+            .collect()
+    }
+
+    #[test]
+    fn spirit_guardians_three_spirits_hit_enemy_on_orbit_path() {
+        let (mut app, caster, enemy) = guardians_app();
+        request(&mut app, caster, 2, CastTarget::None);
+        // Until the orbit exists and has turned for (just under) one period.
+        for _ in 0..200 {
+            step(&mut app);
+            if live_orbits(&mut app)
+                .first()
+                .is_some_and(|(elapsed, _)| *elapsed >= 1.4)
+            {
+                break;
+            }
+        }
+        assert_eq!(live_orbits(&mut app).len(), 1);
+        assert_eq!(
+            damaged_health(&app, enemy),
+            270.0,
+            "3 spirits x 90 pure damage over one revolution"
+        );
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 910.0);
+    }
+
+    #[test]
+    fn spirit_guardians_ends_after_duration() {
+        let (mut app, caster, enemy) = guardians_app();
+        request(&mut app, caster, 2, CastTarget::None);
+        run_seconds(&mut app, 0.6);
+        assert_eq!(live_orbits(&mut app).len(), 1);
+        // Rank 1 lasts 3 s: 2 hits per spirit on this path, then nothing more.
+        run_seconds(&mut app, 3.2);
+        assert!(live_orbits(&mut app).is_empty());
+        let total = damaged_health(&app, enemy);
+        assert_eq!(total, 540.0, "3 spirits x 2 passes x 90");
+        run_seconds(&mut app, 3.0);
+        assert_eq!(damaged_health(&app, enemy), total, "no hits after it ended");
+    }
+
+    #[test]
+    fn spirit_guardians_follow_shadowheart() {
+        let (mut app, caster, old_spot) = guardians_app();
+        request(&mut app, caster, 2, CastTarget::None);
+        run_seconds(&mut app, 0.6);
+        let new_home = Vec3::new(2000.0, 0.0, 0.0);
+        move_unit(&mut app, caster, new_home);
+        let new_spot = spawn_unit(&mut app, Team::Dire, new_home + Vec3::new(0.0, 0.0, 180.0));
+        let before = health(&app, old_spot);
+        run_seconds(&mut app, 1.5);
+        assert!(
+            damaged_health(&app, new_spot) >= 90.0,
+            "the spirits went along"
+        );
+        assert_eq!(
+            health(&app, old_spot),
+            before,
+            "and left the old spot alone"
+        );
+        let (_, at) = live_orbits(&mut app)[0];
+        assert_eq!(at, new_home);
+    }
+
+    #[test]
+    fn sharran_conversion_status_lasts_duration() {
+        let mut app = qop_app();
+        let caster = spawn_caster(&mut app, SHADOWHEART);
+        request(&mut app, caster, 3, CastTarget::None);
+        run_seconds(&mut app, 0.3);
+        let status = status_of(&app, caster, "convert_on_death").expect("aura");
+        assert_eq!(status.convert_radius, 300.0);
+        assert!(
+            (status.remaining - 5.0).abs() <= 0.4,
+            "{}",
+            status.remaining
+        );
+        assert_eq!(app.world().get::<Mana>(caster).unwrap().current, 875.0);
+        assert_eq!(
+            app.world()
+                .get::<StatusEffects>(caster)
+                .unwrap()
+                .convert_radius(),
+            300.0
+        );
+        run_seconds(&mut app, 5.2);
+        assert!(!has_status(&app, caster, "convert_on_death"));
+        assert_eq!(
+            app.world()
+                .get::<StatusEffects>(caster)
+                .unwrap()
+                .convert_radius(),
+            0.0
+        );
+    }
 }

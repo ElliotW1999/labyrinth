@@ -8,3 +8,4 @@ Sniper,FALSE,Shrapnel,Headshot,Take Aim,Assassinate,19,27,15,2,3.2,2.6,AGI,"Agi 
 Ursa,TRUE,Earthshock,Overpower,Fury Swipes,Enrage,25,18,16,2.4,2.8,1.5,AGI,"Agi brawler — Earthshock, Overpower, Fury Swipes, Enrage",220,75,26,150,310,-1.52,6.321839,0,0,1.7,0.3,0.3,,0.6
 Slark,TRUE,Dark Pact,Pounce,Essence Shift,Shadow Dance,20,21,16,2.1,1.5,1.9,AGI,"Agi assassin — Dark Pact, Pounce, Essence Shift, Shadow Dance",200,75,40,150,300,-2.94,6.321839,-0.15,0,1.7,0.5,0.3,,0.7,120
 Winter Wyvern,FALSE,Arctic Burn,Splinter Blast,Cold Embrace,Winter's Curse,22,16,26,2.5,1.7,3.6,INT,"Int disabler — Arctic Burn, Splinter Blast, Cold Embrace, Winter's Curse",208,75,20,450,285,-1.24,6.321839,-0.19,0.25,1.7,0.25,0.8,700,0.6,
+Shadowheart,TRUE,Purification,Warding Bond,Spirit Guardians,Sharran Conversion,22,15,18,3.1,1.7,2.1,STR,"Str support — Purification, Warding Bond, Spirit Guardians, Sharran Conversion",208,75,36,150,310,-0.1,6.321839,-0.19,0,1.7,0.4,0.6,,0.6,

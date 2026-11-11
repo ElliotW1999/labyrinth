@@ -61,6 +61,8 @@ pub enum HeroId {
     Slark,
     /// Generated hero — abilities are stubs until implemented.
     WinterWyvern,
+    /// Generated hero — abilities are stubs until implemented.
+    Shadowheart,
     // </hero_generator:hero_enum>
 }
 
@@ -79,6 +81,7 @@ impl HeroId {
             HeroId::Ursa,
             HeroId::Slark,
             HeroId::WinterWyvern,
+            HeroId::Shadowheart,
             // </hero_generator:hero_all>
         ]
     }
@@ -122,6 +125,7 @@ impl HeroId {
             HeroId::Ursa => "Ursa",
             HeroId::Slark => "Slark",
             HeroId::WinterWyvern => "Winter Wyvern",
+            HeroId::Shadowheart => "Shadowheart",
             // </hero_generator:hero_name>
         }
     }
@@ -144,6 +148,9 @@ impl HeroId {
             HeroId::Slark => "Agi assassin — Dark Pact, Pounce, Essence Shift, Shadow Dance",
             HeroId::WinterWyvern => {
                 "Int disabler — Arctic Burn, Splinter Blast, Cold Embrace, Winter's Curse"
+            }
+            HeroId::Shadowheart => {
+                "Str support — Purification, Warding Bond, Spirit Guardians, Sharran Conversion"
             } // </hero_generator:hero_blurb>
         }
     }
@@ -163,6 +170,7 @@ impl HeroId {
             HeroId::Ursa => "AGI",
             HeroId::Slark => "AGI",
             HeroId::WinterWyvern => "INT",
+            HeroId::Shadowheart => "STR",
             // </hero_generator:hero_primary>
         }
     }
@@ -529,6 +537,30 @@ impl HeroId {
                     AbilityId::SplinterBlast,
                     AbilityId::ColdEmbrace,
                     AbilityId::WintersCurse,
+                ],
+                dimensions: UnitDimensions::HERO,
+            },
+            HeroId::Shadowheart => HeroDef {
+                id: self,
+                attributes: HeroAttributes {
+                    strength: 22.0,
+                    agility: 15.0,
+                    intelligence: 18.0,
+                    str_per_level: 3.1,
+                    agi_per_level: 1.7,
+                    int_per_level: 2.1,
+                    primary: Some(Attribute::Strength),
+                },
+                base_health: 208.0,
+                base_health_regen: -0.19,
+                base_mana: 75.0,
+                base_mana_regen: 0.0,
+                combat: hero_combat(36.0, 150.0, 1.7, 0.4, 0.6, 0.6, -0.1, 6.321839, 310.0, None),
+                abilities: [
+                    AbilityId::Purification,
+                    AbilityId::WardingBond,
+                    AbilityId::SpiritGuardians,
+                    AbilityId::SharranConversion,
                 ],
                 dimensions: UnitDimensions::HERO,
             },
@@ -957,6 +989,7 @@ mod tests {
             (HeroId::Ursa, 44.0),
             (HeroId::Slark, 61.0),
             (HeroId::WinterWyvern, 46.0),
+            (HeroId::Shadowheart, 58.0),
         ];
         for (hero, total) in expected {
             let def = hero.def();
@@ -1076,6 +1109,67 @@ mod tests {
             stats.attack_speed
         );
         assert!((stats.attack_speed - 0.682353).abs() < 1e-5);
+    }
+
+    #[test]
+    fn shadowheart_matches_spec() {
+        use crate::combat::apply_damage;
+        use crate::components::DamageType;
+
+        assert_eq!(HeroId::from_cli("shadowheart"), Some(HeroId::Shadowheart));
+        assert_eq!(HeroId::Shadowheart.name(), "Shadowheart");
+        assert_eq!(HeroId::Shadowheart.primary_label(), "STR");
+        let def = HeroId::Shadowheart.def();
+        assert_eq!(
+            def.abilities,
+            [
+                AbilityId::Purification,
+                AbilityId::WardingBond,
+                AbilityId::SpiritGuardians,
+                AbilityId::SharranConversion,
+            ]
+        );
+
+        let (health, mana, stats, attrs) = def.vitals();
+        assert!((health.max - 604.0).abs() < 1e-3, "health {}", health.max);
+        assert!((health.regen_per_sec - 2.45).abs() < 1e-4);
+        assert!((mana.max - 291.0).abs() < 1e-3, "mana {}", mana.max);
+        assert!((mana.regen_per_sec - 0.9).abs() < 1e-4);
+        assert!((stats.armor - 2.0).abs() < 1e-3, "armor {}", stats.armor);
+        let taken = apply_damage(100.0, DamageType::Magical, &stats);
+        assert!(
+            (taken - 72.5).abs() < 0.01,
+            "27.5% magic resist: took {taken}"
+        );
+        assert_eq!(
+            (attrs.strength, attrs.agility, attrs.intelligence),
+            (22.0, 15.0, 18.0)
+        );
+        assert_eq!(
+            (
+                attrs.str_per_level,
+                attrs.agi_per_level,
+                attrs.int_per_level
+            ),
+            (3.1, 1.7, 2.1)
+        );
+
+        // 58 at level 1: the stored 36 plus 22 Strength (the primary).
+        assert_eq!(stats.attack_damage, 58.0);
+        assert_eq!(def.combat.attack_damage, 36.0);
+        assert_eq!(stats.attack_range, 150.0);
+        assert!(stats.is_melee());
+        assert_eq!(stats.base_attack_time, 1.7);
+        assert_eq!(stats.attack_point, 0.4);
+        assert_eq!(stats.attack_backswing, 0.6);
+        assert_eq!(stats.turn_rate, 0.6);
+        assert_eq!(stats.move_speed, 310.0);
+        assert!(
+            (stats.attack_speed - 115.0 / 100.0 / 1.7).abs() < 1e-4,
+            "APS {}",
+            stats.attack_speed
+        );
+        assert!((stats.attack_speed - 0.676471).abs() < 1e-5);
     }
 
     #[test]

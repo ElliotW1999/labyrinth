@@ -1445,6 +1445,148 @@ mod tests {
     }
 
     #[test]
+    fn shadowheart_abilities_generate_expected_definitions() {
+        use crate::abilities::definition::{AreaRadius, StatusSpec};
+        use crate::actions::TargetType;
+
+        assert_eq!(AbilityId::Purification.display_name(), "Purification");
+        assert_eq!(AbilityId::WardingBond.display_name(), "Warding Bond");
+        assert_eq!(
+            AbilityId::SpiritGuardians.display_name(),
+            "Spirit Guardians"
+        );
+        assert_eq!(
+            AbilityId::SharranConversion.display_name(),
+            "Sharran Conversion"
+        );
+        assert!(AbilityId::SharranConversion.is_ultimate());
+        assert!(!AbilityId::Purification.is_ultimate());
+
+        // Q: a heal on the ally target plus pure damage to the enemies around it.
+        let q = builtin(AbilityId::Purification);
+        assert_eq!(q.max_rank, 7);
+        assert_eq!(q.target_type, TargetType::Unit);
+        assert_eq!(q.target_team, TargetTeam::Ally);
+        assert_eq!(q.cast_range.at(1), 700.0);
+        assert_eq!(q.aoe_radius.at(1), 260.0);
+        assert_eq!(q.cooldown.at(7), 10.5);
+        assert_eq!(q.mana_cost.at(5), 142.5);
+        assert!(q.effects_for(AbilityTrigger::OnCast).any(|e| matches!(
+            (e.target, e.effect),
+            (
+                EffectTarget::CastTarget,
+                AbilityEffect::Heal { amount, .. }
+            ) if amount.at(1) == 90.0 && amount.at(5) == 335.0
+        )));
+        assert!(q.effects_for(AbilityTrigger::OnCast).any(|e| matches!(
+            (e.target, e.effect),
+            (
+                EffectTarget::UnitsInRadius {
+                    center: AreaCenter::Aim,
+                    radius: AreaRadius::Ability,
+                    team: TargetTeam::Enemy,
+                },
+                AbilityEffect::Damage { amount, damage_type: DamageType::Pure, .. }
+            ) if amount.at(5) == 335.0
+        )));
+
+        // W: armor and percent magic resistance on both units, plus the bond; 10 s at every rank.
+        let w = builtin(AbilityId::WardingBond);
+        assert_eq!(w.max_rank, 7);
+        assert_eq!(w.target_type, TargetType::Unit);
+        assert_eq!(w.target_team, TargetTeam::Ally);
+        assert_eq!(w.backswing, 1.33);
+        let armor = |target: EffectTarget| {
+            w.effects_for(AbilityTrigger::OnCast).any(|e| matches!(
+                (e.target, e.effect),
+                (
+                    t,
+                    AbilityEffect::ApplyStatus {
+                        status: StatusSpec::Modifier { id: "warding_bond_armor", armor, .. },
+                        duration,
+                    }
+                ) if t == target && armor.at(7) == 5.5 && duration.at(1) == 10.0 && duration.at(7) == 10.0
+            ))
+        };
+        assert!(armor(EffectTarget::Caster) && armor(EffectTarget::CastTarget));
+        let resist = |target: EffectTarget| {
+            w.effects_for(AbilityTrigger::OnCast).any(|e| {
+                matches!(
+                    (e.target, e.effect),
+                    (
+                        t,
+                        AbilityEffect::ApplyStatus {
+                            status: StatusSpec::MagicResistance {
+                                id: "warding_bond_magic_resistance",
+                                percent,
+                            },
+                            duration,
+                        }
+                    ) if t == target && percent.at(4) == 20.0 && duration.at(3) == 10.0
+                )
+            })
+        };
+        assert!(resist(EffectTarget::Caster) && resist(EffectTarget::CastTarget));
+        assert!(w.effects_for(AbilityTrigger::OnCast).any(|e| matches!(
+            (e.target, e.effect),
+            (
+                EffectTarget::CastTarget,
+                AbilityEffect::ApplyStatus {
+                    status: StatusSpec::DamageShare { percent },
+                    duration,
+                }
+            ) if percent.at(1) == 100.0 && duration.at(7) == 10.0
+        )));
+
+        // E: three spirits (hit 80) circling at 180, one revolution per 1.41 s, pure damage
+        // to whatever each touches.
+        let e = builtin(AbilityId::SpiritGuardians);
+        assert_eq!(e.max_rank, 7);
+        assert_eq!(e.target_type, TargetType::NoTarget);
+        let touch = AbilityTrigger::Custom("on_spirit_guardians_touch");
+        assert!(e.effects_for(AbilityTrigger::OnCast).any(|x| matches!(
+            (x.target, x.effect),
+            (
+                EffectTarget::Caster,
+                AbilityEffect::Orbit {
+                    count: 3,
+                    radius: AreaRadius::Fixed(radius),
+                    hit_radius,
+                    period,
+                    duration,
+                    then,
+                    ..
+                }
+            ) if radius.at(1) == 180.0 && hit_radius == 80.0 && period.at(1) == 1.41
+                && duration.at(1) == 3.0 && duration.at(7) == 7.5 && then == touch
+        )));
+        assert!(e.effects_for(touch).any(|x| matches!(
+            (x.target, x.effect),
+            (
+                EffectTarget::TriggerUnit,
+                AbilityEffect::Damage { amount, damage_type: DamageType::Pure, .. }
+            ) if amount.at(1) == 90.0 && amount.at(7) == 405.0
+        )));
+
+        // R: four ranks; a timed conversion aura of radius 300.
+        let r = builtin(AbilityId::SharranConversion);
+        assert_eq!(r.max_rank, 4);
+        assert_eq!(r.target_type, TargetType::NoTarget);
+        assert_eq!(r.cooldown.at(4), 75.0);
+        assert_eq!(r.mana_cost.at(4), 250.0);
+        assert!(r.effects_for(AbilityTrigger::OnCast).any(|x| matches!(
+            (x.target, x.effect),
+            (
+                EffectTarget::Caster,
+                AbilityEffect::ApplyStatus {
+                    status: StatusSpec::ConvertOnDeath { radius },
+                    duration,
+                }
+            ) if radius.at(1) == 300.0 && duration.at(1) == 5.0 && duration.at(4) == 10.0
+        )));
+    }
+
+    #[test]
     fn loadouts_register_their_definitions() {
         let mut world = World::new();
         world.init_resource::<AbilityDefinitions>();

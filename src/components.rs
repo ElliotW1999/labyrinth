@@ -807,6 +807,11 @@ pub enum AbilityId {
     SplinterBlast,
     ColdEmbrace,
     WintersCurse,
+    // Shadowheart (generated stubs)
+    Purification,
+    WardingBond,
+    SpiritGuardians,
+    SharranConversion,
     // </hero_generator:ability_enum>
 }
 
@@ -864,6 +869,10 @@ impl AbilityId {
             AbilityId::SplinterBlast => "Splinter Blast",
             AbilityId::ColdEmbrace => "Cold Embrace",
             AbilityId::WintersCurse => "Winter's Curse",
+            AbilityId::Purification => "Purification",
+            AbilityId::WardingBond => "Warding Bond",
+            AbilityId::SpiritGuardians => "Spirit Guardians",
+            AbilityId::SharranConversion => "Sharran Conversion",
             // </hero_generator:ability_display_name>
         }
     }
@@ -883,7 +892,8 @@ impl AbilityId {
                 | AbilityId::Assassinate
                 | AbilityId::Enrage
                 | AbilityId::ShadowDance
-                | AbilityId::WintersCurse // </hero_generator:ability_ultimates>
+                | AbilityId::WintersCurse
+                | AbilityId::SharranConversion // </hero_generator:ability_ultimates>
         )
     }
 
@@ -920,6 +930,10 @@ impl AbilityId {
             AbilityId::SplinterBlast => 7,
             AbilityId::ColdEmbrace => 7,
             AbilityId::WintersCurse => 4,
+            AbilityId::Purification => 7,
+            AbilityId::WardingBond => 7,
+            AbilityId::SpiritGuardians => 7,
+            AbilityId::SharranConversion => 4,
             // </ability_generator:max_rank>
             _ if self.is_ultimate() => 4,
             _ => 7,

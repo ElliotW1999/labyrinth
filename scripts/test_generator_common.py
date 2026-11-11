@@ -2831,6 +2831,31 @@ class HeroGeneratorTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self._load("false", "200")
 
+    def test_shadowheart_row_generates_the_spec_hero(self) -> None:
+        import tempfile
+
+        import HeroGenerator
+
+        root = Path(__file__).resolve().parent.parent
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "heroes.csv"
+            lines = (root / "data" / "heroes.csv").read_text(encoding="utf-8").splitlines()
+            path.write_text("\n".join([lines[0], *[l for l in lines if l.startswith("Shadowheart,")]]) + "\n", encoding="utf-8")
+            hero = HeroGenerator.load_csv(path)[0]
+        self.assertEqual(hero.rust_id, "Shadowheart")
+        self.assertEqual(
+            (hero.ability_q, hero.ability_w, hero.ability_e, hero.ability_r),
+            ("Purification", "Warding Bond", "Spirit Guardians", "Sharran Conversion"),
+        )
+        self.assertEqual((hero.base_health, hero.base_mana, hero.attack_damage), (208.0, 75.0, 36.0))
+        self.assertEqual((hero.base_health_regen, hero.base_mana_regen, hero.armor), (-0.19, 0.0, -0.1))
+        self.assertEqual(hero.magic_resist, 6.321839)
+        self.assertEqual((hero.attack_range, hero.move_speed), (150.0, 310.0))
+        arm = HeroGenerator.hero_def_arm(hero)
+        self.assertIn("HeroId::Shadowheart => HeroDef {", arm)
+        self.assertIn("primary: Some(Attribute::Strength),", arm)
+        self.assertIn("combat: hero_combat(\n                    36.0,\n                    150.0,\n                    1.7,\n                    0.4,\n                    0.6,\n                    0.6,\n                    -0.1,\n                    6.321839,\n                    310.0,\n                    None,", arm)
+
 
 if __name__ == "__main__":
     unittest.main()

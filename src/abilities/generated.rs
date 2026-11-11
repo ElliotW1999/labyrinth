@@ -54,6 +54,10 @@ pub fn definition(id: AbilityId) -> Option<AbilityDefinition> {
         AbilityId::SplinterBlast => Some(splinter_blast()),
         AbilityId::ColdEmbrace => Some(cold_embrace()),
         AbilityId::WintersCurse => Some(winters_curse()),
+        AbilityId::Purification => Some(purification()),
+        AbilityId::WardingBond => Some(warding_bond()),
+        AbilityId::SpiritGuardians => Some(spirit_guardians()),
+        AbilityId::SharranConversion => Some(sharran_conversion()),
         _ => None,
     }
 }
@@ -1630,3 +1634,216 @@ fn winters_curse() -> AbilityDefinition {
         )
 }
 // </ability:winters_curse>
+
+// <ability:purification>
+fn purification() -> AbilityDefinition {
+    const DESCRIPTION: &str =
+        "Instantly heals an allied unit and deals pure damage to every enemy around it";
+    AbilityDefinition::new(AbilityId::Purification)
+        .description(DESCRIPTION)
+        .targeting(
+            TargetType::Unit,
+            RankValue::fixed(700.0),
+            RankValue::fixed(260.0),
+        )
+        .team(TargetTeam::Ally)
+        .costs(
+            RankValue::levels(&[15.0, 14.0, 13.0, 12.0, 11.5, 11.0, 10.5]),
+            RankValue::levels(&[90.0, 105.0, 120.0, 135.0, 142.5, 150.0, 157.5]),
+        )
+        .timing(0.2, 1.4)
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::CastTarget,
+            AbilityEffect::Heal {
+                amount: RankValue::levels(&[90.0, 160.0, 230.0, 300.0, 335.0, 370.0, 405.0]),
+                scaling: EffectScaling::None,
+            },
+        )
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::UnitsInRadius {
+                center: AreaCenter::Aim,
+                radius: AreaRadius::Ability,
+                team: TargetTeam::Enemy,
+            },
+            AbilityEffect::Damage {
+                amount: RankValue::levels(&[90.0, 160.0, 230.0, 300.0, 335.0, 370.0, 405.0]),
+                damage_type: DamageType::Pure,
+                scaling: EffectScaling::None,
+            },
+        )
+}
+// </ability:purification>
+
+// <ability:warding_bond>
+fn warding_bond() -> AbilityDefinition {
+    const DESCRIPTION: &str = "Binds Shadowheart to an ally: both gain armor and magic resistance, and all damage the ally takes is also dealt to Shadowheart";
+    AbilityDefinition::new(AbilityId::WardingBond)
+        .description(DESCRIPTION)
+        .targeting(TargetType::Unit, RankValue::fixed(700.0), RankValue::ZERO)
+        .team(TargetTeam::Ally)
+        .costs(
+            RankValue::levels(&[40.0, 35.0, 30.0, 25.0, 22.5, 20.0, 17.5]),
+            RankValue::levels(&[90.0, 105.0, 120.0, 135.0, 142.5, 150.0, 157.5]),
+        )
+        .timing(0.3, 1.33)
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::Caster,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Modifier {
+                    id: "warding_bond_armor",
+                    kind: StatusKind::Buff,
+                    armor: RankValue::levels(&[1.0, 2.0, 3.0, 4.0, 4.5, 5.0, 5.5]),
+                    magic_resist: RankValue::ZERO,
+                    move_speed: RankValue::ZERO,
+                    attack_damage: RankValue::ZERO,
+                    attack_speed_flat: RankValue::ZERO,
+                    attack_speed_mult: RankValue::ZERO,
+                    attack_range: RankValue::ZERO,
+                    attack_projectile_speed: RankValue::ZERO,
+                    attack_damage_pct: RankValue::ZERO,
+                    cleave: RankValue::ZERO,
+                    cleave_radius: RankValue::ZERO,
+                    cleave_end_radius: RankValue::ZERO,
+                    cleave_distance: RankValue::ZERO,
+                    attack_charges: RankValue::ZERO,
+                    independent: false,
+                },
+                duration: RankValue::fixed(10.0),
+            },
+        )
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::CastTarget,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Modifier {
+                    id: "warding_bond_armor",
+                    kind: StatusKind::Buff,
+                    armor: RankValue::levels(&[1.0, 2.0, 3.0, 4.0, 4.5, 5.0, 5.5]),
+                    magic_resist: RankValue::ZERO,
+                    move_speed: RankValue::ZERO,
+                    attack_damage: RankValue::ZERO,
+                    attack_speed_flat: RankValue::ZERO,
+                    attack_speed_mult: RankValue::ZERO,
+                    attack_range: RankValue::ZERO,
+                    attack_projectile_speed: RankValue::ZERO,
+                    attack_damage_pct: RankValue::ZERO,
+                    cleave: RankValue::ZERO,
+                    cleave_radius: RankValue::ZERO,
+                    cleave_end_radius: RankValue::ZERO,
+                    cleave_distance: RankValue::ZERO,
+                    attack_charges: RankValue::ZERO,
+                    independent: false,
+                },
+                duration: RankValue::fixed(10.0),
+            },
+        )
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::Caster,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::MagicResistance {
+                    id: "warding_bond_magic_resistance",
+                    percent: RankValue::levels(&[5.0, 10.0, 15.0, 20.0, 22.5, 25.0, 27.5]),
+                },
+                duration: RankValue::fixed(10.0),
+            },
+        )
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::CastTarget,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::MagicResistance {
+                    id: "warding_bond_magic_resistance",
+                    percent: RankValue::levels(&[5.0, 10.0, 15.0, 20.0, 22.5, 25.0, 27.5]),
+                },
+                duration: RankValue::fixed(10.0),
+            },
+        )
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::CastTarget,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::DamageShare {
+                    percent: RankValue::fixed(100.0),
+                },
+                duration: RankValue::fixed(10.0),
+            },
+        )
+}
+// </ability:warding_bond>
+
+// <ability:spirit_guardians>
+fn spirit_guardians() -> AbilityDefinition {
+    const DESCRIPTION: &str =
+        "Three spirits circle Shadowheart, dealing pure damage to each enemy they touch";
+    AbilityDefinition::new(AbilityId::SpiritGuardians)
+        .description(DESCRIPTION)
+        .targeting(
+            TargetType::NoTarget,
+            RankValue::ZERO,
+            RankValue::fixed(260.0),
+        )
+        .team(TargetTeam::Enemy)
+        .costs(
+            RankValue::levels(&[40.0, 35.0, 30.0, 25.0, 22.5, 20.0, 17.5]),
+            RankValue::levels(&[90.0, 105.0, 120.0, 135.0, 142.5, 150.0, 157.5]),
+        )
+        .timing(0.3, 0.0)
+        .mechanic(shockwave_ring())
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::Caster,
+            AbilityEffect::Orbit {
+                count: 3,
+                radius: AreaRadius::Fixed(RankValue::fixed(180.0)),
+                hit_radius: 80.0,
+                period: RankValue::fixed(1.41),
+                duration: RankValue::levels(&[3.0, 4.0, 5.0, 6.0, 6.5, 7.0, 7.5]),
+                team: TargetTeam::Enemy,
+                then: AbilityTrigger::Custom("on_spirit_guardians_touch"),
+            },
+        )
+        .on(
+            AbilityTrigger::Custom("on_spirit_guardians_touch"),
+            EffectTarget::TriggerUnit,
+            AbilityEffect::Damage {
+                amount: RankValue::levels(&[90.0, 160.0, 230.0, 300.0, 335.0, 370.0, 405.0]),
+                damage_type: DamageType::Pure,
+                scaling: EffectScaling::None,
+            },
+        )
+}
+// </ability:spirit_guardians>
+
+// <ability:sharran_conversion>
+fn sharran_conversion() -> AbilityDefinition {
+    const DESCRIPTION: &str = "For a short time, enemy creeps that die near Shadowheart rise again as her allies at full health for 30 seconds";
+    AbilityDefinition::new(AbilityId::SharranConversion)
+        .description(DESCRIPTION)
+        .targeting(
+            TargetType::NoTarget,
+            RankValue::ZERO,
+            RankValue::fixed(300.0),
+        )
+        .team(TargetTeam::Enemy)
+        .costs(
+            RankValue::levels(&[100.0, 90.0, 80.0, 75.0]),
+            RankValue::levels(&[125.0, 175.0, 225.0, 250.0]),
+        )
+        .timing(0.0, 0.0)
+        .mechanic(shockwave_ring())
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::Caster,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::ConvertOnDeath {
+                    radius: RankValue::fixed(300.0),
+                },
+                duration: RankValue::levels(&[5.0, 7.0, 9.0, 10.0]),
+            },
+        )
+}
+// </ability:sharran_conversion>
