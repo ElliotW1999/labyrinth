@@ -13,7 +13,7 @@ use super::definition::{
     LeashAnchorKind, PassiveStat, RankValue, StatusFilter, StatusSpec, TargetTeam, TargetType,
 };
 #[allow(unused_imports)]
-use crate::components::{AbilityId, DamageType};
+use crate::components::{AbilityId, DamageType, ProjectileSeek};
 #[allow(unused_imports)]
 use crate::scale;
 #[allow(unused_imports)]
@@ -58,6 +58,10 @@ pub fn definition(id: AbilityId) -> Option<AbilityDefinition> {
         AbilityId::WardingBond => Some(warding_bond()),
         AbilityId::SpiritGuardians => Some(spirit_guardians()),
         AbilityId::SharranConversion => Some(sharran_conversion()),
+        AbilityId::RocketBarrage => Some(rocket_barrage()),
+        AbilityId::HomingMissile => Some(homing_missile()),
+        AbilityId::FlakCannon => Some(flak_cannon()),
+        AbilityId::CallDown => Some(call_down()),
         _ => None,
     }
 }
@@ -134,6 +138,7 @@ fn arcane_lance() -> AbilityDefinition {
             first_hit: false,
             end_radius: None,
             origin_offset: None,
+            seek: None,
         })
         .on(
             AbilityTrigger::OnProjectileHit,
@@ -335,6 +340,7 @@ fn shadow_strike() -> AbilityDefinition {
             first_hit: false,
             end_radius: None,
             origin_offset: None,
+            seek: None,
         })
         .on(
             AbilityTrigger::OnProjectileHit,
@@ -454,6 +460,7 @@ fn sonic_wave() -> AbilityDefinition {
             first_hit: false,
             end_radius: Some(RankValue::fixed(450.0)),
             origin_offset: None,
+            seek: None,
         })
         .on(
             AbilityTrigger::OnProjectileHit,
@@ -507,6 +514,7 @@ fn magnus_shockwave() -> AbilityDefinition {
             first_hit: false,
             end_radius: None,
             origin_offset: Some(RankValue::fixed(48.0)),
+            seek: None,
         })
         .on(
             AbilityTrigger::OnProjectileHit,
@@ -979,6 +987,7 @@ fn assassinate() -> AbilityDefinition {
             first_hit: false,
             end_radius: None,
             origin_offset: None,
+            seek: None,
         })
         .on(
             AbilityTrigger::OnProjectileHit,
@@ -1522,6 +1531,7 @@ fn splinter_blast() -> AbilityDefinition {
             first_hit: false,
             end_radius: None,
             origin_offset: None,
+            seek: None,
         })
         .on(
             AbilityTrigger::OnProjectileHit,
@@ -1847,3 +1857,198 @@ fn sharran_conversion() -> AbilityDefinition {
         )
 }
 // </ability:sharran_conversion>
+
+// <ability:rocket_barrage>
+fn rocket_barrage() -> AbilityDefinition {
+    const DESCRIPTION: &str = "Gyrocopter fires a barrage of rockets for 3 seconds; each rocket strikes a random nearby enemy for magical damage";
+    AbilityDefinition::new(AbilityId::RocketBarrage)
+        .description(DESCRIPTION)
+        .targeting(
+            TargetType::NoTarget,
+            RankValue::ZERO,
+            RankValue::fixed(400.0),
+        )
+        .team(TargetTeam::Enemy)
+        .costs(
+            RankValue::levels(&[7.0, 6.5, 6.0, 5.5, 5.25, 5.0, 4.75]),
+            RankValue::fixed(75.0),
+        )
+        .timing(0.0, 0.0)
+        .mechanic(shockwave_ring())
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::Caster,
+            AbilityEffect::Zone {
+                radius: AreaRadius::Ability,
+                team: TargetTeam::Enemy,
+                delay: RankValue::fixed(0.0),
+                duration: RankValue::fixed(3.0),
+                interval: RankValue::fixed(0.1),
+                then: AbilityTrigger::Custom("on_rocket_barrage_tick"),
+                follow_caster: true,
+            },
+        )
+        .on(
+            AbilityTrigger::Custom("on_rocket_barrage_tick"),
+            EffectTarget::AffectedUnits,
+            AbilityEffect::PickRandom {
+                count: 1,
+                then: AbilityTrigger::Custom("on_rocket_barrage_hit"),
+            },
+        )
+        .on(
+            AbilityTrigger::Custom("on_rocket_barrage_hit"),
+            EffectTarget::TriggerUnit,
+            AbilityEffect::Damage {
+                amount: RankValue::levels(&[8.0, 14.0, 20.0, 26.0, 29.0, 32.0, 35.0]),
+                damage_type: DamageType::Magical,
+                scaling: EffectScaling::None,
+            },
+        )
+}
+// </ability:rocket_barrage>
+
+// <ability:homing_missile>
+fn homing_missile() -> AbilityDefinition {
+    const DESCRIPTION: &str = "Launches a missile that waits briefly, then accelerates toward the target, dealing magical damage and stunning it; if the target dies first, the missile seeks the nearest enemy";
+    AbilityDefinition::new(AbilityId::HomingMissile)
+        .description(DESCRIPTION)
+        .targeting(TargetType::Unit, RankValue::fixed(1050.0), RankValue::ZERO)
+        .team(TargetTeam::Enemy)
+        .costs(
+            RankValue::levels(&[26.0, 25.0, 24.0, 23.0, 22.5, 22.0, 21.5]),
+            RankValue::levels(&[90.0, 100.0, 110.0, 120.0, 125.0, 130.0, 135.0]),
+        )
+        .timing(0.0, 0.0)
+        .mechanic(AbilityMechanic::Projectile {
+            splash_radius: AreaRadius::Ability,
+            speed: Some(500.0),
+            skillshot: false,
+            first_hit: false,
+            end_radius: None,
+            origin_offset: None,
+            seek: Some(ProjectileSeek {
+                delay: 0.5,
+                acceleration: 14.285714,
+                retarget_radius: 700.0,
+            }),
+        })
+        .on(
+            AbilityTrigger::OnProjectileHit,
+            EffectTarget::TriggerUnit,
+            AbilityEffect::Damage {
+                amount: RankValue::levels(&[90.0, 180.0, 270.0, 360.0, 405.0, 450.0, 495.0]),
+                damage_type: DamageType::Magical,
+                scaling: EffectScaling::None,
+            },
+        )
+        .on(
+            AbilityTrigger::OnProjectileHit,
+            EffectTarget::TriggerUnit,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::OwnedStun {
+                    id: "homing_missile_stun",
+                },
+                duration: RankValue::levels(&[1.25, 1.5, 1.75, 2.0, 2.125, 2.25, 2.375]),
+            },
+        )
+}
+// </ability:homing_missile>
+
+// <ability:flak_cannon>
+fn flak_cannon() -> AbilityDefinition {
+    const DESCRIPTION: &str = "For a limited number of attacks, each of Gyrocopter's attacks also strikes additional nearby enemies";
+    AbilityDefinition::new(AbilityId::FlakCannon)
+        .description(DESCRIPTION)
+        .targeting(TargetType::NoTarget, RankValue::ZERO, RankValue::ZERO)
+        .team(TargetTeam::SelfOnly)
+        .costs(RankValue::fixed(25.0), RankValue::fixed(50.0))
+        .timing(0.0, 0.0)
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::Caster,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::AttackCharges {
+                    id: "flak_cannon_attack_charges",
+                    charges: RankValue::levels(&[4.0, 5.0, 6.0, 7.0, 8.0, 8.0, 9.0]),
+                },
+                duration: RankValue::fixed(10.0),
+            },
+        )
+        .on(
+            AbilityTrigger::OnAttack,
+            EffectTarget::Caster,
+            AbilityEffect::RequireStatus {
+                id: "flak_cannon_attack_charges",
+                then: AbilityTrigger::Custom("on_flak_cannon_attack"),
+            },
+        )
+        .on(
+            AbilityTrigger::Custom("on_flak_cannon_attack"),
+            EffectTarget::UnitsInRadius {
+                center: AreaCenter::Caster,
+                radius: AreaRadius::Fixed(RankValue::fixed(1250.0)),
+                team: TargetTeam::Enemy,
+            },
+            AbilityEffect::PerformAttack {
+                damage_ratio: RankValue::fixed(1.0),
+                max_targets: RankValue::levels(&[4.0, 5.0, 6.0, 7.0, 8.0, 8.0, 9.0]),
+                exclude_trigger_unit: true,
+            },
+        )
+}
+// </ability:flak_cannon>
+
+// <ability:call_down>
+fn call_down() -> AbilityDefinition {
+    const DESCRIPTION: &str =
+        "After a 2 second delay, missiles strike the target area, damaging and slowing enemies";
+    AbilityDefinition::new(AbilityId::CallDown)
+        .description(DESCRIPTION)
+        .targeting(
+            TargetType::Area,
+            RankValue::fixed(1000.0),
+            RankValue::fixed(400.0),
+        )
+        .team(TargetTeam::Enemy)
+        .costs(
+            RankValue::levels(&[75.0, 65.0, 55.0, 50.0]),
+            RankValue::levels(&[150.0, 200.0, 250.0, 275.0]),
+        )
+        .timing(0.3, 0.5)
+        .mechanic(nova_ring())
+        .on(
+            AbilityTrigger::OnCast,
+            EffectTarget::Caster,
+            AbilityEffect::Zone {
+                radius: AreaRadius::Ability,
+                team: TargetTeam::Enemy,
+                delay: RankValue::fixed(2.0),
+                duration: RankValue::fixed(1.0),
+                interval: RankValue::fixed(1.0),
+                then: AbilityTrigger::Custom("on_call_down_impact"),
+                follow_caster: false,
+            },
+        )
+        .on(
+            AbilityTrigger::Custom("on_call_down_impact"),
+            EffectTarget::AffectedUnits,
+            AbilityEffect::Damage {
+                amount: RankValue::levels(&[200.0, 350.0, 500.0, 575.0]),
+                damage_type: DamageType::Magical,
+                scaling: EffectScaling::None,
+            },
+        )
+        .on(
+            AbilityTrigger::Custom("on_call_down_impact"),
+            EffectTarget::AffectedUnits,
+            AbilityEffect::ApplyStatus {
+                status: StatusSpec::Slow {
+                    id: "call_down_slow",
+                    percent: RankValue::fixed(60.0),
+                },
+                duration: RankValue::fixed(4.0),
+            },
+        )
+}
+// </ability:call_down>

@@ -6,6 +6,7 @@ use bevy::prelude::{Entity, Vec2, Vec3};
 
 use crate::components::AbilityId;
 use crate::components::DamageType;
+use crate::components::ProjectileSeek;
 use crate::status::{DamageShare, DispelType, Leash, LeashAnchor, StatusEffect, StatusKind};
 use crate::vitals::{ManaShield, ResourceKind, ResourceStat};
 
@@ -520,6 +521,13 @@ pub enum StatusSpec {
     Stacks {
         id: &'static str,
     },
+    /// A buff that only counts basic attacks: it carries `charges` (at least 1) and does
+    /// nothing else. It ends after that many released attacks or when `duration` runs out
+    /// (generated id `<owner>_attack_charges`; gate on it with `require_status`).
+    AttackCharges {
+        id: &'static str,
+        charges: RankValue,
+    },
     /// `percent` (0-100) of incoming damage is removed after mitigation (a buff). `id` is
     /// `<owner>_damage_reduction`; reductions from different ids multiply.
     DamageReduction {
@@ -815,6 +823,10 @@ impl StatusSpec {
             }
             StatusSpec::HealBlock => StatusEffect::heal_block(duration),
             StatusSpec::Stacks { id } => StatusEffect::stack(id, duration),
+            StatusSpec::AttackCharges { id, charges } => StatusEffect {
+                attack_charges: charges.at(rank).round().max(1.0) as u32,
+                ..StatusEffect::buff(id, duration)
+            },
             StatusSpec::StatusResistance { id, percent } => StatusEffect::status_resistance(
                 id,
                 (percent.at(rank) / 100.0).clamp(0.0, 1.0),
@@ -1106,6 +1118,14 @@ pub enum AbilityEffect {
         team: TargetTeam,
         then: AbilityTrigger,
     },
+    /// Mechanic gate: picks `count` distinct random units out of the resolved targets (alive
+    /// ones only) and re-fires this context under `then` once per pick (trigger unit = the
+    /// pick, point = its position, no affected units). An empty pool fires nothing. Emits no
+    /// gameplay messages.
+    PickRandom {
+        count: u32,
+        then: AbilityTrigger,
+    },
     /// Mechanic gate: spawns a persistent area at the trigger point (the aim for `OnCast`).
     /// After `delay` seconds, and then every `interval` seconds for `duration` seconds in
     /// total (`floor(duration / interval)` ticks), it re-fires this context under `then`
@@ -1154,11 +1174,11 @@ pub enum AbilityEffect {
     /// the caster's attack damage, ignoring cooldown, swing and range (instant attack, double
     /// attack, multi-target attack). The caster itself is never a target, nor the trigger unit
     /// when `exclude_trigger_unit` is set; at most `max_targets` are attacked, nearest first
-    /// (0 = all). Does nothing under a trigger caused by an extra attack, so extra attacks
-    /// never chain, nor under a reaction (damage- or status-class trigger).
+    /// (rank-scaled, rounded; 0 = all). Does nothing under a trigger caused by an extra attack,
+    /// so extra attacks never chain, nor under a reaction (damage- or status-class trigger).
     PerformAttack {
         damage_ratio: RankValue,
-        max_targets: u32,
+        max_targets: RankValue,
         exclude_trigger_unit: bool,
     },
     /// Escape hatch: runs the system registered under `id` with
@@ -1183,6 +1203,7 @@ impl AbilityEffect {
                 | Self::Counter { .. }
                 | Self::Accumulate { .. }
                 | Self::Chain { .. }
+                | Self::PickRandom { .. }
                 | Self::Zone { .. }
                 | Self::Orbit { .. }
                 | Self::PassiveStat { .. }
@@ -1226,6 +1247,10 @@ pub enum AbilityMechanic {
         /// Skillshots only: the wave starts this far in front of the caster (towards the aim)
         /// instead of at the caster's centre, and still flies the full cast range from there.
         origin_offset: Option<RankValue>,
+        /// Homing projectiles only: launch delay, acceleration and retargeting when the
+        /// target dies. `None` is a plain homing bolt (fixed speed, no delay, ends at the
+        /// last known position).
+        seek: Option<ProjectileSeek>,
     },
     /// One homing spell projectile per living, targetable unit of `team` inside the ability's
     /// `aoe_radius` around `center` (the caster is never one). Each projectile carries the

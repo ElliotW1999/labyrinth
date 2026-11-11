@@ -103,7 +103,11 @@ ABILITY_COLUMNS = (
 # (skillshots only; level list allowed; the width the wave widens to, needs aoe_radius),
 # projectile_origin_offset (skillshots only; level list allowed; how far in front of the caster
 # the wave starts), cast_range_buffer (unit-targeted abilities only; level list allowed; the cast is
-# cancelled for free during the cast point if the target moves further than cast_range + buffer).
+# cancelled for free during the cast point if the target moves further than cast_range + buffer),
+# projectile_delay / projectile_acceleration / projectile_retarget_radius (projectile_type targeted
+# only; single numbers): the missile waits `delay` seconds at the launch point, then gains
+# `acceleration` units/s^2, and when its target dies it retargets the nearest living enemy within
+# `retarget_radius` of itself. Setting any of them makes the projectile a seeker.
 
 SLOTS = ("q", "w", "e", "r", "innate")
 ABILITY_TYPES = {"active": "Active", "passive": "Passive", "toggle": "Toggle"}
@@ -130,7 +134,7 @@ use super::definition::{
     LeashAnchorKind, PassiveStat, RankValue, StatusFilter, StatusSpec, TargetTeam, TargetType,
 };
 #[allow(unused_imports)]
-use crate::components::{AbilityId, DamageType};
+use crate::components::{AbilityId, DamageType, ProjectileSeek};
 #[allow(unused_imports)]
 use crate::status::{DispelStrength, StatusKind};
 #[allow(unused_imports)]
@@ -168,6 +172,7 @@ class Ability:
     projectile_end_radius: list[float] | None = None
     projectile_origin_offset: list[float] | None = None
     cast_range_buffer: list[float] | None = None
+    projectile_seek: tuple[float, float, float] | None = None
     effects: list[str] = field(default_factory=list)
 
 
@@ -263,6 +268,7 @@ def parse_ability(row: Row, effect_rows: list[EffectRow], report: Report) -> Abi
         projectile_end_radius=activation.projectile_end_radius,
         projectile_origin_offset=activation.projectile_origin_offset,
         cast_range_buffer=cast_range_buffer,
+        projectile_seek=activation.seek,
     )
 
 
@@ -349,7 +355,7 @@ def ability_fn(a: Ability) -> str:
             lines.append("        .mechanic(shockwave_ring())")
         lines.append(f"        .mechanic({projectile_each_mechanic_rust(a.target_type, a.target_team, a.projectile_speed)})")
     elif a.projectile != "none":
-        lines.append(f"        .mechanic({projectile_mechanic_rust(a.projectile, a.projectile_speed, a.projectile_end_radius, a.projectile_origin_offset)})")
+        lines.append(f"        .mechanic({projectile_mechanic_rust(a.projectile, a.projectile_speed, a.projectile_end_radius, a.projectile_origin_offset, a.projectile_seek)})")
     elif a.behavior == "Active" and a.aoe_radius and any(a.aoe_radius):
         if a.rust_target_type in ("NoTarget", "SelfTarget"):
             lines.append("        .mechanic(shockwave_ring())")

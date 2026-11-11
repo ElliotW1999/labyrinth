@@ -99,6 +99,7 @@ const PROJECTILE: AbilityMechanic = AbilityMechanic::Projectile {
     first_hit: false,
     end_radius: None,
     origin_offset: None,
+    seek: None,
 };
 
 const fn damage(
@@ -1583,6 +1584,188 @@ mod tests {
                     duration,
                 }
             ) if radius.at(1) == 300.0 && duration.at(1) == 5.0 && duration.at(4) == 10.0
+        )));
+    }
+
+    #[test]
+    fn gyrocopter_abilities_generate_expected_definitions() {
+        use crate::abilities::definition::{AreaRadius, StatusSpec};
+        use crate::actions::TargetType;
+        use crate::components::ProjectileSeek;
+
+        assert_eq!(AbilityId::RocketBarrage.display_name(), "Rocket Barrage");
+        assert_eq!(AbilityId::HomingMissile.display_name(), "Homing Missile");
+        assert_eq!(AbilityId::FlakCannon.display_name(), "Flak Cannon");
+        assert_eq!(AbilityId::CallDown.display_name(), "Call Down");
+        assert!(AbilityId::CallDown.is_ultimate());
+        assert!(!AbilityId::FlakCannon.is_ultimate());
+
+        // Q: ten rockets a second for three seconds around Gyrocopter; each tick strikes one
+        // random enemy within 400.
+        let q = builtin(AbilityId::RocketBarrage);
+        assert_eq!(q.max_rank, 7);
+        assert_eq!(q.target_type, TargetType::NoTarget);
+        assert_eq!(q.target_team, TargetTeam::Enemy);
+        assert_eq!(q.aoe_radius.at(1), 400.0);
+        assert_eq!(q.cast_time, 0.0);
+        assert_eq!(q.cooldown.at(5), 5.25);
+        assert_eq!(q.mana_cost.at(1), 75.0);
+        let tick = AbilityTrigger::Custom("on_rocket_barrage_tick");
+        let hit = AbilityTrigger::Custom("on_rocket_barrage_hit");
+        assert!(q.effects_for(AbilityTrigger::OnCast).any(|e| matches!(
+            (e.target, e.effect),
+            (
+                EffectTarget::Caster,
+                AbilityEffect::Zone {
+                    radius: AreaRadius::Ability,
+                    team: TargetTeam::Enemy,
+                    duration,
+                    interval,
+                    then,
+                    follow_caster: true,
+                    ..
+                }
+            ) if interval.at(1) == 0.1 && duration.at(1) == 3.0 && then == tick
+        )));
+        assert!(q.effects_for(tick).any(|e| matches!(
+            (e.target, e.effect),
+            (
+                EffectTarget::AffectedUnits,
+                AbilityEffect::PickRandom { count: 1, then }
+            ) if then == hit
+        )));
+        assert!(q.effects_for(hit).any(|e| matches!(
+            (e.target, e.effect),
+            (
+                EffectTarget::TriggerUnit,
+                AbilityEffect::Damage { amount, damage_type: DamageType::Magical, .. }
+            ) if amount.at(1) == 8.0 && amount.at(7) == 35.0
+        )));
+
+        // W: a unit-target seeking missile, damage and a Gyrocopter-owned stun on reach.
+        let w = builtin(AbilityId::HomingMissile);
+        assert_eq!(w.max_rank, 7);
+        assert_eq!(w.target_type, TargetType::Unit);
+        assert_eq!(w.cast_range.at(1), 1050.0);
+        assert_eq!(w.cast_time, 0.0);
+        assert_eq!(w.mana_cost.at(7), 135.0);
+        assert_eq!(w.cooldown.at(5), 22.5);
+        assert!(w.mechanics.iter().any(|m| matches!(
+            m,
+            AbilityMechanic::Projectile {
+                skillshot: false,
+                speed: Some(speed),
+                seek: Some(ProjectileSeek { delay, acceleration, retarget_radius }),
+                ..
+            } if *speed == 500.0 && *delay == 0.5 && (acceleration - 14.285714).abs() < 1e-5
+                && *retarget_radius == 700.0
+        )));
+        assert!(
+            w.effects_for(AbilityTrigger::OnProjectileHit)
+                .any(|e| matches!(
+                    (e.target, e.effect),
+                    (
+                        EffectTarget::TriggerUnit,
+                        AbilityEffect::Damage { amount, damage_type: DamageType::Magical, .. }
+                    ) if amount.at(1) == 90.0 && amount.at(7) == 495.0
+                ))
+        );
+        assert!(
+            w.effects_for(AbilityTrigger::OnProjectileHit)
+                .any(|e| matches!(
+                    (e.target, e.effect),
+                    (
+                        EffectTarget::TriggerUnit,
+                        AbilityEffect::ApplyStatus {
+                            status: StatusSpec::OwnedStun { id: "homing_missile_stun" },
+                            duration,
+                        }
+                    ) if duration.at(1) == 1.25 && duration.at(7) == 2.375
+                ))
+        );
+
+        // E: a charges-only buff, gated on by each attack, that splits it to extra enemies
+        // around Gyrocopter.
+        let e = builtin(AbilityId::FlakCannon);
+        assert_eq!(e.max_rank, 7);
+        assert_eq!(e.target_type, TargetType::NoTarget);
+        assert_eq!(e.cast_time, 0.0);
+        assert_eq!(e.cooldown.at(1), 25.0);
+        assert_eq!(e.mana_cost.at(1), 50.0);
+        assert!(e.effects_for(AbilityTrigger::OnCast).any(|x| matches!(
+            (x.target, x.effect),
+            (
+                EffectTarget::Caster,
+                AbilityEffect::ApplyStatus {
+                    status: StatusSpec::AttackCharges { id: "flak_cannon_attack_charges", charges },
+                    duration,
+                }
+            ) if charges.at(4) == 7.0 && charges.at(7) == 9.0 && duration.at(1) == 10.0
+                && duration.at(7) == 10.0
+        )));
+        let split = AbilityTrigger::Custom("on_flak_cannon_attack");
+        assert!(e.effects_for(AbilityTrigger::OnAttack).any(|x| matches!(
+            (x.target, x.effect),
+            (
+                EffectTarget::Caster,
+                AbilityEffect::RequireStatus { id: "flak_cannon_attack_charges", then }
+            ) if then == split
+        )));
+        assert!(e.effects_for(split).any(|x| matches!(
+            (x.target, x.effect),
+            (
+                EffectTarget::UnitsInRadius {
+                    center: AreaCenter::Caster,
+                    radius: AreaRadius::Fixed(radius),
+                    team: TargetTeam::Enemy,
+                },
+                AbilityEffect::PerformAttack { damage_ratio, max_targets, exclude_trigger_unit: true }
+            ) if radius.at(1) == 1250.0 && max_targets.at(7) == 9.0 && max_targets.at(1) == 4.0
+                && damage_ratio.at(1) == 1.0
+        )));
+
+        // R: four ranks; a ground zone with one impact tick after 2 s that damages and slows.
+        let r = builtin(AbilityId::CallDown);
+        assert_eq!(r.max_rank, 4);
+        assert_eq!(r.target_type, TargetType::Area);
+        assert_eq!(r.cast_range.at(1), 1000.0);
+        assert_eq!(r.aoe_radius.at(1), 400.0);
+        assert_eq!(r.cast_time, 0.3);
+        assert_eq!(r.backswing, 0.5);
+        assert_eq!(r.cooldown.at(4), 50.0);
+        assert_eq!(r.mana_cost.at(4), 275.0);
+        let impact = AbilityTrigger::Custom("on_call_down_impact");
+        assert!(r.effects_for(AbilityTrigger::OnCast).any(|x| matches!(
+            (x.target, x.effect),
+            (
+                EffectTarget::Caster,
+                AbilityEffect::Zone {
+                    radius: AreaRadius::Ability,
+                    delay,
+                    duration,
+                    interval,
+                    then,
+                    follow_caster: false,
+                    ..
+                }
+            ) if delay.at(1) == 2.0 && duration.at(1) == 1.0 && interval.at(1) == 1.0 && then == impact
+        )));
+        assert!(r.effects_for(impact).any(|x| matches!(
+            (x.target, x.effect),
+            (
+                EffectTarget::AffectedUnits,
+                AbilityEffect::Damage { amount, damage_type: DamageType::Magical, .. }
+            ) if amount.at(1) == 200.0 && amount.at(4) == 575.0
+        )));
+        assert!(r.effects_for(impact).any(|x| matches!(
+            (x.target, x.effect),
+            (
+                EffectTarget::AffectedUnits,
+                AbilityEffect::ApplyStatus {
+                    status: StatusSpec::Slow { id: "call_down_slow", percent },
+                    duration,
+                }
+            ) if percent.at(1) == 60.0 && duration.at(1) == 4.0
         )));
     }
 

@@ -91,7 +91,7 @@ GATE_TYPES = ("proc", "pseudo_proc", "counter", "accumulate", "require_status")
 # Every effect type that fires a custom trigger: the gates plus the Chain mechanic gate (one
 # derived context per hop) and the Zone mechanic gate (one per tick). Used for reachability and
 # reaction propagation.
-CUSTOM_TRIGGER_FEEDERS = (*GATE_TYPES, "chain", "zone", "attached_zone", "orbit")
+CUSTOM_TRIGGER_FEEDERS = (*GATE_TYPES, "chain", "pick_random", "zone", "attached_zone", "orbit")
 # Triggers whose resolved target is the unit that caused them (the `attacker` target).
 ATTACKER_TRIGGERS = ("on_damage_taken", "on_death")
 
@@ -167,6 +167,9 @@ EFFECT_TYPES = {
     "require_status",
     # Mechanic gate: jump from the start unit to nearby units, re-firing a custom trigger per hop.
     "chain",
+    # Mechanic gate: picks `value` (default 1) distinct random units out of the target pool and
+    # re-fires a custom trigger once per pick, with the pick as the trigger unit.
+    "pick_random",
     # Mechanic gate: a delayed, persistent area that re-fires a custom trigger on every tick with the
     # units inside as the affected units.
     "zone",
@@ -255,6 +258,9 @@ STATUSES = {
     # Percent magic resistance (amount/value = 1..100), multiplicative with the rating.
     "magic_resistance": (None, "magic_resistance", True),
     "stacks": (None, "stacks", False),
+    # A buff that only counts basic attacks (`amount` = attacks, `duration` required); the id is
+    # `<owner>_attack_charges`. Gate on it with `require_status`.
+    "attack_charges": (None, "attack_charges", True),
     "status_resistance": (None, "status_resistance", True),
     "mana_shield": (None, "mana_shield", True),
     # Duplicates `amount` percent of the holder's incoming damage to the unit that applied it.
@@ -267,7 +273,7 @@ STATUSES = {
 INDEPENDENT_SUFFIX = "independent"
 
 # Statuses whose runtime id is `<owner>_<name>` (the keyword alone is not a status id).
-OWNER_ID_STATUSES = ("damage_reduction", "magic_resistance", "status_resistance", "stacks", "move_speed_bonus", "attack_point")
+OWNER_ID_STATUSES = ("damage_reduction", "magic_resistance", "status_resistance", "stacks", "move_speed_bonus", "attack_point", "attack_charges")
 
 # Triggers whose context carries the cast's unit target (see TriggerContext::cast_target).
 CAST_TARGET_TRIGGERS = ("on_cast", "on_projectile_hit")
@@ -308,6 +314,9 @@ TARGET_TYPES = ("unit", "point", "direction", "no_target", "self")
 PROJECTILE_TYPES = ("none", "targeted", "targeted_each", "skillshot", "skillshot_single")
 # Skillshots fly the cast range; `skillshot_single` stops at the first enemy it strikes (a hook).
 SKILLSHOT_TYPES = ("skillshot", "skillshot_single")
+
+# Optional ability columns for seeking homing projectiles (projectile_type targeted only).
+SEEK_COLUMNS = ("projectile_delay", "projectile_acceleration", "projectile_retarget_radius")
 
 # Optional activation columns on items.csv (not part of ITEM_COLUMNS required tuple).
 ITEM_ACTIVATION_OPTIONAL = (
@@ -672,6 +681,19 @@ class ActivationSpec:
     projectile_end_radius: list[float] | None = None
     # Skillshots only: how far in front of the caster (per rank) the wave starts.
     projectile_origin_offset: list[float] | None = None
+    # Seeking (targeted projectiles of abilities only): launch delay in seconds, acceleration in
+    # units/s^2 and the retarget radius. Setting any of them emits a `ProjectileSeek` block.
+    projectile_delay: float | None = None
+    projectile_acceleration: float | None = None
+    projectile_retarget_radius: float | None = None
+
+    @property
+    def seek(self) -> tuple[float, float, float] | None:
+        """(delay, acceleration, retarget radius) when any seek column is set, else None."""
+        values = (self.projectile_delay, self.projectile_acceleration, self.projectile_retarget_radius)
+        if all(v is None for v in values):
+            return None
+        return tuple(v or 0.0 for v in values)  # type: ignore[return-value]
 
     def has_cast_range(self, kind: str) -> bool:
         if kind == "ability":
@@ -727,6 +749,13 @@ def parse_activation_spec(
     speed = parse_scalar(row, "projectile_speed", report, minimum=1)
     end_radius = parse_number(row, "projectile_end_radius", report, levels=levels, minimum=0)
     origin_offset = parse_number(row, "projectile_origin_offset", report, levels=levels, minimum=0)
+    delay = parse_scalar(row, "projectile_delay", report, minimum=0)
+    acceleration = parse_scalar(row, "projectile_acceleration", report, minimum=0)
+    retarget_radius = parse_scalar(row, "projectile_retarget_radius", report, minimum=0)
+    if kind == "item":
+        for column in SEEK_COLUMNS:
+            if row.get(column):
+                report.error(row.file, row.line, column, row.get(column), "seeking projectile columns are ability-only for now; leave blank on items")
 
     if kind == "ability" and None in (target_type, target_team):
         return None
@@ -750,6 +779,9 @@ def parse_activation_spec(
         projectile_speed=speed,
         projectile_end_radius=end_radius,
         projectile_origin_offset=origin_offset,
+        projectile_delay=delay if kind == "ability" else None,
+        projectile_acceleration=acceleration if kind == "ability" else None,
+        projectile_retarget_radius=retarget_radius if kind == "ability" else None,
     )
 
 
@@ -808,6 +840,12 @@ def validate_activation(
         elif kind == "item":
             err("projectile_origin_offset", "item skillshots start at the user; leave projectile_origin_offset blank")
 
+    for column in SEEK_COLUMNS:
+        if row.get(column) and spec.projectile_type != "targeted":
+            err(column, f"only homing projectiles seek; projectile_type is {spec.projectile_type} (needs targeted)")
+    if spec.projectile_retarget_radius is not None and spec.projectile_retarget_radius <= 0:
+        err("projectile_retarget_radius", "projectile_retarget_radius must be above 0 (leave it blank to never retarget)")
+
     if spec.target_team == "self" and spec.target_type not in ("self", "no_target"):
         err("target_team", f"target_team self requires target_type self or no_target (got {spec.target_type})")
     if spec.target_type == "self" and spec.target_team != "self":
@@ -838,17 +876,28 @@ def projectile_mechanic_rust(
     projectile_speed: float | None,
     end_radius: list[float] | None = None,
     origin_offset: list[float] | None = None,
+    seek: tuple[float, float, float] | None = None,
 ) -> str:
-    """`AbilityMechanic::Projectile { ... }` for a non-"none" projectile_type (abilities and items)."""
+    """`AbilityMechanic::Projectile { ... }` for a non-"none" projectile_type (abilities and items).
+
+    `seek` is (delay, acceleration, retarget radius) for a seeking homing projectile."""
     speed = f"Some({f32(projectile_speed)})" if projectile_speed else "None"
     skillshot = "true" if projectile_type in SKILLSHOT_TYPES else "false"
     first_hit = "true" if projectile_type == "skillshot_single" else "false"
     end = f"Some({rank_value(end_radius)})" if end_radius else "None"
     offset = f"Some({rank_value(origin_offset)})" if origin_offset else "None"
+    if seek is None:
+        seek_rs = "None"
+    else:
+        delay, acceleration, radius = seek
+        seek_rs = (
+            f"Some(ProjectileSeek {{ delay: {f32(delay)}, acceleration: {f32(acceleration)}, "
+            f"retarget_radius: {f32(radius)} }})"
+        )
     return (
         "AbilityMechanic::Projectile { "
         f"splash_radius: AreaRadius::Ability, speed: {speed}, skillshot: {skillshot}, "
-        f"first_hit: {first_hit}, end_radius: {end}, origin_offset: {offset} }}"
+        f"first_hit: {first_hit}, end_radius: {end}, origin_offset: {offset}, seek: {seek_rs} }}"
     )
 
 
@@ -1838,6 +1887,21 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
                 return None
             _unused(e, report, "value", "amount")
             spec = f'StatusSpec::Stacks {{ id: "{ctx.owner_id}_stacks" }}'
+        elif effect_id == "attack_charges":
+            if e.trigger in ("passive", "while", "while_toggled"):
+                report.error(row.file, row.line, "trigger", e.trigger, "attack_charges is a timed buff that counts attacks; it cannot be held by passive, while or while_toggled")
+                return None
+            if not amount:
+                report.error(row.file, row.line, "amount", "", "required: the number of attacks the status lasts for (a whole number of at least 1)")
+                return None
+            if any(not float(a).is_integer() or a < 1 for a in amount):
+                report.error(row.file, row.line, "amount", row.get("amount"), "attack charges must be whole numbers of at least 1")
+                return None
+            if not duration or any(d <= 0 for d in duration):
+                report.error(row.file, row.line, "duration", row.get("duration"), "required: attack_charges needs a duration above 0 (it ends after the attacks or when this runs out)")
+                return None
+            spec = f'StatusSpec::AttackCharges {{ id: "{ctx.owner_id}_attack_charges", charges: {rank_value(amount)} }}'
+            _unused(e, report, "value")
         elif effect_id in ("damage_reduction", "magic_resistance", "status_resistance"):
             percent = amount or value
             if not percent:
@@ -2175,6 +2239,31 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             f"falloff: {f32(amount[0] / 100)}, team: TargetTeam::{chain_team}, "
             f'then: AbilityTrigger::Custom("{effect_id}") }}'
         )
+    elif t == "pick_random":
+        if not _require(e, "effect_id", report, "the custom trigger to fire per pick (on_<name>)"):
+            return None
+        if not CUSTOM_TRIGGER_PATTERN.match(effect_id) or effect_id in ABILITY_TRIGGERS or effect_id in ITEM_TRIGGERS:
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), "must be a custom on_<name> trigger, not a built-in trigger")
+            return None
+        if effect_id == e.trigger:
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), "a pick_random cannot fire its own trigger")
+            return None
+        if e.target not in ("affected_units", "units_in_radius"):
+            report.error(row.file, row.line, "effect_target", e.target, "pick_random chooses from a pool of units; use affected_units or units_in_radius")
+            return None
+        if ctx.owner_triggers is not None and effect_id not in ctx.owner_triggers:
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), f"no row of {e.owner!r} uses trigger {effect_id}, so this pick_random would do nothing")
+            return None
+        if not no_scaling():
+            return None
+        picks = 1
+        if value:
+            if len(value) != 1 or not float(value[0]).is_integer() or value[0] < 1:
+                report.error(row.file, row.line, "value", row.get("value"), "pick_random needs a single integer number of picks of at least 1 (blank = 1)")
+                return None
+            picks = int(value[0])
+        _unused(e, report, "damage_type", "duration", "amount")
+        effect = f'AbilityEffect::PickRandom {{ count: {picks}, then: AbilityTrigger::Custom("{effect_id}") }}'
     elif t in ("zone", "attached_zone"):
         # `attached_zone` is a `zone` that is re-centred on its caster before every tick.
         if not _require(e, "effect_id", report, "the custom trigger to fire per tick (on_<name>)"):
@@ -2304,12 +2393,12 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
         if any(p <= 0 for p in percent):
             report.error(row.file, row.line, "value", row.get("value"), "perform_attack damage percent must be above 0")
             return None
-        max_targets = 0
+        max_targets = "RankValue::ZERO"
         if amount:
-            if len(amount) != 1 or not float(amount[0]).is_integer() or amount[0] < 0:
-                report.error(row.file, row.line, "amount", row.get("amount"), "max targets must be a single integer of at least 0 (0 = all)")
+            if any(not float(a).is_integer() or a < 0 for a in amount):
+                report.error(row.file, row.line, "amount", row.get("amount"), "max targets must be whole numbers of at least 0 (0 = all), one per rank")
                 return None
-            max_targets = int(amount[0])
+            max_targets = rank_value(amount)
         _unused(e, report, "damage_type", "duration")
         effect = (
             f"AbilityEffect::PerformAttack {{ damage_ratio: {rank_value([p / 100 for p in percent])}, "
@@ -2372,7 +2461,9 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
         # Enemy/both abilities keep their team; ally/self abilities follow effect polarity, so a
         # harmful area (damage, stun, knockback) hits enemies and a beneficial one hits allies.
         team = ctx.team if ctx.team in ("Enemy", "Any") else ("Ally" if beneficial else "Enemy")
-        center = ctx.center_for.get(e.trigger, "TriggerPoint")
+        # Extra attacks launch from the attacker and the runner ranks candidates by distance from
+        # it, so a `perform_attack` search area is always centred on the caster.
+        center = "Caster" if t == "perform_attack" else ctx.center_for.get(e.trigger, "TriggerPoint")
         target = (
             f"EffectTarget::UnitsInRadius {{ center: AreaCenter::{center}, "
             f"radius: {radius_rs}, team: TargetTeam::{team} }}"

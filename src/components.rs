@@ -812,6 +812,11 @@ pub enum AbilityId {
     WardingBond,
     SpiritGuardians,
     SharranConversion,
+    // Gyrocopter (generated stubs)
+    RocketBarrage,
+    HomingMissile,
+    FlakCannon,
+    CallDown,
     // </hero_generator:ability_enum>
 }
 
@@ -873,6 +878,10 @@ impl AbilityId {
             AbilityId::WardingBond => "Warding Bond",
             AbilityId::SpiritGuardians => "Spirit Guardians",
             AbilityId::SharranConversion => "Sharran Conversion",
+            AbilityId::RocketBarrage => "Rocket Barrage",
+            AbilityId::HomingMissile => "Homing Missile",
+            AbilityId::FlakCannon => "Flak Cannon",
+            AbilityId::CallDown => "Call Down",
             // </hero_generator:ability_display_name>
         }
     }
@@ -893,7 +902,8 @@ impl AbilityId {
                 | AbilityId::Enrage
                 | AbilityId::ShadowDance
                 | AbilityId::WintersCurse
-                | AbilityId::SharranConversion // </hero_generator:ability_ultimates>
+                | AbilityId::SharranConversion
+                | AbilityId::CallDown // </hero_generator:ability_ultimates>
         )
     }
 
@@ -934,6 +944,10 @@ impl AbilityId {
             AbilityId::WardingBond => 7,
             AbilityId::SpiritGuardians => 7,
             AbilityId::SharranConversion => 4,
+            AbilityId::RocketBarrage => 7,
+            AbilityId::HomingMissile => 7,
+            AbilityId::FlakCannon => 7,
+            AbilityId::CallDown => 4,
             // </ability_generator:max_rank>
             _ if self.is_ultimate() => 4,
             _ => 7,
@@ -1051,6 +1065,20 @@ pub struct Projectile {
     pub lifetime: f32,
     /// Enemies this close to the impact are reported as splashed.
     pub splash_radius: f32,
+}
+
+/// Seeking rules of a homing spell projectile, used both as the mechanic's data and as the
+/// component that [`crate::combat::fly_projectiles`] reads and ticks. All three are constants.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Default)]
+pub struct ProjectileSeek {
+    /// Seconds the projectile waits at its launch point (facing the target) before flying.
+    /// Counts down in place once the projectile exists.
+    pub delay: f32,
+    /// Units per second squared added to the speed once the delay is over.
+    pub acceleration: f32,
+    /// When the target dies or despawns, retarget the nearest living, targetable enemy within
+    /// this distance (centre to edge) of the projectile. 0 = never retarget.
+    pub retarget_radius: f32,
 }
 
 #[derive(Component, Debug, Clone, Copy)]

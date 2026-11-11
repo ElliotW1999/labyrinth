@@ -5279,6 +5279,66 @@ mod tests {
                     .any(|e| e.id == "plain")
             );
         }
+
+        /// A charges-only status built the way generated abilities build it.
+        fn counter(rank: u32, duration: f32) -> StatusEffect {
+            StatusSpec::AttackCharges {
+                id: "charged",
+                charges: RankValue::levels(&[4.0, 5.0, 6.0]),
+            }
+            .build(
+                rank,
+                duration,
+                StatusBuildContext {
+                    move_speed: 300.0,
+                    agility: 0.0,
+                    source: None,
+                    point: Vec3::ZERO,
+                    cast_target: None,
+                    base_attack_damage: 0.0,
+                },
+            )
+        }
+
+        #[test]
+        fn charges_only_status_is_removed_after_n_releases() {
+            let mut app = app();
+            let unit = unit(&mut app);
+            let base = rating(&app, unit);
+            give(&mut app, unit, counter(1, 10.0));
+            assert_eq!(charges(&app, unit), Some(4), "rank 1 carries 4 attacks");
+            assert_eq!(rating(&app, unit), base, "it modifies no stat");
+            for left in [3, 2, 1] {
+                release(&mut app, unit, false);
+                assert_eq!(charges(&app, unit), Some(left));
+            }
+            release(&mut app, unit, false);
+            assert_eq!(charges(&app, unit), None, "the fourth attack ends it");
+            // The rank picks the count.
+            give(&mut app, unit, counter(3, 10.0));
+            assert_eq!(charges(&app, unit), Some(6));
+        }
+
+        #[test]
+        fn charges_only_status_expires_on_duration_with_charges_left() {
+            let mut app = app();
+            let unit = unit(&mut app);
+            give(&mut app, unit, counter(1, 1.0));
+            release(&mut app, unit, false);
+            assert_eq!(charges(&app, unit), Some(3));
+            frame(&mut app, 1.5);
+            assert_eq!(charges(&app, unit), None);
+        }
+
+        #[test]
+        fn extra_attacks_do_not_spend_charges_only_status() {
+            let mut app = app();
+            let unit = unit(&mut app);
+            give(&mut app, unit, counter(1, 10.0));
+            release(&mut app, unit, true);
+            release(&mut app, unit, true);
+            assert_eq!(charges(&app, unit), Some(4));
+        }
     }
 
     mod invisibility {

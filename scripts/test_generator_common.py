@@ -16,6 +16,8 @@ from generator_common import (  # noqa: E402
     Report,
     Row,
     ABILITY_TRIGGERS,
+    CUSTOM_TRIGGER_FEEDERS,
+    GATE_TYPES,
     GLOBAL_CAST_RANGE,
     ITEM_TRIGGERS,
     NOT_EMITTED_TRIGGERS,
@@ -569,6 +571,135 @@ def _effect(
         target_type="unit",
     )
     return effect, ctx
+
+
+class PerformAttackTests(unittest.TestCase):
+    def test_rank_list_amount_and_caster_centre(self) -> None:
+        report = Report()
+        effect, ctx = _effect("perform_attack", "exclude_trigger_unit", target="units_in_radius", trigger="on_attack", kind="item", amount="1|2|3", radius="500")
+        ctx.levels = 3
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors, report.errors)
+        self.assertIn("max_targets: RankValue::from_level_1(1.0, 1.0)", result[2])
+        self.assertIn("center: AreaCenter::Caster", result[1])
+        # A gate-fed custom trigger is centred on the caster too.
+        report = Report()
+        effect, ctx = _effect("perform_attack", "", target="units_in_radius", trigger="on_split", kind="item", radius="500")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors, report.errors)
+        self.assertIn("center: AreaCenter::Caster", result[1])
+        # Other effects keep the trigger point.
+        report = Report()
+        effect, ctx = _effect("damage", "", target="units_in_radius", trigger="on_attack", kind="item", value="10", damage_type="magical", radius="500")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertIn("center: AreaCenter::TriggerPoint", result[1])
+
+    def test_non_integer_amount_is_rejected(self) -> None:
+        for amount in ("1.5", "1|2.5|3", "-1"):
+            report = Report()
+            effect, ctx = _effect("perform_attack", "", target="cast_target", amount=amount)
+            ctx.levels = 3 if "|" in amount else 1
+            self.assertIsNone(effect_to_rust(effect, ctx, report), amount)
+            self.assertEqual(report.errors[0].field, "amount")
+
+
+
+class AttackChargesStatusTests(unittest.TestCase):
+    def _convert(self, trigger="on_cast", **cells):
+        report = Report()
+        effect, ctx = _effect("apply_status", "attack_charges", target="caster", trigger=trigger, **cells)
+        ctx.levels = 3
+        return effect_to_rust(effect, ctx, report), report
+
+    def test_emits_owner_id_status_with_rank_charges(self) -> None:
+        result, report = self._convert(amount="4|5|6", duration="10")
+        self.assertFalse(report.errors, report.errors)
+        self.assertIn(
+            'StatusSpec::AttackCharges { id: "tester_attack_charges", charges: RankValue::from_level_1(4.0, 1.0) }',
+            result[2],
+        )
+        self.assertIn("duration: RankValue::fixed(10.0)", result[2])
+
+    def test_invalid_rows_are_rejected(self) -> None:
+        for cells, field in (
+            ({"amount": "0", "duration": "10"}, "amount"),
+            ({"amount": "1.5", "duration": "10"}, "amount"),
+            ({"amount": "4|0|6", "duration": "10"}, "amount"),
+            ({"duration": "10"}, "amount"),
+            ({"amount": "4"}, "duration"),
+        ):
+            result, report = self._convert(**cells)
+            self.assertIsNone(result, cells)
+            self.assertEqual(report.errors[0].field, field, cells)
+
+    def test_rejected_on_held_triggers(self) -> None:
+        for trigger in ("passive", "while:moving", "while_toggled"):
+            result, report = self._convert(trigger=trigger, amount="4", duration="10")
+            self.assertIsNone(result, trigger)
+
+    def test_remove_status_names_the_owner_id(self) -> None:
+        report = Report()
+        effect, ctx = _effect("remove_status", "attack_charges", target="caster")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertIn("<owner>_attack_charges", report.errors[0].message)
+
+    def test_runtime_status_id_accepts_owner_id(self) -> None:
+        self.assertEqual(runtime_status_id("flak_cannon_attack_charges"), "flak_cannon_attack_charges")
+        self.assertIsNone(runtime_status_id("attack_charges"))
+
+
+class PickRandomTests(unittest.TestCase):
+    def _convert(self, effect_id="on_pick", target="affected_units", trigger="on_tick", owner_triggers=("on_pick",), **cells):
+        report = Report()
+        effect, ctx = _effect("pick_random", effect_id, target=target, trigger=trigger, **cells)
+        ctx.owner_triggers = set(owner_triggers) if owner_triggers is not None else None
+        return effect_to_rust(effect, ctx, report), report
+
+    def test_emits_pick_random_gate(self) -> None:
+        result, report = self._convert()
+        self.assertFalse(report.errors, report.errors)
+        self.assertEqual(result[1], "EffectTarget::AffectedUnits")
+        self.assertEqual(result[2], 'AbilityEffect::PickRandom { count: 1, then: AbilityTrigger::Custom("on_pick") }')
+
+    def test_value_is_the_pick_count(self) -> None:
+        result, report = self._convert(value="3")
+        self.assertIn("count: 3,", result[2])
+        result, report = self._convert(target="units_in_radius", trigger="on_cast", value="2", radius="400")
+        self.assertFalse(report.errors, report.errors)
+        self.assertIn("count: 2,", result[2])
+        self.assertIn("EffectTarget::UnitsInRadius", result[1])
+
+    def test_invalid_rows_are_rejected(self) -> None:
+        for kwargs, field in (
+            ({"value": "0"}, "value"),
+            ({"value": "1.5"}, "value"),
+            ({"value": "1|2"}, "value"),
+            ({"target": "caster"}, "effect_target"),
+            ({"target": "trigger_unit"}, "effect_target"),
+            ({"effect_id": "on_tick"}, "effect_id"),  # its own trigger
+            ({"effect_id": "on_cast"}, "effect_id"),  # built-in
+            ({"effect_id": ""}, "effect_id"),
+            ({"effect_id": "on_nobody", "owner_triggers": ("on_pick",)}, "effect_id"),  # no consumer
+        ):
+            result, report = self._convert(**kwargs)
+            self.assertIsNone(result, kwargs)
+            self.assertEqual(report.errors[0].field, field, kwargs)
+
+    def test_it_feeds_custom_triggers_but_is_not_a_self_gate(self) -> None:
+        self.assertIn("pick_random", CUSTOM_TRIGGER_FEEDERS)
+        self.assertNotIn("pick_random", GATE_TYPES)
+
+    def test_fed_trigger_rows_load_end_to_end(self) -> None:
+        abilities, report = load_test_ability(
+            effects=[
+                {"effect_index": "0", "trigger": "on_cast", "effect_target": "caster", "effect_type": "attached_zone", "effect_id": "on_tick", "value": "0.1", "duration": "3", "radius": "400"},
+                {"effect_index": "1", "trigger": "on_tick", "effect_target": "affected_units", "effect_type": "pick_random", "effect_id": "on_hit"},
+                {"effect_index": "2", "trigger": "on_hit", "effect_target": "trigger_unit", "effect_type": "damage", "value": "10", "damage_type": "magical"},
+            ]
+        )
+        self.assertFalse(report.errors, report.errors)
+        self.assertFalse([w for w in report.warnings if "never fired" in w.message], report.warnings)
+        self.assertEqual(len(abilities[0].effects), 3)
 
 
 class ResourceEffectTests(unittest.TestCase):
@@ -1722,13 +1853,13 @@ class AttackModifierTests(unittest.TestCase):
     def test_perform_attack_columns(self) -> None:
         report = Report()
         effect, ctx = _effect("perform_attack", "", target="cast_target")
-        self.assertIn("damage_ratio: RankValue::fixed(1.0), max_targets: 0, exclude_trigger_unit: false", effect_to_rust(effect, ctx, report)[2])
+        self.assertIn("damage_ratio: RankValue::fixed(1.0), max_targets: RankValue::ZERO, exclude_trigger_unit: false", effect_to_rust(effect, ctx, report)[2])
 
         report = Report()
         effect, ctx = _effect("perform_attack", "exclude_trigger_unit", target="trigger_unit", trigger="on_attack", kind="item", value="70", amount="2")
         result = effect_to_rust(effect, ctx, report)
         self.assertFalse(report.errors)
-        self.assertIn("damage_ratio: RankValue::fixed(0.7), max_targets: 2, exclude_trigger_unit: true", result[2])
+        self.assertIn("damage_ratio: RankValue::fixed(0.7), max_targets: RankValue::fixed(2.0), exclude_trigger_unit: true", result[2])
 
         for cells in ({"effect_id": "bogus"}, {"value": "0"}, {"amount": "1.5"}, {"amount": "-1"}):
             report = Report()
@@ -1867,6 +1998,89 @@ class ChainEffectTests(unittest.TestCase):
         self.assertFalse(report.warnings)
 
 
+class ProjectileSeekTests(unittest.TestCase):
+    def _spec(self, kind: str = "ability", **overrides: str):
+        cells = {
+            "target_type": "unit",
+            "target_team": "enemy",
+            "cast_range": "1050",
+            "projectile_type": "targeted",
+            "projectile_speed": "500",
+            "projectile_delay": "0.5",
+            "projectile_acceleration": "14.285714",
+            "projectile_retarget_radius": "700",
+        }
+        cells.update(overrides)
+        report = Report()
+        spec = parse_activation_spec(row(cells), kind=kind, has_active_effects=True, report=report, levels=kind == "ability")
+        if spec is not None:
+            validate_activation(row(cells), spec, kind=kind, ability_type="active", report=report)
+        return spec, report
+
+    def test_seek_columns_emit_a_seek_block(self) -> None:
+        spec, report = self._spec()
+        self.assertFalse(report.errors, report.errors)
+        self.assertEqual(spec.seek, (0.5, 14.285714, 700.0))
+        rust = projectile_mechanic_rust(spec.projectile_type, 500.0, None, None, spec.seek)
+        self.assertIn(
+            "seek: Some(ProjectileSeek { delay: 0.5, acceleration: 14.285714, retarget_radius: 700.0 })",
+            rust,
+        )
+        self.assertIn("speed: Some(500.0)", rust)
+
+    def test_any_single_column_makes_a_seeker_and_missing_ones_are_zero(self) -> None:
+        spec, report = self._spec(projectile_delay="", projectile_acceleration="")
+        self.assertFalse(report.errors, report.errors)
+        self.assertEqual(spec.seek, (0.0, 0.0, 700.0))
+        spec, report = self._spec(projectile_delay="1", projectile_acceleration="", projectile_retarget_radius="")
+        self.assertFalse(report.errors, report.errors)
+        self.assertEqual(spec.seek, (1.0, 0.0, 0.0))
+
+    def test_no_seek_columns_emit_seek_none(self) -> None:
+        spec, report = self._spec(projectile_delay="", projectile_acceleration="", projectile_retarget_radius="")
+        self.assertFalse(report.errors, report.errors)
+        self.assertIsNone(spec.seek)
+        self.assertIn("seek: None", projectile_mechanic_rust("targeted", None))
+        self.assertIn("seek: None", projectile_mechanic_rust("skillshot", None, None, None, None))
+
+    def test_rejected_without_a_homing_projectile(self) -> None:
+        for column, value in (("projectile_delay", "0.5"), ("projectile_acceleration", "5"), ("projectile_retarget_radius", "300")):
+            for overrides in ({"projectile_type": "none", "projectile_speed": ""}, {"projectile_type": "skillshot", "target_type": "point"}):
+                _, report = self._spec(**{"projectile_delay": "", "projectile_acceleration": "", "projectile_retarget_radius": "", column: value, **overrides})
+                self.assertTrue(report.errors, (column, overrides))
+                self.assertEqual(report.errors[0].field, column)
+
+    def test_negative_delay_acceleration_and_zero_retarget_radius_are_rejected(self) -> None:
+        for column, value in (
+            ("projectile_delay", "-0.1"),
+            ("projectile_acceleration", "-1"),
+            ("projectile_retarget_radius", "0"),
+            ("projectile_retarget_radius", "-5"),
+        ):
+            _, report = self._spec(**{column: value})
+            self.assertTrue(report.errors, (column, value))
+            self.assertEqual(report.errors[0].field, column)
+
+    def test_columns_are_constants_not_level_lists(self) -> None:
+        _, report = self._spec(projectile_delay="0.5|0.4")
+        self.assertTrue(report.errors)
+
+    def test_items_do_not_support_seek_columns_yet(self) -> None:
+        _, report = self._spec(kind="item", cast_range="600")
+        self.assertTrue(any(e.field == "projectile_delay" for e in report.errors))
+
+    def test_ability_loads_end_to_end(self) -> None:
+        abilities, report = load_test_ability(
+            {
+                "target_type": "unit", "cast_range": "1050", "projectile_type": "targeted", "projectile_speed": "500",
+                "projectile_delay": "0.5", "projectile_acceleration": "14.285714", "projectile_retarget_radius": "700",
+            },
+            [{"trigger": "on_projectile_hit", "effect_target": "trigger_unit", "effect_type": "damage", "value": "90", "damage_type": "magical"}],
+        )
+        self.assertFalse(report.errors, report.errors)
+        self.assertEqual(abilities[0].projectile_seek, (0.5, 14.285714, 700.0))
+
+
 class ItemProjectileTests(unittest.TestCase):
     ITEM_HEADER = "id,name,item_type,cost,sell_value,tier,rarity,stackable,max_stack,consumable,max_charges,description,cooldown,target_type,target_team,cast_range,projectile_type,projectile_speed\n"
     EFFECT_HEADER = "item_id,effect_index,trigger,effect_target,effect_type,effect_id,value,damage_type,duration,radius,amount,scaling_type,scaling_value\n"
@@ -1893,7 +2107,7 @@ class ItemProjectileTests(unittest.TestCase):
         self.assertFalse([w for w in report.warnings if w.field == "projectile_type"])
         rendered = module.item_static(items[0])
         self.assertIn(
-            "mechanics: &[AbilityMechanic::Projectile { splash_radius: AreaRadius::Ability, speed: Some(1200.0), skillshot: false, first_hit: false, end_radius: None, origin_offset: None }],",
+            "mechanics: &[AbilityMechanic::Projectile { splash_radius: AreaRadius::Ability, speed: Some(1200.0), skillshot: false, first_hit: false, end_radius: None, origin_offset: None, seek: None }],",
             rendered,
         )
         self.assertIn("AbilityTrigger::OnProjectileHit", rendered)
@@ -2368,7 +2582,8 @@ ABILITY_COLUMNS_FOR_TESTS = (
     "id,name,slot,ability_type,target_type,target_team,cast_range,aoe_radius,cast_time,"
     "channel_time,cooldown,mana_cost,max_charges,charge_restore_time,projectile_type,"
     "projectile_speed,description,cast_backswing,max_rank,toggle_mana_per_sec,"
-    "projectile_end_radius,projectile_origin_offset,cast_range_buffer"
+    "projectile_end_radius,projectile_origin_offset,cast_range_buffer,"
+    "projectile_delay,projectile_acceleration,projectile_retarget_radius"
 ).split(",")
 EFFECT_COLUMNS_FOR_TESTS = (
     "ability_id,effect_index,trigger,effect_target,effect_type,effect_id,value,damage_type,"
@@ -2855,6 +3070,32 @@ class HeroGeneratorTests(unittest.TestCase):
         self.assertIn("HeroId::Shadowheart => HeroDef {", arm)
         self.assertIn("primary: Some(Attribute::Strength),", arm)
         self.assertIn("combat: hero_combat(\n                    36.0,\n                    150.0,\n                    1.7,\n                    0.4,\n                    0.6,\n                    0.6,\n                    -0.1,\n                    6.321839,\n                    310.0,\n                    None,", arm)
+
+    def test_gyrocopter_row_generates_the_spec_hero(self) -> None:
+        import tempfile
+
+        import HeroGenerator
+
+        root = Path(__file__).resolve().parent.parent
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "heroes.csv"
+            lines = (root / "data" / "heroes.csv").read_text(encoding="utf-8").splitlines()
+            path.write_text("\n".join([lines[0], *[l for l in lines if l.startswith("Gyrocopter,")]]) + "\n", encoding="utf-8")
+            hero = HeroGenerator.load_csv(path)[0]
+        self.assertEqual(hero.rust_id, "Gyrocopter")
+        self.assertEqual(
+            (hero.ability_q, hero.ability_w, hero.ability_e, hero.ability_r),
+            ("Rocket Barrage", "Homing Missile", "Flak Cannon", "Call Down"),
+        )
+        self.assertEqual((hero.base_health, hero.base_mana, hero.attack_damage), (208.0, 75.0, 21.0))
+        self.assertEqual((hero.base_health_regen, hero.base_mana_regen, hero.armor), (-0.19, 0.0, -2.5))
+        self.assertEqual(hero.magic_resist, 6.321839)
+        self.assertEqual((hero.attack_range, hero.move_speed), (365.0, 315.0))
+        arm = HeroGenerator.hero_def_arm(hero)
+        self.assertIn("HeroId::Gyrocopter => HeroDef {", arm)
+        self.assertIn("primary: Some(Attribute::Agility),", arm)
+        self.assertIn("base_attack_speed: 115.0,", arm)
+        self.assertIn("Some(3000.0),", arm)
 
 
 if __name__ == "__main__":

@@ -1078,6 +1078,7 @@ mod tests {
                 first_hit: false,
                 end_radius: None,
                 origin_offset: None,
+                seek: None,
             })
     }
 
@@ -1638,7 +1639,7 @@ mod tests {
     fn perform_attack(max_targets: u32, exclude_trigger_unit: bool) -> AbilityEffect {
         AbilityEffect::PerformAttack {
             damage_ratio: RankValue::fixed(0.7),
-            max_targets,
+            max_targets: RankValue::fixed(max_targets as f32),
             exclude_trigger_unit,
         }
     }
@@ -1675,6 +1676,49 @@ mod tests {
                 damage_ratio: 0.7,
             }]
         );
+    }
+
+    #[test]
+    fn perform_attack_max_targets_scales_with_rank() {
+        let ability = AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::NoTarget, RankValue::ZERO, RankValue::ZERO)
+            .costs(RankValue::ZERO, RankValue::ZERO)
+            .timing(0.0, 0.0)
+            .on(
+                AbilityTrigger::OnCast,
+                EffectTarget::UnitsInRadius {
+                    center: definition::AreaCenter::Caster,
+                    radius: AreaRadius::Fixed(RankValue::fixed(600.0)),
+                    team: TargetTeam::Enemy,
+                },
+                AbilityEffect::PerformAttack {
+                    damage_ratio: RankValue::fixed(1.0),
+                    max_targets: RankValue::levels(&[1.0, 2.0, 3.0]),
+                    exclude_trigger_unit: false,
+                },
+            );
+        for (rank, expected) in [(1, 1), (2, 2), (3, 3)] {
+            let mut app = test_app();
+            app.world_mut()
+                .resource_mut::<AbilityDefinitions>()
+                .insert(ability.clone());
+            let caster = spawn_caster(&mut app, KIT);
+            set_rank(&mut app, caster, 3, rank);
+            for i in 0..4 {
+                spawn_unit(
+                    &mut app,
+                    Team::Dire,
+                    Vec3::new(100.0 + 50.0 * i as f32, 0.0, 0.0),
+                );
+            }
+            request(&mut app, caster, 3, CastTarget::None);
+            let mut count = 0;
+            for _ in 0..6 {
+                step(&mut app);
+                count += extra_attack_events(&app).len();
+            }
+            assert_eq!(count, expected, "rank {rank}");
+        }
     }
 
     #[test]
@@ -1834,7 +1878,7 @@ mod tests {
                 target: EffectTarget::TriggerUnit,
                 effect: AbilityEffect::PerformAttack {
                     damage_ratio: RankValue::fixed(ratio),
-                    max_targets: 0,
+                    max_targets: RankValue::ZERO,
                     exclude_trigger_unit: false,
                 },
             },
@@ -3212,6 +3256,7 @@ mod tests {
             first_hit: false,
             end_radius: None,
             origin_offset: None,
+            seek: None,
         }];
         let effects: &'static [AbilityEffectEntry] = Box::leak(entries.into_boxed_slice());
         ItemDefinition {
@@ -3309,6 +3354,7 @@ mod tests {
                 first_hit: false,
                 end_radius: None,
                 origin_offset: None,
+                seek: None,
             })
             .on(
                 AbilityTrigger::OnProjectileHit,
@@ -7510,6 +7556,7 @@ mod tests {
                 team: TargetTeam::Enemy,
                 then,
             },
+            AbilityEffect::PickRandom { count: 1, then },
         ];
         for gate in gates {
             assert!(!gate.acts_on_targets(), "{gate:?}");
@@ -7812,6 +7859,7 @@ mod tests {
                 first_hit: false,
                 end_radius: None,
                 origin_offset: origin_offset.map(RankValue::fixed),
+                seek: None,
             })
     }
 
@@ -8657,6 +8705,7 @@ mod tests {
                 first_hit: false,
                 end_radius: None,
                 origin_offset: None,
+                seek: None,
             })
             .on(
                 AbilityTrigger::OnProjectileHit,
@@ -9318,6 +9367,250 @@ mod tests {
         app.world_mut().write_message(AbilityTriggerEvent(shallow));
         step(&mut app);
         assert_eq!(zone_count(&mut app), 1);
+    }
+
+    // ---- random picks (AbilityEffect::PickRandom) ----
+
+    const PICK_HIT: AbilityTrigger = AbilityTrigger::Custom("on_pick_hit");
+
+    /// A zone on the caster whose every tick strikes `count` random enemies inside it.
+    fn pick_ability(count: u32, duration: f32) -> AbilityDefinition {
+        AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::NoTarget, RankValue::ZERO, RankValue::ZERO)
+            .costs(RankValue::ZERO, RankValue::ZERO)
+            .timing(0.0, 0.0)
+            .on(
+                AbilityTrigger::OnCast,
+                EffectTarget::Caster,
+                zone_effect(TargetTeam::Enemy, 0.0, duration, 1.0),
+            )
+            .on(
+                ZONE_TICK,
+                EffectTarget::AffectedUnits,
+                AbilityEffect::PickRandom {
+                    count,
+                    then: PICK_HIT,
+                },
+            )
+            .on(
+                PICK_HIT,
+                EffectTarget::TriggerUnit,
+                fixed_magical_damage(10.0),
+            )
+    }
+
+    /// Runs the pick ability and returns the targets struck in each frame that struck any.
+    fn run_picks(app: &mut App, count: u32, duration: f32) -> Vec<Vec<Entity>> {
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(pick_ability(count, duration));
+        let caster = spawn_caster(app, KIT);
+        request(app, caster, 3, CastTarget::None);
+        let mut frames = Vec::new();
+        for _ in 0..((duration + 1.0) / 0.05) as usize {
+            step(app);
+            let hit: Vec<Entity> = current_messages::<DamageEvent>(app)
+                .iter()
+                .map(|d| d.target)
+                .collect();
+            if !hit.is_empty() {
+                frames.push(hit);
+            }
+        }
+        frames
+    }
+
+    #[test]
+    fn pick_random_fires_once_per_tick_on_one_pool_member() {
+        let mut app = test_app();
+        let pool = [
+            spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0)),
+            spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, 150.0)),
+            spawn_unit(&mut app, Team::Dire, Vec3::new(-120.0, 0.0, 0.0)),
+        ];
+        let outside = spawn_unit(&mut app, Team::Dire, Vec3::new(900.0, 0.0, 0.0));
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(50.0, 0.0, 0.0));
+        let frames = run_picks(&mut app, 1, 3.0);
+        assert_eq!(frames.len(), 3, "one strike per tick, three ticks");
+        for hit in &frames {
+            assert_eq!(hit.len(), 1);
+            assert!(pool.contains(&hit[0]));
+            assert!(hit[0] != outside && hit[0] != ally);
+        }
+    }
+
+    #[test]
+    fn pick_random_with_empty_pool_fires_nothing() {
+        let mut app = test_app();
+        spawn_unit(&mut app, Team::Dire, Vec3::new(900.0, 0.0, 0.0));
+        spawn_unit(&mut app, Team::Radiant, Vec3::new(50.0, 0.0, 0.0));
+        assert!(run_picks(&mut app, 1, 3.0).is_empty());
+    }
+
+    #[test]
+    fn pick_random_count_caps_at_pool_and_is_distinct() {
+        let mut app = test_app();
+        for x in [100.0, 150.0, 200.0] {
+            spawn_unit(&mut app, Team::Dire, Vec3::new(x, 0.0, 0.0));
+        }
+        for frame in run_picks(&mut app, 2, 3.0) {
+            assert_eq!(frame.len(), 2);
+            assert_ne!(frame[0], frame[1], "picks are distinct");
+        }
+        let mut app = test_app();
+        for x in [100.0, 150.0] {
+            spawn_unit(&mut app, Team::Dire, Vec3::new(x, 0.0, 0.0));
+        }
+        for frame in run_picks(&mut app, 5, 3.0) {
+            assert_eq!(frame.len(), 2, "capped at the pool size");
+            assert_ne!(frame[0], frame[1]);
+        }
+    }
+
+    #[test]
+    fn pick_random_is_deterministic_for_a_seed() {
+        let run = |seed: u64| {
+            let mut app = test_app();
+            app.world_mut().resource_mut::<CombatRng>().seed(seed);
+            let pool: Vec<Entity> = (0..4)
+                .map(|i| {
+                    spawn_unit(
+                        &mut app,
+                        Team::Dire,
+                        Vec3::new(60.0 + 40.0 * i as f32, 0.0, 0.0),
+                    )
+                })
+                .collect();
+            run_picks(&mut app, 1, 20.0)
+                .iter()
+                .map(|hit| pool.iter().position(|e| *e == hit[0]).unwrap())
+                .collect::<Vec<_>>()
+        };
+        let (a, b) = (run(7), run(7));
+        assert_eq!(a.len(), 20);
+        assert_eq!(a, b, "same seed, same picks");
+        assert!(
+            a.iter().any(|i| *i != a[0]),
+            "the picks vary across ticks, not always the same unit"
+        );
+        assert_ne!(a, run(99), "another seed picks differently");
+    }
+
+    #[test]
+    fn pick_random_respects_depth_cap() {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(pick_ability(1, 1.0));
+        let caster = spawn_caster(&mut app, KIT);
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        let tick_at = |depth: u8| {
+            let mut ctx = TriggerContext::new(
+                ZONE_TICK,
+                EffectSource::Ability(AbilityId::Bulwark),
+                caster,
+                Team::Radiant,
+                1,
+                Vec3::ZERO,
+                Vec3::ZERO,
+            );
+            ctx.depth = depth;
+            ctx.affected_units = vec![enemy];
+            AbilityTriggerEvent(ctx)
+        };
+        app.world_mut()
+            .write_message(tick_at(effects::MAX_TRIGGER_DEPTH));
+        step(&mut app);
+        step(&mut app);
+        assert!(current_messages::<DamageEvent>(&app).is_empty());
+
+        // A zone tick sits at depth 1, one hop below the cap, and still strikes.
+        app.world_mut()
+            .write_message(tick_at(effects::MAX_TRIGGER_DEPTH - 1));
+        let mut struck = 0;
+        for _ in 0..3 {
+            step(&mut app);
+            struck += current_messages::<DamageEvent>(&app).len();
+        }
+        assert_eq!(struck, 1);
+    }
+
+    #[test]
+    fn item_and_ability_pick_random_alike() {
+        let rows = |trigger| -> Vec<AbilityEffectEntry> {
+            vec![
+                AbilityEffectEntry {
+                    trigger,
+                    target: EffectTarget::UnitsInRadius {
+                        center: definition::AreaCenter::Caster,
+                        radius: AreaRadius::Fixed(RankValue::fixed(500.0)),
+                        team: TargetTeam::Enemy,
+                    },
+                    effect: AbilityEffect::PickRandom {
+                        count: 1,
+                        then: PICK_HIT,
+                    },
+                },
+                AbilityEffectEntry {
+                    trigger: PICK_HIT,
+                    target: EffectTarget::TriggerUnit,
+                    effect: fixed_magical_damage(10.0),
+                },
+            ]
+        };
+
+        // Ability.
+        let mut app = test_app();
+        let mut ability = AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::NoTarget, RankValue::ZERO, RankValue::ZERO)
+            .costs(RankValue::ZERO, RankValue::ZERO)
+            .timing(0.0, 0.0);
+        for entry in rows(AbilityTrigger::OnCast) {
+            ability = ability.on(entry.trigger, entry.target, entry.effect);
+        }
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(ability);
+        let caster = spawn_caster(&mut app, KIT);
+        let pool = [
+            spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0)),
+            spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, 200.0)),
+        ];
+        request(&mut app, caster, 3, CastTarget::None);
+        let mut ability_hits = Vec::new();
+        for _ in 0..6 {
+            step(&mut app);
+            ability_hits.extend(current_messages::<DamageEvent>(&app));
+        }
+
+        // Item.
+        let mut app = test_app();
+        let effects: &'static [AbilityEffectEntry] =
+            Box::leak(rows(AbilityTrigger::OnUse).into_boxed_slice());
+        let _defs = install_test_item_definitions([item_with(
+            effects,
+            TargetType::NoTarget,
+            TargetTeam::Enemy,
+            0.0,
+        )]);
+        let caster = spawn_caster_with_inventory(&mut app, KIT);
+        give_item(&mut app, caster, ItemId::HeartwoodBand);
+        let item_pool = [
+            spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0)),
+            spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, 200.0)),
+        ];
+        request_item(&mut app, caster, 0, CastTarget::None);
+        let mut item_hits = Vec::new();
+        for _ in 0..6 {
+            step(&mut app);
+            item_hits.extend(current_messages::<DamageEvent>(&app));
+        }
+
+        assert_eq!(ability_hits.len(), 1);
+        assert_eq!(item_hits.len(), 1);
+        assert!(pool.contains(&ability_hits[0].target));
+        assert!(item_pool.contains(&item_hits[0].target));
+        assert_eq!(ability_hits[0].amount, item_hits[0].amount);
     }
 
     fn move_unit(app: &mut App, unit: Entity, to: Vec3) {
@@ -12420,5 +12713,402 @@ mod tests {
                 .convert_radius(),
             0.0
         );
+    }
+
+    // ---- Gyrocopter ----
+
+    const GYRO: [AbilityId; 4] = [
+        AbilityId::RocketBarrage,
+        AbilityId::HomingMissile,
+        AbilityId::FlakCannon,
+        AbilityId::CallDown,
+    ];
+
+    /// The Ursa test app plus the real projectile pipeline, which Homing Missile needs.
+    fn gyro_app() -> App {
+        let mut app = qop_app();
+        app.add_systems(
+            Update,
+            (
+                spawn_requested_projectiles,
+                crate::combat::fly_projectiles,
+                crate::combat::apply_projectile_hits,
+                crate::combat::tick_lifetimes,
+            )
+                .chain()
+                .after(execute_ability_casts)
+                .before(projectile_hit_triggers),
+        );
+        app
+    }
+
+    /// A unit the projectile pipeline can see (it reads global transforms).
+    fn gyro_unit(app: &mut App, team: Team, pos: Vec3) -> Entity {
+        let unit = spawn_unit(app, team, pos);
+        with_world_transform(app, unit);
+        unit
+    }
+
+    fn hits_on(app: &App, unit: Entity) -> Vec<DamageEvent> {
+        current_messages::<DamageEvent>(app)
+            .into_iter()
+            .filter(|d| d.target == unit)
+            .collect()
+    }
+
+    #[test]
+    fn rocket_barrage_fires_thirty_rockets_over_three_seconds_on_random_enemies() {
+        let mut app = qop_app();
+        app.world_mut().resource_mut::<CombatRng>().seed(7);
+        let caster = spawn_caster(&mut app, GYRO);
+        let a = spawn_unit(&mut app, Team::Dire, Vec3::new(200.0, 0.0, 0.0));
+        let b = spawn_unit(&mut app, Team::Dire, Vec3::new(-250.0, 0.0, 100.0));
+        let outside = spawn_unit(&mut app, Team::Dire, Vec3::new(500.0, 0.0, 0.0));
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(100.0, 0.0, 0.0));
+        request(&mut app, caster, 0, CastTarget::None);
+        let (mut on_a, mut on_b) = (0, 0);
+        for _ in 0..(4.0_f32 / 0.05) as usize {
+            step(&mut app);
+            for hit in current_messages::<DamageEvent>(&app) {
+                assert_eq!(hit.amount, 8.0, "rank 1 rocket");
+                assert_eq!(hit.damage_type, DamageType::Magical);
+                assert!(hit.is_spell);
+                assert_eq!(hit.source, Some(caster));
+                if hit.target == a {
+                    on_a += 1;
+                } else if hit.target == b {
+                    on_b += 1;
+                } else {
+                    panic!("a rocket struck {:?}", hit.target);
+                }
+            }
+        }
+        assert_eq!(on_a + on_b, 30, "ten rockets a second for three seconds");
+        assert!(on_a > 0 && on_b > 0, "both were hit: {on_a} / {on_b}");
+        assert_eq!(health(&app, outside), 1000.0, "500 away is outside the 400");
+        assert_eq!(health(&app, ally), 1000.0);
+        assert_eq!(health(&app, a), 1000.0 - 8.0 * on_a as f32);
+    }
+
+    #[test]
+    fn rocket_barrage_follows_gyrocopter() {
+        let mut app = qop_app();
+        let caster = spawn_caster(&mut app, GYRO);
+        let left_behind = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        let far = spawn_unit(&mut app, Team::Dire, Vec3::new(3100.0, 0.0, 0.0));
+        request(&mut app, caster, 0, CastTarget::None);
+        run_seconds(&mut app, 0.5);
+        assert!(health(&app, left_behind) < 1000.0, "struck while near");
+        assert_eq!(health(&app, far), 1000.0);
+
+        app.world_mut()
+            .get_mut::<Transform>(caster)
+            .unwrap()
+            .translation = Vec3::new(3000.0, 0.0, 0.0);
+        let before = health(&app, left_behind);
+        let mut on_far = 0;
+        for _ in 0..(2.4_f32 / 0.05) as usize {
+            step(&mut app);
+            on_far += hits_on(&app, far).len();
+        }
+        assert!(on_far > 0, "the barrage moved with the caster");
+        assert_eq!(health(&app, left_behind), before, "and left the old spot");
+    }
+
+    #[test]
+    fn rocket_barrage_with_no_enemies_does_nothing() {
+        let mut app = qop_app();
+        let caster = spawn_caster(&mut app, GYRO);
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(100.0, 0.0, 0.0));
+        let far = spawn_unit(&mut app, Team::Dire, Vec3::new(900.0, 0.0, 0.0));
+        request(&mut app, caster, 0, CastTarget::None);
+        let mut damage = 0;
+        for _ in 0..(4.0_f32 / 0.05) as usize {
+            step(&mut app);
+            damage += current_messages::<DamageEvent>(&app).len();
+        }
+        assert_eq!(damage, 0);
+        assert_eq!(health(&app, ally), 1000.0);
+        assert_eq!(health(&app, far), 1000.0);
+        assert_eq!(zone_count(&mut app), 0, "the zone ran out");
+    }
+
+    /// Frame index (0.05 s each) at which `unit` has taken `expected` damage events in a row.
+    fn missile_position(app: &mut App) -> Option<Vec3> {
+        app.world_mut()
+            .query::<(&Transform, &crate::components::Projectile)>()
+            .iter(app.world())
+            .next()
+            .map(|(tf, _)| tf.translation)
+    }
+
+    #[test]
+    fn homing_missile_waits_then_hits_damages_and_stuns() {
+        let mut app = gyro_app();
+        let caster = spawn_caster(&mut app, GYRO);
+        let target = gyro_unit(&mut app, Team::Dire, Vec3::new(600.0, 0.0, 0.0));
+        request(&mut app, caster, 1, CastTarget::Unit(target));
+
+        let mut first_seen = None;
+        let mut launch = Vec3::ZERO;
+        let mut moved_at = None;
+        let mut damage = Vec::new();
+        let mut stunned = false;
+        for frame in 0..80 {
+            step(&mut app);
+            damage.extend(hits_on(&app, target));
+            stunned |= has_status(&app, target, "homing_missile_stun");
+            if let Some(position) = missile_position(&mut app) {
+                if first_seen.is_none() {
+                    first_seen = Some(frame);
+                    launch = position;
+                } else if moved_at.is_none() && position != launch {
+                    moved_at = Some(frame);
+                }
+            }
+        }
+        let (seen, moved) = (first_seen.expect("launched"), moved_at.expect("flew"));
+        let waited = (moved - seen) as f32 * 0.05;
+        assert!(
+            (0.45..=0.65).contains(&waited),
+            "no movement before 0.5 s, waited {waited}"
+        );
+        assert_eq!(damage.len(), 1, "one strike");
+        assert_eq!(damage[0].amount, 90.0, "rank 1");
+        assert_eq!(damage[0].damage_type, DamageType::Magical);
+        assert!(stunned, "stunned by homing_missile_stun");
+        assert_eq!(missile_position(&mut app), None, "the missile is spent");
+    }
+
+    #[test]
+    fn homing_missile_retargets_when_target_dies() {
+        let mut app = gyro_app();
+        let caster = spawn_caster(&mut app, GYRO);
+        let target = gyro_unit(&mut app, Team::Dire, Vec3::new(900.0, 0.0, 0.0));
+        let heir = gyro_unit(&mut app, Team::Dire, Vec3::new(300.0, 0.0, 300.0));
+        let too_far = gyro_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, 1500.0));
+        request(&mut app, caster, 1, CastTarget::Unit(target));
+        run_seconds(&mut app, 0.2);
+        set_health(&mut app, target, 0.0);
+        let mut stunned = false;
+        for _ in 0..80 {
+            step(&mut app);
+            stunned |= has_status(&app, heir, "homing_missile_stun");
+        }
+        assert_eq!(health(&app, heir), 910.0, "the new target takes the damage");
+        assert!(stunned, "and the stun");
+        assert!(!has_status(&app, target, "homing_missile_stun"));
+        assert_eq!(health(&app, too_far), 1000.0);
+        assert_eq!(missile_position(&mut app), None);
+    }
+
+    #[test]
+    fn homing_missile_retarget_obeys_spell_landing_rules() {
+        let mut app = gyro_app();
+        let caster = spawn_caster(&mut app, GYRO);
+        let target = gyro_unit(&mut app, Team::Dire, Vec3::new(900.0, 0.0, 0.0));
+        let heir = gyro_unit(&mut app, Team::Dire, Vec3::new(300.0, 0.0, 300.0));
+        give_status(
+            &mut app,
+            heir,
+            crate::status::StatusEffect::spell_block(30.0),
+        );
+        request(&mut app, caster, 1, CastTarget::Unit(target));
+        run_seconds(&mut app, 0.2);
+        set_health(&mut app, target, 0.0);
+        for _ in 0..80 {
+            step(&mut app);
+        }
+        assert_eq!(health(&app, heir), 1000.0, "the new target blocked it");
+        assert!(status_of(&app, heir, "spell_block").is_none(), "spent");
+        assert!(!has_status(&app, heir, "homing_missile_stun"));
+    }
+
+    /// Casts Flak Cannon (the rank given) and lets the status land.
+    fn cast_flak(app: &mut App, caster: Entity, rank: u32) {
+        set_rank(app, caster, 2, rank);
+        request(app, caster, 2, CastTarget::None);
+        run_seconds(app, 0.3);
+    }
+
+    fn flak_charges(app: &App, caster: Entity) -> Option<u32> {
+        status_of(app, caster, "flak_cannon_attack_charges").map(|s| s.attack_charges)
+    }
+
+    fn release_attack(app: &mut App, attacker: Entity, target: Entity, extra: bool) {
+        app.world_mut()
+            .write_message(crate::basic_attack::BasicAttackReleaseEvent {
+                attacker,
+                target,
+                damage: 10.0,
+                extra,
+            });
+    }
+
+    fn extra_targets(app: &App) -> Vec<Entity> {
+        extra_attack_events(app)
+            .iter()
+            .map(|event| event.target)
+            .collect()
+    }
+
+    #[test]
+    fn flak_cannon_splits_each_attack_to_n_nearest_enemies_around_gyro() {
+        let mut app = qop_app();
+        let caster = spawn_caster(&mut app, GYRO);
+        let primary = spawn_unit(&mut app, Team::Dire, Vec3::new(-300.0, 0.0, 0.0));
+        let near = spawn_unit(&mut app, Team::Dire, Vec3::new(200.0, 0.0, 0.0));
+        let middle = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, 600.0));
+        // 1200 from Gyrocopter but 1500 from the primary: inside the search radius.
+        let edge = spawn_unit(&mut app, Team::Dire, Vec3::new(1200.0, 0.0, 0.0));
+        let _outside = spawn_unit(&mut app, Team::Dire, Vec3::new(1300.0, 0.0, 0.0));
+        let _ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(50.0, 0.0, 0.0));
+        cast_flak(&mut app, caster, 1);
+        assert_eq!(flak_charges(&app, caster), Some(4));
+
+        release_attack(&mut app, caster, primary, false);
+        step(&mut app);
+        let events = extra_attack_events(&app);
+        assert_eq!(
+            events.iter().map(|e| e.target).collect::<Vec<_>>(),
+            vec![near, middle, edge],
+            "nearest first, never the primary"
+        );
+        assert!(
+            events
+                .iter()
+                .all(|e| e.attacker == caster && e.damage_ratio == 1.0)
+        );
+        assert_eq!(flak_charges(&app, caster), Some(3), "one charge spent");
+    }
+
+    #[test]
+    fn flak_cannon_caps_extra_targets_by_rank() {
+        for (rank, cap) in [(1, 4), (5, 8), (7, 9)] {
+            let mut app = qop_app();
+            let caster = spawn_caster(&mut app, GYRO);
+            let primary = spawn_unit(&mut app, Team::Dire, Vec3::new(-100.0, 0.0, 0.0));
+            for i in 0..12 {
+                spawn_unit(
+                    &mut app,
+                    Team::Dire,
+                    Vec3::new(100.0 + 50.0 * i as f32, 0.0, 0.0),
+                );
+            }
+            cast_flak(&mut app, caster, rank);
+            release_attack(&mut app, caster, primary, false);
+            step(&mut app);
+            assert_eq!(extra_targets(&app).len(), cap, "rank {rank}");
+        }
+    }
+
+    #[test]
+    fn flak_cannon_ends_after_n_attacks() {
+        let mut app = qop_app();
+        let caster = spawn_caster(&mut app, GYRO);
+        let primary = spawn_unit(&mut app, Team::Dire, Vec3::new(-100.0, 0.0, 0.0));
+        let other = spawn_unit(&mut app, Team::Dire, Vec3::new(300.0, 0.0, 0.0));
+        cast_flak(&mut app, caster, 1);
+        for attack in 1..=4 {
+            release_attack(&mut app, caster, primary, false);
+            step(&mut app);
+            assert_eq!(extra_targets(&app), vec![other], "attack {attack} splits");
+        }
+        assert_eq!(flak_charges(&app, caster), None, "the fourth ended it");
+        release_attack(&mut app, caster, primary, false);
+        step(&mut app);
+        assert!(extra_targets(&app).is_empty(), "the fifth does not split");
+    }
+
+    #[test]
+    fn flak_cannon_ends_after_duration_with_charges_left() {
+        let mut app = qop_app();
+        let caster = spawn_caster(&mut app, GYRO);
+        let primary = spawn_unit(&mut app, Team::Dire, Vec3::new(-100.0, 0.0, 0.0));
+        spawn_unit(&mut app, Team::Dire, Vec3::new(300.0, 0.0, 0.0));
+        cast_flak(&mut app, caster, 1);
+        release_attack(&mut app, caster, primary, false);
+        step(&mut app);
+        assert_eq!(flak_charges(&app, caster), Some(3));
+        run_seconds(&mut app, 9.0);
+        assert_eq!(flak_charges(&app, caster), Some(3), "10 s have not passed");
+        run_seconds(&mut app, 1.5);
+        assert_eq!(
+            flak_charges(&app, caster),
+            None,
+            "expired with charges left"
+        );
+        release_attack(&mut app, caster, primary, false);
+        step(&mut app);
+        assert!(extra_targets(&app).is_empty());
+    }
+
+    #[test]
+    fn flak_cannon_extra_attacks_do_not_split_again_or_spend_charges() {
+        let mut app = qop_app();
+        let caster = spawn_caster(&mut app, GYRO);
+        let primary = spawn_unit(&mut app, Team::Dire, Vec3::new(-100.0, 0.0, 0.0));
+        spawn_unit(&mut app, Team::Dire, Vec3::new(300.0, 0.0, 0.0));
+        cast_flak(&mut app, caster, 1);
+        release_attack(&mut app, caster, primary, true);
+        step(&mut app);
+        assert!(extra_targets(&app).is_empty(), "no chaining");
+        assert_eq!(flak_charges(&app, caster), Some(4), "no charge spent");
+    }
+
+    #[test]
+    fn call_down_hits_and_slows_after_two_seconds_only() {
+        let mut app = qop_app();
+        let caster = spawn_caster(&mut app, GYRO);
+        let aim = Vec3::new(800.0, 0.0, 0.0);
+        let inside = spawn_unit(&mut app, Team::Dire, Vec3::new(1000.0, 0.0, 0.0));
+        let outside = spawn_unit(&mut app, Team::Dire, Vec3::new(1500.0, 0.0, 0.0));
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(850.0, 0.0, 0.0));
+        request(&mut app, caster, 3, CastTarget::Point(aim));
+
+        let mut struck_at = None;
+        let mut hits = 0;
+        for frame in 1..=(6.0_f32 / 0.05) as usize {
+            step(&mut app);
+            let landed = hits_on(&app, inside);
+            hits += landed.len();
+            if let Some(hit) = landed.first() {
+                assert_eq!(hit.amount, 200.0, "rank 1, before mitigation");
+                assert_eq!(hit.damage_type, DamageType::Magical);
+                struck_at.get_or_insert(frame as f32 * 0.05);
+            }
+            if struck_at.is_none() {
+                assert_eq!(health(&app, inside), 1000.0, "nothing before the impact");
+            }
+        }
+        // 0.3 s cast point, then the 2 s delay.
+        let at = struck_at.expect("the impact landed");
+        assert!((2.25..=2.5).contains(&at), "impact at {at} s");
+        assert_eq!(hits, 1, "a single impact");
+        assert_eq!(health(&app, inside), 800.0);
+        assert_eq!(health(&app, outside), 1000.0);
+        assert_eq!(health(&app, ally), 1000.0);
+        let slow = status_of(&app, inside, "call_down_slow").expect("slowed");
+        assert!((slow.move_slow_fraction - 0.6).abs() < 1e-6);
+        assert!(!has_status(&app, outside, "call_down_slow"));
+    }
+
+    #[test]
+    fn call_down_slow_lasts_four_seconds() {
+        let mut app = qop_app();
+        let caster = spawn_caster(&mut app, GYRO);
+        let inside = spawn_unit(&mut app, Team::Dire, Vec3::new(900.0, 0.0, 0.0));
+        request(
+            &mut app,
+            caster,
+            3,
+            CastTarget::Point(Vec3::new(800.0, 0.0, 0.0)),
+        );
+        run_seconds(&mut app, 2.6);
+        assert!(has_status(&app, inside, "call_down_slow"));
+        run_seconds(&mut app, 3.0);
+        assert!(has_status(&app, inside, "call_down_slow"), "still 4 s long");
+        run_seconds(&mut app, 1.0);
+        assert!(!has_status(&app, inside, "call_down_slow"), "worn off");
     }
 }
