@@ -2526,6 +2526,51 @@ mod tests {
             assert_eq!(taken(&app, partner), 0.0);
         }
 
+        /// A damage source with outgoing amps, so the copy's amp handling is observable.
+        fn amped_source(app: &mut App, physical: f32, spell: f32) -> Entity {
+            let mut stats = CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 0.0);
+            stats.outgoing_physical_amp = physical;
+            stats.outgoing_spell_amp = spell;
+            app.world_mut().spawn(stats).id()
+        }
+
+        #[test]
+        fn damage_share_applies_source_physical_amp_exactly_once_to_the_copy() {
+            let mut app = app();
+            let (target, partner) = pair(&mut app, 0.0, 0.0, 1.0);
+            // Zero out armor on both so only the amp shows.
+            for e in [target, partner] {
+                app.world_mut().get_mut::<CombatStats>(e).unwrap().armor = 0.0;
+            }
+            let source = amped_source(&mut app, 0.5, 0.0);
+            let mut event = DamageEvent::new(target, 100.0, DamageType::Physical);
+            event.source = Some(source);
+            app.world_mut().write_message(event);
+            app.update();
+            app.update();
+            app.update();
+            assert!((taken(&app, target) - 150.0).abs() < 1e-3);
+            // 100 x 1.5 once, not 100 x 1.5 x 1.5.
+            assert!((taken(&app, partner) - 150.0).abs() < 1e-3);
+        }
+
+        #[test]
+        fn damage_share_applies_source_spell_amp_exactly_once_to_the_copy() {
+            let mut app = app();
+            let (target, partner) = pair(&mut app, 0.0, 0.0, 1.0);
+            let source = amped_source(&mut app, 0.0, 0.5);
+            let mut event = DamageEvent::new(target, 100.0, DamageType::Magical);
+            event.source = Some(source);
+            event.is_spell = true;
+            app.world_mut().write_message(event);
+            app.update();
+            app.update();
+            app.update();
+            assert!((taken(&app, target) - 150.0).abs() < 1e-3);
+            // The copy is not a spell, so the spell amp comes only from the original.
+            assert!((taken(&app, partner) - 150.0).abs() < 1e-3);
+        }
+
         #[test]
         fn shield_soaked_damage_still_emits_the_copy() {
             let mut app = app();
