@@ -63,6 +63,8 @@ pub enum HeroId {
     WinterWyvern,
     /// Generated hero — abilities are stubs until implemented.
     Shadowheart,
+    /// Generated hero — abilities are stubs until implemented.
+    Gyrocopter,
     // </hero_generator:hero_enum>
 }
 
@@ -82,6 +84,7 @@ impl HeroId {
             HeroId::Slark,
             HeroId::WinterWyvern,
             HeroId::Shadowheart,
+            HeroId::Gyrocopter,
             // </hero_generator:hero_all>
         ]
     }
@@ -126,6 +129,7 @@ impl HeroId {
             HeroId::Slark => "Slark",
             HeroId::WinterWyvern => "Winter Wyvern",
             HeroId::Shadowheart => "Shadowheart",
+            HeroId::Gyrocopter => "Gyrocopter",
             // </hero_generator:hero_name>
         }
     }
@@ -151,6 +155,9 @@ impl HeroId {
             }
             HeroId::Shadowheart => {
                 "Str support — Purification, Warding Bond, Spirit Guardians, Sharran Conversion"
+            }
+            HeroId::Gyrocopter => {
+                "Agi gunship — Rocket Barrage, Homing Missile, Flak Cannon, Call Down"
             } // </hero_generator:hero_blurb>
         }
     }
@@ -171,6 +178,7 @@ impl HeroId {
             HeroId::Slark => "AGI",
             HeroId::WinterWyvern => "INT",
             HeroId::Shadowheart => "STR",
+            HeroId::Gyrocopter => "AGI",
             // </hero_generator:hero_primary>
         }
     }
@@ -561,6 +569,44 @@ impl HeroId {
                     AbilityId::WardingBond,
                     AbilityId::SpiritGuardians,
                     AbilityId::SharranConversion,
+                ],
+                dimensions: UnitDimensions::HERO,
+            },
+            HeroId::Gyrocopter => HeroDef {
+                id: self,
+                attributes: HeroAttributes {
+                    strength: 22.0,
+                    agility: 25.0,
+                    intelligence: 21.0,
+                    str_per_level: 2.5,
+                    agi_per_level: 3.4,
+                    int_per_level: 2.4,
+                    primary: Some(Attribute::Agility),
+                },
+                base_health: 208.0,
+                base_health_regen: -0.19,
+                base_mana: 75.0,
+                base_mana_regen: 0.0,
+                combat: CombatStats {
+                    base_attack_speed: 115.0,
+                    ..hero_combat(
+                        21.0,
+                        365.0,
+                        1.7,
+                        0.2,
+                        0.1,
+                        0.6,
+                        -2.5,
+                        6.321839,
+                        315.0,
+                        Some(3000.0),
+                    )
+                },
+                abilities: [
+                    AbilityId::RocketBarrage,
+                    AbilityId::HomingMissile,
+                    AbilityId::FlakCannon,
+                    AbilityId::CallDown,
                 ],
                 dimensions: UnitDimensions::HERO,
             },
@@ -990,6 +1036,7 @@ mod tests {
             (HeroId::Slark, 61.0),
             (HeroId::WinterWyvern, 46.0),
             (HeroId::Shadowheart, 58.0),
+            (HeroId::Gyrocopter, 46.0),
         ];
         for (hero, total) in expected {
             let def = hero.def();
@@ -1550,5 +1597,73 @@ mod tests {
             stats.attack_speed
         );
         assert!((stats.attack_speed - 0.829412).abs() < 1e-5);
+    }
+
+    #[test]
+    fn gyrocopter_matches_spec() {
+        use crate::combat::apply_damage;
+        use crate::components::DamageType;
+
+        assert_eq!(HeroId::from_cli("gyrocopter"), Some(HeroId::Gyrocopter));
+        assert_eq!(HeroId::Gyrocopter.name(), "Gyrocopter");
+        assert_eq!(HeroId::Gyrocopter.primary_label(), "AGI");
+        let def = HeroId::Gyrocopter.def();
+        assert_eq!(
+            def.abilities,
+            [
+                AbilityId::RocketBarrage,
+                AbilityId::HomingMissile,
+                AbilityId::FlakCannon,
+                AbilityId::CallDown,
+            ]
+        );
+
+        let (health, mana, stats, attrs) = def.vitals();
+        assert!((health.max - 604.0).abs() < 1e-3, "health {}", health.max);
+        assert!((health.regen_per_sec - 2.45).abs() < 1e-4);
+        assert!((mana.max - 327.0).abs() < 1e-3, "mana {}", mana.max);
+        assert!((mana.regen_per_sec - 1.05).abs() < 1e-4);
+        assert!((stats.armor - 1.0).abs() < 1e-3, "armor {}", stats.armor);
+        let taken = apply_damage(100.0, DamageType::Magical, &stats);
+        assert!(
+            (taken - 72.5).abs() < 0.01,
+            "27.5% magic resist: took {taken}"
+        );
+        assert_eq!(
+            (attrs.strength, attrs.agility, attrs.intelligence),
+            (22.0, 25.0, 21.0)
+        );
+        assert_eq!(
+            (
+                attrs.str_per_level,
+                attrs.agi_per_level,
+                attrs.int_per_level
+            ),
+            (2.5, 3.4, 2.4)
+        );
+
+        // 46 at level 1: the stored 21 plus 25 Agility (the primary).
+        assert_eq!(stats.attack_damage, 46.0);
+        assert_eq!(def.combat.attack_damage, 21.0);
+        assert_eq!(stats.attack_range, 365.0);
+        assert!(!stats.is_melee());
+        let projectile_speed = crate::basic_attack::projectile_speed_for(stats.base_attack_range())
+            + stats.attack_projectile_speed_bonus;
+        assert!(
+            (projectile_speed - 3000.0).abs() < 1e-3,
+            "speed {projectile_speed}"
+        );
+        assert_eq!(stats.base_attack_time, 1.7);
+        assert_eq!(stats.attack_point, 0.2);
+        assert_eq!(stats.attack_backswing, 0.1);
+        assert_eq!(stats.turn_rate, 0.6);
+        assert_eq!(stats.move_speed, 315.0);
+        assert_eq!(stats.base_attack_speed, 115.0);
+        assert!(
+            (stats.attack_speed - 140.0 / 100.0 / 1.7).abs() < 1e-4,
+            "APS {}",
+            stats.attack_speed
+        );
+        assert!((stats.attack_speed - 0.823529).abs() < 1e-5);
     }
 }

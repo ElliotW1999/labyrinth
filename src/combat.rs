@@ -613,7 +613,7 @@ fn tick_attack_cooldowns(time: Res<Time>, mut query: Query<&mut AttackCooldown>)
 }
 
 #[allow(clippy::type_complexity)]
-fn fly_projectiles(
+pub(crate) fn fly_projectiles(
     time: Res<Time>,
     mut projectiles: Query<(
         Entity,
@@ -994,7 +994,7 @@ pub fn apply_projectile_hits(
     }
 }
 
-fn tick_lifetimes(
+pub(crate) fn tick_lifetimes(
     time: Res<Time>,
     mut query: Query<(Entity, &mut Lifetime, Option<&mut Projectile>)>,
     mut commands: Commands,

@@ -812,6 +812,11 @@ pub enum AbilityId {
     WardingBond,
     SpiritGuardians,
     SharranConversion,
+    // Gyrocopter (generated stubs)
+    RocketBarrage,
+    HomingMissile,
+    FlakCannon,
+    CallDown,
     // </hero_generator:ability_enum>
 }
 
@@ -873,6 +878,10 @@ impl AbilityId {
             AbilityId::WardingBond => "Warding Bond",
             AbilityId::SpiritGuardians => "Spirit Guardians",
             AbilityId::SharranConversion => "Sharran Conversion",
+            AbilityId::RocketBarrage => "Rocket Barrage",
+            AbilityId::HomingMissile => "Homing Missile",
+            AbilityId::FlakCannon => "Flak Cannon",
+            AbilityId::CallDown => "Call Down",
             // </hero_generator:ability_display_name>
         }
     }
@@ -893,7 +902,8 @@ impl AbilityId {
                 | AbilityId::Enrage
                 | AbilityId::ShadowDance
                 | AbilityId::WintersCurse
-                | AbilityId::SharranConversion // </hero_generator:ability_ultimates>
+                | AbilityId::SharranConversion
+                | AbilityId::CallDown // </hero_generator:ability_ultimates>
         )
     }
 
@@ -934,6 +944,10 @@ impl AbilityId {
             AbilityId::WardingBond => 7,
             AbilityId::SpiritGuardians => 7,
             AbilityId::SharranConversion => 4,
+            AbilityId::RocketBarrage => 7,
+            AbilityId::HomingMissile => 7,
+            AbilityId::FlakCannon => 7,
+            AbilityId::CallDown => 4,
             // </ability_generator:max_rank>
             _ if self.is_ultimate() => 4,
             _ => 7,
