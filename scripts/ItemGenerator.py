@@ -18,6 +18,11 @@ the alternatives of one slot: `belt_of_strength|band_of_elvenskin;boots` needs a
 a boots; the first alternative the hero owns, in CSV order, is consumed),
 `color_r` / `color_g` / `color_b` (0..1).
 
+Optional `attribute_toggle` (> 0): the item is an active that switches a per-instance selected
+attribute (Strength -> Agility -> Intelligence) and grants that many points of the selected one
+(Power Treads). It has no cooldown, no activation columns and no on_use / channel / projectile
+effects, and cannot be consumable; the toggle is handled by the item runtime, not an effect row.
+
 Optional activation columns for items with `on_use` effects (blank = instant no-target
 use, as before): `charge_restore_time`, `target_type`, `target_team`, `cast_range`,
 `cast_time`, `channel_time`, `mana_cost`, `projectile_type`, `projectile_speed`
@@ -205,6 +210,7 @@ class Item:
     max_charges: int | None
     cooldown: float
     activation: Activation
+    attribute_toggle: float | None
     components: list[list[str]]
     color: tuple[float, float, float]
     description: str
@@ -271,7 +277,21 @@ def parse_item(row: Row, effects: list[EffectRow], report: Report) -> Item | Non
         report.error(row.file, row.line, fld, row.get(fld), message)
 
     projectile = row.get("projectile_type").lower() or "none"
-    has_use = projectile != "none" or any(e.trigger in ("on_use", "on_channel_end", "on_channel_interrupted") for e in effects)
+    has_effect_use = projectile != "none" or any(e.trigger in ("on_use", "on_channel_end", "on_channel_interrupted") for e in effects)
+    toggle = parse_scalar(row, "attribute_toggle", report)
+    if toggle is not None and toggle <= 0:
+        err("attribute_toggle", "must be above 0")
+    if toggle is not None:
+        if has_effect_use:
+            err("attribute_toggle", "an attribute toggle cannot also have on_use / channel / projectile effects")
+        if consumable:
+            err("attribute_toggle", "an attribute toggle cannot be consumable")
+        for column in ACTIVATION_COLUMNS:
+            if row.get(column):
+                err(column, "not allowed with attribute_toggle: the toggle switches instantly")
+        if cooldown:
+            err("cooldown", "attribute toggles have no cooldown")
+    has_use = has_effect_use or toggle is not None
     if stackable and max_stack is None:
         err("max_stack", "required for stackable items")
     if stackable and max_stack is not None and max_stack < 2:
@@ -286,7 +306,7 @@ def parse_item(row: Row, effects: list[EffectRow], report: Report) -> Item | Non
         report.warn(row.file, row.line, "item_type", row.get("item_type"), "item_type consumable but consumable is false")
     if sell_value is not None and cost is not None and sell_value > cost:
         report.warn(row.file, row.line, "sell_value", row.get("sell_value"), "sell value exceeds cost")
-    if has_use and cooldown is None:
+    if has_use and cooldown is None and toggle is None:
         report.warn(row.file, row.line, "cooldown", "", "on_use item without a cooldown column value; using 0s")
     if cooldown is not None and not has_use:
         report.warn(row.file, row.line, "cooldown", row.get("cooldown"), "ignored: the item has no on_use effects")
@@ -294,7 +314,7 @@ def parse_item(row: Row, effects: list[EffectRow], report: Report) -> Item | Non
         err("color_r", "colors are 0..1 floats")
     if any(c is None for c in color) and any(c is not None for c in color):
         err("color_r", "set all of color_r, color_g, color_b or none")
-    activation = parse_activation(row, has_use, report)
+    activation = parse_activation(row, has_effect_use, report)
     short = row.get("short_label") or short_label_from_name(name)
     if len(short) > 4:
         err("short_label", "at most 4 characters")
@@ -320,6 +340,7 @@ def parse_item(row: Row, effects: list[EffectRow], report: Report) -> Item | Non
         max_charges=int(max_charges) if max_charges else None,
         cooldown=cooldown or 0.0,
         activation=activation,
+        attribute_toggle=toggle,
         components=components,
         color=tuple(color) if all(c is not None for c in color) else color_from_name(name),  # type: ignore[arg-type]
         description=row.get("description") or describe(effects),
@@ -409,6 +430,7 @@ def item_static(item: Item) -> str:
         f"    max_charges: {f'Some({item.max_charges})' if item.max_charges else 'None'},",
         f"    cooldown: {f32(item.cooldown)},",
         f"    activation: {activation_rust(item.activation)},",
+        f"    attribute_toggle: {f'Some({f32(item.attribute_toggle)})' if item.attribute_toggle is not None else 'None'},",
         f"    components: &[{components}],",
         f"    color: [{f32(r)}, {f32(g)}, {f32(b)}],",
         f"    description: {rust_str(item.description)},",

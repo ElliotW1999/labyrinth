@@ -1,4 +1,4 @@
-id,name,item_type,cost,sell_value,tier,rarity,stackable,max_stack,consumable,max_charges,description,short_label,cooldown,components,color_r,color_g,color_b,charge_restore_time,target_type,target_team,cast_range,cast_time,channel_time,mana_cost,projectile_type,projectile_speed
+id,name,item_type,cost,sell_value,tier,rarity,stackable,max_stack,consumable,max_charges,description,short_label,cooldown,components,color_r,color_g,color_b,charge_restore_time,target_type,target_team,cast_range,cast_time,channel_time,mana_cost,projectile_type,projectile_speed,attribute_toggle
 iron_bracer,Iron Bracer,equipment,300,150,1,common,FALSE,,FALSE,,"+100 HP, +4 Armor",IB,,,0.55,0.55,0.6,,,,,,,,,
 swift_boots,Swift Boots,equipment,450,225,1,common,FALSE,,FALSE,,+65 Move Speed,SB,,,0.35,0.7,0.45,,,,,,,,,
 mana_crystal,Mana Crystal,accessories,350,175,1,common,FALSE,,FALSE,,"+80 Mana, +4 Mana Regen",MC,,,0.3,0.45,0.95,,,,,,,,,
@@ -64,3 +64,4 @@ morbid_mask,Morbid Mask,miscellaneous,900,450,,,FALSE,,FALSE,,18% Lifesteal,MM,,
 ghost_scepter,Ghost Scepter,miscellaneous,1500,750,,,FALSE,,FALSE,,"+5 All Attributes. Active: Ethereal for 4s (immune to physical damage and attacks, disarmed, takes 30% more magical damage)",GS,22,,,,,,,,,,,,,,
 soul_ring,Soul Ring,accessories,700,350,,,FALSE,,FALSE,,"+6 Strength, +2 Armor. Active: pay 150 HP for 150 temporary mana for 10s (raises max mana by any excess)",SR,25,gauntlets_of_strength;gauntlets_of_strength;ring_of_protection;recipe_soul_ring,,,,,,,,,,,,
 recipe_soul_ring,Recipe: Soul Ring,recipe,245,122,,,FALSE,,FALSE,,Combines with components into Soul Ring,R-SR,,,,,,,,,,,,,,
+power_treads,Power Treads,accessories,1400,700,,,FALSE,,FALSE,,"+55 Move Speed, +25 Attack Speed, +10 selected attribute. Active: switch Strength / Agility / Intelligence",PT,0,boots_of_speed;gloves_of_haste;belt_of_strength|band_of_elvenskin|robe_of_the_magi,,,,,,,,,,,,,10

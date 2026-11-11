@@ -1640,6 +1640,59 @@ class ItemComponentSlotTests(unittest.TestCase):
         self.assertFalse([w for w in report.warnings if "different costs" in w.message])
 
 
+class AttributeToggleItemTests(unittest.TestCase):
+    ITEM_HEADER = "id,name,item_type,cost,sell_value,tier,rarity,stackable,max_stack,consumable,max_charges,description,cooldown,target_type,mana_cost,attribute_toggle\n"
+    EFFECT_HEADER = "item_id,effect_index,trigger,effect_target,effect_type,effect_id,value,damage_type,duration,radius,amount,scaling_type,scaling_value\n"
+    PASSIVE = "treads,0,passive,owner,stat_modifier,move_speed,55,,,,,,\n"
+
+    def load(self, item_row: str, effect_rows: str = PASSIVE):
+        import tempfile
+
+        import ItemGenerator
+
+        with tempfile.TemporaryDirectory() as tmp:
+            items = Path(tmp) / "items.csv"
+            effects = Path(tmp) / "effects.csv"
+            items.write_text(self.ITEM_HEADER + item_row + "\n", encoding="utf-8")
+            effects.write_text(self.EFFECT_HEADER + effect_rows, encoding="utf-8")
+            loaded, report = ItemGenerator.load(items, effects, set())
+        return ItemGenerator, loaded, report
+
+    def test_toggle_field_is_emitted_and_the_item_counts_as_active(self) -> None:
+        module, items, report = self.load("treads,Treads,accessories,1400,700,1,common,false,,false,,boots,0,,,10")
+        self.assertFalse(report.errors, [e.message for e in report.errors])
+        self.assertFalse([w for w in report.warnings if w.field == "cooldown"])
+        rendered = module.item_static(items[0])
+        self.assertIn("attribute_toggle: Some(10.0),", rendered)
+        self.assertIn("activation: ItemActivation::INSTANT,", rendered)
+
+    def test_items_without_the_column_emit_none(self) -> None:
+        module, items, report = self.load("treads,Treads,accessories,1400,700,1,common,false,,false,,boots,,,,")
+        self.assertFalse(report.errors)
+        self.assertIn("attribute_toggle: None,", module.item_static(items[0]))
+
+    def test_toggle_must_be_positive_and_exclusive_with_other_actives(self) -> None:
+        cases = {
+            "treads,Treads,accessories,1400,700,1,common,false,,false,,boots,0,,,0": ("above 0", self.PASSIVE),
+            "treads,Treads,accessories,1400,700,1,common,false,,false,,boots,0,,,-5": ("above 0", self.PASSIVE),
+            "treads,Treads,accessories,1400,700,1,common,false,,false,,boots,0,,,abc": ("number", self.PASSIVE),
+            "treads,Treads,accessories,1400,700,1,common,false,,true,,boots,0,,,10": ("consumable", self.PASSIVE),
+            "treads,Treads,accessories,1400,700,1,common,false,,false,,boots,5,,,10": ("no cooldown", self.PASSIVE),
+            "treads,Treads,accessories,1400,700,1,common,false,,false,,boots,0,unit,,10": ("switches instantly", self.PASSIVE),
+            "treads,Treads,accessories,1400,700,1,common,false,,false,,boots,0,,20,10": ("switches instantly", self.PASSIVE),
+            "treads,Treads,accessories,1400,700,1,common,false,,false,,boots,0,,,10": (
+                "cannot also have",
+                self.PASSIVE + "treads,1,on_use,owner,heal,,10,,,,,,\n",
+            ),
+        }
+        for row_text, (message, effects) in cases.items():
+            _, _, report = self.load(row_text, effects)
+            self.assertTrue(
+                any(message in e.message for e in report.errors),
+                (row_text, [e.message for e in report.errors]),
+            )
+
+
 class DamageReductionStatusTests(unittest.TestCase):
     def test_generated_damage_reduction_carries_a_per_owner_id(self) -> None:
         report = Report()

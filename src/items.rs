@@ -128,14 +128,17 @@ impl Inventory {
     }
 
     pub fn try_add(&mut self, id: ItemId) -> bool {
-        let Some(i) = self.slot_for(id) else {
-            return false;
-        };
+        self.try_add_at(id).is_some()
+    }
+
+    /// Like [`Self::try_add`], returning the slot that received the unit.
+    pub fn try_add_at(&mut self, id: ItemId) -> Option<usize> {
+        let i = self.slot_for(id)?;
         match self.slots[i].as_mut() {
             Some(item) => item.stack += 1,
             None => self.slots[i] = Some(ItemInstance::new(id)),
         }
-        true
+        Some(i)
     }
 
     fn count_of(&self, id: ItemId) -> u32 {
@@ -196,6 +199,8 @@ pub struct ItemInstance {
     pub stack: u32,
     /// Units used up at commit whose passives `resolve_item_uses` has not removed yet.
     pub spent_units: u32,
+    /// The attribute an `attribute_toggle` item currently grants (`None` for other items).
+    pub selected_attribute: Option<Attribute>,
 }
 
 impl ItemInstance {
@@ -210,7 +215,24 @@ impl ItemInstance {
             },
             stack: 1,
             spent_units: 0,
+            selected_attribute: def.attribute_toggle.map(|_| Attribute::Strength),
         }
+    }
+}
+
+impl ItemInstance {
+    /// "Strength" / "Agility" / "Intelligence" for a toggle item's current selection.
+    pub fn selected_attribute_name(&self) -> Option<&'static str> {
+        self.selected_attribute.map(tooltip::attribute_name)
+    }
+}
+
+/// The next attribute a toggle item switches to: Strength -> Agility -> Intelligence -> Strength.
+pub fn next_attribute(attribute: Attribute) -> Attribute {
+    match attribute {
+        Attribute::Strength => Attribute::Agility,
+        Attribute::Agility => Attribute::Intelligence,
+        Attribute::Intelligence => Attribute::Strength,
     }
 }
 
@@ -282,6 +304,7 @@ pub enum ItemId {
     GhostScepter,
     SoulRing,
     RecipeSoulRing,
+    PowerTreads,
     // </item_generator:item_enum>
 }
 
@@ -412,6 +435,10 @@ pub struct ItemDefinition {
     pub cooldown: f32,
     /// Targeting, timing, and cost of the active (ignored without `OnUse` effects).
     pub activation: ItemActivation,
+    /// Points of the instance's selected attribute the item grants (Power Treads). The
+    /// active switches the selection Strength -> Agility -> Intelligence, instantly and
+    /// without a cooldown; the bonus is reconciled by [`sync_item_attribute_toggles`].
+    pub attribute_toggle: Option<f32>,
     /// Recipe slots: each slot lists the alternatives that can fill it, in preference order
     /// (the first one the hero owns is consumed). Empty = basic item.
     pub components: &'static [&'static [ItemId]],
@@ -616,6 +643,7 @@ impl ItemId {
             ItemId::GhostScepter,
             ItemId::SoulRing,
             ItemId::RecipeSoulRing,
+            ItemId::PowerTreads,
             // </item_generator:item_all>
         ]
     }
@@ -692,7 +720,13 @@ impl ItemId {
                 body.push_str(&format!("\n{line}"));
             }
         }
-        let effects: Vec<String> = def.effects.iter().flat_map(item_effect_lines).collect();
+        let mut effects: Vec<String> = def.effects.iter().flat_map(item_effect_lines).collect();
+        if let Some(points) = def.attribute_toggle {
+            effects.push(format!(
+                "Use: switch the +{} attribute between Strength, Agility and Intelligence",
+                tooltip::fmt_num(points)
+            ));
+        }
         if !effects.is_empty() {
             body.push_str("\n\nEffects:");
             for line in effects {
@@ -727,7 +761,8 @@ impl ItemId {
 
     pub fn has_active(self) -> bool {
         let def = self.definition();
-        def.effects_for(AbilityTrigger::OnUse).next().is_some()
+        def.attribute_toggle.is_some()
+            || def.effects_for(AbilityTrigger::OnUse).next().is_some()
             || !def.mechanics.is_empty()
             || (def.activation.channel_time > 0.0
                 && (def
@@ -1183,6 +1218,18 @@ pub fn resolve_item_uses(
         else {
             continue;
         };
+        // An attribute toggle only switches the instance's selection (reconciled by
+        // `sync_item_attribute_toggles`): no feedback and no `OnUse` trigger.
+        if item.definition().attribute_toggle.is_some() {
+            if let Some(slot) = inv
+                .slot_of(instance)
+                .and_then(|index| inv.slots[index].as_mut())
+            {
+                let current = slot.selected_attribute.unwrap_or(Attribute::Strength);
+                slot.selected_attribute = Some(next_attribute(current));
+            }
+            continue;
+        }
         let position = transform.translation;
         spawn_item_use_fx(&mut commands, &assets, item, position);
         triggers.write(AbilityTriggerEvent(item_use_trigger(
@@ -1243,6 +1290,75 @@ fn item_use_trigger(
 
 /// Presentation only: a heal flash when the active affects its owner and a pulse ring
 /// for each fixed-radius area it hits.
+/// The selected-attribute bonuses of every toggle item the hero owns, already folded into
+/// its stats. Inserted lazily by [`sync_item_attribute_toggles`].
+#[derive(Component, Debug, Clone, Copy, Default, PartialEq)]
+pub struct AppliedItemToggles(pub ItemPassives);
+
+/// What the hero's toggle items grant right now: `attribute_toggle` points of each owned
+/// instance's selected attribute.
+fn desired_toggle_passives(inv: &Inventory) -> ItemPassives {
+    let mut total = ItemPassives::default();
+    for item in inv.slots.iter().flatten() {
+        let Some(points) = item.id.definition().attribute_toggle else {
+            continue;
+        };
+        let points = points * item.stack as f32;
+        match item.selected_attribute.unwrap_or(Attribute::Strength) {
+            Attribute::Strength => total.strength += points,
+            Attribute::Agility => total.agility += points,
+            Attribute::Intelligence => total.intelligence += points,
+        }
+    }
+    total
+}
+
+/// Reconcile the selected-attribute bonus of toggle items (Power Treads) every frame, like
+/// `sync_ability_passives`: remove what was applied, apply what is wanted now. This is the
+/// only place that applies or removes it, so buying, selling, undoing, combining and
+/// toggling can never double count it; a sold item's bonus goes within one frame. Changing
+/// attributes never kills a living hero: its health is floored at 1.
+///
+/// Runs right after `resolve_item_uses`. Dead heroes are skipped (reconciled on respawn).
+pub fn sync_item_attribute_toggles(
+    mut commands: Commands,
+    mut heroes: Query<(
+        Entity,
+        &Inventory,
+        &mut Health,
+        &mut Mana,
+        &mut CombatStats,
+        &mut HeroAttributes,
+        Option<&mut AppliedItemToggles>,
+    )>,
+) {
+    for (entity, inv, mut health, mut mana, mut stats, mut attrs, applied) in &mut heroes {
+        if !health.is_alive() {
+            continue;
+        }
+        let desired = desired_toggle_passives(inv);
+        let current = applied.as_ref().map_or(ItemPassives::default(), |a| a.0);
+        if desired == current {
+            continue;
+        }
+        if current != ItemPassives::default() {
+            remove_passives(current, 1, &mut health, &mut mana, &mut stats, &mut attrs);
+        }
+        if desired != ItemPassives::default() {
+            apply_passives(desired, &mut health, &mut mana, &mut stats, &mut attrs);
+        }
+        if health.current < 1.0 {
+            health.current = 1.0;
+        }
+        match applied {
+            Some(mut applied) => applied.0 = desired,
+            None => {
+                commands.entity(entity).insert(AppliedItemToggles(desired));
+            }
+        }
+    }
+}
+
 fn spawn_item_use_fx(commands: &mut Commands, assets: &SharedAssets, item: ItemId, at: Vec3) {
     for entry in item.definition().effects_for(AbilityTrigger::OnUse) {
         match entry.target {
@@ -1589,6 +1705,25 @@ fn assemblable_option(inv: &Inventory, result: ItemId) -> Option<Vec<(ItemId, u3
         .find(|needs| can_assemble(inv, result, needs))
 }
 
+/// The one attribute `id` grants through its passives (Belt of Strength -> Strength), if it
+/// grants exactly one.
+fn single_attribute(id: ItemId) -> Option<Attribute> {
+    let passives = id.passives();
+    let granted: Vec<Attribute> = [
+        (passives.strength, Attribute::Strength),
+        (passives.agility, Attribute::Agility),
+        (passives.intelligence, Attribute::Intelligence),
+    ]
+    .into_iter()
+    .filter(|(value, _)| *value > 0.0)
+    .map(|(_, attribute)| attribute)
+    .collect();
+    match granted.as_slice() {
+        [only] => Some(*only),
+        _ => None,
+    }
+}
+
 /// Combine every complete component set. Does not run during undo.
 fn combine_ready_items(
     inv: &mut Inventory,
@@ -1611,8 +1746,19 @@ fn combine_ready_items(
                 inv.remove_one(id);
             }
         }
-        if inv.try_add(result) {
+        if let Some(index) = inv.try_add_at(result) {
             apply_passives(result.passives(), health, mana, stats, attrs);
+            // A toggle item starts on the attribute of the component that was consumed.
+            if result.definition().attribute_toggle.is_some()
+                && let Some(item) = inv.slots[index].as_mut()
+            {
+                item.selected_attribute = Some(
+                    needs
+                        .iter()
+                        .find_map(|&(id, _)| single_attribute(id))
+                        .unwrap_or(Attribute::Strength),
+                );
+            }
         } else {
             for &(id, n) in &needs {
                 for _ in 0..n {
@@ -2041,6 +2187,14 @@ mod tests {
             let def = id.definition();
             if !def.mechanics.is_empty() {
                 assert!(id.has_active(), "{id:?} has mechanics so it is an active");
+                continue;
+            }
+            if def.attribute_toggle.is_some() {
+                assert!(
+                    id.has_active(),
+                    "{id:?} toggles an attribute so it is an active"
+                );
+                assert_eq!(def.cooldown, 0.0, "{id:?} toggles have no cooldown");
                 continue;
             }
             let uses = def.effects_for(AbilityTrigger::OnUse).next().is_some();
@@ -2986,6 +3140,83 @@ mod tests {
         assert!(body.contains("• Mana Crystal (350g)"), "{body}");
     }
 
+    fn treads_selection(shop: &Shopper) -> Option<Attribute> {
+        shop.inv
+            .slots
+            .iter()
+            .flatten()
+            .find(|item| item.id == ItemId::PowerTreads)
+            .and_then(|item| item.selected_attribute)
+    }
+
+    #[test]
+    fn power_treads_build_from_each_alternative_with_the_matching_start_attribute() {
+        let def = ItemId::PowerTreads.definition();
+        assert_eq!((def.cost, def.attribute_toggle), (1400, Some(10.0)));
+        assert!(ItemId::PowerTreads.has_active());
+        for (alternative, expected) in [
+            (ItemId::BeltOfStrength, Attribute::Strength),
+            (ItemId::BandOfElvenskin, Attribute::Agility),
+            (ItemId::RobeOfTheMagi, Attribute::Intelligence),
+        ] {
+            let mut shop = Shopper::new();
+            for item in [ItemId::BootsOfSpeed, ItemId::GlovesOfHaste, alternative] {
+                assert!(shop.buy(item), "{item:?}");
+            }
+            assert_eq!(shop.owned(), vec![ItemId::PowerTreads], "{alternative:?}");
+            assert_eq!(treads_selection(&shop), Some(expected), "{alternative:?}");
+            assert_eq!(shop.wallet.gold, 2000 - 500 - 450 - 450);
+        }
+    }
+
+    #[test]
+    fn power_treads_bought_directly_start_on_strength_and_pay_static_stats() {
+        let mut shop = Shopper::new();
+        let base_speed = shop.stats.move_speed;
+        shop.wallet.gold = 5000;
+        assert!(shop.buy(ItemId::PowerTreads));
+        assert_eq!(treads_selection(&shop), Some(Attribute::Strength));
+        assert_eq!(shop.stats.move_speed, base_speed + 55.0);
+    }
+
+    #[test]
+    fn undoing_a_treads_build_restores_the_alternative_that_was_used() {
+        let mut shop = Shopper::new();
+        for item in [ItemId::BootsOfSpeed, ItemId::GlovesOfHaste] {
+            assert!(shop.buy(item));
+        }
+        let before_gold = shop.wallet.gold;
+        assert!(shop.buy(ItemId::BandOfElvenskin));
+        assert_eq!(shop.owned(), vec![ItemId::PowerTreads]);
+        assert!(shop.undo());
+        let mut back = shop.owned();
+        back.sort_by_key(|id| id.name());
+        assert_eq!(back, vec![ItemId::BootsOfSpeed, ItemId::GlovesOfHaste]);
+        assert_eq!(shop.wallet.gold, before_gold);
+    }
+
+    #[test]
+    fn undoing_a_treads_sale_keeps_the_selected_attribute() {
+        let mut shop = Shopper::new();
+        shop.wallet.gold = 5000;
+        assert!(shop.buy(ItemId::PowerTreads));
+        shop.inv.slots[0].as_mut().unwrap().selected_attribute = Some(Attribute::Intelligence);
+        assert!(shop.sell(0));
+        assert!(shop.owned().is_empty());
+        assert!(shop.undo());
+        assert_eq!(treads_selection(&shop), Some(Attribute::Intelligence));
+    }
+
+    #[test]
+    fn treads_tooltip_lists_the_alternatives_and_the_toggle() {
+        let body = ItemId::PowerTreads.tooltip_body();
+        assert!(
+            body.contains("• Belt of Strength / Band of Elvenskin / Robe of the Magi (450g)"),
+            "{body}"
+        );
+        assert!(body.contains("Use: switch the +10 attribute"), "{body}");
+    }
+
     #[test]
     fn soul_ring_needs_two_gauntlets_and_a_ring_and_undo_is_exact() {
         let mut shop = Shopper::new();
@@ -3360,6 +3591,7 @@ mod tests {
                     tick_activations,
                     (
                         resolve_item_uses,
+                        sync_item_attribute_toggles,
                         crate::abilities::mechanics::execute_item_mechanics,
                     )
                         .chain(),
@@ -3451,6 +3683,7 @@ mod tests {
                 0.5,
                 0.0,
             ),
+            attribute_toggle: None,
             components: &[],
             color: [1.0, 1.0, 1.0],
             description: "test",
@@ -3474,6 +3707,7 @@ mod tests {
             max_charges: None,
             cooldown: 5.0,
             activation,
+            attribute_toggle: None,
             components: &[],
             color: [1.0, 1.0, 1.0],
             description: "test",
@@ -3524,6 +3758,135 @@ mod tests {
             }
         }
         false
+    }
+
+    fn attributes_of(app: &App, owner: Entity) -> (f32, f32, f32) {
+        let a = app.world().get::<HeroAttributes>(owner).unwrap();
+        (a.strength, a.agility, a.intelligence)
+    }
+
+    fn selection(app: &App, owner: Entity) -> Option<Attribute> {
+        slot(app, owner, 0).unwrap().selected_attribute
+    }
+
+    fn toggle(app: &mut App, owner: Entity) {
+        request(app, owner, 0, CastTarget::None);
+        for _ in 0..3 {
+            step(app);
+        }
+    }
+
+    #[test]
+    fn treads_toggle_cycles_the_attribute_and_moves_the_bonus() {
+        let mut app = item_app();
+        let owner = spawn_caster(&mut app, 100.0);
+        let base = attributes_of(&app, owner);
+        give(&mut app, owner, ItemId::PowerTreads);
+        step(&mut app);
+        assert_eq!(selection(&app, owner), Some(Attribute::Strength));
+        assert_eq!(
+            attributes_of(&app, owner),
+            (base.0 + 10.0, base.1, base.2),
+            "a freshly given pair starts on Strength"
+        );
+        let base_hp = 1000.0;
+        assert_eq!(
+            app.world().get::<Health>(owner).unwrap().max,
+            base_hp + 10.0 * HeroAttributes::HP_PER_STR
+        );
+
+        toggle(&mut app, owner);
+        assert_eq!(selection(&app, owner), Some(Attribute::Agility));
+        assert_eq!(attributes_of(&app, owner), (base.0, base.1 + 10.0, base.2));
+        assert_eq!(app.world().get::<Health>(owner).unwrap().max, base_hp);
+
+        toggle(&mut app, owner);
+        assert_eq!(selection(&app, owner), Some(Attribute::Intelligence));
+        assert_eq!(attributes_of(&app, owner), (base.0, base.1, base.2 + 10.0));
+
+        toggle(&mut app, owner);
+        assert_eq!(selection(&app, owner), Some(Attribute::Strength));
+        assert_eq!(attributes_of(&app, owner), (base.0 + 10.0, base.1, base.2));
+        assert_eq!(
+            slot(&app, owner, 0).unwrap().cooldown.remaining,
+            0.0,
+            "toggling has no cooldown"
+        );
+    }
+
+    #[test]
+    fn treads_toggle_never_kills_a_low_health_hero() {
+        let mut app = item_app();
+        let owner = spawn_caster(&mut app, 100.0);
+        give(&mut app, owner, ItemId::PowerTreads);
+        step(&mut app);
+        app.world_mut().get_mut::<Health>(owner).unwrap().current = 20.0;
+        toggle(&mut app, owner);
+        assert_eq!(selection(&app, owner), Some(Attribute::Agility));
+        let health = app.world().get::<Health>(owner).unwrap();
+        assert_eq!(health.current, 1.0, "losing strength floors health at 1");
+        assert!(health.is_alive());
+    }
+
+    #[test]
+    fn treads_toggle_is_blocked_by_mute_and_stun() {
+        let mut app = item_app();
+        let owner = spawn_caster(&mut app, 100.0);
+        give(&mut app, owner, ItemId::PowerTreads);
+        step(&mut app);
+        for status in [StatusEffect::mute(5.0), StatusEffect::stunned(5.0)] {
+            app.world_mut()
+                .get_mut::<StatusEffects>(owner)
+                .unwrap()
+                .effects
+                .push(status);
+            toggle(&mut app, owner);
+            assert_eq!(selection(&app, owner), Some(Attribute::Strength));
+            app.world_mut()
+                .get_mut::<StatusEffects>(owner)
+                .unwrap()
+                .effects
+                .clear();
+        }
+        toggle(&mut app, owner);
+        assert_eq!(selection(&app, owner), Some(Attribute::Agility));
+    }
+
+    #[test]
+    fn removing_treads_removes_the_selected_bonus_within_a_frame() {
+        let mut app = item_app();
+        let owner = spawn_caster(&mut app, 100.0);
+        let base = attributes_of(&app, owner);
+        let base_hp = app.world().get::<Health>(owner).unwrap().max;
+        give(&mut app, owner, ItemId::PowerTreads);
+        toggle(&mut app, owner);
+        assert_eq!(attributes_of(&app, owner), (base.0, base.1 + 10.0, base.2));
+        app.world_mut().get_mut::<Inventory>(owner).unwrap().slots[0] = None;
+        step(&mut app);
+        assert_eq!(attributes_of(&app, owner), base);
+        assert_eq!(app.world().get::<Health>(owner).unwrap().max, base_hp);
+        assert_eq!(
+            app.world().get::<AppliedItemToggles>(owner).unwrap().0,
+            ItemPassives::default()
+        );
+    }
+
+    #[test]
+    fn two_treads_each_keep_their_own_selection() {
+        let mut app = item_app();
+        let owner = spawn_caster(&mut app, 100.0);
+        let base = attributes_of(&app, owner);
+        give(&mut app, owner, ItemId::PowerTreads);
+        give(&mut app, owner, ItemId::PowerTreads);
+        app.world_mut().get_mut::<Inventory>(owner).unwrap().slots[1]
+            .as_mut()
+            .unwrap()
+            .selected_attribute = Some(Attribute::Intelligence);
+        step(&mut app);
+        assert_eq!(
+            attributes_of(&app, owner),
+            (base.0 + 10.0, base.1, base.2 + 10.0)
+        );
     }
 
     #[test]

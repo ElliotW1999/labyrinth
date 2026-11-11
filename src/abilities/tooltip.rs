@@ -850,7 +850,7 @@ pub(crate) fn passive_name(stat: super::definition::PassiveStat) -> &'static str
     }
 }
 
-fn attribute_name(attribute: Attribute) -> &'static str {
+pub(crate) fn attribute_name(attribute: Attribute) -> &'static str {
     match attribute {
         Attribute::Strength => "Strength",
         Attribute::Agility => "Agility",
