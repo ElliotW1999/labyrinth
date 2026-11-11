@@ -472,6 +472,9 @@ fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
             seconds_row("Heal reduction duration", duration),
         ],
         StatusSpec::Stacks { .. } => vec![seconds_row("Stack duration", duration)],
+        StatusSpec::AttackCharges { charges, .. } => {
+            vec![row("Attacks", charges), seconds_row("Duration", duration)]
+        }
         StatusSpec::DamageReduction { percent, .. } => vec![
             row("Damage reduction %", percent),
             seconds_row("Damage reduction duration", duration),
@@ -769,6 +772,7 @@ fn status_name(status: StatusSpec) -> &'static str {
         StatusSpec::HealBlock => "Heal block",
         StatusSpec::DamageReduction { .. } => "Damage reduction",
         StatusSpec::Stacks { .. } => "Stacks",
+        StatusSpec::AttackCharges { .. } => "Attack charges",
         StatusSpec::ConvertOnDeath { .. } => "Convert on death",
         StatusSpec::DamageShare { .. } => "Damage share",
         StatusSpec::MagicResistance { .. } => "Magic resistance",

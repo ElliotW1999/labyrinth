@@ -255,6 +255,9 @@ STATUSES = {
     # Percent magic resistance (amount/value = 1..100), multiplicative with the rating.
     "magic_resistance": (None, "magic_resistance", True),
     "stacks": (None, "stacks", False),
+    # A buff that only counts basic attacks (`amount` = attacks, `duration` required); the id is
+    # `<owner>_attack_charges`. Gate on it with `require_status`.
+    "attack_charges": (None, "attack_charges", True),
     "status_resistance": (None, "status_resistance", True),
     "mana_shield": (None, "mana_shield", True),
     # Duplicates `amount` percent of the holder's incoming damage to the unit that applied it.
@@ -267,7 +270,7 @@ STATUSES = {
 INDEPENDENT_SUFFIX = "independent"
 
 # Statuses whose runtime id is `<owner>_<name>` (the keyword alone is not a status id).
-OWNER_ID_STATUSES = ("damage_reduction", "magic_resistance", "status_resistance", "stacks", "move_speed_bonus", "attack_point")
+OWNER_ID_STATUSES = ("damage_reduction", "magic_resistance", "status_resistance", "stacks", "move_speed_bonus", "attack_point", "attack_charges")
 
 # Triggers whose context carries the cast's unit target (see TriggerContext::cast_target).
 CAST_TARGET_TRIGGERS = ("on_cast", "on_projectile_hit")
@@ -1838,6 +1841,21 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
                 return None
             _unused(e, report, "value", "amount")
             spec = f'StatusSpec::Stacks {{ id: "{ctx.owner_id}_stacks" }}'
+        elif effect_id == "attack_charges":
+            if e.trigger in ("passive", "while", "while_toggled"):
+                report.error(row.file, row.line, "trigger", e.trigger, "attack_charges is a timed buff that counts attacks; it cannot be held by passive, while or while_toggled")
+                return None
+            if not amount:
+                report.error(row.file, row.line, "amount", "", "required: the number of attacks the status lasts for (a whole number of at least 1)")
+                return None
+            if any(not float(a).is_integer() or a < 1 for a in amount):
+                report.error(row.file, row.line, "amount", row.get("amount"), "attack charges must be whole numbers of at least 1")
+                return None
+            if not duration or any(d <= 0 for d in duration):
+                report.error(row.file, row.line, "duration", row.get("duration"), "required: attack_charges needs a duration above 0 (it ends after the attacks or when this runs out)")
+                return None
+            spec = f'StatusSpec::AttackCharges {{ id: "{ctx.owner_id}_attack_charges", charges: {rank_value(amount)} }}'
+            _unused(e, report, "value")
         elif effect_id in ("damage_reduction", "magic_resistance", "status_resistance"):
             percent = amount or value
             if not percent:

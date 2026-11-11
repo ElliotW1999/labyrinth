@@ -520,6 +520,13 @@ pub enum StatusSpec {
     Stacks {
         id: &'static str,
     },
+    /// A buff that only counts basic attacks: it carries `charges` (at least 1) and does
+    /// nothing else. It ends after that many released attacks or when `duration` runs out
+    /// (generated id `<owner>_attack_charges`; gate on it with `require_status`).
+    AttackCharges {
+        id: &'static str,
+        charges: RankValue,
+    },
     /// `percent` (0-100) of incoming damage is removed after mitigation (a buff). `id` is
     /// `<owner>_damage_reduction`; reductions from different ids multiply.
     DamageReduction {
@@ -815,6 +822,10 @@ impl StatusSpec {
             }
             StatusSpec::HealBlock => StatusEffect::heal_block(duration),
             StatusSpec::Stacks { id } => StatusEffect::stack(id, duration),
+            StatusSpec::AttackCharges { id, charges } => StatusEffect {
+                attack_charges: charges.at(rank).round().max(1.0) as u32,
+                ..StatusEffect::buff(id, duration)
+            },
             StatusSpec::StatusResistance { id, percent } => StatusEffect::status_resistance(
                 id,
                 (percent.at(rank) / 100.0).clamp(0.0, 1.0),

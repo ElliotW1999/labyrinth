@@ -602,6 +602,50 @@ class PerformAttackTests(unittest.TestCase):
 
 
 
+class AttackChargesStatusTests(unittest.TestCase):
+    def _convert(self, trigger="on_cast", **cells):
+        report = Report()
+        effect, ctx = _effect("apply_status", "attack_charges", target="caster", trigger=trigger, **cells)
+        ctx.levels = 3
+        return effect_to_rust(effect, ctx, report), report
+
+    def test_emits_owner_id_status_with_rank_charges(self) -> None:
+        result, report = self._convert(amount="4|5|6", duration="10")
+        self.assertFalse(report.errors, report.errors)
+        self.assertIn(
+            'StatusSpec::AttackCharges { id: "tester_attack_charges", charges: RankValue::from_level_1(4.0, 1.0) }',
+            result[2],
+        )
+        self.assertIn("duration: RankValue::fixed(10.0)", result[2])
+
+    def test_invalid_rows_are_rejected(self) -> None:
+        for cells, field in (
+            ({"amount": "0", "duration": "10"}, "amount"),
+            ({"amount": "1.5", "duration": "10"}, "amount"),
+            ({"amount": "4|0|6", "duration": "10"}, "amount"),
+            ({"duration": "10"}, "amount"),
+            ({"amount": "4"}, "duration"),
+        ):
+            result, report = self._convert(**cells)
+            self.assertIsNone(result, cells)
+            self.assertEqual(report.errors[0].field, field, cells)
+
+    def test_rejected_on_held_triggers(self) -> None:
+        for trigger in ("passive", "while:moving", "while_toggled"):
+            result, report = self._convert(trigger=trigger, amount="4", duration="10")
+            self.assertIsNone(result, trigger)
+
+    def test_remove_status_names_the_owner_id(self) -> None:
+        report = Report()
+        effect, ctx = _effect("remove_status", "attack_charges", target="caster")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertIn("<owner>_attack_charges", report.errors[0].message)
+
+    def test_runtime_status_id_accepts_owner_id(self) -> None:
+        self.assertEqual(runtime_status_id("flak_cannon_attack_charges"), "flak_cannon_attack_charges")
+        self.assertIsNone(runtime_status_id("attack_charges"))
+
+
 class ResourceEffectTests(unittest.TestCase):
     def test_resource_effects_health_drain(self) -> None:
         report = Report()
