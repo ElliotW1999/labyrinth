@@ -2937,6 +2937,44 @@ mod tests {
         }
 
         #[test]
+        fn seeking_projectile_retargets_during_delay_and_strikes_only_after_it() {
+            // The original target dies while the missile still waits; the replacement
+            // stands inside the contact radius, yet nothing is struck before the delay ends.
+            let mut world = world();
+            let target = unit(&mut world, Team::Dire, 1000.0);
+            let near = unit(&mut world, Team::Dire, 0.0);
+            let m = missile(&mut world, target, Some(seek(0.5, 0.0, 700.0)), 15.0);
+            kill(&mut world, target);
+            for _ in 0..9 {
+                step(&mut world, DT);
+            }
+            assert_eq!(world.get::<ProjectileHome>(m).unwrap().target, near);
+            assert!(hits(&world).is_empty(), "no strike while waiting");
+            let hit = run_until_hit(&mut world, 20, DT);
+            assert_eq!(hit.len(), 1);
+            assert_eq!(hit[0].primary, Some(near));
+            assert_eq!(hit[0].payload.cast_target, Some(near));
+        }
+
+        #[test]
+        fn seeking_projectile_retargets_repeatedly_and_still_hits_once() {
+            let mut world = world();
+            let first = unit(&mut world, Team::Dire, 2000.0);
+            let second = unit(&mut world, Team::Dire, 300.0);
+            let third = unit(&mut world, Team::Dire, 450.0);
+            let m = missile(&mut world, first, Some(seek(0.0, 0.0, 700.0)), 15.0);
+            kill(&mut world, first);
+            step(&mut world, DT);
+            assert_eq!(world.get::<ProjectileHome>(m).unwrap().target, second);
+            kill(&mut world, second);
+            step(&mut world, DT);
+            assert_eq!(world.get::<ProjectileHome>(m).unwrap().target, third);
+            let hit = run_until_hit(&mut world, 80, DT);
+            assert_eq!(hit.len(), 1, "one hit event for the whole flight");
+            assert_eq!(hit[0].primary, Some(third));
+        }
+
+        #[test]
         fn seeking_projectile_without_retarget_radius_keeps_last_known_behaviour() {
             let mut world = world();
             let target = unit(&mut world, Team::Dire, 800.0);
