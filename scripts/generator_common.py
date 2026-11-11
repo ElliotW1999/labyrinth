@@ -91,7 +91,7 @@ GATE_TYPES = ("proc", "pseudo_proc", "counter", "accumulate", "require_status")
 # Every effect type that fires a custom trigger: the gates plus the Chain mechanic gate (one
 # derived context per hop) and the Zone mechanic gate (one per tick). Used for reachability and
 # reaction propagation.
-CUSTOM_TRIGGER_FEEDERS = (*GATE_TYPES, "chain", "zone", "attached_zone")
+CUSTOM_TRIGGER_FEEDERS = (*GATE_TYPES, "chain", "zone", "attached_zone", "orbit")
 # Triggers whose resolved target is the unit that caused them (the `attacker` target).
 ATTACKER_TRIGGERS = ("on_damage_taken", "on_death")
 
@@ -172,6 +172,9 @@ EFFECT_TYPES = {
     "zone",
     # A zone that is re-centred on its caster before every tick and ends when the caster dies.
     "attached_zone",
+    # Mechanic gate: hitboxes orbiting the caster that fire a custom trigger (with the unit
+    # touched as the trigger unit) each time one of them starts touching a unit.
+    "orbit",
     # Extra basic attacks (instant / double / multi-target attack).
     "perform_attack",
 }
@@ -1433,7 +1436,7 @@ def chain_fed_triggers(effects: list[EffectRow]) -> set[str]:
             fed = fed_trigger(e)
             if e.effect_type not in CUSTOM_TRIGGER_FEEDERS or fed in fed_triggers:
                 continue
-            if e.effect_type in ("chain", "zone", "attached_zone") or e.trigger in fed_triggers:
+            if e.effect_type in ("chain", "zone", "attached_zone", "orbit") or e.trigger in fed_triggers:
                 fed_triggers.add(fed)
                 changed = True
     return fed_triggers
@@ -2216,6 +2219,68 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             f'then: AbilityTrigger::Custom("{effect_id}"), '
             f"follow_caster: {'true' if t == 'attached_zone' else 'false'} }}"
         )
+    elif t == "orbit":
+        # `effect_id` = `on_<trigger>:<hit_radius>`; value = orbiters, duration, radius (else the
+        # ability's aoe_radius) = orbit radius, amount = seconds per revolution.
+        trigger_name, _, hit_text = effect_id.partition(":")
+        if not trigger_name or not hit_text:
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), "orbit needs effect_id <on_trigger>:<hit_radius>, e.g. on_spirit_touch:80")
+            return None
+        effect_id = trigger_name
+        if not CUSTOM_TRIGGER_PATTERN.match(effect_id) or effect_id in ABILITY_TRIGGERS or effect_id in ITEM_TRIGGERS:
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), "must be a custom on_<name> trigger, not a built-in trigger")
+            return None
+        if effect_id == e.trigger:
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), "an orbit cannot fire its own trigger")
+            return None
+        try:
+            hit_radius = float(hit_text)
+        except ValueError:
+            hit_radius = 0.0
+        if hit_radius <= 0:
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), "orbit hit radius (the number after the colon) must be above 0")
+            return None
+        if e.target not in ("caster", "owner"):
+            report.error(row.file, row.line, "effect_target", e.target, "an orbit circles the unit using it; use owner or caster")
+            return None
+        if ctx.owner_triggers is not None and effect_id not in ctx.owner_triggers:
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), f"no row of {e.owner!r} uses trigger {effect_id}, so this orbit would do nothing")
+            return None
+        if not no_scaling():
+            return None
+        if not _require(e, "value", report, "number of orbiting hitboxes (integer, at least 1)"):
+            return None
+        if len(value) != 1 or not float(value[0]).is_integer() or value[0] < 1:
+            report.error(row.file, row.line, "value", row.get("value"), "orbit needs a single integer number of orbiters of at least 1")
+            return None
+        if not _require(e, "duration", report, "seconds the orbit lasts (above 0)"):
+            return None
+        if any(d <= 0 for d in duration):
+            report.error(row.file, row.line, "duration", row.get("duration"), "orbit duration must be above 0")
+            return None
+        if not _require(e, "amount", report, "seconds per revolution (above 0)"):
+            return None
+        if any(a <= 0 for a in amount):
+            report.error(row.file, row.line, "amount", row.get("amount"), "orbit seconds per revolution must be above 0")
+            return None
+        if radius:
+            if any(r <= 0 for r in radius):
+                report.error(row.file, row.line, "radius", row.get("radius"), "orbit radius must be above 0")
+                return None
+            orbit_radius = f"AreaRadius::Fixed({rank_value(radius)})"
+        elif ctx.has_aoe:
+            orbit_radius = "AreaRadius::Ability"
+        else:
+            where = "the ability has no aoe_radius" if ctx.kind == "ability" else "items have no aoe_radius"
+            report.error(row.file, row.line, "radius", "", f"required for an orbit ({where})")
+            return None
+        _unused(e, report, "damage_type")
+        orbit_team = ctx.team if ctx.team in ("Enemy", "Ally", "Any") else "Enemy"
+        effect = (
+            f"AbilityEffect::Orbit {{ count: {int(value[0])}, radius: {orbit_radius}, "
+            f"hit_radius: {f32(hit_radius)}, period: {rank_value(amount)}, duration: {rank_value(duration)}, "
+            f'team: TargetTeam::{orbit_team}, then: AbilityTrigger::Custom("{effect_id}") }}'
+        )
     elif t == "perform_attack":
         if effect_id not in ("", "exclude_trigger_unit"):
             report.error(row.file, row.line, "effect_id", row.get("effect_id"), "perform_attack effect_id must be blank or exclude_trigger_unit")
@@ -2261,7 +2326,7 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
     else:  # pragma: no cover - parse_enum already rejected it
         return None
 
-    if t not in ("movement", "chain", "zone", "attached_zone") and e.target != "units_in_radius" and row.get("radius"):
+    if t not in ("movement", "chain", "zone", "attached_zone", "orbit") and e.target != "units_in_radius" and row.get("radius"):
         report.warn(row.file, row.line, "radius", row.get("radius"), "only used by units_in_radius targets")
 
     # --- target

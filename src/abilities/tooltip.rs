@@ -402,6 +402,7 @@ fn effect_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
         | AbilityEffect::Counter { .. }
         | AbilityEffect::Chain { .. }
         | AbilityEffect::Zone { .. }
+        | AbilityEffect::Orbit { .. }
         | AbilityEffect::Accumulate { .. }
         | AbilityEffect::PerformAttack { .. } => Vec::new(),
     }
@@ -630,6 +631,25 @@ fn effect_text_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
             vec![text_row(format!(
                 "{label}: radius {radius}, {delay}every {}s for {}s",
                 fmt_num(interval.at(1)),
+                fmt_num(duration.at(1))
+            ))]
+        }
+        AbilityEffect::Orbit {
+            count,
+            radius,
+            hit_radius,
+            period,
+            duration,
+            ..
+        } => {
+            let radius = match radius {
+                AreaRadius::Ability => "the ability radius".to_string(),
+                AreaRadius::Fixed(value) => fmt_num(value.at(1)),
+            };
+            vec![text_row(format!(
+                "Orbit: {count} x (hit R {}) at radius {radius}, 1 revolution / {}s, for {}s",
+                fmt_num(hit_radius),
+                fmt_num(period.at(1)),
                 fmt_num(duration.at(1))
             ))]
         }

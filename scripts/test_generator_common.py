@@ -861,6 +861,71 @@ class DamageShareStatusTests(unittest.TestCase):
             self.assertEqual(report.errors[0].field, field, name)
 
 
+class OrbitTests(unittest.TestCase):
+    GOOD = {"value": "3", "duration": "3|4|5", "radius": "180", "amount": "1.41"}
+
+    def _orbit(self, effect_id="on_touch:80", target="caster", kind="ability", **cells):
+        report = Report()
+        effect, ctx = _effect("orbit", effect_id, target=target, kind=kind, **{**self.GOOD, **cells})
+        ctx.levels = 3
+        ctx.has_aoe = kind == "ability"
+        return effect_to_rust(effect, ctx, report), report
+
+    def test_orbit_emits_the_effect(self) -> None:
+        result, report = self._orbit()
+        self.assertIsNotNone(result, report.errors)
+        code = result[2]
+        self.assertIn("AbilityEffect::Orbit { count: 3, radius: AreaRadius::Fixed(RankValue::fixed(180.0))", code)
+        self.assertIn("hit_radius: 80.0", code)
+        self.assertIn("period: RankValue::fixed(1.41)", code)
+        self.assertIn("duration: RankValue::from_level_1(3.0, 1.0)", code)
+        self.assertIn("team: TargetTeam::Enemy", code)
+        self.assertIn('then: AbilityTrigger::Custom("on_touch")', code)
+        self.assertEqual(result[1], "EffectTarget::Caster")
+
+    def test_blank_radius_falls_back_to_the_ability_radius(self) -> None:
+        result, report = self._orbit(radius="")
+        self.assertIn("radius: AreaRadius::Ability", result[2])
+        result, report = self._orbit(radius="", kind="item")
+        self.assertIsNone(result)
+        self.assertEqual(report.errors[0].field, "radius")
+
+    def test_invalid_orbits_are_rejected(self) -> None:
+        cases = (
+            ("zero orbiters", {"value": "0"}, "value"),
+            ("fractional orbiters", {"value": "2.5"}, "value"),
+            ("missing orbiters", {"value": ""}, "value"),
+            ("zero period", {"amount": "0"}, "amount"),
+            ("missing period", {"amount": ""}, "amount"),
+            ("missing hit radius", {"effect_id": "on_touch"}, "effect_id"),
+            ("zero hit radius", {"effect_id": "on_touch:0"}, "effect_id"),
+            ("junk hit radius", {"effect_id": "on_touch:big"}, "effect_id"),
+            ("built-in trigger", {"effect_id": "on_cast:80"}, "effect_id"),
+            ("missing duration", {"duration": ""}, "duration"),
+            ("zero radius", {"radius": "0"}, "radius"),
+            ("cast_target", {"target": "cast_target"}, "effect_target"),
+        )
+        for name, cells, field in cases:
+            result, report = self._orbit(**cells)
+            self.assertIsNone(result, name)
+            self.assertEqual(report.errors[0].field, field, name)
+
+    def test_orbit_feeds_its_trigger_for_reachability_and_fed_sets(self) -> None:
+        effect, _ = _effect("orbit", "on_touch:80", **self.GOOD)
+        other, _ = _effect("damage", "", trigger="on_touch", target="trigger_unit")
+        self.assertEqual(chain_fed_triggers([effect]), {"on_touch"})
+        report = Report()
+        warn_unreachable_custom_triggers([effect, other], set(), report)
+        self.assertFalse(report.warnings)
+
+    def test_perform_attack_under_an_orbit_fed_trigger_is_rejected(self) -> None:
+        report = Report()
+        orbit, _ = _effect("orbit", "on_touch:80", **self.GOOD)
+        attack, ctx = _effect("perform_attack", "", trigger="on_touch", target="caster")
+        ctx.chain_fed = chain_fed_triggers([orbit, attack])
+        self.assertIsNone(effect_to_rust(attack, ctx, report))
+
+
 class ZoneTests(unittest.TestCase):
     GOOD = {"value": "1", "duration": "10", "amount": "1.2"}
 

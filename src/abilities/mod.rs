@@ -23,6 +23,7 @@ pub mod definition;
 pub mod effects;
 pub mod generated;
 pub mod mechanics;
+pub mod orbits;
 pub mod passive;
 pub mod reactive_triggers;
 pub mod tooltip;
@@ -76,6 +77,7 @@ impl Plugin for AbilitiesPlugin {
             .add_message::<crate::abilities::effects::SpellHitEvent>()
             .add_message::<crate::abilities::effects::SpellReflectEvent>()
             .add_message::<zones::SpawnZoneEvent>()
+            .add_message::<orbits::SpawnOrbitEvent>()
             .add_message::<crate::abilities::reactive_triggers::CooldownReadyEvent>()
             .add_message::<HealEvent>()
             .add_message::<ManaRestoreEvent>()
@@ -121,6 +123,7 @@ impl Plugin for AbilitiesPlugin {
                         reactive_triggers::proximity_triggers,
                         reactive_triggers::interval_triggers,
                         zones::tick_zones,
+                        orbits::tick_orbits,
                         reactive_triggers::cooldown_triggers,
                         reactive_triggers::cast_triggers,
                         reactive_triggers::damage_triggers,
@@ -130,7 +133,7 @@ impl Plugin for AbilitiesPlugin {
                     )
                         .chain(),
                     resolve_ability_triggers,
-                    zones::spawn_requested_zones,
+                    (zones::spawn_requested_zones, orbits::spawn_requested_orbits).chain(),
                     spawn_requested_projectiles,
                     (
                         apply_heal_events,
@@ -736,6 +739,7 @@ mod tests {
             .add_message::<crate::abilities::effects::SpellHitEvent>()
             .add_message::<crate::abilities::effects::SpellReflectEvent>()
             .add_message::<zones::SpawnZoneEvent>()
+            .add_message::<orbits::SpawnOrbitEvent>()
             .add_message::<crate::abilities::reactive_triggers::CooldownReadyEvent>()
             .add_message::<HealEvent>()
             .add_message::<ManaRestoreEvent>()
@@ -779,6 +783,7 @@ mod tests {
                         reactive_triggers::proximity_triggers,
                         reactive_triggers::interval_triggers,
                         zones::tick_zones,
+                        orbits::tick_orbits,
                         reactive_triggers::cooldown_triggers,
                         reactive_triggers::cast_triggers,
                         reactive_triggers::damage_triggers,
@@ -788,7 +793,7 @@ mod tests {
                     )
                         .chain(),
                     resolve_ability_triggers,
-                    zones::spawn_requested_zones,
+                    (zones::spawn_requested_zones, orbits::spawn_requested_orbits).chain(),
                     apply_heal_events,
                     (
                         apply_mana_restore_events,
@@ -9642,6 +9647,336 @@ mod tests {
         assert_eq!(from_ability, from_item);
         assert_eq!(health(&ability_app, ability_enemy), 970.0);
         assert_eq!(health(&item_app, item_enemy), 970.0);
+    }
+
+    // ---- orbits (AbilityEffect::Orbit) ----
+
+    const ORBIT_TOUCH: AbilityTrigger = AbilityTrigger::Custom("on_orbit_touch");
+    const ORBIT_PERIOD: f32 = 1.41;
+
+    fn orbit_effect(count: u32, duration: f32, team: TargetTeam) -> AbilityEffect {
+        AbilityEffect::Orbit {
+            count,
+            radius: AreaRadius::Fixed(RankValue::fixed(180.0)),
+            hit_radius: 80.0,
+            period: RankValue::fixed(ORBIT_PERIOD),
+            duration: RankValue::fixed(duration),
+            team,
+            then: ORBIT_TOUCH,
+        }
+    }
+
+    /// An instant no-target cast that starts an orbit on the caster; each touch deals 10.
+    fn orbit_ability(effect: AbilityEffect) -> AbilityDefinition {
+        AbilityDefinition::new(AbilityId::Bulwark)
+            .targeting(TargetType::NoTarget, RankValue::ZERO, RankValue::ZERO)
+            .costs(RankValue::ZERO, RankValue::ZERO)
+            .timing(0.0, 0.0)
+            .on(AbilityTrigger::OnCast, EffectTarget::Caster, effect)
+            .on(
+                ORBIT_TOUCH,
+                EffectTarget::TriggerUnit,
+                fixed_magical_damage(10.0),
+            )
+    }
+
+    fn orbit_app(effect: AbilityEffect) -> (App, Entity) {
+        let mut app = test_app();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(orbit_ability(effect));
+        let caster = spawn_caster(&mut app, KIT);
+        (app, caster)
+    }
+
+    fn orbit_count(app: &mut App) -> usize {
+        app.world_mut()
+            .query::<&orbits::AbilityOrbit>()
+            .iter(app.world())
+            .count()
+    }
+
+    fn orbit_touches(app: &App) -> Vec<TriggerContext> {
+        app.world()
+            .resource::<Messages<AbilityTriggerEvent>>()
+            .iter_current_update_messages()
+            .filter(|event| event.0.trigger == ORBIT_TOUCH)
+            .map(|event| event.0.clone())
+            .collect()
+    }
+
+    fn step_by(app: &mut App, dt: f32) {
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_secs_f32(dt));
+        app.update();
+    }
+
+    /// Runs `seconds` in frames of `dt` and returns every touch written.
+    fn run_orbit(app: &mut App, seconds: f32, dt: f32) -> Vec<TriggerContext> {
+        let mut touches = Vec::new();
+        for _ in 0..(seconds / dt).round() as usize {
+            step_by(app, dt);
+            touches.extend(orbit_touches(app));
+        }
+        touches
+    }
+
+    #[test]
+    fn orbit_positions_follow_caster_and_angle() {
+        let (mut app, caster) = orbit_app(orbit_effect(3, 5.0, TargetTeam::Enemy));
+        request(&mut app, caster, 3, CastTarget::None);
+        step(&mut app);
+        step(&mut app);
+        let orbit = app
+            .world_mut()
+            .query::<&orbits::AbilityOrbit>()
+            .single(app.world())
+            .unwrap()
+            .clone();
+        // The first orbiter starts in front of the caster (-Z), the others 120 degrees apart.
+        let near = |a: Vec3, b: Vec3| a.distance(b) < 0.01;
+        assert!(near(orbit.offset(0, 0.0), Vec3::new(0.0, 0.0, -180.0)));
+        let third = std::f32::consts::TAU / 3.0;
+        for index in 0..3 {
+            let expected = Vec3::new(
+                (-std::f32::consts::FRAC_PI_2 + third * index as f32).cos(),
+                0.0,
+                (-std::f32::consts::FRAC_PI_2 + third * index as f32).sin(),
+            ) * 180.0;
+            assert!(near(orbit.offset(index, 0.0), expected), "orbiter {index}");
+            // Every orbiter is on the circle, and a quarter period turns it a quarter turn.
+            assert!((orbit.offset(index, 0.3).length() - 180.0).abs() < 0.01);
+        }
+        assert!(near(
+            orbit.offset(0, ORBIT_PERIOD / 4.0),
+            Vec3::new(180.0, 0.0, 0.0)
+        ));
+        // The orbit and its spheres follow the caster.
+        move_unit(&mut app, caster, Vec3::new(500.0, 0.0, -300.0));
+        step(&mut app);
+        let (orbit, transform) = app
+            .world_mut()
+            .query::<(&orbits::AbilityOrbit, &Transform)>()
+            .single(app.world())
+            .unwrap();
+        assert_eq!(transform.translation, Vec3::new(500.0, 0.0, -300.0));
+        assert_eq!(orbit.template.origin, Vec3::new(500.0, 0.0, -300.0));
+        let visuals = orbit.visuals.clone();
+        assert_eq!(visuals.len(), 3);
+        let local = app
+            .world()
+            .get::<Transform>(visuals[0])
+            .unwrap()
+            .translation;
+        assert!((Vec2::new(local.x, local.z).length() - 180.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn orbit_starts_at_the_casters_facing() {
+        let (mut app, caster) = orbit_app(orbit_effect(3, 5.0, TargetTeam::Enemy));
+        app.world_mut()
+            .get_mut::<Transform>(caster)
+            .unwrap()
+            .look_to(Dir3::X, Dir3::Y);
+        request(&mut app, caster, 3, CastTarget::None);
+        step(&mut app);
+        step(&mut app);
+        let orbit = app
+            .world_mut()
+            .query::<&orbits::AbilityOrbit>()
+            .single(app.world())
+            .unwrap();
+        assert!((orbit.offset(0, 0.0) - Vec3::new(180.0, 0.0, 0.0)).length() < 0.01);
+    }
+
+    #[test]
+    fn orbit_hits_stationary_enemy_once_per_orbiter_per_revolution() {
+        let (mut app, caster) = orbit_app(orbit_effect(3, ORBIT_PERIOD, TargetTeam::Enemy));
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(180.0, 0.0, 0.0));
+        request(&mut app, caster, 3, CastTarget::None);
+        let touches = run_orbit(&mut app, 3.0, 0.05);
+        assert_eq!(touches.len(), 3, "one hit per orbiter");
+        assert!(touches.iter().all(|t| t.trigger_unit == Some(enemy)));
+        assert_eq!(health(&app, enemy), 1000.0 - 30.0);
+        assert_eq!(orbit_count(&mut app), 0);
+    }
+
+    #[test]
+    fn orbit_does_not_rehit_while_contact_persists() {
+        let (mut app, caster) = orbit_app(orbit_effect(3, 4.0, TargetTeam::Enemy));
+        // A huge unit on top of the caster is inside every hitbox the whole time.
+        let giant = spawn_unit(&mut app, Team::Dire, Vec3::ZERO);
+        app.world_mut().entity_mut(giant).insert(BoundRadius(400.0));
+        request(&mut app, caster, 3, CastTarget::None);
+        let touches = run_orbit(&mut app, 5.0, 0.05);
+        assert_eq!(touches.len(), 3, "once per orbiter for the whole duration");
+        assert_eq!(health(&app, giant), 1000.0 - 30.0);
+    }
+
+    #[test]
+    fn orbit_rehits_after_contact_ends() {
+        let (mut app, caster) = orbit_app(orbit_effect(3, ORBIT_PERIOD * 2.0, TargetTeam::Enemy));
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(180.0, 0.0, 0.0));
+        request(&mut app, caster, 3, CastTarget::None);
+        let touches = run_orbit(&mut app, 5.0, 0.05);
+        assert_eq!(touches.len(), 6, "each orbiter passes the enemy twice");
+        assert_eq!(health(&app, enemy), 1000.0 - 60.0);
+    }
+
+    #[test]
+    fn orbit_substeps_prevent_tunnelling_at_low_fps() {
+        for dt in [0.1, 0.25, 0.5] {
+            let (mut app, caster) = orbit_app(orbit_effect(3, ORBIT_PERIOD, TargetTeam::Enemy));
+            let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(180.0, 0.0, 0.0));
+            request(&mut app, caster, 3, CastTarget::None);
+            // The cast frame, then frames of `dt`: the hitbox moves more than its own size
+            // between frames at the larger steps.
+            step(&mut app);
+            let touches = run_orbit(&mut app, 3.0, dt);
+            assert_eq!(touches.len(), 3, "dt {dt}");
+            assert_eq!(health(&app, enemy), 1000.0 - 30.0, "dt {dt}");
+        }
+    }
+
+    #[test]
+    fn orbit_ignores_allies_caster_and_cycloned_units() {
+        let (mut app, caster) = orbit_app(orbit_effect(3, 3.0, TargetTeam::Enemy));
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(180.0, 0.0, 0.0));
+        let cycloned = spawn_unit(&mut app, Team::Dire, Vec3::new(-180.0, 0.0, 0.0));
+        app.world_mut()
+            .get_mut::<StatusEffects>(cycloned)
+            .unwrap()
+            .effects
+            .push(crate::status::StatusEffect::cyclone(10.0, true));
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(0.0, 0.0, 180.0));
+        request(&mut app, caster, 3, CastTarget::None);
+        let touches = run_orbit(&mut app, 3.0, 0.05);
+        assert!(touches.iter().all(|t| t.trigger_unit == Some(enemy)));
+        assert!(!touches.is_empty());
+        assert_eq!(health(&app, ally), 1000.0);
+        assert_eq!(health(&app, cycloned), 1000.0);
+
+        // Whoever the team rule allows, the caster is never touched by its own orbit.
+        let (mut app, caster) = orbit_app(AbilityEffect::Orbit {
+            count: 3,
+            radius: AreaRadius::Fixed(RankValue::fixed(100.0)),
+            hit_radius: 300.0,
+            period: RankValue::fixed(ORBIT_PERIOD),
+            duration: RankValue::fixed(2.0),
+            team: TargetTeam::Any,
+            then: ORBIT_TOUCH,
+        });
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(50.0, 0.0, 0.0));
+        request(&mut app, caster, 3, CastTarget::None);
+        let touches = run_orbit(&mut app, 2.0, 0.05);
+        assert!(touches.iter().any(|t| t.trigger_unit == Some(ally)));
+        assert!(touches.iter().all(|t| t.trigger_unit != Some(caster)));
+        assert_eq!(health(&app, caster), 1000.0);
+    }
+
+    #[test]
+    fn orbit_ends_on_duration_and_on_caster_death() {
+        let (mut app, caster) = orbit_app(orbit_effect(3, 2.0, TargetTeam::Enemy));
+        request(&mut app, caster, 3, CastTarget::None);
+        run_orbit(&mut app, 1.0, 0.05);
+        assert_eq!(orbit_count(&mut app), 1);
+        run_orbit(&mut app, 1.5, 0.05);
+        assert_eq!(orbit_count(&mut app), 0, "ended with its duration");
+
+        let (mut app, caster) = orbit_app(orbit_effect(3, 10.0, TargetTeam::Enemy));
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(180.0, 0.0, 0.0));
+        request(&mut app, caster, 3, CastTarget::None);
+        run_orbit(&mut app, 0.3, 0.05);
+        assert_eq!(orbit_count(&mut app), 1);
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 0.0;
+        let touches = run_orbit(&mut app, 3.0, 0.05);
+        assert!(touches.is_empty(), "a dead caster's spirits do not hit");
+        assert_eq!(orbit_count(&mut app), 0, "despawned, not paused");
+        assert_eq!(health(&app, enemy), 1000.0);
+    }
+
+    #[test]
+    fn item_and_ability_orbit_alike() {
+        static ITEM_EFFECTS: std::sync::OnceLock<&'static [AbilityEffectEntry]> =
+            std::sync::OnceLock::new();
+        let item_effects = ITEM_EFFECTS.get_or_init(|| {
+            Box::leak(Box::new([
+                AbilityEffectEntry {
+                    trigger: AbilityTrigger::OnUse,
+                    target: EffectTarget::Caster,
+                    effect: orbit_effect(3, 3.0, TargetTeam::Enemy),
+                },
+                AbilityEffectEntry {
+                    trigger: ORBIT_TOUCH,
+                    target: EffectTarget::TriggerUnit,
+                    effect: fixed_magical_damage(10.0),
+                },
+            ]))
+        });
+        let item = ItemDefinition {
+            id: ItemId::StormRod,
+            name: "Parity Orbit",
+            short_label: "PO",
+            item_type: ItemType::Miscellaneous,
+            cost: 1,
+            sell_value: 0,
+            tier: 1,
+            rarity: ItemRarity::Common,
+            max_stack: 1,
+            consumable: false,
+            max_charges: None,
+            cooldown: 0.0,
+            activation: ItemActivation {
+                target_type: TargetType::NoTarget,
+                target_team: TargetTeam::Enemy,
+                cast_range: 0.0,
+                cast_time: 0.0,
+                channel_time: 0.0,
+                mana_cost: 0.0,
+            },
+            components: &[],
+            color: [1.0, 1.0, 1.0],
+            description: "test",
+            effects: item_effects,
+            mechanics: &[],
+        };
+
+        let (mut ability_app, ability_caster) = orbit_app(orbit_effect(3, 3.0, TargetTeam::Enemy));
+        let ability_enemy = spawn_unit(&mut ability_app, Team::Dire, Vec3::new(180.0, 0.0, 0.0));
+        request(&mut ability_app, ability_caster, 3, CastTarget::None);
+
+        let mut item_app = test_app();
+        let _defs = install_test_item_definitions([item]);
+        let item_caster = spawn_caster_with_inventory(&mut item_app, KIT);
+        give_item(&mut item_app, item_caster, ItemId::StormRod);
+        let item_enemy = spawn_unit(&mut item_app, Team::Dire, Vec3::new(180.0, 0.0, 0.0));
+        request_item(&mut item_app, item_caster, 0, CastTarget::None);
+
+        let shape = |app: &mut App, enemy: Entity| {
+            let mut touches = Vec::new();
+            for index in 0..100 {
+                step(app);
+                for touch in orbit_touches(app) {
+                    touches.push((
+                        index,
+                        touch.trigger_unit == Some(enemy),
+                        touch.depth,
+                        touch.reaction,
+                        touch.attack,
+                    ));
+                }
+            }
+            touches
+        };
+        let from_ability = shape(&mut ability_app, ability_enemy);
+        let from_item = shape(&mut item_app, item_enemy);
+        assert!(from_ability.len() >= 3);
+        assert_eq!(from_ability, from_item);
+        assert_eq!(
+            health(&ability_app, ability_enemy),
+            health(&item_app, item_enemy)
+        );
     }
 
     // ---- Sniper ----
