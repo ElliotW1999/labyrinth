@@ -305,6 +305,12 @@ pub enum ItemId {
     SoulRing,
     RecipeSoulRing,
     PowerTreads,
+    PhaseBoots,
+    OblivionStaff,
+    Perseverance,
+    BootsOfTravel,
+    RecipeBootsOfTravel,
+    MoonShard,
     // </item_generator:item_enum>
 }
 
@@ -644,6 +650,12 @@ impl ItemId {
             ItemId::SoulRing,
             ItemId::RecipeSoulRing,
             ItemId::PowerTreads,
+            ItemId::PhaseBoots,
+            ItemId::OblivionStaff,
+            ItemId::Perseverance,
+            ItemId::BootsOfTravel,
+            ItemId::RecipeBootsOfTravel,
+            ItemId::MoonShard,
             // </item_generator:item_all>
         ]
     }
@@ -3264,6 +3276,96 @@ mod tests {
         assert_eq!(shop.stats.armor, reference.stats.armor);
         assert_eq!(shop.attrs.strength, reference.attrs.strength);
         assert_eq!(shop.health.max, reference.health.max);
+    }
+
+    #[test]
+    fn moon_shard_combines_from_two_hyperstones() {
+        let mut shop = Shopper::new();
+        shop.wallet.gold = 5000;
+        let base = shop.stats.attack_speed_flat;
+        assert!(shop.buy(ItemId::Hyperstone));
+        assert!(!shop.owned().contains(&ItemId::MoonShard));
+        assert!(shop.buy(ItemId::Hyperstone));
+        assert_eq!(shop.owned(), vec![ItemId::MoonShard]);
+        assert_eq!(shop.stats.attack_speed_flat, base + 140.0);
+    }
+
+    #[test]
+    fn phase_boots_and_boots_of_travel_combine() {
+        let mut shop = Shopper::new();
+        shop.wallet.gold = 5000;
+        let (armor, speed, damage) = (
+            shop.stats.armor,
+            shop.stats.move_speed,
+            shop.stats.attack_damage,
+        );
+        for item in [
+            ItemId::BootsOfSpeed,
+            ItemId::Chainmail,
+            ItemId::BladesOfAttack,
+        ] {
+            assert!(shop.buy(item));
+        }
+        assert_eq!(shop.owned(), vec![ItemId::PhaseBoots]);
+        assert_eq!(shop.stats.armor, armor + 4.0);
+        assert_eq!(shop.stats.move_speed, speed + 50.0);
+        assert_eq!(shop.stats.attack_damage, damage + 18.0);
+
+        let mut shop = Shopper::new();
+        shop.wallet.gold = 5000;
+        assert!(shop.buy(ItemId::BootsOfSpeed));
+        assert!(shop.buy(ItemId::RecipeBootsOfTravel));
+        assert_eq!(shop.owned(), vec![ItemId::BootsOfTravel]);
+        assert_eq!(shop.stats.move_speed, speed + 110.0);
+        assert_eq!(ItemId::RecipeBootsOfTravel.cost(), 2000);
+        assert_eq!(ItemId::BootsOfTravel.cost(), 2500);
+    }
+
+    #[test]
+    fn boots_of_speed_combine_priority_is_deterministic() {
+        // Phase Boots, Boots of Travel and Power Treads all take Boots of Speed. When the
+        // parts for several are present the first in `ItemId::all()` order is built.
+        let mut shop = Shopper::new();
+        shop.wallet.gold = 9000;
+        for item in [
+            ItemId::BootsOfSpeed,
+            ItemId::RecipeBootsOfTravel,
+            ItemId::Chainmail,
+            ItemId::BladesOfAttack,
+        ] {
+            assert!(shop.buy(item));
+        }
+        let order = ItemId::all();
+        let position = |id: ItemId| order.iter().position(|&i| i == id).unwrap();
+        assert!(position(ItemId::PhaseBoots) < position(ItemId::BootsOfTravel));
+        assert!(shop.owned().contains(&ItemId::PhaseBoots));
+        assert!(!shop.owned().contains(&ItemId::BootsOfTravel));
+        assert!(shop.owned().contains(&ItemId::RecipeBootsOfTravel));
+    }
+
+    #[test]
+    fn plain_accessories_have_their_listed_passives() {
+        let mut shop = Shopper::new();
+        shop.wallet.gold = 9000;
+        let base_int = shop.attrs.intelligence;
+        let base_as = shop.stats.attack_speed_flat;
+        for item in [
+            ItemId::BlitzKnuckles,
+            ItemId::RobeOfTheMagi,
+            ItemId::SagesMask,
+        ] {
+            assert!(shop.buy(item));
+        }
+        assert_eq!(shop.owned(), vec![ItemId::OblivionStaff]);
+        assert_eq!(shop.attrs.intelligence, base_int + 10.0);
+        assert_eq!(shop.stats.attack_speed_flat, base_as + 35.0);
+
+        let mut shop = Shopper::new();
+        for item in [ItemId::RingOfHealth, ItemId::VoidStone] {
+            assert!(shop.buy(item));
+        }
+        assert_eq!(shop.owned(), vec![ItemId::Perseverance]);
+        assert_eq!(ItemId::Perseverance.definition().short_label, "PV");
     }
 
     #[test]

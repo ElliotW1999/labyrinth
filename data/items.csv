@@ -65,3 +65,9 @@ ghost_scepter,Ghost Scepter,miscellaneous,1500,750,,,FALSE,,FALSE,,"+5 All Attri
 soul_ring,Soul Ring,accessories,700,350,,,FALSE,,FALSE,,"+6 Strength, +2 Armor. Active: pay 150 HP for 150 temporary mana for 10s (raises max mana by any excess)",SR,25,gauntlets_of_strength;gauntlets_of_strength;ring_of_protection;recipe_soul_ring,,,,,,,,,,,,
 recipe_soul_ring,Recipe: Soul Ring,recipe,245,122,,,FALSE,,FALSE,,Combines with components into Soul Ring,R-SR,,,,,,,,,,,,,,
 power_treads,Power Treads,accessories,1400,700,,,FALSE,,FALSE,,"+55 Move Speed, +25 Attack Speed, +10 selected attribute. Active: switch Strength / Agility / Intelligence",PT,0,boots_of_speed;gloves_of_haste;belt_of_strength|band_of_elvenskin|robe_of_the_magi,,,,,,,,,,,,,10
+phase_boots,Phase Boots,accessories,1450,725,,,FALSE,,FALSE,,"+4 Armor, +50 Move Speed, +18 Attack Damage. Active: +10% Move Speed and phased for 3s",PB,8,boots_of_speed;chainmail;blades_of_attack,,,,,,,,,,,,,
+oblivion_staff,Oblivion Staff,accessories,1625,812,,,FALSE,,FALSE,,"+10 Intelligence, +1.25 Mana Regen, +35 Attack Speed",OS,,blitz_knuckles;robe_of_the_magi;sages_mask,,,,,,,,,,,,,
+perseverance,Perseverance,accessories,1400,700,,,FALSE,,FALSE,,"+5.5 HP Regen, +2.25 Mana Regen",PV,,ring_of_health;void_stone,,,,,,,,,,,,,
+boots_of_travel,Boots of Travel,accessories,2500,1250,,,FALSE,,FALSE,,+110 Move Speed,BoT,,boots_of_speed;recipe_boots_of_travel,,,,,,,,,,,,,
+recipe_boots_of_travel,Recipe: Boots of Travel,recipe,2000,1000,,,FALSE,,FALSE,,Combines with components into Boots of Travel,R-BT,,,,,,,,,,,,,,,
+moon_shard,Moon Shard,accessories,4000,2000,,,FALSE,,FALSE,,+140 Attack Speed,MS,,hyperstone;hyperstone,,,,,,,,,,,,,

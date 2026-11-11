@@ -84,6 +84,12 @@ pub fn definition(id: ItemId) -> &'static ItemDefinition {
         ItemId::SoulRing => &SOUL_RING,
         ItemId::RecipeSoulRing => &RECIPE_SOUL_RING,
         ItemId::PowerTreads => &POWER_TREADS,
+        ItemId::PhaseBoots => &PHASE_BOOTS,
+        ItemId::OblivionStaff => &OBLIVION_STAFF,
+        ItemId::Perseverance => &PERSEVERANCE,
+        ItemId::BootsOfTravel => &BOOTS_OF_TRAVEL,
+        ItemId::RecipeBootsOfTravel => &RECIPE_BOOTS_OF_TRAVEL,
+        ItemId::MoonShard => &MOON_SHARD,
     }
 }
 
@@ -2544,3 +2550,262 @@ static POWER_TREADS: ItemDefinition = ItemDefinition {
     mechanics: &[],
 };
 // </item:power_treads>
+
+// <item:phase_boots>
+static PHASE_BOOTS: ItemDefinition = ItemDefinition {
+    id: ItemId::PhaseBoots,
+    name: "Phase Boots",
+    short_label: "PB",
+    item_type: ItemType::Accessories,
+    cost: 1450,
+    sell_value: 725,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 8.0,
+    activation: ItemActivation {
+        target_type: TargetType::NoTarget,
+        target_team: TargetTeam::Any,
+        cast_range: 0.0,
+        cast_time: 0.0,
+        channel_time: 0.0,
+        mana_cost: 0.0,
+    },
+    attribute_toggle: None,
+    components: &[
+        &[ItemId::BootsOfSpeed],
+        &[ItemId::Chainmail],
+        &[ItemId::BladesOfAttack],
+    ],
+    color: [0.758, 0.379, 0.29],
+    description: "+4 Armor, +50 Move Speed, +18 Attack Damage. Active: +10% Move Speed and phased for 3s",
+    effects: &[
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::Armor,
+                amount: RankValue::fixed(4.0),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::MoveSpeed,
+                amount: RankValue::fixed(50.0),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::AttackDamage,
+                amount: RankValue::fixed(18.0),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::OnUse,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::ApplyStatus {
+                status: StatusSpec::MoveSpeedBonus {
+                    id: "phase_boots_move_speed_bonus",
+                    percent: RankValue::fixed(10.0),
+                },
+                duration: RankValue::fixed(3.0),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::OnUse,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::ApplyStatus {
+                status: StatusSpec::Phased,
+                duration: RankValue::fixed(3.0),
+            },
+        },
+    ],
+    mechanics: &[],
+};
+// </item:phase_boots>
+
+// <item:oblivion_staff>
+static OBLIVION_STAFF: ItemDefinition = ItemDefinition {
+    id: ItemId::OblivionStaff,
+    name: "Oblivion Staff",
+    short_label: "OS",
+    item_type: ItemType::Accessories,
+    cost: 1625,
+    sell_value: 812,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    activation: ItemActivation::INSTANT,
+    attribute_toggle: None,
+    components: &[
+        &[ItemId::BlitzKnuckles],
+        &[ItemId::RobeOfTheMagi],
+        &[ItemId::SagesMask],
+    ],
+    color: [0.685, 0.676, 0.81],
+    description: "+10 Intelligence, +1.25 Mana Regen, +35 Attack Speed",
+    effects: &[
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::Attribute(Attribute::Intelligence),
+                amount: RankValue::fixed(10.0),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::ManaRegen,
+                amount: RankValue::fixed(1.25),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::AttackSpeed,
+                amount: RankValue::fixed(35.0),
+            },
+        },
+    ],
+    mechanics: &[],
+};
+// </item:oblivion_staff>
+
+// <item:perseverance>
+static PERSEVERANCE: ItemDefinition = ItemDefinition {
+    id: ItemId::Perseverance,
+    name: "Perseverance",
+    short_label: "PV",
+    item_type: ItemType::Accessories,
+    cost: 1400,
+    sell_value: 700,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    activation: ItemActivation::INSTANT,
+    attribute_toggle: None,
+    components: &[&[ItemId::RingOfHealth], &[ItemId::VoidStone]],
+    color: [0.431, 0.511, 0.565],
+    description: "+5.5 HP Regen, +2.25 Mana Regen",
+    effects: &[
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::HealthRegen,
+                amount: RankValue::fixed(5.5),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::ManaRegen,
+                amount: RankValue::fixed(2.25),
+            },
+        },
+    ],
+    mechanics: &[],
+};
+// </item:perseverance>
+
+// <item:boots_of_travel>
+static BOOTS_OF_TRAVEL: ItemDefinition = ItemDefinition {
+    id: ItemId::BootsOfTravel,
+    name: "Boots of Travel",
+    short_label: "BoT",
+    item_type: ItemType::Accessories,
+    cost: 2500,
+    sell_value: 1250,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    activation: ItemActivation::INSTANT,
+    attribute_toggle: None,
+    components: &[&[ItemId::BootsOfSpeed], &[ItemId::RecipeBootsOfTravel]],
+    color: [0.596, 0.539, 0.725],
+    description: "+110 Move Speed",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::MoveSpeed,
+            amount: RankValue::fixed(110.0),
+        },
+    }],
+    mechanics: &[],
+};
+// </item:boots_of_travel>
+
+// <item:recipe_boots_of_travel>
+static RECIPE_BOOTS_OF_TRAVEL: ItemDefinition = ItemDefinition {
+    id: ItemId::RecipeBootsOfTravel,
+    name: "Recipe: Boots of Travel",
+    short_label: "R-BT",
+    item_type: ItemType::Recipe,
+    cost: 2000,
+    sell_value: 1000,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    activation: ItemActivation::INSTANT,
+    attribute_toggle: None,
+    components: &[],
+    color: [0.257, 0.419, 0.582],
+    description: "Combines with components into Boots of Travel",
+    effects: &[],
+    mechanics: &[],
+};
+// </item:recipe_boots_of_travel>
+
+// <item:moon_shard>
+static MOON_SHARD: ItemDefinition = ItemDefinition {
+    id: ItemId::MoonShard,
+    name: "Moon Shard",
+    short_label: "MS",
+    item_type: ItemType::Accessories,
+    cost: 4000,
+    sell_value: 2000,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    activation: ItemActivation::INSTANT,
+    attribute_toggle: None,
+    components: &[&[ItemId::Hyperstone], &[ItemId::Hyperstone]],
+    color: [0.49, 0.459, 0.845],
+    description: "+140 Attack Speed",
+    effects: &[AbilityEffectEntry {
+        trigger: AbilityTrigger::Passive,
+        target: EffectTarget::Caster,
+        effect: AbilityEffect::PassiveStat {
+            stat: PassiveStat::AttackSpeed,
+            amount: RankValue::fixed(140.0),
+        },
+    }],
+    mechanics: &[],
+};
+// </item:moon_shard>
