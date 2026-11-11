@@ -9,7 +9,7 @@ Plan and decisions: `docs/plans/2026-11-08-mechanic-composition-layers.md`. Reac
 | Layer | Purpose | Owning code | May emit | May read |
 |---|---|---|---|---|
 | **Activation** | How an action starts: targeting, range, cost, cooldown, cast point, channel | `src/actions/` (`pipeline.rs`, `targeting.rs`, `resources.rs`); source-specific halves in `abilities/casting.rs` (`ability_action_spec`, `commit_ability`) and `items.rs` (`item_action_spec`, `commit_item`) | `ActionFiredEvent`, `ActionChannelEndEvent`; facts `AbilityCastEvent` (abilities only) and `CooldownReadyEvent` (carries an `EffectSource`, written when `ActionCooldown::tick` reports the cooldown became ready) | Loadout / inventory, mana, cooldowns, statuses (`DisableRule`) |
-| **Mechanics** | How an action plays out over time and **who** is involved: dash, projectile (homing, skillshot, skillshot that widens with distance via `end_radius`), `ProjectileToEach` (one homing projectile per unit in an area), attack-unit, the four gates (`Proc` incl. pseudo-random, `Counter`, `Accumulate`, `Chain`; gate state in `TriggerCounters { counts, prd, sums }`), and the `Zone` gate (a delayed, persistent area that fires a custom trigger on every tick; `abilities/zones.rs`) | `abilities/mechanics.rs` (`MechanicRunner`, `CastContext`, `chain_hops`, `execute_ability_casts`, `execute_item_mechanics`), `combat.rs` projectile systems, `displacement.rs` motion | `AbilityTriggerEvent`, `SpawnProjectileEvent`, `DisplacementEvent` (dash). Never Damage, Heal or Status events | Positions, teams, health (alive), untargetable |
+| **Mechanics** | How an action plays out over time and **who** is involved: dash, projectile (homing, skillshot, skillshot that widens with distance via `end_radius`), `ProjectileToEach` (one homing projectile per unit in an area), attack-unit, the four gates (`Proc` incl. pseudo-random, `Counter`, `Accumulate`, `Chain`; gate state in `TriggerCounters { counts, prd, sums }`), the `Zone` gate (a delayed, persistent area that fires a custom trigger on every tick; `abilities/zones.rs`) and the `Orbit` gate (hitboxes circling the caster that fire a custom trigger on every new contact; `abilities/orbits.rs`) | `abilities/mechanics.rs` (`MechanicRunner`, `CastContext`, `chain_hops`, `execute_ability_casts`, `execute_item_mechanics`), `combat.rs` projectile systems, `displacement.rs` motion | `AbilityTriggerEvent`, `SpawnProjectileEvent`, `DisplacementEvent` (dash). Never Damage, Heal or Status events | Positions, teams, health (alive), untargetable |
 | **Triggers** | **When** effects run: `AbilityTrigger` plus the systems that emit it | `definition.rs` (`AbilityTrigger`, `StatusFilter`, `Condition`), `mechanics.rs` (`OnCast`, `projectile_hit_triggers`), `items.rs` (`OnUse`), `casting.rs` (channel end), `attack_triggers.rs`, `displacement.rs` (contact, movement end), `passive.rs` (`WhileToggled`), `reactive_triggers.rs` (dispatchers `track_travel`, `proximity_triggers`, `interval_triggers`, `cooldown_triggers`, `cast_triggers`, `damage_triggers`, `status_triggers`; state `TriggerTracking`; shared fan-out `owner_sources` / `source_triggers` / `fan_out`) | `AbilityTriggerEvent(TriggerContext)`. The dispatchers read only fact messages (I11) | The fired action; fact messages from the Effects and Gameplay-rules layers |
 | **Effects** | **What** happens: `AbilityEffect` rows executed by the single executor. This is also the only place the reaction flag is stamped (I1, I10) | `abilities/effects.rs` (`EffectRunner::execute`, `resolve_ability_triggers`, `build_status_effect`) | `DamageEvent`, `HealEvent`, `ManaRestoreEvent`, `ResourceDrainEvent`, `StatusEffectEvent` (all stamped `.reactive(ctx.reaction)`), `DisplacementEvent`, `TeleportEvent`, `ExtraAttackEvent`, derived contexts from gates; the fact `SpellHitEvent` (ability source, depth 0, cast phase only) | Context, target stats and statuses (for scaling) |
 | **Modifiers** | Persistent numeric changes | `PassiveStat` / `ItemPassives` (`items.rs`, `abilities/passive.rs`), `StatusSpec` modifier variants and `StatusEffect` stat fields (`status.rs`), `vitals::resource_stat` | Stat changes through `CombatStats` | Owned items, ranks, active statuses |
@@ -82,16 +82,16 @@ Gates feed back: `Proc` / `RequireStatus` / `Counter` / `Accumulate` / `Chain` p
 
 All systems below run in `Update`. The two plugin chains interleave: the abilities chain (2) runs after `apply_projectile_hits` and before `apply_damage_events`, both of which belong to the combat chain (1).
 
-1. **Combat chain** (`CombatPlugin`): attack cooldowns, basic attack requests and windups, releases, impacts, projectile flight (`fly_projectiles`, `skillshot_contacts`), `apply_projectile_hits`, *[abilities chain runs here]*, **`apply_damage_events`**, lifetimes, `despawn_dead`.
+1. **Combat chain** (`CombatPlugin`): attack cooldowns, basic attack requests and windups, releases, impacts, projectile flight (`fly_projectiles`, `skillshot_contacts`), `apply_projectile_hits`, *[abilities chain runs here]*, **`apply_damage_events`**, lifetimes, `despawn_dead` (which also decides conversions: a `Creep` that died inside a living enemy `convert_on_death` holder's radius writes `CreepConvertedEvent`), `spawn_converted_creeps` (reads it and spawns the risen creeps through `spawn_creep`, with a 30 s `Lifetime`).
 2. **Abilities chain** (`AbilitiesPlugin`), ordered `.after(SimSet::Commands)`, `.after(apply_projectile_hits)` and `.before(apply_damage_events)`:
    1. cooldown, mana regen, `tick_toggle_upkeep`, `sync_ability_passives`
    2. activation: `resolve_queued_activations`, `validate_activation_requests`, `refresh_activation_aims`, `tick_activations` (emits `ActionFiredEvent`)
    3. `emit_ability_casts`, then `resolve_item_uses` (OnUse) followed by `execute_item_mechanics`, then `execute_ability_casts` (mechanics and OnCast)
    4. `action_channel_end_triggers`, `projectile_hit_triggers`, `attack_triggers`, `consume_attack_charges`, `break_invisibility` (reads non-extra `BasicAttackReleaseEvent` and `ActionFiredEvent`; writes `StatusChange::Remove` for invisibility that breaks on action)
    5. `tick_forced_movement`, `settle_grounded_units` (contact and movement-end triggers)
-   6. reactive dispatchers, chained in this order: `track_travel`, `proximity_triggers`, `interval_triggers`, `tick_zones` (fires the zone ticks that came due; a `follow_caster` zone is first re-centred on its caster, or despawned when the caster is dead), `cooldown_triggers` (reads `CooldownReadyEvent`), `cast_triggers` (reads `AbilityCastEvent`, `SpellHitEvent`), `damage_triggers` (reads `DamageAppliedEvent`), `status_triggers` (reads `StatusLifecycleEvent`, `.after(tick_status_effects)`), `sync_conditional_statuses` (`While` rows)
+   6. reactive dispatchers, chained in this order: `track_travel`, `proximity_triggers`, `interval_triggers`, `tick_zones` (fires the zone ticks that came due; a `follow_caster` zone is first re-centred on its caster, or despawned when the caster is dead), `tick_orbits` (moves each orbit's hitboxes in sub-steps of at most one hit radius and fires the trigger for every unit that newly enters a hitbox; a dead caster ends the orbit), `cooldown_triggers` (reads `CooldownReadyEvent`), `cast_triggers` (reads `AbilityCastEvent`, `SpellHitEvent`), `damage_triggers` (reads `DamageAppliedEvent`), `status_triggers` (reads `StatusLifecycleEvent`, `.after(tick_status_effects)`), `sync_conditional_statuses` (`While` rows)
    7. **`resolve_ability_triggers`** (effects, including gates and their derived contexts; writes `SpellHitEvent`)
-   8. `spawn_requested_zones` (reads `SpawnZoneEvent`; the zone starts counting next frame), `spawn_requested_projectiles`
+   8. `spawn_requested_zones` (reads `SpawnZoneEvent`; the zone starts counting next frame), `spawn_requested_orbits` (reads `SpawnOrbitEvent`; same), `spawn_requested_projectiles`
    9. appliers in order: heals, mana restore, resource drains, displacement, status events (write `StatusLifecycleEvent`), resource-cap sync, attribute sync (`sync_status_attributes`, so it runs after `apply_status_effect_events` and `tick_status_effects`), teleport (`before(SimSet::Ai)`; writes `TeleportCompletedEvent` / `TeleportRejectedEvent`)
 3. `tick_status_effects` runs `.before(apply_damage_events)` so DoT damage lands in the same damage pass, and `.after(tick_activations).after(tick_attack_swings)` so interrupt checks see a stun before it expires (a stun shorter than one frame still cancels a channel, cast point or swing).
 4. `SimSet::Commands` then `Ai` then `Movement` order the unit orders and locomotion. Inside `Ai` the chain is `follow_lane_waypoints`, `acquire_targets`, `player_attack_move`, **`enforce_compulsions`**, `assign_attack_positions`: `enforce_compulsions` is the single order writer for feared, taunted and hypnotized units (it clears their queue and attack-move, writes the forced `MoveTarget` / `AttackTarget`, and ends taunt / hypnosis when the source is gone), so it must run after everything that could write an order and before attack positions are assigned. `process_issued_commands` drops commands for units whose `ActionBlocks` contain `ORDERS`.
@@ -110,6 +110,7 @@ A chain hop therefore resolves in the same frame as the trigger that started it 
 | `on_cooldown_ready`, `on_interval`, `on_move`, `on_enemy_enter`, `on_enemy_leave` | same frame | Emitted by the dispatchers from this frame's state |
 | gate output (`on_overload`, `on_chain_hit`, ...) | same frame as the trigger that fed the gate | Derived contexts resolve in the same call |
 | zone tick (`on_shrapnel_tick`, ...) | the frame the tick comes due (`delay + k x interval`), resolved in that frame's `resolve_ability_triggers` | A zone spawned in frame N starts counting in N+1; overdue ticks catch up in one frame, never more than `ticks` in total |
+| orbit contact (`on_spirit_guardians_touch`, ...) | the frame a hitbox starts touching a unit, resolved in that frame's `resolve_ability_triggers` | An orbit spawned in frame N starts moving in N+1; each orbiter re-fires for a unit only after the unit left its hitbox |
 | `on_channel_tick`, `on_expire` | never | Not emitted yet; both generators warn |
 
 A reaction to damage therefore lands one frame after the hit that caused it, and a chain started by that reaction resolves in that later frame.
@@ -134,6 +135,8 @@ Four storage styles coexist on purpose. Pick by the kind of change and keep a st
 
 **Attack point override.** `StatusEffect.attack_point_override` (`apply_status,attack_point`) follows the cap pattern below: it is read only by `CombatStats::effective_attack_point` (lowest live value wins, clamped to `MAX_ATTACK_SWING`) when `start_basic_attack_windups` begins a swing, and is not a stat delta, so nothing is reverted when it ends. Backswing is unchanged.
 
+**Percent magic resistance** (`StatusEffect.magic_resist_fraction`, `apply_status,magic_resistance`) is a read-time factor like `damage_reduction`: `StatusEffects::magic_damage_factor()` (the product of `1 - f` over live effects) multiplies the post-mitigation damage of magical events in `apply_damage_events`, after the magic-resist rating. It is not a stat delta, so nothing is reverted when it ends.
+
 **Heal over time.** `StatusEffect.heal_per_sec` plus `heal_max_health_fraction` (percent of the holder's current max health per second, read each tick); `build_status_effect` folds the healer's amp into both parts once.
 
 **Caps.** `StatusEffect.move_speed_cap` (0 = none) is applied by `CombatStats::effective_move_speed` as `.min(lowest live cap)` after the `scale::MIN_MOVE_SPEED` floor and the slow sum. Hex uses `scale::HEX_MOVE_SPEED`; the cap is not a stat delta, so nothing is reverted when it ends.
@@ -152,7 +155,14 @@ How each protection treats each kind of effect. "Skipped" means the unit is neve
 | **Displacement** (`DisplacementEvent`) | No effect | Hostile displacement skipped (`displacement.rs` via `status::hostile` + `blocks_hostile_relocation`); own and ally motion allowed | Cyclone motion has `Suspend` priority, so other motion is refused while it runs | No effect | No; a cyclone launched by a reaction applies a reactive status, so it is silent |
 | **Teleport** (`TeleportEvent`) | No effect | Hostile teleport rejected with `TeleportError::Immune` (`teleport.rs`); self and ally teleports ignore it | `TeleportError::Suspended` while the cyclone motion runs; not selected as an effect target | No effect | No; completed teleports only reset travel tracking (not counted for `on_move`) |
 | **Damage reduction** (`StatusSpec::DamageReduction`) | Not reached (the event is dropped first) | No effect (a buff) | Not selected | Not reached (damage immunity resolves to 0 first) | Not an event: `StatusEffects::damage_taken_factor()` multiplies the post-mitigation damage in `combat::resolve_incoming_damage` for every damage type; shields soak the pre-armor amount first |
+| **Magic resistance %** (`StatusSpec::MagicResistance`) | Not reached (the event is dropped first) | No effect (a buff) | Not selected | Not reached | Not an event: `StatusEffects::magic_damage_factor()` multiplies the post-mitigation damage of magical events only, together with `damage_taken_factor()`, so it stacks multiplicatively with the rating and with other percent sources |
+| **Damage share** (`StatusSpec::DamageShare`) | A bonded target that is invulnerable emits no copy; an invulnerable partner drops the copy | No effect (a buff) | Not selected | The target's own immunity does not stop the copy (it is made from the incoming event), but the partner's immunity applies to it | The copy is a `reactive` event: it fires no damage triggers, is never shared again and grants no lifesteal |
+| **Convert on death** (`StatusSpec::ConvertOnDeath`) | No effect | No effect (a buff) | A holder that is cycloned still converts; only `Creep` units convert | No effect | Not an event: `despawn_dead` reads `convert_radius()` of living enemy holders and writes `CreepConvertedEvent` |
 | **Status resistance** (`StatusSpec::StatusResistance`) | No effect | No effect (a buff); a debuff-immune unit still rejects the debuff | Not selected | No effect | Not an event: `apply_status_effect_events` scales the duration of a finite hostile debuff (another unit as source, not reactive) by `status_resistance_factor()` before applying it |
+
+**Damage pipeline order** (`apply_damage_events`, per `DamageEvent`): drop dead or invulnerable targets, wake from sleep, outgoing amps (`resolve_outgoing_amount`), shields, block, armor or magic-resist rating, `incoming_damage_amp`, then the read-time factors (`damage_taken_factor()` and, for magical damage, `magic_damage_factor()`), the mana shield, then health. The **share step comes last**: a non-reactive event on a bonded target pushes a `reactive` copy of the pre-mitigation damage (same type) for the partner, written next to reflected damage and read next frame; the target's own health delta is untouched.
+
+**Area team rule** (`units_in_radius`, generator): an enemy or both ability keeps its `target_team`; an ally or self ability follows the polarity of the row, so harmful rows (damage, debuffs, knockback) select enemies and beneficial rows (heal, buffs) select allies. Items always follow polarity.
 
 ### Disable matrix, targeting and spell landing
 
@@ -675,6 +685,36 @@ winters_curse,2,on_cast,units_in_radius,apply_status,taunt_target,50|65|80|87.5,
 ```
 
 Tests: `winter_wyvern_matches_spec`, `winter_wyvern_abilities_generate_expected_definitions`, the `arctic_burn_*`, `splinter_blast_*`, `cold_embrace_*` and `winters_curse_*` integration tests in `abilities/mod.rs`, plus one set per gap.
+
+### 6.17 Shadowheart
+
+All four abilities are data rows (`purification`, `warding_bond`, `spirit_guardians`, `sharran_conversion`; trigger `on_spirit_guardians_touch`; status ids `warding_bond_armor`, `warding_bond_magic_resistance`, `damage_share`, `convert_on_death`). Plan and decisions: `docs/plans/2026-11-11-shadowheart-hero.md`.
+
+New surface (nothing else was added):
+
+| Gap | Surface | Where it lives |
+|---|---|---|
+| G1 | `units_in_radius` team follows effect polarity on ally and self abilities | `generator_common.py` |
+| G2 | `apply_status,magic_resistance` (`StatusSpec::MagicResistance`, `StatusEffects::magic_damage_factor()`) | `status.rs`, `combat.rs`, `definition.rs` |
+| G3 | `apply_status,damage_share` (`StatusSpec::DamageShare`): a reactive copy of incoming damage for the status source | `status.rs`, `combat.rs` (`apply_damage_events`) |
+| G4 | `orbit` effect type / `AbilityEffect::Orbit`: orbiting hitboxes that fire a custom trigger on each new contact | `abilities/orbits.rs`, `effects.rs`, `generator_common.py` |
+| G5 | `apply_status,convert_on_death` (`StatusSpec::ConvertOnDeath`), `Creep.ranged`, `CreepConvertedEvent`, `units::spawn_converted_creeps`, `LaneFollower::resume_from` | `combat.rs` (`despawn_dead`), `units.rs`, `ai.rs` |
+
+**Purification** (ally unit target, 700, radius 260): a heal on the cast target and pure damage to the enemies within 260 of it (G1 makes the area select enemies even though the ability targets allies). It may be self-cast.
+
+**Warding Bond** (ally unit target, 10 s at every rank): `stat_modifier,armor` and `magic_resistance` on the caster and the target, and `damage_share` (100%) on the target. The target takes every hit in full; Shadowheart also receives a reactive copy of the incoming damage before mitigation, with the same damage type, one frame later, and applies her own armor, magic resistance, shields and damage reduction to it. There is no distance break and the copy can kill her. Self-cast applies the buffs once and shares nothing.
+
+**Spirit Guardians** (no target): three hitboxes (radius 80) circle at 180 for 3 to 7.5 s, one revolution per 1.41 s, starting at her facing. Each contact fires `on_spirit_guardians_touch`, where a pure `damage` row targets the `trigger_unit`; damage is per contact, not per second, and each spirit remembers its own contacts.
+
+**Sharran Conversion** (no target): a 5 to 10 s `convert_on_death` aura of radius 300. Enemy creeps that die inside it (whoever killed them, bounty paid as usual) are replaced by a fresh creep of Shadowheart's team at the death point, resuming its lane forward, for 30 s. Heroes, towers and the training dummy never convert.
+
+```csv
+warding_bond,4,on_cast,cast_target,apply_status,damage_share,,,10,,100,,
+spirit_guardians,0,on_cast,caster,orbit,on_spirit_guardians_touch:80,3,,3|4|5|6|6.5|7|7.5,180,1.41,,
+sharran_conversion,0,on_cast,caster,apply_status,convert_on_death,300,,5|7|9|10,,,,
+```
+
+Tests: `shadowheart_matches_spec`, `shadowheart_abilities_generate_expected_definitions`, the `purification_*`, `warding_bond_*`, `spirit_guardians_*` and `sharran_conversion_*` integration tests in `abilities/mod.rs`, the `orbit_*` tests, the `damage_share` and `magic_resistance` modules in `combat.rs`, and the `conversion` module in `sim_tests.rs`.
 
 ## 7. Checklist: adding a mechanic, effect or trigger
 

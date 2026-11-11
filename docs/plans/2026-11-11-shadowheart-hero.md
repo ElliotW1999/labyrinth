@@ -454,3 +454,54 @@ Environment: install the Bevy system libraries with apt if they are missing (as 
   - The tooltip says "rise again as allies for 30s".
   - In §6, the description becomes: "For a short time, enemy creeps that die near Shadowheart rise again as her allies at full health for 30 seconds".
 - **A5.** The data descriptions for Warding Bond (§6) say: "both gain armor and magic resistance, and all damage the ally takes is also dealt to Shadowheart".
+
+---
+
+## 14. Implementation notes (2026-11-11)
+
+Built in the plan's order, one commit per step (G1, G2, G3, G4, G5, data, docs). §13 was applied throughout: Warding Bond lasts 10 s, `damage_share` duplicates the incoming pre-mitigation damage (100 for Warding Bond) while the target still takes everything, and converted creeps get a 30 s `Lifetime`. Only the gaps G1–G5 were built.
+
+### What was built, and where
+
+| Step | Surface | Files |
+|---|---|---|
+| G1 | `units_in_radius` team: `ctx.team` wins only for enemy / both abilities, otherwise effect polarity. `AreaPolarityTests`. No generated Rust changed | `generator_common.py` |
+| G2 | `StatusSpec::MagicResistance { id, percent }`, `StatusEffect.magic_resist_fraction`, `StatusEffects::magic_damage_factor()`, folded into `taken_factor` for magical events; tooltip rows; generator keyword and owner id | `status.rs`, `combat.rs`, `definition.rs`, `tooltip.rs`, `generator_common.py` |
+| G3 | `StatusSpec::DamageShare { percent }`, `StatusEffect.damage_share: Option<DamageShare { partner, fraction }>`, `StatusEffects::damage_share()`; the copy is emitted from `apply_damage_events` | same files |
+| G4 | `AbilityEffect::Orbit`, `SpawnOrbitEvent`, `AbilityOrbit`, `spawn_requested_orbits`, `tick_orbits`; scheduled beside the zone systems in the plugin and both test apps; `orbit` effect type | new `abilities/orbits.rs`, `effects.rs`, `definition.rs`, `mod.rs`, `tooltip.rs`, `generator_common.py` |
+| G5 | `StatusSpec::ConvertOnDeath { radius }`, `StatusEffect.convert_radius`, `CreepConvertedEvent`, conversion check in `despawn_dead`, `units::spawn_converted_creeps`, `CONVERTED_CREEP_LIFETIME_SECS`, `Creep.ranged`, `spawn_creep` returns its `Entity`, `LaneFollower::resume_from` | `status.rs`, `combat.rs`, `units.rs`, `ai.rs`, `components.rs` |
+| Data | The §6–§8 rows (with the §13 changes), the generated kit, the hero arm, invalid examples | `data/`, `generated.rs`, `heroes.rs`, `components.rs` |
+
+### Deviations and judgement calls
+
+1. **Amount of the shared copy (G3 / A2).** The copy's `amount` is the incoming amount before the target's mitigation, but the copy goes through `apply_damage_events` again, with the same source, and that pass re-applies the source's outgoing physical amp (`resolve_outgoing_amount`). So a physical copy carries the raw `event.amount`, and a magical or pure copy carries the amount after outgoing amps (`outgoing`, which already holds any spell amp; the copy is `is_spell: false`, so it is not amplified twice). In both cases the partner receives the source's amps exactly once. This is what "pre-mitigation, same damage type" means once the outgoing amp is taken into account; without it a physical hit would be amplified twice.
+2. **Partner alive check.** A dead or despawned partner is not checked when the copy is emitted (the target's query borrow is held there); the copy is dropped when it is processed on the next frame (dead or missing target, or invulnerable). The result is the same as the plan's "partner must be alive" rule.
+3. **Self-sourced bond.** `StatusBuildContext` does not know the holder, so "partner == target" is decided at damage time (no copy), not when the status is built. A bond with no source builds a plain `damage_share` buff.
+4. **Damage-immune targets.** §13 says the copy is emitted when the target is alive and not invulnerable. A target that is only damage-immune (for example spell immunity against magic) still emits the copy, as the plan states. If that is not wanted, add `&& !damage_immune` to the condition in `apply_damage_events`.
+5. **Orbit angle.** `start_angle` is `atan2(forward.z, forward.x)` of the caster's facing, so orbiter 0 starts in front of her; angles increase counter-clockwise in the XZ plane (as written in `AbilityOrbit::offset`). The orbit entity's `Transform` is moved to the caster every frame and the sphere visuals are its children (only when `SharedAssets` carries the meshes; `SharedAssets::default()` in the test apps does).
+6. **System tuple size.** The abilities chain in `AbilitiesPlugin` and in the test app reached Bevy's 20-member tuple limit, so `spawn_requested_zones` and `spawn_requested_orbits` are grouped as one chained sub-tuple. Order is unchanged.
+7. **Other test plumbing.** The items test app registers `SpawnOrbitEvent` (the effect runner takes it as a parameter), and the `combat::tests` XP helper registers `CreepConvertedEvent`.
+8. **Test layout.** The orbit tests are flat functions under a `// ---- orbits ----` header in `abilities/mod.rs` (like the zone tests) instead of a nested `mod orbits`, which would shadow the `orbits` module. The G3 tests are in `combat.rs` (`mod damage_share`, an `App` is used so the copy is read on the next update), the G2 tests in `combat.rs` (`mod magic_resistance`).
+9. **Invalid examples.** They reuse the existing `fireball` ability of `data/examples/invalid/` (indexes 48-61). The first two `damage_share` rows and the `cast_target` orbit row also report that fireball is not a unit ability; the intended error is reported as well.
+10. **`war_cry`.** Its generated area team flips to Enemy only in the validation output of the examples (no example is generated into `src/`), so no file changed for it.
+11. **Clippy attribute.** `despawn_dead` has `#[allow(clippy::type_complexity)]` after its query grew.
+
+### Behaviour notes for reviewers
+
+- Orbit damage is per contact entry. A unit standing still on the path takes one hit per orbiter pass (a rank 1 orbit of 3 s hits a stationary unit on the path 6 times: `spirit_guardians_ends_after_duration`).
+- `convert_on_death` takes the nearest living enemy holder; a converted creep is a `Creep`, so it can be converted back, with a fresh 30 s `Lifetime`.
+- The HUD MR stat still shows the rating only (known limitation from G2). Orbit spheres and `StatusEffects` exist on the sim authority only, so clients do not see the spirits (as for zones).
+
+### Verification (all run on this branch)
+
+| Command | Result |
+|---|---|
+| `cargo fmt --check` | clean |
+| `cargo build` | succeeds (the 4 warnings were already there) |
+| `cargo test` | 832 passed, 0 failed |
+| `python3 scripts/AbilityGenerator.py --check` | 34 abilities, 87 effect rows |
+| `python3 scripts/ItemGenerator.py --check` | 60 items, 85 effect rows |
+| `AbilityGenerator.py` / `ItemGenerator.py` on `data/examples/` with `--check` | 47 abilities, 113 rows / 28 items, 56 rows |
+| `python3 -m unittest test_generator_common` (in `scripts/`) | 229 tests, OK |
+| `python3 scripts/HeroGenerator.py data/heroes.example.csv --dry-run` | nothing to add (Shadowheart already present) |
+| `git diff --stat src/abilities/generated.rs src/item_catalog.rs` against the plan commit | `generated.rs` +217 / -0 (the 4 Shadowheart blocks); `item_catalog.rs` unchanged |
