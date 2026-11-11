@@ -412,7 +412,9 @@ pub struct ItemDefinition {
     pub cooldown: f32,
     /// Targeting, timing, and cost of the active (ignored without `OnUse` effects).
     pub activation: ItemActivation,
-    pub components: &'static [ItemId],
+    /// Recipe slots: each slot lists the alternatives that can fill it, in preference order
+    /// (the first one the hero owns is consumed). Empty = basic item.
+    pub components: &'static [&'static [ItemId]],
     pub color: [f32; 3],
     pub description: &'static str,
     pub effects: &'static [AbilityEffectEntry],
@@ -700,8 +702,8 @@ impl ItemId {
         let comps = self.recipe_components();
         if !comps.is_empty() {
             body.push_str("\n\nComponents:");
-            for c in comps {
-                body.push_str(&format!("\n• {} ({}g)", c.name(), c.cost()));
+            for slot in comps {
+                body.push_str(&format!("\n• {}", component_slot_label(slot)));
             }
         }
         body
@@ -717,8 +719,9 @@ impl ItemId {
         self.has_active().then(|| self.definition().cooldown)
     }
 
-    /// Build tree components (other items and/or a recipe scrap). Empty = basic item.
-    pub fn recipe_components(self) -> &'static [ItemId] {
+    /// Build tree slots (other items and/or a recipe scrap), each with its alternatives.
+    /// Empty = basic item.
+    pub fn recipe_components(self) -> &'static [&'static [ItemId]] {
         self.definition().components
     }
 
@@ -944,6 +947,14 @@ fn passive_stat_lines(passives: &ItemPassives) -> Vec<String> {
             .map(|(value, stat)| format!("{:+.0}% {}", value * 100.0, tooltip::passive_name(stat))),
     );
     lines
+}
+
+/// One recipe slot for tooltips and the shop: "A / B / C (450g)", priced at the first
+/// alternative (alternatives are meant to cost the same).
+pub fn component_slot_label(slot: &[ItemId]) -> String {
+    let names: Vec<&str> = slot.iter().map(|id| id.name()).collect();
+    let cost = slot.first().map_or(0, |id| id.cost());
+    format!("{} ({}g)", names.join(" / "), cost)
 }
 
 /// Tooltip lines for one non-passive effect entry, from the same describer abilities
@@ -1513,21 +1524,46 @@ fn count_diff(
     (removed, added)
 }
 
-/// Component multiset for `result`, or `None` when the item is not a build.
-fn component_needs(result: ItemId) -> Option<Vec<(ItemId, u32)>> {
-    let comps = result.recipe_components();
-    if comps.is_empty() || comps.contains(&result) {
-        return None;
+/// Every way to fill the recipe slots of `result`, one id per slot: the cartesian product of
+/// the alternatives in CSV order (the first slot varies slowest), so the first option that
+/// can be assembled prefers earlier alternatives. Empty when the item is not a build or lists
+/// itself as a component.
+fn component_options(result: ItemId) -> Vec<Vec<ItemId>> {
+    let slots = result.recipe_components();
+    if slots.is_empty()
+        || slots
+            .iter()
+            .any(|slot| slot.is_empty() || slot.contains(&result))
+    {
+        return Vec::new();
     }
-    let mut needs = Vec::new();
-    for &comp in comps {
+    let mut options: Vec<Vec<ItemId>> = vec![Vec::new()];
+    for slot in slots {
+        options = options
+            .into_iter()
+            .flat_map(|prefix| {
+                slot.iter().map(move |&alt| {
+                    let mut option = prefix.clone();
+                    option.push(alt);
+                    option
+                })
+            })
+            .collect();
+    }
+    options
+}
+
+/// The multiset of one option: each item and how many of it the option consumes.
+fn option_needs(option: &[ItemId]) -> Vec<(ItemId, u32)> {
+    let mut needs: Vec<(ItemId, u32)> = Vec::new();
+    for &comp in option {
         if let Some((_, count)) = needs.iter_mut().find(|(id, _)| *id == comp) {
             *count += 1;
         } else {
             needs.push((comp, 1));
         }
     }
-    Some(needs)
+    needs
 }
 
 fn can_assemble(inv: &Inventory, result: ItemId, needs: &[(ItemId, u32)]) -> bool {
@@ -1545,6 +1581,14 @@ fn can_assemble(inv: &Inventory, result: ItemId, needs: &[(ItemId, u32)]) -> boo
     scratch.slot_for(result).is_some()
 }
 
+/// The first option (in CSV order) of `result` the inventory can assemble right now.
+fn assemblable_option(inv: &Inventory, result: ItemId) -> Option<Vec<(ItemId, u32)>> {
+    component_options(result)
+        .iter()
+        .map(|option| option_needs(option))
+        .find(|needs| can_assemble(inv, result, needs))
+}
+
 /// Combine every complete component set. Does not run during undo.
 fn combine_ready_items(
     inv: &mut Inventory,
@@ -1554,12 +1598,11 @@ fn combine_ready_items(
     attrs: &mut HeroAttributes,
 ) {
     for _ in 0..8 {
-        let Some(result) = ItemId::all().iter().copied().find(|&result| {
-            component_needs(result).is_some_and(|needs| can_assemble(inv, result, &needs))
-        }) else {
-            break;
-        };
-        let Some(needs) = component_needs(result) else {
+        let Some((result, needs)) = ItemId::all()
+            .iter()
+            .copied()
+            .find_map(|result| assemblable_option(inv, result).map(|needs| (result, needs)))
+        else {
             break;
         };
         for &(id, n) in &needs {
@@ -1977,10 +2020,16 @@ mod tests {
         assert!(ItemId::RecipeSparkPendant.is_recipe());
         assert!(!ItemId::shop_listed().any(|id| id.is_recipe()));
         assert!(ItemId::shop_listed().any(|id| id == ItemId::HeartwoodBand));
-        let hb = ItemId::HeartwoodBand.recipe_components();
+        let flat = |id: ItemId| -> Vec<ItemId> {
+            id.recipe_components()
+                .iter()
+                .flat_map(|s| s.iter().copied())
+                .collect()
+        };
+        let hb = flat(ItemId::HeartwoodBand);
         assert!(hb.contains(&ItemId::IronBracer));
         assert!(hb.contains(&ItemId::RecipeHeartwoodBand));
-        let sp = ItemId::SparkPendant.recipe_components();
+        let sp = flat(ItemId::SparkPendant);
         assert!(sp.contains(&ItemId::ManaCrystal));
         assert!(sp.contains(&ItemId::BladeOfAsh));
         assert!(sp.contains(&ItemId::RecipeSparkPendant));
@@ -2854,6 +2903,87 @@ mod tests {
         fn owned(&self) -> Vec<ItemId> {
             owned(&self.inv)
         }
+    }
+
+    /// Stand-in recipe for `AegisCharm`: (`IronBracer` or `SwiftBoots`) and `ManaCrystal`.
+    fn or_recipe() -> DefinitionOverride {
+        let slots: &'static [&'static [ItemId]] = &[
+            &[ItemId::IronBracer, ItemId::SwiftBoots],
+            &[ItemId::ManaCrystal],
+        ];
+        install_test_item_definitions([ItemDefinition {
+            components: slots,
+            ..*ItemId::AegisCharm.definition()
+        }])
+    }
+
+    #[test]
+    fn component_options_follow_csv_order() {
+        let _defs = or_recipe();
+        assert_eq!(
+            component_options(ItemId::AegisCharm),
+            vec![
+                vec![ItemId::IronBracer, ItemId::ManaCrystal],
+                vec![ItemId::SwiftBoots, ItemId::ManaCrystal],
+            ]
+        );
+        assert!(component_options(ItemId::IronBracer).is_empty());
+    }
+
+    #[test]
+    fn or_slot_consumes_the_first_owned_alternative() {
+        let _defs = or_recipe();
+        // Only the second alternative owned: it is consumed.
+        let mut shop = Shopper::new();
+        assert!(shop.buy(ItemId::SwiftBoots));
+        assert!(shop.buy(ItemId::ManaCrystal));
+        assert_eq!(shop.owned(), vec![ItemId::AegisCharm]);
+
+        // Both owned: the first in CSV order goes, the other stays.
+        let mut shop = Shopper::new();
+        assert!(shop.buy(ItemId::SwiftBoots));
+        assert!(shop.buy(ItemId::IronBracer));
+        assert!(shop.buy(ItemId::ManaCrystal));
+        assert_eq!(shop.owned(), vec![ItemId::SwiftBoots, ItemId::AegisCharm]);
+    }
+
+    #[test]
+    fn or_slot_without_any_alternative_does_not_combine() {
+        let _defs = or_recipe();
+        let mut shop = Shopper::new();
+        assert!(shop.buy(ItemId::ManaCrystal));
+        assert!(shop.buy(ItemId::VialOfLight));
+        assert!(!shop.owned().contains(&ItemId::AegisCharm));
+    }
+
+    #[test]
+    fn undo_restores_the_exact_alternative_that_was_consumed() {
+        let _defs = or_recipe();
+        let mut shop = Shopper::new();
+        assert!(shop.buy(ItemId::SwiftBoots));
+        assert!(shop.buy(ItemId::ManaCrystal));
+        assert_eq!(shop.owned(), vec![ItemId::AegisCharm]);
+        let reference = {
+            let mut r = Shopper::new();
+            assert!(r.buy(ItemId::SwiftBoots));
+            r
+        };
+        assert!(shop.undo());
+        assert_eq!(shop.owned(), vec![ItemId::SwiftBoots]);
+        assert_eq!(shop.wallet.gold, reference.wallet.gold);
+        assert_eq!(shop.stats.move_speed, reference.stats.move_speed);
+        assert_eq!(shop.stats.armor, reference.stats.armor);
+    }
+
+    #[test]
+    fn component_tooltip_lists_alternatives_in_one_line() {
+        let _defs = or_recipe();
+        let body = ItemId::AegisCharm.tooltip_body();
+        assert!(
+            body.contains("• Iron Bracer / Swift Boots (300g)"),
+            "{body}"
+        );
+        assert!(body.contains("• Mana Crystal (350g)"), "{body}");
     }
 
     #[test]

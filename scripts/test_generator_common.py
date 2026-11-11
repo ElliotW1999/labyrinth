@@ -1578,6 +1578,68 @@ class TemporaryManaStatusTests(unittest.TestCase):
             self.assertTrue(report.errors, trigger)
 
 
+class ItemComponentSlotTests(unittest.TestCase):
+    ITEM_HEADER = "id,name,item_type,cost,sell_value,tier,rarity,stackable,max_stack,consumable,max_charges,description,components\n"
+    EFFECT_HEADER = "item_id,effect_index,trigger,effect_target,effect_type,effect_id,value,damage_type,duration,radius,amount,scaling_type,scaling_value\n"
+    BASES = (
+        "belt,Belt,attributes,450,225,1,common,false,,false,,,\n"
+        "band,Band,attributes,450,225,1,common,false,,false,,,\n"
+        "robe,Robe,attributes,500,250,1,common,false,,false,,,\n"
+        "boots,Boots,equipment,300,150,1,common,false,,false,,,\n"
+    )
+
+    def load(self, result_components: str, extra_rows: str = ""):
+        import tempfile
+
+        import ItemGenerator
+
+        row = f"result,Result,accessories,1000,500,1,common,false,,false,,,{result_components}\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            items = Path(tmp) / "items.csv"
+            effects = Path(tmp) / "effects.csv"
+            items.write_text(self.ITEM_HEADER + self.BASES + extra_rows + row, encoding="utf-8")
+            effects.write_text(self.EFFECT_HEADER, encoding="utf-8")
+            loaded, report = ItemGenerator.load(items, effects, set())
+        return ItemGenerator, loaded, report
+
+    def test_pipe_alternatives_render_as_one_slot(self) -> None:
+        module, items, report = self.load("boots;belt|band|robe")
+        self.assertFalse(report.errors)
+        result = next(i for i in items if i.id == "result")
+        self.assertEqual(result.components, [["boots"], ["belt", "band", "robe"]])
+        self.assertIn("components: &[&[ItemId::Boots], &[ItemId::Belt, ItemId::Band, ItemId::Robe]],", module.item_static(result))
+
+    def test_semicolon_only_rows_and_duplicate_slots_are_kept(self) -> None:
+        module, items, report = self.load("belt;belt;boots")
+        self.assertFalse(report.errors)
+        result = next(i for i in items if i.id == "result")
+        self.assertEqual(result.components, [["belt"], ["belt"], ["boots"]])
+        self.assertIn("components: &[&[ItemId::Belt], &[ItemId::Belt], &[ItemId::Boots]],", module.item_static(result))
+
+    def test_no_components_render_an_empty_list(self) -> None:
+        module, items, report = self.load("")
+        result = next(i for i in items if i.id == "result")
+        self.assertIn("components: &[],", module.item_static(result))
+
+    def test_alternative_errors(self) -> None:
+        cases = {
+            "belt|ghost": "no item with this id",
+            "belt|result": "own component",
+            "belt|belt;boots": "listed twice",
+            "belt;band;robe;boots;belt;band": "at most",
+        }
+        for components, message in cases.items():
+            _, _, report = self.load(components)
+            self.assertTrue(any(message in e.message for e in report.errors), (components, [e.message for e in report.errors]))
+
+    def test_alternatives_with_different_costs_warn(self) -> None:
+        _, _, report = self.load("belt|boots")
+        self.assertFalse(report.errors)
+        self.assertTrue(any("different costs" in w.message for w in report.warnings))
+        _, _, report = self.load("belt|band")
+        self.assertFalse([w for w in report.warnings if "different costs" in w.message])
+
+
 class DamageReductionStatusTests(unittest.TestCase):
     def test_generated_damage_reduction_carries_a_per_owner_id(self) -> None:
         report = Report()

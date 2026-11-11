@@ -13,7 +13,9 @@ Re-running overwrites items that already exist; items missing from the CSV are k
 Blank cells mean "not applicable".
 
 Optional extra columns (kept from the previous generator format): `short_label`,
-`cooldown` (active cooldown in seconds), `components` (`;`-separated item ids),
+`cooldown` (active cooldown in seconds), `components` (`;` separates recipe slots, `|` separates
+the alternatives of one slot: `belt_of_strength|band_of_elvenskin;boots` needs a belt OR a band, and
+a boots; the first alternative the hero owns, in CSV order, is consumed),
 `color_r` / `color_g` / `color_b` (0..1).
 
 Optional activation columns for items with `on_use` effects (blank = instant no-target
@@ -203,7 +205,7 @@ class Item:
     max_charges: int | None
     cooldown: float
     activation: Activation
-    components: list[str]
+    components: list[list[str]]
     color: tuple[float, float, float]
     description: str
     projectile: str = "none"
@@ -232,6 +234,16 @@ def describe(effects: list[EffectRow]) -> str:
             stat = e.row.get("effect_id").lower()
             bits.append(f"+{e.row.get('value')} {STAT_LABELS.get(stat, stat)}")
     return ", ".join(bits)
+
+
+def parse_components(text: str) -> list[list[str]]:
+    """`;` separates recipe slots; `|` separates the alternatives within one slot."""
+    slots = []
+    for part in text.split(";"):
+        alternatives = [a.strip() for a in part.split("|") if a.strip()]
+        if alternatives:
+            slots.append(alternatives)
+    return slots
 
 
 def parse_item(row: Row, effects: list[EffectRow], report: Report) -> Item | None:
@@ -286,9 +298,12 @@ def parse_item(row: Row, effects: list[EffectRow], report: Report) -> Item | Non
     short = row.get("short_label") or short_label_from_name(name)
     if len(short) > 4:
         err("short_label", "at most 4 characters")
-    components = [c.strip() for c in re.split(r"[;|]", row.get("components")) if c.strip()]
+    components = parse_components(row.get("components"))
     if len(components) > MAX_COMPONENTS:
         err("components", f"at most {MAX_COMPONENTS} recipe components")
+    for slot in components:
+        for alt in sorted({a for a in slot if slot.count(a) > 1}):
+            err("components", f"{alt} is listed twice in one alternative slot")
     return Item(
         row=row,
         id=ident,
@@ -375,7 +390,9 @@ def effect_context(item: Item) -> EffectContext:
 def item_static(item: Item) -> str:
     const = item.id.upper()
     r, g, b = item.color
-    components = ", ".join(f"ItemId::{to_pascal_case(c)}" for c in item.components)
+    components = ", ".join(
+        "&[" + ", ".join(f"ItemId::{to_pascal_case(alt)}" for alt in slot) + "]" for slot in item.components
+    )
     lines = [
         f"// <item:{item.id}>",
         f"static {const}: ItemDefinition = ItemDefinition {{",
@@ -466,6 +483,7 @@ def load(items_csv: Path, effects_csv: Path, existing_ids: set[str], *, repo_roo
         elif name:
             names[name] = row.line
 
+    costs_by_id = {r.get("id"): int(r.get("cost")) for r in item_rows if r.get("cost").isdigit()}
     by_owner = parse_effect_rows(effect_rows, "item_id", set(ids), report)
     known = set(ids) | existing_ids
     items: list[Item] = []
@@ -478,11 +496,21 @@ def load(items_csv: Path, effects_csv: Path, existing_ids: set[str], *, repo_roo
         item = parse_item(row, effects, report)
         if item is None:
             continue
-        for comp in item.components:
-            if comp == item.id:
-                report.error(row.file, row.line, "components", comp, "an item cannot be its own component")
-            elif comp not in known:
-                report.error(row.file, row.line, "components", comp, "no item with this id (in the CSV or already generated)")
+        for slot in item.components:
+            for comp in slot:
+                if comp == item.id:
+                    report.error(row.file, row.line, "components", comp, "an item cannot be its own component")
+                elif comp not in known:
+                    report.error(row.file, row.line, "components", comp, "no item with this id (in the CSV or already generated)")
+            costs = {costs_by_id[c] for c in slot if c in costs_by_id}
+            if len(costs) > 1:
+                report.warn(
+                    row.file,
+                    row.line,
+                    "components",
+                    "|".join(slot),
+                    "alternatives with different costs: the recipe cost then depends on which one is consumed",
+                )
         ctx = effect_context(item)
         ctx.registered_custom = registered_custom
         ctx.owner_triggers = {e.trigger for e in effects}

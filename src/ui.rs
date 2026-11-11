@@ -2001,7 +2001,11 @@ fn handle_shop_detail_clicks(
         if *interaction != Interaction::Pressed {
             continue;
         }
-        if let Some(comp) = comps_list.get(button.index).copied() {
+        // A slot with alternatives opens its first (preferred) one.
+        if let Some(comp) = comps_list
+            .get(button.index)
+            .and_then(|slot| slot.first().copied())
+        {
             shop_ui.detail = Some(comp);
             return;
         }
@@ -2081,7 +2085,10 @@ fn sync_shop_detail_panel(
 
     let comps = item.recipe_components();
     for (button, mut vis, mut bg, mut border) in &mut rows {
-        if let Some(comp) = comps.get(button.index).copied() {
+        if let Some(comp) = comps
+            .get(button.index)
+            .and_then(|slot| slot.first().copied())
+        {
             *vis = Visibility::Inherited;
             *bg = BackgroundColor(Color::srgba(
                 comp.placeholder_color().to_srgba().red,
@@ -2099,9 +2106,15 @@ fn sync_shop_detail_panel(
         }
     }
     for (label, mut text) in &mut labels {
-        if let Some(comp) = comps.get(label.index).copied() {
-            let tag = if comp.is_recipe() { " [recipe]" } else { "" };
-            *text = Text::new(format!("{} — {}g{}", comp.name(), comp.cost(), tag));
+        if let Some(slot) = comps.get(label.index).filter(|slot| !slot.is_empty()) {
+            let tag = if slot[0].is_recipe() { " [recipe]" } else { "" };
+            let names: Vec<&str> = slot.iter().map(|id| id.name()).collect();
+            *text = Text::new(format!(
+                "{} — {}g{}",
+                names.join(" / "),
+                slot[0].cost(),
+                tag
+            ));
         } else {
             *text = Text::new("");
         }

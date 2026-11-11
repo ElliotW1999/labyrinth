@@ -890,8 +890,20 @@ impl AbilityId {
         matches!(
             self,
             // <hero_generator:ability_ultimates>
-            AbilityId::Nova | AbilityId::Execute | AbilityId::Meteor | AbilityId::Aegis | AbilityId::Ritual | AbilityId::Cataclysm | AbilityId::SonicWave | AbilityId::ReversePolarity | AbilityId::Assassinate | AbilityId::Enrage | AbilityId::ShadowDance | AbilityId::WintersCurse | AbilityId::SharranConversion | AbilityId::CallDown
- // </hero_generator:ability_ultimates>
+            AbilityId::Nova
+                | AbilityId::Execute
+                | AbilityId::Meteor
+                | AbilityId::Aegis
+                | AbilityId::Ritual
+                | AbilityId::Cataclysm
+                | AbilityId::SonicWave
+                | AbilityId::ReversePolarity
+                | AbilityId::Assassinate
+                | AbilityId::Enrage
+                | AbilityId::ShadowDance
+                | AbilityId::WintersCurse
+                | AbilityId::SharranConversion
+                | AbilityId::CallDown // </hero_generator:ability_ultimates>
         )
     }
 
