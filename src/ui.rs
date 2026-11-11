@@ -1847,7 +1847,15 @@ fn refresh_inventory_bar(
     for (meta, mut text) in &mut labels {
         let hotkey = ItemId::inventory_hotkey(meta.index).unwrap_or("?");
         if let Some(item) = inv.slots.get(meta.index).and_then(|s| s.as_ref()) {
-            *text = Text::new(format!("{}\n{}", item.id.short_label(), item.id.name()));
+            *text = Text::new(match item.selected_attribute_name() {
+                Some(attribute) => format!(
+                    "{}\n{} [{}]",
+                    item.id.short_label(),
+                    item.id.name(),
+                    &attribute[..3]
+                ),
+                None => format!("{}\n{}", item.id.short_label(), item.id.name()),
+            });
         } else {
             *text = Text::new(format!("{hotkey}"));
         }
@@ -2001,7 +2009,11 @@ fn handle_shop_detail_clicks(
         if *interaction != Interaction::Pressed {
             continue;
         }
-        if let Some(comp) = comps_list.get(button.index).copied() {
+        // A slot with alternatives opens its first (preferred) one.
+        if let Some(comp) = comps_list
+            .get(button.index)
+            .and_then(|slot| slot.first().copied())
+        {
             shop_ui.detail = Some(comp);
             return;
         }
@@ -2081,7 +2093,10 @@ fn sync_shop_detail_panel(
 
     let comps = item.recipe_components();
     for (button, mut vis, mut bg, mut border) in &mut rows {
-        if let Some(comp) = comps.get(button.index).copied() {
+        if let Some(comp) = comps
+            .get(button.index)
+            .and_then(|slot| slot.first().copied())
+        {
             *vis = Visibility::Inherited;
             *bg = BackgroundColor(Color::srgba(
                 comp.placeholder_color().to_srgba().red,
@@ -2099,9 +2114,15 @@ fn sync_shop_detail_panel(
         }
     }
     for (label, mut text) in &mut labels {
-        if let Some(comp) = comps.get(label.index).copied() {
-            let tag = if comp.is_recipe() { " [recipe]" } else { "" };
-            *text = Text::new(format!("{} — {}g{}", comp.name(), comp.cost(), tag));
+        if let Some(slot) = comps.get(label.index).filter(|slot| !slot.is_empty()) {
+            let tag = if slot[0].is_recipe() { " [recipe]" } else { "" };
+            let names: Vec<&str> = slot.iter().map(|id| id.name()).collect();
+            *text = Text::new(format!(
+                "{} — {}g{}",
+                names.join(" / "),
+                slot[0].cost(),
+                tag
+            ));
         } else {
             *text = Text::new("");
         }
@@ -2214,9 +2235,14 @@ fn update_item_tooltips(
             if matches!(*interaction, Interaction::Hovered | Interaction::Pressed) {
                 if let Some(item) = inventory.slots.get(slot.index).and_then(|s| s.as_ref()) {
                     let hotkey = ItemId::inventory_hotkey(slot.index).unwrap_or("?");
+                    let selected = item
+                        .selected_attribute_name()
+                        .map(|attribute| format!("Selected attribute: {attribute}\n"))
+                        .unwrap_or_default();
                     body = Some(format!(
-                        "{}\nHotkey: {}\n{}",
+                        "{}\n{}Hotkey: {}\n{}",
                         item.id.tooltip_body(),
+                        selected,
                         hotkey,
                         if item.cooldown.remaining > 0.05 {
                             format!("Cooldown: {:.0}s", item.cooldown.remaining.ceil())

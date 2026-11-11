@@ -168,7 +168,7 @@ impl StatusEffects { pub fn compulsion(&self) -> Option<Compulsion> } // last-ap
 | Spell immunity | `debuff_immune + spell_immune + immune_damage=MAGICAL`, undispellable, id `spell_immunity` | `StatusSpec::SpellImmunity`, `spell_immunity` | buff |
 | Debuff immunity | unchanged, id → `debuff_immunity` | `debuff_immunity` | buff |
 | Attack immunity | `attack_immune` | `StatusSpec::AttackImmunity`, `attack_immunity` | buff |
-| Ethereal | `disarmed + attack_immune + immune_damage=PHYSICAL + magic_resist -= amp` | `StatusSpec::Ethereal { magic_amp_percent }`, `ethereal` | follows hostility |
+| Ethereal | `disarmed + attack_immune + immune_damage=PHYSICAL + magic_resist_fraction = -amp` (exact x(1+amp) magical damage on top of the holder's own resistance) | `StatusSpec::Ethereal { magic_amp_percent }`, `ethereal` | follows hostility |
 | Banish | `stunned + invulnerable + untargetable + hidden + ignore_unit_collision`, `DispelType::None` (D5) | `StatusSpec::Banish`, `banish` | follows hostility |
 | Cyclone | add `untargetable: true` | existing | n/a |
 | Hex | add `breaks_passives`, `move_speed_cap: HEX_MOVE_SPEED` | existing `hex` | debuff |
@@ -274,7 +274,7 @@ Steps 1-6 are implemented; step 7 is deferred (D1-D5 as resolved above, D3 = Lot
 
 Deviations from the plan, with reasons:
 
-- **Ethereal amp** is stored as magic-resistance points (converted from the percent) and clamped at 90, instead of a raw percent field, so it composes with the existing resistance maths; the generator bounds the percent to 0..90.
+- **Ethereal amp** is stored as a negative `magic_resist_fraction` (the percent / 100, clamped at 0.9), so the extra magical damage is exactly x(1+amp) on top of the holder's own resistance rating (changed from a magic-resist rating cut, which was only exact at 0 resistance; see `2026-11-11-misc-accessory-items.md`). The generator bounds the percent to 0..90.
 - **Ethereal and Banish generator default team** is Enemy (they are debuffs on enemies; the kind follows hostility at apply time).
 - **Flee fallback** keeps the unit's heading when the source position is unknown instead of choosing a new direction.
 - **Taunt and hypnosis are removed when the source dies** or despawns (`enforce_compulsions`), rather than lingering until expiry.

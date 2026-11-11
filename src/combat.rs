@@ -1520,13 +1520,22 @@ mod tests {
 
     /// Damage of `damage_type` dealt to a 500-health unit with `status`, at zero resistances.
     fn damage_taken_with(status: crate::status::StatusEffect, damage_type: DamageType) -> f32 {
+        damage_taken_with_magic_resist(status, damage_type, 0.0)
+    }
+
+    /// As [`damage_taken_with`], for a target with `magic_resist` rating.
+    fn damage_taken_with_magic_resist(
+        status: crate::status::StatusEffect,
+        damage_type: DamageType,
+        magic_resist: f32,
+    ) -> f32 {
         let mut world = World::new();
         world.init_resource::<Messages<DamageEvent>>();
         world.init_resource::<Messages<crate::combat::DamageAppliedEvent>>();
         world.init_resource::<Messages<crate::status::StatusLifecycleEvent>>();
         world.init_resource::<CombatRng>();
         let defender = CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 0.0);
-        let mut target_stats = defender;
+        let mut target_stats = CombatStats::simple(0.0, 0.0, 1.0, 0.0, magic_resist, 0.0);
         let mut statuses = StatusEffects::default();
         crate::status::apply_status(&mut statuses, &mut target_stats, status, 0.0);
         let caster = world.spawn((Health::new(500.0), defender)).id();
@@ -1544,10 +1553,28 @@ mod tests {
         assert_eq!(damage_taken_with(ethereal(), DamageType::Physical), 0.0);
         let magic = damage_taken_with(ethereal(), DamageType::Magical);
         assert!(
-            (magic - 140.0).abs() < 0.5,
+            (magic - 140.0).abs() < 1e-3,
             "40% amp at zero resist: {magic}"
         );
         assert!((damage_taken_with(ethereal(), DamageType::Pure) - 100.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn ethereal_amp_is_relative_to_holder_resistance() {
+        // A rating of 6.3218 mitigates 100 to 72.5; Ethereal multiplies that by exactly 1.3.
+        let rating = (0.275_f32 / 0.725) / 0.06;
+        let plain = damage_taken_with_magic_resist(
+            crate::status::StatusEffect::ethereal(5.0, 0.0, true),
+            DamageType::Magical,
+            rating,
+        );
+        assert!((plain - 72.5).abs() < 1e-2, "{plain}");
+        let amped = damage_taken_with_magic_resist(
+            crate::status::StatusEffect::ethereal(5.0, 30.0, true),
+            DamageType::Magical,
+            rating,
+        );
+        assert!((amped - 72.5 * 1.3).abs() < 1e-2, "{amped}");
     }
 
     #[test]
