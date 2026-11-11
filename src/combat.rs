@@ -11,9 +11,9 @@ use crate::basic_attack::{
     start_basic_attack_windups, sync_attack_projectile_visuals, tick_attack_swings,
 };
 use crate::components::{
-    AttackCooldown, BoundRadius, CombatStats, DamageType, GoldBounty, Health, HeroAttributes,
-    HeroProgress, Lifetime, Mana, PlayerHero, PlayerWallet, Projectile, ProjectileHome,
-    ProjectileStyle, ShieldPool, Team, XpBounty,
+    AttackCooldown, BoundRadius, CombatStats, Creep, DamageType, GoldBounty, Health,
+    HeroAttributes, HeroProgress, Lane, Lifetime, Mana, PlayerHero, PlayerWallet, Projectile,
+    ProjectileHome, ProjectileStyle, ShieldPool, Team, XpBounty,
 };
 use crate::dimensions::{area_contains, bounds_of};
 use crate::progression::add_xp;
@@ -37,6 +37,7 @@ impl Plugin for CombatPlugin {
             .add_message::<ExtraAttackEvent>()
             .add_message::<DamageEvent>()
             .add_message::<DamageAppliedEvent>()
+            .add_message::<CreepConvertedEvent>()
             .add_message::<SpawnProjectileEvent>()
             .add_message::<ProjectileHitEvent>()
             .add_systems(
@@ -65,6 +66,8 @@ impl Plugin for CombatPlugin {
                     // units (`MoveTarget`, `AttackTarget`, ...), and a unit despawned
                     // before those commands are applied panics the app.
                     despawn_dead.after(crate::movement::SimSet::Movement),
+                    // Right after the deaths are finalised: creeps they converted come back.
+                    crate::units::spawn_converted_creeps,
                 )
                     .chain()
                     .run_if(crate::net::is_sim_authority),
@@ -915,6 +918,40 @@ fn tick_lifetimes(
     }
 }
 
+/// A creep died within the radius of an enemy `convert_on_death` holder: a fresh creep of
+/// `team` (the holder's) is spawned at `position` by [`crate::units::spawn_converted_creeps`].
+#[derive(Message, Debug, Clone, Copy, PartialEq)]
+pub struct CreepConvertedEvent {
+    pub position: Vec3,
+    pub team: Team,
+    pub lane: Lane,
+    pub ranged: bool,
+}
+
+/// The nearest living enemy of `victim_team` whose `convert_on_death` radius reaches the
+/// dying creep (its centre to the victim's edge), with its team.
+fn conversion_holder(
+    holders: &Query<(&Transform, &Team, &Health, &StatusEffects)>,
+    victim_team: Team,
+    position: Vec3,
+    bound: f32,
+) -> Option<Team> {
+    holders
+        .iter()
+        .filter(|(_, team, health, statuses)| {
+            **team == victim_team.enemy() && health.is_alive() && statuses.convert_radius() > 0.0
+        })
+        .filter(|(tf, _, _, statuses)| {
+            area_contains(tf.translation, statuses.convert_radius(), position, bound)
+        })
+        .min_by(|(a, ..), (b, ..)| {
+            flat_distance(a.translation, position)
+                .total_cmp(&flat_distance(b.translation, position))
+        })
+        .map(|(_, team, ..)| *team)
+}
+
+#[allow(clippy::type_complexity)]
 fn despawn_dead(
     mut commands: Commands,
     dead: Query<
@@ -925,12 +962,16 @@ fn despawn_dead(
             Option<&GoldBounty>,
             Option<&XpBounty>,
             Option<&Team>,
+            Option<&Creep>,
+            Option<&BoundRadius>,
         ),
         Without<PlayerHero>,
     >,
     mut heroes: Query<(&Transform, &Team, &mut PlayerWallet, &mut HeroProgress), With<PlayerHero>>,
+    holders: Query<(&Transform, &Team, &Health, &StatusEffects)>,
+    mut converted: MessageWriter<CreepConvertedEvent>,
 ) {
-    for (entity, transform, health, gold_bounty, xp_bounty, team) in &dead {
+    for (entity, transform, health, gold_bounty, xp_bounty, team, creep, bound) in &dead {
         if health.is_alive() {
             continue;
         }
@@ -952,6 +993,24 @@ fn despawn_dead(
                     }
                 }
             }
+        }
+
+        // The bounty above is paid as usual; a creep dying inside an enemy conversion aura
+        // is then replaced by a fresh creep of that enemy's team.
+        if let (Some(victim_team), Some(creep)) = (team, creep)
+            && let Some(holder_team) = conversion_holder(
+                &holders,
+                *victim_team,
+                transform.translation,
+                bounds_of(bound),
+            )
+        {
+            converted.write(CreepConvertedEvent {
+                position: transform.translation,
+                team: holder_team,
+                lane: creep.lane,
+                ranged: creep.ranged,
+            });
         }
 
         commands.entity(entity).despawn();
@@ -1096,6 +1155,7 @@ mod tests {
     /// away, runs `despawn_dead`, and returns the hero's progress.
     fn creep_death_xp(hero_distance: f32) -> HeroProgress {
         let mut world = World::new();
+        world.init_resource::<Messages<CreepConvertedEvent>>();
         world.spawn((
             Transform::from_xyz(0.0, 0.0, 0.0),
             Health {

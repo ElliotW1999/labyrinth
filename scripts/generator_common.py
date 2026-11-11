@@ -259,6 +259,8 @@ STATUSES = {
     "mana_shield": (None, "mana_shield", True),
     # Duplicates `amount` percent of the holder's incoming damage to the unit that applied it.
     "damage_share": (None, "damage_share", True),
+    # Enemy creeps dying within `value` of the holder rise again as the holder's allies.
+    "convert_on_death": (None, "convert_on_death", True),
 }
 
 # `stat_modifier` effect-id suffix: each application keeps its own status instance and timer.
@@ -1848,6 +1850,17 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             spec = f'StatusSpec::{variant} {{ id: "{ctx.owner_id}_{effect_id}", percent: {rank_value(percent)} }}'
             if amount:
                 _unused(e, report, "value")
+        elif effect_id == "convert_on_death":
+            if e.trigger in ("passive", "while", "while_toggled"):
+                report.error(row.file, row.line, "trigger", e.trigger, "convert_on_death is a timed aura; it cannot be held by passive, while or while_toggled")
+                return None
+            if not _require(e, "value", report, "conversion radius in world units (above 0)"):
+                return None
+            if any(r <= 0 for r in value):
+                report.error(row.file, row.line, "value", row.get("value"), "convert_on_death radius must be above 0")
+                return None
+            spec = f"StatusSpec::ConvertOnDeath {{ radius: {rank_value(value)} }}"
+            _unused(e, report, "amount")
         elif effect_id == "damage_share":
             percent = amount or value
             if not percent:

@@ -597,8 +597,9 @@ pub struct PlayerHero;
 
 #[derive(Component, Debug, Clone, Copy)]
 pub struct Creep {
-    #[allow(dead_code)]
     pub lane: Lane,
+    /// Ranged (as opposed to melee) lane creep; a converted creep respawns as the same kind.
+    pub ranged: bool,
 }
 
 /// Practice target near the Radiant ancient. It is not a lane creep: nothing moves it

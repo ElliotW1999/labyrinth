@@ -926,6 +926,32 @@ class OrbitTests(unittest.TestCase):
         self.assertIsNone(effect_to_rust(attack, ctx, report))
 
 
+class ConvertOnDeathStatusTests(unittest.TestCase):
+    def _status(self, trigger="on_cast", **cells):
+        report = Report()
+        effect, ctx = _effect("apply_status", "convert_on_death", target="caster", trigger=trigger, **cells)
+        ctx.levels = 4
+        return effect_to_rust(effect, ctx, report), report
+
+    def test_radius_comes_from_value(self) -> None:
+        result, report = self._status(value="300", duration="5|7|9|10")
+        self.assertIsNotNone(result, report.errors)
+        self.assertIn("StatusSpec::ConvertOnDeath { radius: RankValue::fixed(300.0) }", result[2])
+        self.assertIn("RankValue::levels(&[5.0, 7.0, 9.0, 10.0])", result[2])
+        self.assertEqual(result[1], "EffectTarget::Caster")
+
+    def test_invalid_rows_are_rejected(self) -> None:
+        for name, cells, field in (
+            ("zero radius", {"value": "0", "duration": "5"}, "value"),
+            ("missing radius", {"duration": "5"}, "value"),
+            ("passive row", {"trigger": "passive", "value": "300", "duration": "5"}, "trigger"),
+            ("while row", {"trigger": "while", "value": "300", "duration": "5"}, "trigger"),
+        ):
+            result, report = self._status(**cells)
+            self.assertIsNone(result, name)
+            self.assertEqual(report.errors[0].field, field, name)
+
+
 class ZoneTests(unittest.TestCase):
     GOOD = {"value": "1", "duration": "10", "amount": "1.2"}
 

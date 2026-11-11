@@ -269,6 +269,9 @@ pub struct StatusEffect {
     pub mana_shield: Option<crate::vitals::ManaShield>,
     /// Duplicates part of the damage the holder takes to another unit (the bond's source).
     pub damage_share: Option<DamageShare>,
+    /// Radius (`0` = none) within which enemy creeps that die rise again as the holder's allies;
+    /// read by `combat::despawn_dead` when a creep's death is finalised.
+    pub convert_radius: f32,
     pub damage_per_sec: f32,
     /// Ticking burn: seconds between ticks (`0` = no ticking; see [`StatusEffect::burn_ticking`]).
     pub dot_interval: f32,
@@ -441,6 +444,7 @@ impl StatusEffect {
             heal_blocked: false,
             mana_shield: None,
             damage_share: None,
+            convert_radius: 0.0,
             damage_per_sec: 0.0,
             dot_interval: 0.0,
             dot_per_tick: 0.0,
@@ -585,6 +589,14 @@ impl StatusEffect {
         Self {
             damage_share: Some(share),
             ..Self::buff("damage_share", duration)
+        }
+    }
+
+    /// Enemy creeps that die within `radius` of the holder return as its allies (a buff).
+    pub fn convert_on_death(radius: f32, duration: f32) -> Self {
+        Self {
+            convert_radius: radius.max(0.0),
+            ..Self::buff("convert_on_death", duration)
         }
     }
 
@@ -981,6 +993,15 @@ impl StatusEffects {
             .filter(|e| e.remaining > 0.0)
             .filter_map(|e| e.mana_shield)
             .max_by(|a, b| a.absorb.total_cmp(&b.absorb))
+    }
+
+    /// The largest live creep-conversion radius on the holder (0 = none).
+    pub fn convert_radius(&self) -> f32 {
+        self.effects
+            .iter()
+            .filter(|e| e.remaining > 0.0)
+            .map(|e| e.convert_radius)
+            .fold(0.0, f32::max)
     }
 
     /// The first live damage bond on the holder, if any.

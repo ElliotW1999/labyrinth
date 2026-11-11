@@ -476,6 +476,10 @@ fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
             row("Damage reduction %", percent),
             seconds_row("Damage reduction duration", duration),
         ],
+        StatusSpec::ConvertOnDeath { radius } => vec![
+            row("Converts enemy creeps that die within R", radius),
+            seconds_row("Conversion duration", duration),
+        ],
         StatusSpec::DamageShare { percent } => vec![
             row("Damage duplicated to caster %", percent),
             seconds_row("Damage share duration", duration),
@@ -765,6 +769,7 @@ fn status_name(status: StatusSpec) -> &'static str {
         StatusSpec::HealBlock => "Heal block",
         StatusSpec::DamageReduction { .. } => "Damage reduction",
         StatusSpec::Stacks { .. } => "Stacks",
+        StatusSpec::ConvertOnDeath { .. } => "Convert on death",
         StatusSpec::DamageShare { .. } => "Damage share",
         StatusSpec::MagicResistance { .. } => "Magic resistance",
         StatusSpec::StatusResistance { .. } => "Status resistance",

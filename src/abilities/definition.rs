@@ -377,6 +377,12 @@ pub enum StatusSpec {
         radius: RankValue,
         anchor: LeashAnchorKind,
     },
+    /// Enemy creeps that die within `radius` of the holder (its centre to the victim's edge)
+    /// rise again as the holder's allies at full health (a Basic-dispellable buff with the id
+    /// `convert_on_death`). Decided in `combat::despawn_dead`; nothing is applied to the creep.
+    ConvertOnDeath {
+        radius: RankValue,
+    },
     /// Blocks new debuffs and purges existing ones on application. Magic damage and hostile
     /// spells still land.
     DebuffImmunity,
@@ -676,6 +682,9 @@ impl StatusSpec {
                     },
                     duration,
                 )
+            }
+            StatusSpec::ConvertOnDeath { radius } => {
+                StatusEffect::convert_on_death(radius.at(rank), duration)
             }
             StatusSpec::DebuffImmunity => StatusEffect::debuff_immunity(duration),
             StatusSpec::SpellImmunity => StatusEffect::spell_immunity(duration),
