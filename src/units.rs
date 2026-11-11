@@ -4,7 +4,7 @@ use bevy::prelude::*;
 
 use crate::components::{
     Ancient, AttackCooldown, CombatStats, Creep, GoldBounty, Health, HeroAttributes, Lane,
-    PlayerHero, PlayerWallet, Team, Tower, TrainingDummy, XpBounty,
+    Lifetime, PlayerHero, PlayerWallet, Team, Tower, TrainingDummy, XpBounty,
 };
 use crate::dimensions::UnitDimensions;
 use crate::heroes::{HeroId, HeroKind};
@@ -108,7 +108,7 @@ pub fn spawn_creep(
     lane: Lane,
     position: Vec3,
     ranged: bool,
-) {
+) -> Entity {
     let mat = match team {
         Team::Radiant => assets.radiant_mat.clone(),
         Team::Dire => assets.dire_mat.clone(),
@@ -137,7 +137,7 @@ pub fn spawn_creep(
             MeshMaterial3d(mat),
             Transform::from_translation(grounded(position, scale::CREEP_MODEL_HEIGHT)),
             team,
-            Creep { lane },
+            Creep { lane, ranged },
             Health::new(if ranged { 240.0 } else { 280.0 }),
             CombatStats::simple(
                 if ranged { 15.0 } else { 18.0 },
@@ -161,6 +161,42 @@ pub fn spawn_creep(
         },
     ));
     attach_mobile_unit_details(commands, id, assets, team, false);
+    id
+}
+
+/// How long a creep that rose again through `convert_on_death` lives. It is despawned
+/// without a bounty when this runs out; killed before then it pays the normal bounties.
+pub const CONVERTED_CREEP_LIFETIME_SECS: f32 = 30.0;
+
+/// Spawns the creeps `combat::despawn_dead` decided to bring back: a fresh creep of the
+/// converting unit's team at the death point (full health, normal bounties, the normal creep
+/// AI) that resumes its lane forward from there and expires after
+/// [`CONVERTED_CREEP_LIFETIME_SECS`]. Skipped without presentation assets.
+pub fn spawn_converted_creeps(
+    mut commands: Commands,
+    assets: Option<Res<SharedAssets>>,
+    mut events: MessageReader<crate::combat::CreepConvertedEvent>,
+) {
+    for event in events.read() {
+        let Some(assets) = assets.as_deref() else {
+            continue;
+        };
+        let id = spawn_creep(
+            &mut commands,
+            assets,
+            event.team,
+            event.lane,
+            event.position,
+            event.ranged,
+        );
+        commands.entity(id).insert((
+            crate::ai::LaneFollower::resume_from(
+                crate::map::lane_path(event.team, event.lane),
+                event.position,
+            ),
+            Lifetime(CONVERTED_CREEP_LIFETIME_SECS),
+        ));
+    }
 }
 
 /// Stationary 1000 HP target beside the Radiant ancient. Enemy team so the player

@@ -6,7 +6,7 @@ use bevy::prelude::{Entity, Vec2, Vec3};
 
 use crate::components::AbilityId;
 use crate::components::DamageType;
-use crate::status::{DispelType, Leash, LeashAnchor, StatusEffect, StatusKind};
+use crate::status::{DamageShare, DispelType, Leash, LeashAnchor, StatusEffect, StatusKind};
 use crate::vitals::{ManaShield, ResourceKind, ResourceStat};
 
 /// Upper bound (seconds) for an ability's cast point (the aim before it fires).
@@ -377,6 +377,12 @@ pub enum StatusSpec {
         radius: RankValue,
         anchor: LeashAnchorKind,
     },
+    /// Enemy creeps that die within `radius` of the holder (its centre to the victim's edge)
+    /// rise again as the holder's allies at full health (a Basic-dispellable buff with the id
+    /// `convert_on_death`). Decided in `combat::despawn_dead`; nothing is applied to the creep.
+    ConvertOnDeath {
+        radius: RankValue,
+    },
     /// Blocks new debuffs and purges existing ones on application. Magic damage and hostile
     /// spells still land.
     DebuffImmunity,
@@ -520,10 +526,23 @@ pub enum StatusSpec {
         id: &'static str,
         percent: RankValue,
     },
+    /// `percent` (0-100) less magical damage is taken, multiplying with the magic-resist rating
+    /// and other percent sources (a buff). `id` is `<owner>_magic_resistance`.
+    MagicResistance {
+        id: &'static str,
+        percent: RankValue,
+    },
     /// `percent` (0-100) is cut from the duration of hostile debuffs that land on the holder
     /// while it lasts (a buff). `id` is `<owner>_status_resistance`; resistances multiply.
     StatusResistance {
         id: &'static str,
+        percent: RankValue,
+    },
+    /// Bonds the holder to the unit that applied the status: `percent` (0-100) of every
+    /// (non-reactive) hit the holder takes is also dealt to that unit, as a copy of the
+    /// pre-mitigation damage with the same damage type that the unit then mitigates itself.
+    /// The holder still takes the full hit. A buff with the id `damage_share`.
+    DamageShare {
         percent: RankValue,
     },
     /// Diverts `absorb_percent` (0–100) of post-mitigation damage to mana, at
@@ -664,6 +683,9 @@ impl StatusSpec {
                     duration,
                 )
             }
+            StatusSpec::ConvertOnDeath { radius } => {
+                StatusEffect::convert_on_death(radius.at(rank), duration)
+            }
             StatusSpec::DebuffImmunity => StatusEffect::debuff_immunity(duration),
             StatusSpec::SpellImmunity => StatusEffect::spell_immunity(duration),
             StatusSpec::AttackImmunity => StatusEffect::attack_immunity(duration),
@@ -798,11 +820,26 @@ impl StatusSpec {
                 (percent.at(rank) / 100.0).clamp(0.0, 1.0),
                 duration,
             ),
+            StatusSpec::MagicResistance { id, percent } => StatusEffect::magic_resistance(
+                id,
+                (percent.at(rank) / 100.0).clamp(0.0, 1.0),
+                duration,
+            ),
             StatusSpec::DamageReduction { id, percent } => StatusEffect::damage_reduction(
                 id,
                 (percent.at(rank) / 100.0).clamp(0.0, 1.0),
                 duration,
             ),
+            StatusSpec::DamageShare { percent } => match ctx.source {
+                Some(partner) => StatusEffect::damage_share(
+                    DamageShare {
+                        partner,
+                        fraction: (percent.at(rank) / 100.0).clamp(0.0, 1.0),
+                    },
+                    duration,
+                ),
+                None => StatusEffect::buff("damage_share", duration),
+            },
             StatusSpec::ManaShield {
                 absorb_percent,
                 damage_per_mana,
@@ -1088,6 +1125,23 @@ pub enum AbilityEffect {
         then: AbilityTrigger,
         follow_caster: bool,
     },
+    /// Mechanic gate: `count` hitboxes (`hit_radius` each) circle the caster at `radius`, one
+    /// revolution per `period` seconds, for `duration` seconds, starting at the caster's
+    /// facing and spaced evenly. Each time a hitbox starts touching a unit of `team` (the
+    /// caster is never one) it re-fires this context under `then` with that unit as the
+    /// trigger unit, at the hitbox's position. A unit re-arms only after it leaves that
+    /// hitbox; hitboxes are independent. The re-fired context has no affected units from the
+    /// spawn and no attack. The orbit follows the caster and ends when it dies or its entity
+    /// is gone. Runs once per execution.
+    Orbit {
+        count: u32,
+        radius: AreaRadius,
+        hit_radius: f32,
+        period: RankValue,
+        duration: RankValue,
+        team: TargetTeam,
+        then: AbilityTrigger,
+    },
     /// Gate: sums `TriggerContext::amount` over executions (damage taken, distance walked, or
     /// 1 per occurrence) and, whenever the sum reaches `threshold`, re-fires this trigger's
     /// context under `then` once and keeps the remainder. The sum is counted per source and
@@ -1130,6 +1184,7 @@ impl AbilityEffect {
                 | Self::Accumulate { .. }
                 | Self::Chain { .. }
                 | Self::Zone { .. }
+                | Self::Orbit { .. }
                 | Self::PassiveStat { .. }
         )
     }

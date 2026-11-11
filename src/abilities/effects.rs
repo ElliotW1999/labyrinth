@@ -19,6 +19,7 @@ use super::definition::{
     EffectScaling, EffectTarget, StatusBuildContext, TargetTeam,
 };
 use super::mechanics::{ChainCandidate, chain_hops};
+use super::orbits::SpawnOrbitEvent;
 use super::passive::passive_suppressed;
 use super::zones::SpawnZoneEvent;
 use crate::actions::{ActionId, TargetType, team_allows};
@@ -521,6 +522,7 @@ pub struct EffectRunner<'w, 's> {
     teleports: MessageWriter<'w, TeleportEvent>,
     extra_attacks: MessageWriter<'w, ExtraAttackEvent>,
     zones: MessageWriter<'w, SpawnZoneEvent>,
+    orbits: MessageWriter<'w, SpawnOrbitEvent>,
     rng: ResMut<'w, CombatRng>,
     counters: Query<'w, 's, &'static mut TriggerCounters>,
     /// Contexts produced by gates since the last [`Self::take_derived`].
@@ -1095,6 +1097,55 @@ impl EffectRunner<'_, '_> {
                     interval,
                     ticks,
                     follow_caster,
+                });
+            }
+            AbilityEffect::Orbit {
+                count,
+                radius,
+                hit_radius,
+                period,
+                duration,
+                team,
+                then,
+            } => {
+                if !self.gate_open(ctx) {
+                    return;
+                }
+                let (period, duration) = (period.at(rank), duration.at(rank));
+                let radius = match radius {
+                    AreaRadius::Ability => aoe_radius,
+                    AreaRadius::Fixed(value) => value.at(rank),
+                };
+                if count == 0
+                    || period <= 0.0
+                    || duration <= 0.0
+                    || radius <= 0.0
+                    || hit_radius <= 0.0
+                {
+                    return;
+                }
+                // The first orbiter starts in front of the caster.
+                let start_angle = self
+                    .units
+                    .get(ctx.caster)
+                    .map(|(_, tf, ..)| {
+                        let forward = tf.forward();
+                        forward.z.atan2(forward.x)
+                    })
+                    .unwrap_or(0.0);
+                let mut template = ctx.derived(then);
+                template.trigger_unit = None;
+                template.affected_units.clear();
+                template.attack = None;
+                self.orbits.write(SpawnOrbitEvent {
+                    template,
+                    count,
+                    radius,
+                    hit_radius,
+                    period,
+                    duration,
+                    team,
+                    start_angle,
                 });
             }
             AbilityEffect::Accumulate { threshold, then } => {

@@ -781,6 +781,177 @@ class HealStatusTests(unittest.TestCase):
         self.assertEqual(report.errors[0].field, "effect_type")
 
 
+class AreaPolarityTests(unittest.TestCase):
+    def _area(self, effect_type, effect_id, team, **cells):
+        report = Report()
+        effect, ctx = _effect(effect_type, effect_id, target="units_in_radius", **cells)
+        ctx.team, ctx.has_aoe = team, True
+        result = effect_to_rust(effect, ctx, report)
+        self.assertFalse(report.errors, report.errors)
+        return result[1]
+
+    def test_ally_ability_damage_area_hits_enemies(self) -> None:
+        self.assertIn("team: TargetTeam::Enemy", self._area("damage", "", "Ally", value="90", damage_type="pure"))
+
+    def test_ally_ability_heal_area_hits_allies(self) -> None:
+        self.assertIn("team: TargetTeam::Ally", self._area("heal", "", "Ally", value="90"))
+
+    def test_enemy_ability_heal_area_is_unchanged(self) -> None:
+        self.assertIn("team: TargetTeam::Enemy", self._area("heal", "", "Enemy", value="90"))
+
+    def test_self_ability_stun_area_hits_enemies(self) -> None:
+        self.assertIn("team: TargetTeam::Enemy", self._area("apply_status", "stun", "Ally", duration="1"))
+
+
+class MagicResistanceStatusTests(unittest.TestCase):
+    def _status(self, effect_type="apply_status", **cells):
+        report = Report()
+        effect, ctx = _effect(effect_type, "magic_resistance", target="caster", **cells)
+        ctx.levels = 4
+        return effect_to_rust(effect, ctx, report), report
+
+    def test_percent_from_amount_emits_owner_id(self) -> None:
+        result, report = self._status(amount="5|10|15|20", duration="10")
+        self.assertIsNotNone(result, report.errors)
+        self.assertIn('StatusSpec::MagicResistance { id: "tester_magic_resistance"', result[2])
+        self.assertIn("percent: RankValue", result[2])
+
+    def test_value_is_accepted_and_range_is_checked(self) -> None:
+        result, _ = self._status(value="25", duration="10")
+        self.assertIsNotNone(result)
+        for bad in ("0", "101", "-5"):
+            result, report = self._status(amount=bad, duration="10")
+            self.assertIsNone(result, bad)
+            self.assertEqual(report.errors[0].field, "amount")
+        result, report = self._status(duration="10")
+        self.assertIsNone(result)
+
+    def test_remove_status_is_rejected_with_owner_id_hint(self) -> None:
+        report = Report()
+        effect, ctx = _effect("remove_status", "magic_resistance", target="caster")
+        self.assertIsNone(effect_to_rust(effect, ctx, report))
+        self.assertIn("<owner>_magic_resistance", report.errors[0].message)
+
+
+class DamageShareStatusTests(unittest.TestCase):
+    def _status(self, target="cast_target", **cells):
+        report = Report()
+        effect, ctx = _effect("apply_status", "damage_share", target=target, **cells)
+        ctx.levels = 4
+        return effect_to_rust(effect, ctx, report), report
+
+    def test_percent_from_amount_or_value(self) -> None:
+        result, report = self._status(amount="100", duration="10")
+        self.assertIsNotNone(result, report.errors)
+        self.assertIn("StatusSpec::DamageShare { percent: RankValue::fixed(100.0) }", result[2])
+        self.assertEqual(result[1], "EffectTarget::CastTarget")
+        result, _ = self._status(value="50", duration="10")
+        self.assertIsNotNone(result)
+
+    def test_invalid_percent_and_self_targets_are_rejected(self) -> None:
+        for name, cells, field in (
+            ("zero", {"amount": "0"}, "amount"),
+            ("above 100", {"amount": "150"}, "amount"),
+            ("missing", {}, "amount"),
+            ("caster target", {"amount": "100", "target": "caster"}, "effect_target"),
+            ("owner target", {"amount": "100", "target": "owner"}, "effect_target"),
+        ):
+            result, report = self._status(duration="10", **cells)
+            self.assertIsNone(result, name)
+            self.assertEqual(report.errors[0].field, field, name)
+
+
+class OrbitTests(unittest.TestCase):
+    GOOD = {"value": "3", "duration": "3|4|5", "radius": "180", "amount": "1.41"}
+
+    def _orbit(self, effect_id="on_touch:80", target="caster", kind="ability", **cells):
+        report = Report()
+        effect, ctx = _effect("orbit", effect_id, target=target, kind=kind, **{**self.GOOD, **cells})
+        ctx.levels = 3
+        ctx.has_aoe = kind == "ability"
+        return effect_to_rust(effect, ctx, report), report
+
+    def test_orbit_emits_the_effect(self) -> None:
+        result, report = self._orbit()
+        self.assertIsNotNone(result, report.errors)
+        code = result[2]
+        self.assertIn("AbilityEffect::Orbit { count: 3, radius: AreaRadius::Fixed(RankValue::fixed(180.0))", code)
+        self.assertIn("hit_radius: 80.0", code)
+        self.assertIn("period: RankValue::fixed(1.41)", code)
+        self.assertIn("duration: RankValue::from_level_1(3.0, 1.0)", code)
+        self.assertIn("team: TargetTeam::Enemy", code)
+        self.assertIn('then: AbilityTrigger::Custom("on_touch")', code)
+        self.assertEqual(result[1], "EffectTarget::Caster")
+
+    def test_blank_radius_falls_back_to_the_ability_radius(self) -> None:
+        result, report = self._orbit(radius="")
+        self.assertIn("radius: AreaRadius::Ability", result[2])
+        result, report = self._orbit(radius="", kind="item")
+        self.assertIsNone(result)
+        self.assertEqual(report.errors[0].field, "radius")
+
+    def test_invalid_orbits_are_rejected(self) -> None:
+        cases = (
+            ("zero orbiters", {"value": "0"}, "value"),
+            ("fractional orbiters", {"value": "2.5"}, "value"),
+            ("missing orbiters", {"value": ""}, "value"),
+            ("zero period", {"amount": "0"}, "amount"),
+            ("missing period", {"amount": ""}, "amount"),
+            ("missing hit radius", {"effect_id": "on_touch"}, "effect_id"),
+            ("zero hit radius", {"effect_id": "on_touch:0"}, "effect_id"),
+            ("junk hit radius", {"effect_id": "on_touch:big"}, "effect_id"),
+            ("built-in trigger", {"effect_id": "on_cast:80"}, "effect_id"),
+            ("missing duration", {"duration": ""}, "duration"),
+            ("zero radius", {"radius": "0"}, "radius"),
+            ("cast_target", {"target": "cast_target"}, "effect_target"),
+        )
+        for name, cells, field in cases:
+            result, report = self._orbit(**cells)
+            self.assertIsNone(result, name)
+            self.assertEqual(report.errors[0].field, field, name)
+
+    def test_orbit_feeds_its_trigger_for_reachability_and_fed_sets(self) -> None:
+        effect, _ = _effect("orbit", "on_touch:80", **self.GOOD)
+        other, _ = _effect("damage", "", trigger="on_touch", target="trigger_unit")
+        self.assertEqual(chain_fed_triggers([effect]), {"on_touch"})
+        report = Report()
+        warn_unreachable_custom_triggers([effect, other], set(), report)
+        self.assertFalse(report.warnings)
+
+    def test_perform_attack_under_an_orbit_fed_trigger_is_rejected(self) -> None:
+        report = Report()
+        orbit, _ = _effect("orbit", "on_touch:80", **self.GOOD)
+        attack, ctx = _effect("perform_attack", "", trigger="on_touch", target="caster")
+        ctx.chain_fed = chain_fed_triggers([orbit, attack])
+        self.assertIsNone(effect_to_rust(attack, ctx, report))
+
+
+class ConvertOnDeathStatusTests(unittest.TestCase):
+    def _status(self, trigger="on_cast", **cells):
+        report = Report()
+        effect, ctx = _effect("apply_status", "convert_on_death", target="caster", trigger=trigger, **cells)
+        ctx.levels = 4
+        return effect_to_rust(effect, ctx, report), report
+
+    def test_radius_comes_from_value(self) -> None:
+        result, report = self._status(value="300", duration="5|7|9|10")
+        self.assertIsNotNone(result, report.errors)
+        self.assertIn("StatusSpec::ConvertOnDeath { radius: RankValue::fixed(300.0) }", result[2])
+        self.assertIn("RankValue::levels(&[5.0, 7.0, 9.0, 10.0])", result[2])
+        self.assertEqual(result[1], "EffectTarget::Caster")
+
+    def test_invalid_rows_are_rejected(self) -> None:
+        for name, cells, field in (
+            ("zero radius", {"value": "0", "duration": "5"}, "value"),
+            ("missing radius", {"duration": "5"}, "value"),
+            ("passive row", {"trigger": "passive", "value": "300", "duration": "5"}, "trigger"),
+            ("while row", {"trigger": "while", "value": "300", "duration": "5"}, "trigger"),
+        ):
+            result, report = self._status(**cells)
+            self.assertIsNone(result, name)
+            self.assertEqual(report.errors[0].field, field, name)
+
+
 class ZoneTests(unittest.TestCase):
     GOOD = {"value": "1", "duration": "10", "amount": "1.2"}
 
@@ -2659,6 +2830,31 @@ class HeroGeneratorTests(unittest.TestCase):
         self.assertIn("disagrees with attack_range", str(ctx.exception))
         with self.assertRaises(SystemExit):
             self._load("false", "200")
+
+    def test_shadowheart_row_generates_the_spec_hero(self) -> None:
+        import tempfile
+
+        import HeroGenerator
+
+        root = Path(__file__).resolve().parent.parent
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "heroes.csv"
+            lines = (root / "data" / "heroes.csv").read_text(encoding="utf-8").splitlines()
+            path.write_text("\n".join([lines[0], *[l for l in lines if l.startswith("Shadowheart,")]]) + "\n", encoding="utf-8")
+            hero = HeroGenerator.load_csv(path)[0]
+        self.assertEqual(hero.rust_id, "Shadowheart")
+        self.assertEqual(
+            (hero.ability_q, hero.ability_w, hero.ability_e, hero.ability_r),
+            ("Purification", "Warding Bond", "Spirit Guardians", "Sharran Conversion"),
+        )
+        self.assertEqual((hero.base_health, hero.base_mana, hero.attack_damage), (208.0, 75.0, 36.0))
+        self.assertEqual((hero.base_health_regen, hero.base_mana_regen, hero.armor), (-0.19, 0.0, -0.1))
+        self.assertEqual(hero.magic_resist, 6.321839)
+        self.assertEqual((hero.attack_range, hero.move_speed), (150.0, 310.0))
+        arm = HeroGenerator.hero_def_arm(hero)
+        self.assertIn("HeroId::Shadowheart => HeroDef {", arm)
+        self.assertIn("primary: Some(Attribute::Strength),", arm)
+        self.assertIn("combat: hero_combat(\n                    36.0,\n                    150.0,\n                    1.7,\n                    0.4,\n                    0.6,\n                    0.6,\n                    -0.1,\n                    6.321839,\n                    310.0,\n                    None,", arm)
 
 
 if __name__ == "__main__":

@@ -402,6 +402,7 @@ fn effect_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
         | AbilityEffect::Counter { .. }
         | AbilityEffect::Chain { .. }
         | AbilityEffect::Zone { .. }
+        | AbilityEffect::Orbit { .. }
         | AbilityEffect::Accumulate { .. }
         | AbilityEffect::PerformAttack { .. } => Vec::new(),
     }
@@ -474,6 +475,18 @@ fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
         StatusSpec::DamageReduction { percent, .. } => vec![
             row("Damage reduction %", percent),
             seconds_row("Damage reduction duration", duration),
+        ],
+        StatusSpec::ConvertOnDeath { radius } => vec![
+            row("Converts enemy creeps that die within R", radius),
+            seconds_row("Conversion duration", duration),
+        ],
+        StatusSpec::DamageShare { percent } => vec![
+            row("Damage duplicated to caster %", percent),
+            seconds_row("Damage share duration", duration),
+        ],
+        StatusSpec::MagicResistance { percent, .. } => vec![
+            row("Magic resistance %", percent),
+            seconds_row("Magic resistance duration", duration),
         ],
         StatusSpec::StatusResistance { percent, .. } => vec![
             row("Status resistance %", percent),
@@ -625,6 +638,25 @@ fn effect_text_rows(effect: &AbilityEffect) -> Vec<EffectRow> {
                 fmt_num(duration.at(1))
             ))]
         }
+        AbilityEffect::Orbit {
+            count,
+            radius,
+            hit_radius,
+            period,
+            duration,
+            ..
+        } => {
+            let radius = match radius {
+                AreaRadius::Ability => "the ability radius".to_string(),
+                AreaRadius::Fixed(value) => fmt_num(value.at(1)),
+            };
+            vec![text_row(format!(
+                "Orbit: {count} x (hit R {}) at radius {radius}, 1 revolution / {}s, for {}s",
+                fmt_num(hit_radius),
+                fmt_num(period.at(1)),
+                fmt_num(duration.at(1))
+            ))]
+        }
         AbilityEffect::Accumulate { threshold, .. } => vec![text_row(format!(
             "Each time {} builds up",
             fmt_num(threshold.at(1))
@@ -737,6 +769,9 @@ fn status_name(status: StatusSpec) -> &'static str {
         StatusSpec::HealBlock => "Heal block",
         StatusSpec::DamageReduction { .. } => "Damage reduction",
         StatusSpec::Stacks { .. } => "Stacks",
+        StatusSpec::ConvertOnDeath { .. } => "Convert on death",
+        StatusSpec::DamageShare { .. } => "Damage share",
+        StatusSpec::MagicResistance { .. } => "Magic resistance",
         StatusSpec::StatusResistance { .. } => "Status resistance",
         StatusSpec::ManaShield { .. } => "Mana shield",
         StatusSpec::ResourceModifier { .. } => "Modifier",

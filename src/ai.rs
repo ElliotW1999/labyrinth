@@ -50,6 +50,37 @@ pub struct LaneFollower {
     pub index: usize,
 }
 
+impl LaneFollower {
+    /// A follower that continues `waypoints` from `position` instead of from the start: it
+    /// aims at the nearest waypoint, or the one after it when the unit is already past the
+    /// nearest one (on the far side of it, seen along the lane), so it never walks back.
+    pub fn resume_from(waypoints: Vec<Vec3>, position: Vec3) -> Self {
+        let nearest = waypoints
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| {
+                flat_distance(**a, position).total_cmp(&flat_distance(**b, position))
+            })
+            .map_or(0, |(index, _)| index);
+        let index = match waypoints.get(nearest + 1) {
+            Some(next) => {
+                let along = Vec2::new(next.x - waypoints[nearest].x, next.z - waypoints[nearest].z);
+                let offset = Vec2::new(
+                    position.x - waypoints[nearest].x,
+                    position.z - waypoints[nearest].z,
+                );
+                if along.dot(offset) > 0.0 {
+                    nearest + 1
+                } else {
+                    nearest
+                }
+            }
+            None => nearest,
+        };
+        Self { waypoints, index }
+    }
+}
+
 /// Whether a status on the unit takes its orders away (a compulsion is in charge instead).
 fn orders_blocked(statuses: Option<&StatusEffects>) -> bool {
     statuses.is_some_and(|s| s.blocks().contains(ActionBlocks::ORDERS))
@@ -383,3 +414,45 @@ pub fn enforce_compulsions(
 
 /// An idle attack-moving hero this close to its destination has finished the order.
 const ATTACK_MOVE_SETTLE: f32 = 250.0;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lane() -> Vec<Vec3> {
+        vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1000.0, 0.0, 0.0),
+            Vec3::new(2000.0, 0.0, 0.0),
+            Vec3::new(3000.0, 0.0, 0.0),
+        ]
+    }
+
+    #[test]
+    fn lane_follower_resume_from_picks_next_waypoint() {
+        // Before the nearest waypoint: aim at it.
+        assert_eq!(
+            LaneFollower::resume_from(lane(), Vec3::new(900.0, 0.0, 100.0)).index,
+            1
+        );
+        // Past the nearest waypoint (toward the next one): aim at the next one.
+        assert_eq!(
+            LaneFollower::resume_from(lane(), Vec3::new(1100.0, 0.0, 100.0)).index,
+            2
+        );
+        // At the start of the lane, and beyond the end, there is nothing to skip to.
+        assert_eq!(
+            LaneFollower::resume_from(lane(), Vec3::new(-100.0, 0.0, 0.0)).index,
+            0
+        );
+        assert_eq!(
+            LaneFollower::resume_from(lane(), Vec3::new(3500.0, 0.0, 0.0)).index,
+            3
+        );
+        assert!(
+            LaneFollower::resume_from(Vec::new(), Vec3::ZERO)
+                .waypoints
+                .is_empty()
+        );
+    }
+}

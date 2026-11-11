@@ -664,3 +664,347 @@ mod compulsions {
         assert!(!targeted, "and never acquired");
     }
 }
+
+// --- Sharran Conversion (`convert_on_death`): enemy creeps rising again as allies ---
+
+mod conversion {
+    use super::*;
+    use crate::components::{AttackTarget, Creep, PlayerHero, PlayerWallet, Tower};
+    use crate::status::{StatusEffect, StatusEffects};
+
+    fn spawn_creep_of(app: &mut App, team: Team, lane: Lane, ranged: bool, pos: Vec3) -> Entity {
+        app.world_mut()
+            .resource_scope(|world, assets: Mut<SharedAssets>| {
+                let mut queue = bevy::ecs::world::CommandQueue::default();
+                let mut commands = Commands::new(&mut queue, world);
+                let id = crate::units::spawn_creep(&mut commands, &assets, team, lane, pos, ranged);
+                queue.apply(world);
+                id
+            })
+    }
+
+    /// A local (player) hero carrying a conversion aura of `radius`.
+    fn spawn_holder(app: &mut App, team: Team, pos: Vec3, radius: f32, seconds: f32) -> Entity {
+        let hero = app
+            .world_mut()
+            .resource_scope(|world, assets: Mut<SharedAssets>| {
+                let mut queue = bevy::ecs::world::CommandQueue::default();
+                let mut commands = Commands::new(&mut queue, world);
+                let hero = crate::units::spawn_hero_entity(
+                    &mut commands,
+                    &assets,
+                    team,
+                    true,
+                    0,
+                    pos,
+                    HeroId::QueenOfPain,
+                );
+                queue.apply(world);
+                hero
+            });
+        app.world_mut()
+            .get_mut::<StatusEffects>(hero)
+            .unwrap()
+            .effects
+            .push(StatusEffect::convert_on_death(radius, seconds));
+        hero
+    }
+
+    fn run(app: &mut App, frames: u32) {
+        for _ in 0..frames {
+            app.update();
+        }
+    }
+
+    fn kill(app: &mut App, unit: Entity) {
+        app.world_mut().get_mut::<Health>(unit).unwrap().current = 0.0;
+    }
+
+    fn creeps_of(app: &mut App, team: Team) -> Vec<Entity> {
+        app.world_mut()
+            .query_filtered::<(Entity, &Team), With<Creep>>()
+            .iter(app.world())
+            .filter(|(_, t)| **t == team)
+            .map(|(e, _)| e)
+            .collect()
+    }
+
+    fn gold(app: &App, hero: Entity) -> u32 {
+        app.world().get::<PlayerWallet>(hero).unwrap().gold
+    }
+
+    #[test]
+    fn enemy_creep_dying_near_holder_returns_as_ally_with_full_health() {
+        let mut app = sim_app();
+        let _holder = spawn_holder(&mut app, Team::Radiant, Vec3::ZERO, 300.0, 10.0);
+        let victim = spawn_creep_of(
+            &mut app,
+            Team::Dire,
+            Lane::Top,
+            true,
+            Vec3::new(200.0, 0.0, 0.0),
+        );
+        app.update();
+        kill(&mut app, victim);
+        run(&mut app, 3);
+        assert!(
+            creeps_of(&mut app, Team::Dire).is_empty(),
+            "the corpse is gone"
+        );
+        let risen = creeps_of(&mut app, Team::Radiant);
+        assert_eq!(risen.len(), 1);
+        let creep = *app.world().get::<Creep>(risen[0]).unwrap();
+        assert_eq!(creep.lane, Lane::Top);
+        assert!(creep.ranged, "same creep type");
+        let health = app.world().get::<Health>(risen[0]).unwrap();
+        assert_eq!(health.current, health.max);
+        assert_eq!(health.max, 240.0, "a ranged creep's full health");
+    }
+
+    #[test]
+    fn bounty_still_paid_on_converted_death() {
+        let mut app = sim_app();
+        let holder = spawn_holder(&mut app, Team::Radiant, Vec3::ZERO, 300.0, 10.0);
+        let victim = spawn_creep_of(
+            &mut app,
+            Team::Dire,
+            Lane::Mid,
+            false,
+            Vec3::new(100.0, 0.0, 0.0),
+        );
+        app.update();
+        let before = gold(&app, holder);
+        kill(&mut app, victim);
+        run(&mut app, 3);
+        assert_eq!(gold(&app, holder), before + 35);
+        assert_eq!(creeps_of(&mut app, Team::Radiant).len(), 1);
+    }
+
+    #[test]
+    fn creep_dying_outside_radius_or_after_expiry_is_not_converted() {
+        let mut app = sim_app();
+        let _holder = spawn_holder(&mut app, Team::Radiant, Vec3::ZERO, 300.0, 10.0);
+        let far = spawn_creep_of(
+            &mut app,
+            Team::Dire,
+            Lane::Mid,
+            false,
+            Vec3::new(700.0, 0.0, 0.0),
+        );
+        app.update();
+        kill(&mut app, far);
+        run(&mut app, 3);
+        assert!(
+            creeps_of(&mut app, Team::Radiant).is_empty(),
+            "outside the radius"
+        );
+
+        // After the aura expired.
+        let mut app = sim_app();
+        let _holder = spawn_holder(&mut app, Team::Radiant, Vec3::ZERO, 300.0, 0.5);
+        let victim = spawn_creep_of(
+            &mut app,
+            Team::Dire,
+            Lane::Mid,
+            false,
+            Vec3::new(100.0, 0.0, 0.0),
+        );
+        run(&mut app, 90);
+        kill(&mut app, victim);
+        run(&mut app, 3);
+        assert!(creeps_of(&mut app, Team::Radiant).is_empty(), "expired");
+    }
+
+    #[test]
+    fn dead_holder_converts_nothing() {
+        let mut app = sim_app();
+        let holder = spawn_holder(&mut app, Team::Radiant, Vec3::ZERO, 300.0, 10.0);
+        let victim = spawn_creep_of(
+            &mut app,
+            Team::Dire,
+            Lane::Mid,
+            false,
+            Vec3::new(100.0, 0.0, 0.0),
+        );
+        app.update();
+        kill(&mut app, holder);
+        kill(&mut app, victim);
+        run(&mut app, 3);
+        assert!(creeps_of(&mut app, Team::Radiant).is_empty());
+        assert!(app.world().get::<PlayerHero>(holder).is_some());
+    }
+
+    #[test]
+    fn heroes_towers_and_dummy_never_convert() {
+        let mut app = sim_app();
+        let dummy_at = crate::units::training_dummy_position();
+        let _holder = spawn_holder(&mut app, Team::Radiant, dummy_at, 600.0, 10.0);
+        app.world_mut()
+            .resource_scope(|world, assets: Mut<SharedAssets>| {
+                let mut queue = bevy::ecs::world::CommandQueue::default();
+                let mut commands = Commands::new(&mut queue, world);
+                crate::units::spawn_training_dummy(&mut commands, &assets);
+                crate::units::spawn_tower(
+                    &mut commands,
+                    &assets,
+                    Team::Dire,
+                    Lane::Mid,
+                    dummy_at + Vec3::new(150.0, 0.0, 0.0),
+                );
+                crate::units::spawn_hero_entity(
+                    &mut commands,
+                    &assets,
+                    Team::Dire,
+                    false,
+                    1,
+                    dummy_at + Vec3::new(0.0, 0.0, 150.0),
+                    HeroId::QueenOfPain,
+                );
+                queue.apply(world);
+            });
+        app.update();
+        let doomed: Vec<Entity> = app
+            .world_mut()
+            .query::<(Entity, &Team)>()
+            .iter(app.world())
+            .filter(|(_, team)| **team == Team::Dire)
+            .map(|(e, _)| e)
+            .collect();
+        assert!(doomed.len() >= 3, "dummy, tower and hero: {doomed:?}");
+        assert!(
+            app.world_mut()
+                .query_filtered::<(), With<Tower>>()
+                .iter(app.world())
+                .count()
+                >= 1
+        );
+        for unit in doomed {
+            if app.world().get::<Health>(unit).is_some() {
+                kill(&mut app, unit);
+            }
+        }
+        run(&mut app, 3);
+        assert!(creeps_of(&mut app, Team::Radiant).is_empty());
+        assert!(creeps_of(&mut app, Team::Dire).is_empty());
+    }
+
+    #[test]
+    fn allied_creep_dying_near_holder_is_not_converted() {
+        let mut app = sim_app();
+        let _holder = spawn_holder(&mut app, Team::Radiant, Vec3::ZERO, 300.0, 10.0);
+        let ally = spawn_creep_of(
+            &mut app,
+            Team::Radiant,
+            Lane::Mid,
+            false,
+            Vec3::new(100.0, 0.0, 0.0),
+        );
+        app.update();
+        kill(&mut app, ally);
+        run(&mut app, 3);
+        assert!(creeps_of(&mut app, Team::Radiant).is_empty());
+        assert!(creeps_of(&mut app, Team::Dire).is_empty());
+    }
+
+    #[test]
+    fn converted_creep_attacks_nearby_enemy() {
+        let mut app = sim_app();
+        let _holder = spawn_holder(&mut app, Team::Radiant, Vec3::ZERO, 300.0, 10.0);
+        let victim = spawn_creep_of(
+            &mut app,
+            Team::Dire,
+            Lane::Mid,
+            false,
+            Vec3::new(250.0, 0.0, 0.0),
+        );
+        let target = spawn_creep_of(
+            &mut app,
+            Team::Dire,
+            Lane::Mid,
+            false,
+            Vec3::new(370.0, 0.0, 0.0),
+        );
+        app.world_mut()
+            .get_mut::<StatusEffects>(target)
+            .unwrap()
+            .effects
+            .push(StatusEffect::rooted(60.0));
+        app.update();
+        kill(&mut app, victim);
+        let before = app.world().get::<Health>(target).unwrap().current;
+        run(&mut app, 240);
+        let risen = creeps_of(&mut app, Team::Radiant);
+        assert_eq!(risen.len(), 1);
+        assert!(
+            app.world().get::<Health>(target).unwrap().current < before,
+            "the risen creep hit the enemy"
+        );
+        assert!(app.world().get::<AttackTarget>(risen[0]).is_some());
+    }
+
+    #[test]
+    fn converted_creep_resumes_lane_forward() {
+        let mut app = sim_app();
+        let death = crate::scale::ground(10.0, 10.0);
+        let _holder = spawn_holder(&mut app, Team::Radiant, death, 300.0, 10.0);
+        let victim = spawn_creep_of(&mut app, Team::Dire, Lane::Mid, false, death);
+        app.update();
+        kill(&mut app, victim);
+        run(&mut app, 2);
+        let risen = creeps_of(&mut app, Team::Radiant);
+        assert_eq!(risen.len(), 1);
+        let follower = app
+            .world()
+            .get::<crate::ai::LaneFollower>(risen[0])
+            .unwrap();
+        let end = *follower.waypoints.last().unwrap();
+        let aimed = follower.waypoints[follower.index];
+        assert!(
+            Vec2::new(aimed.x - end.x, aimed.z - end.z).length()
+                < Vec2::new(death.x - end.x, death.z - end.z).length(),
+            "aims ahead toward the enemy base, not back toward its own"
+        );
+        let start = app.world().get::<Transform>(risen[0]).unwrap().translation;
+        run(&mut app, 120);
+        let later = app.world().get::<Transform>(risen[0]).unwrap().translation;
+        assert!(
+            Vec2::new(later.x - end.x, later.z - end.z).length()
+                < Vec2::new(start.x - end.x, start.z - end.z).length() - 100.0,
+            "walked forward: {start:?} -> {later:?}"
+        );
+    }
+
+    #[test]
+    fn converted_creep_expires_after_30s_without_bounty() {
+        let mut app = sim_app();
+        let holder = spawn_holder(&mut app, Team::Radiant, Vec3::ZERO, 300.0, 5.0);
+        let victim = spawn_creep_of(
+            &mut app,
+            Team::Dire,
+            Lane::Mid,
+            false,
+            Vec3::new(100.0, 0.0, 0.0),
+        );
+        app.update();
+        kill(&mut app, victim);
+        run(&mut app, 3);
+        assert_eq!(creeps_of(&mut app, Team::Radiant).len(), 1);
+        let gold_after_death = gold(&app, holder);
+        run(&mut app, 29 * 60);
+        assert_eq!(
+            creeps_of(&mut app, Team::Radiant).len(),
+            1,
+            "still alive at 29s"
+        );
+        run(&mut app, 2 * 60);
+        assert!(
+            creeps_of(&mut app, Team::Radiant).is_empty(),
+            "gone after 30s"
+        );
+        assert_eq!(
+            gold(&app, holder),
+            gold_after_death,
+            "no bounty for an expiry"
+        );
+    }
+}

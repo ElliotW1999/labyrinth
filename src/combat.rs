@@ -11,9 +11,9 @@ use crate::basic_attack::{
     start_basic_attack_windups, sync_attack_projectile_visuals, tick_attack_swings,
 };
 use crate::components::{
-    AttackCooldown, BoundRadius, CombatStats, DamageType, GoldBounty, Health, HeroAttributes,
-    HeroProgress, Lifetime, Mana, PlayerHero, PlayerWallet, Projectile, ProjectileHome,
-    ProjectileStyle, ShieldPool, Team, XpBounty,
+    AttackCooldown, BoundRadius, CombatStats, Creep, DamageType, GoldBounty, Health,
+    HeroAttributes, HeroProgress, Lane, Lifetime, Mana, PlayerHero, PlayerWallet, Projectile,
+    ProjectileHome, ProjectileStyle, ShieldPool, Team, XpBounty,
 };
 use crate::dimensions::{area_contains, bounds_of};
 use crate::progression::add_xp;
@@ -37,6 +37,7 @@ impl Plugin for CombatPlugin {
             .add_message::<ExtraAttackEvent>()
             .add_message::<DamageEvent>()
             .add_message::<DamageAppliedEvent>()
+            .add_message::<CreepConvertedEvent>()
             .add_message::<SpawnProjectileEvent>()
             .add_message::<ProjectileHitEvent>()
             .add_systems(
@@ -65,6 +66,8 @@ impl Plugin for CombatPlugin {
                     // units (`MoveTarget`, `AttackTarget`, ...), and a unit despawned
                     // before those commands are applied panics the app.
                     despawn_dead.after(crate::movement::SimSet::Movement),
+                    // Right after the deaths are finalised: creeps they converted come back.
+                    crate::units::spawn_converted_creeps,
                 )
                     .chain()
                     .run_if(crate::net::is_sim_authority),
@@ -414,6 +417,8 @@ pub fn apply_damage_events(
     )>,
 ) {
     let mut reflected = Vec::new();
+    // Bond copies (`damage_share`), written next to the reflected damage.
+    let mut shared = Vec::new();
     // (source, health to give back); applied after the whole batch, same frame.
     let mut leeches: Vec<(Entity, f32)> = Vec::new();
     for event in damage.p0().read() {
@@ -471,7 +476,14 @@ pub fn apply_damage_events(
             damage_immune,
             event.applies_block,
             event.pierces_shields,
-            statuses.as_ref().map_or(1.0, |s| s.damage_taken_factor()),
+            statuses.as_ref().map_or(1.0, |s| {
+                let magic = if event.damage_type == DamageType::Magical {
+                    s.magic_damage_factor()
+                } else {
+                    1.0
+                };
+                s.damage_taken_factor() * magic
+            }),
         );
         if resolved.shield_absorbed > 0.0 {
             if let Some(st) = statuses.as_deref_mut() {
@@ -523,6 +535,38 @@ pub fn apply_damage_events(
             }
         }
 
+        // Damage share: the target took the full hit above; its bond partner also receives a
+        // copy of the incoming damage before mitigation (same type), which the partner then
+        // mitigates itself. Reactive damage is never shared, so bonds cannot loop. A dead
+        // partner drops the copy when it is processed (next frame, like reflect).
+        if !event.reactive {
+            if let Some(share) = statuses.as_ref().and_then(|s| s.damage_share()) {
+                if share.partner != event.target && share.fraction > 0.0 {
+                    // Outgoing amps are in `outgoing`; the copy re-applies the physical one
+                    // itself, so pass the raw amount for physical to apply it exactly once.
+                    let pre_mitigation = if event.damage_type == DamageType::Physical {
+                        event.amount
+                    } else {
+                        outgoing
+                    };
+                    shared.push(DamageEvent {
+                        source: event.source,
+                        target: share.partner,
+                        amount: pre_mitigation * share.fraction,
+                        damage_type: event.damage_type,
+                        kind: DamageKind::Generic,
+                        crit: false,
+                        is_spell: false,
+                        applies_block: false,
+                        pierces_shields: false,
+                        reflects: false,
+                        drain_ratio: 0.0,
+                        reactive: true,
+                    });
+                }
+            }
+        }
+
         if event.reflects && resolved.health_delta > 0.0 && damage_reflect > 0.0 {
             if let Some(source) = event.source {
                 let amount = resolved.health_delta * damage_reflect;
@@ -550,7 +594,7 @@ pub fn apply_damage_events(
             apply_heal(&mut health, amount, factor);
         }
     }
-    for event in reflected {
+    for event in reflected.into_iter().chain(shared) {
         damage.p1().write(event);
     }
 }
@@ -874,6 +918,40 @@ fn tick_lifetimes(
     }
 }
 
+/// A creep died within the radius of an enemy `convert_on_death` holder: a fresh creep of
+/// `team` (the holder's) is spawned at `position` by [`crate::units::spawn_converted_creeps`].
+#[derive(Message, Debug, Clone, Copy, PartialEq)]
+pub struct CreepConvertedEvent {
+    pub position: Vec3,
+    pub team: Team,
+    pub lane: Lane,
+    pub ranged: bool,
+}
+
+/// The nearest living enemy of `victim_team` whose `convert_on_death` radius reaches the
+/// dying creep (its centre to the victim's edge), with its team.
+fn conversion_holder(
+    holders: &Query<(&Transform, &Team, &Health, &StatusEffects)>,
+    victim_team: Team,
+    position: Vec3,
+    bound: f32,
+) -> Option<Team> {
+    holders
+        .iter()
+        .filter(|(_, team, health, statuses)| {
+            **team == victim_team.enemy() && health.is_alive() && statuses.convert_radius() > 0.0
+        })
+        .filter(|(tf, _, _, statuses)| {
+            area_contains(tf.translation, statuses.convert_radius(), position, bound)
+        })
+        .min_by(|(a, ..), (b, ..)| {
+            flat_distance(a.translation, position)
+                .total_cmp(&flat_distance(b.translation, position))
+        })
+        .map(|(_, team, ..)| *team)
+}
+
+#[allow(clippy::type_complexity)]
 fn despawn_dead(
     mut commands: Commands,
     dead: Query<
@@ -884,12 +962,16 @@ fn despawn_dead(
             Option<&GoldBounty>,
             Option<&XpBounty>,
             Option<&Team>,
+            Option<&Creep>,
+            Option<&BoundRadius>,
         ),
         Without<PlayerHero>,
     >,
     mut heroes: Query<(&Transform, &Team, &mut PlayerWallet, &mut HeroProgress), With<PlayerHero>>,
+    holders: Query<(&Transform, &Team, &Health, &StatusEffects)>,
+    mut converted: MessageWriter<CreepConvertedEvent>,
 ) {
-    for (entity, transform, health, gold_bounty, xp_bounty, team) in &dead {
+    for (entity, transform, health, gold_bounty, xp_bounty, team, creep, bound) in &dead {
         if health.is_alive() {
             continue;
         }
@@ -911,6 +993,24 @@ fn despawn_dead(
                     }
                 }
             }
+        }
+
+        // The bounty above is paid as usual; a creep dying inside an enemy conversion aura
+        // is then replaced by a fresh creep of that enemy's team.
+        if let (Some(victim_team), Some(creep)) = (team, creep)
+            && let Some(holder_team) = conversion_holder(
+                &holders,
+                *victim_team,
+                transform.translation,
+                bounds_of(bound),
+            )
+        {
+            converted.write(CreepConvertedEvent {
+                position: transform.translation,
+                team: holder_team,
+                lane: creep.lane,
+                ranged: creep.ranged,
+            });
         }
 
         commands.entity(entity).despawn();
@@ -1055,6 +1155,7 @@ mod tests {
     /// away, runs `despawn_dead`, and returns the hero's progress.
     fn creep_death_xp(hero_distance: f32) -> HeroProgress {
         let mut world = World::new();
+        world.init_resource::<Messages<CreepConvertedEvent>>();
         world.spawn((
             Transform::from_xyz(0.0, 0.0, 0.0),
             Health {
@@ -2145,6 +2246,343 @@ mod tests {
                 1.0
             );
             assert!((taken(&mut world, t, DamageType::Pure) - 100.0).abs() < 1e-3);
+        }
+    }
+
+    mod magic_resistance {
+        use super::*;
+        use crate::status::StatusEffect;
+
+        const HERO_MR: f32 = 6.321839; // 27.5%
+
+        fn target_with(magic_resist: f32, effects: Vec<StatusEffect>) -> (World, Entity) {
+            let mut world = World::new();
+            world.init_resource::<Messages<DamageEvent>>();
+            world.init_resource::<Messages<DamageAppliedEvent>>();
+            world.init_resource::<Messages<crate::status::StatusLifecycleEvent>>();
+            world.init_resource::<CombatRng>();
+            let mut statuses = StatusEffects::default();
+            statuses.effects = effects;
+            let target = world
+                .spawn((
+                    Health::new(1000.0),
+                    CombatStats::simple(0.0, 0.0, 1.0, 0.0, magic_resist, 0.0),
+                    statuses,
+                ))
+                .id();
+            (world, target)
+        }
+
+        fn taken(world: &mut World, target: Entity, damage_type: DamageType) -> f32 {
+            let before = world.get::<Health>(target).unwrap().current;
+            world.write_message(DamageEvent::new(target, 100.0, damage_type));
+            world.run_system_once(apply_damage_events).unwrap();
+            before - world.get::<Health>(target).unwrap().current
+        }
+
+        #[test]
+        fn magic_resistance_multiplies_with_rating_mr() {
+            let (mut world, t) = target_with(HERO_MR, vec![]);
+            assert!((taken(&mut world, t, DamageType::Magical) - 72.5).abs() < 0.01);
+            let (mut world, t) =
+                target_with(HERO_MR, vec![StatusEffect::magic_resistance("a", 0.2, 5.0)]);
+            // 100 x 0.725 x 0.8 = 58.
+            assert!((taken(&mut world, t, DamageType::Magical) - 58.0).abs() < 0.01);
+        }
+
+        #[test]
+        fn two_magic_resistance_sources_multiply() {
+            let (mut world, t) = target_with(
+                0.0,
+                vec![
+                    StatusEffect::magic_resistance("a", 0.5, 5.0),
+                    StatusEffect::magic_resistance("b", 0.5, 5.0),
+                ],
+            );
+            let statuses = world.get::<StatusEffects>(t).unwrap();
+            assert!((statuses.magic_damage_factor() - 0.25).abs() < 1e-6);
+            assert!((taken(&mut world, t, DamageType::Magical) - 25.0).abs() < 1e-3);
+        }
+
+        #[test]
+        fn magic_resistance_ignores_physical_and_pure() {
+            for damage_type in [DamageType::Physical, DamageType::Pure] {
+                let (mut world, t) =
+                    target_with(0.0, vec![StatusEffect::magic_resistance("a", 0.5, 5.0)]);
+                assert!(
+                    (taken(&mut world, t, damage_type) - 100.0).abs() < 1e-3,
+                    "{damage_type:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn magic_resistance_ends_on_expiry() {
+            let (mut world, t) =
+                target_with(0.0, vec![StatusEffect::magic_resistance("a", 0.5, 0.0)]);
+            assert_eq!(
+                world.get::<StatusEffects>(t).unwrap().magic_damage_factor(),
+                1.0
+            );
+            assert!((taken(&mut world, t, DamageType::Magical) - 100.0).abs() < 1e-3);
+        }
+    }
+
+    mod damage_share {
+        use super::*;
+        use crate::status::{DamageShare, StatusEffect};
+
+        fn app() -> App {
+            let mut app = App::new();
+            app.add_message::<DamageEvent>();
+            app.add_message::<DamageAppliedEvent>();
+            app.add_message::<crate::status::StatusLifecycleEvent>();
+            app.init_resource::<CombatRng>();
+            app.add_systems(Update, apply_damage_events);
+            app
+        }
+
+        fn unit(
+            app: &mut App,
+            armor: f32,
+            magic_resist: f32,
+            effects: Vec<StatusEffect>,
+        ) -> Entity {
+            let mut statuses = StatusEffects::default();
+            statuses.effects = effects;
+            app.world_mut()
+                .spawn((
+                    Health::new(1000.0),
+                    CombatStats::simple(0.0, 0.0, 1.0, armor, magic_resist, 0.0),
+                    statuses,
+                ))
+                .id()
+        }
+
+        fn bond(partner: Entity, fraction: f32) -> StatusEffect {
+            StatusEffect::damage_share(DamageShare { partner, fraction }, 10.0)
+        }
+
+        /// A target bonded to a fresh partner (`target_armor` / `partner_armor`).
+        fn pair(app: &mut App, target_mr: f32, partner_mr: f32, fraction: f32) -> (Entity, Entity) {
+            let partner = unit(app, 10.0, partner_mr, vec![]);
+            let target = unit(app, 0.0, target_mr, vec![bond(partner, fraction)]);
+            (target, partner)
+        }
+
+        fn taken(app: &App, e: Entity) -> f32 {
+            1000.0 - app.world().get::<Health>(e).unwrap().current
+        }
+
+        fn hit(app: &mut App, target: Entity, amount: f32, damage_type: DamageType) {
+            app.world_mut()
+                .write_message(DamageEvent::new(target, amount, damage_type));
+        }
+
+        #[test]
+        fn damage_share_duplicates_pre_mitigation_damage_to_partner_with_its_own_mitigation() {
+            let mut app = app();
+            let partner = unit(&mut app, 5.0, 0.0, vec![]);
+            let target = unit(&mut app, 10.0, 0.0, vec![bond(partner, 1.0)]);
+            hit(&mut app, target, 100.0, DamageType::Physical);
+            app.update();
+            // The target takes its normal hit now; the copy has not landed yet.
+            let stats = CombatStats::simple(0.0, 0.0, 1.0, 10.0, 0.0, 0.0);
+            assert!(
+                (taken(&app, target) - apply_damage(100.0, DamageType::Physical, &stats)).abs()
+                    < 1e-3
+            );
+            assert_eq!(taken(&app, partner), 0.0);
+            app.update();
+            let stats = CombatStats::simple(0.0, 0.0, 1.0, 5.0, 0.0, 0.0);
+            assert!(
+                (taken(&app, partner) - apply_damage(100.0, DamageType::Physical, &stats)).abs()
+                    < 1e-3
+            );
+            // The target was not reduced further.
+            let stats = CombatStats::simple(0.0, 0.0, 1.0, 10.0, 0.0, 0.0);
+            assert!(
+                (taken(&app, target) - apply_damage(100.0, DamageType::Physical, &stats)).abs()
+                    < 1e-3
+            );
+        }
+
+        #[test]
+        fn damage_share_keeps_magical_type_for_partner_mr() {
+            let mut app = app();
+            let (target, partner) = pair(&mut app, 0.0, 6.321839, 1.0);
+            hit(&mut app, target, 100.0, DamageType::Magical);
+            app.update();
+            app.update();
+            assert!((taken(&app, target) - 100.0).abs() < 1e-3);
+            assert!((taken(&app, partner) - 72.5).abs() < 0.01);
+        }
+
+        #[test]
+        fn damage_share_percent_scales_the_copy_and_pure_ignores_armor() {
+            let mut app = app();
+            let (target, partner) = pair(&mut app, 0.0, 0.0, 0.5);
+            hit(&mut app, target, 100.0, DamageType::Pure);
+            app.update();
+            app.update();
+            assert!((taken(&app, target) - 100.0).abs() < 1e-3);
+            assert!((taken(&app, partner) - 50.0).abs() < 1e-3);
+        }
+
+        #[test]
+        fn damage_share_skips_dead_partner() {
+            let mut app = app();
+            let (target, partner) = pair(&mut app, 0.0, 0.0, 1.0);
+            app.world_mut().get_mut::<Health>(partner).unwrap().current = 0.0;
+            hit(&mut app, target, 100.0, DamageType::Pure);
+            app.update();
+            app.update();
+            assert!((taken(&app, target) - 100.0).abs() < 1e-3);
+            assert_eq!(app.world().get::<Health>(partner).unwrap().current, 0.0);
+            // A despawned partner is just as harmless.
+            app.world_mut().despawn(partner);
+            hit(&mut app, target, 100.0, DamageType::Pure);
+            app.update();
+            app.update();
+            assert!((taken(&app, target) - 200.0).abs() < 1e-3);
+        }
+
+        #[test]
+        fn damage_share_partner_invulnerable_takes_nothing() {
+            let mut app = app();
+            let (target, partner) = pair(&mut app, 0.0, 0.0, 1.0);
+            app.world_mut()
+                .get_mut::<StatusEffects>(partner)
+                .unwrap()
+                .effects
+                .push(StatusEffect::invulnerable(5.0));
+            hit(&mut app, target, 100.0, DamageType::Pure);
+            app.update();
+            app.update();
+            assert!((taken(&app, target) - 100.0).abs() < 1e-3);
+            assert_eq!(taken(&app, partner), 0.0);
+        }
+
+        #[test]
+        fn reactive_damage_is_not_shared() {
+            let mut app = app();
+            let (target, partner) = pair(&mut app, 0.0, 0.0, 1.0);
+            let mut event = DamageEvent::new(target, 100.0, DamageType::Pure);
+            event.reactive = true;
+            app.world_mut().write_message(event);
+            app.update();
+            app.update();
+            assert!((taken(&app, target) - 100.0).abs() < 1e-3);
+            assert_eq!(taken(&app, partner), 0.0);
+        }
+
+        #[test]
+        fn mutual_shares_do_not_loop() {
+            let mut app = app();
+            let a = unit(&mut app, 0.0, 0.0, vec![]);
+            let b = unit(&mut app, 0.0, 0.0, vec![bond(a, 1.0)]);
+            app.world_mut()
+                .get_mut::<StatusEffects>(a)
+                .unwrap()
+                .effects
+                .push(bond(b, 1.0));
+            hit(&mut app, a, 100.0, DamageType::Pure);
+            for _ in 0..6 {
+                app.update();
+            }
+            assert!((taken(&app, a) - 100.0).abs() < 1e-3);
+            assert!((taken(&app, b) - 100.0).abs() < 1e-3);
+        }
+
+        #[test]
+        fn self_sourced_share_is_noop() {
+            let mut app = app();
+            let target = unit(&mut app, 0.0, 0.0, vec![]);
+            app.world_mut()
+                .get_mut::<StatusEffects>(target)
+                .unwrap()
+                .effects
+                .push(bond(target, 1.0));
+            hit(&mut app, target, 100.0, DamageType::Pure);
+            for _ in 0..3 {
+                app.update();
+            }
+            assert!((taken(&app, target) - 100.0).abs() < 1e-3);
+        }
+
+        #[test]
+        fn invulnerable_target_emits_no_copy() {
+            let mut app = app();
+            let (target, partner) = pair(&mut app, 0.0, 0.0, 1.0);
+            app.world_mut()
+                .get_mut::<StatusEffects>(target)
+                .unwrap()
+                .effects
+                .push(StatusEffect::invulnerable(5.0));
+            hit(&mut app, target, 100.0, DamageType::Pure);
+            app.update();
+            app.update();
+            assert_eq!(taken(&app, target), 0.0);
+            assert_eq!(taken(&app, partner), 0.0);
+        }
+
+        /// A damage source with outgoing amps, so the copy's amp handling is observable.
+        fn amped_source(app: &mut App, physical: f32, spell: f32) -> Entity {
+            let mut stats = CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 0.0);
+            stats.outgoing_physical_amp = physical;
+            stats.outgoing_spell_amp = spell;
+            app.world_mut().spawn(stats).id()
+        }
+
+        #[test]
+        fn damage_share_applies_source_physical_amp_exactly_once_to_the_copy() {
+            let mut app = app();
+            let (target, partner) = pair(&mut app, 0.0, 0.0, 1.0);
+            // Zero out armor on both so only the amp shows.
+            for e in [target, partner] {
+                app.world_mut().get_mut::<CombatStats>(e).unwrap().armor = 0.0;
+            }
+            let source = amped_source(&mut app, 0.5, 0.0);
+            let mut event = DamageEvent::new(target, 100.0, DamageType::Physical);
+            event.source = Some(source);
+            app.world_mut().write_message(event);
+            app.update();
+            app.update();
+            app.update();
+            assert!((taken(&app, target) - 150.0).abs() < 1e-3);
+            // 100 x 1.5 once, not 100 x 1.5 x 1.5.
+            assert!((taken(&app, partner) - 150.0).abs() < 1e-3);
+        }
+
+        #[test]
+        fn damage_share_applies_source_spell_amp_exactly_once_to_the_copy() {
+            let mut app = app();
+            let (target, partner) = pair(&mut app, 0.0, 0.0, 1.0);
+            let source = amped_source(&mut app, 0.0, 0.5);
+            let mut event = DamageEvent::new(target, 100.0, DamageType::Magical);
+            event.source = Some(source);
+            event.is_spell = true;
+            app.world_mut().write_message(event);
+            app.update();
+            app.update();
+            app.update();
+            assert!((taken(&app, target) - 150.0).abs() < 1e-3);
+            // The copy is not a spell, so the spell amp comes only from the original.
+            assert!((taken(&app, partner) - 150.0).abs() < 1e-3);
+        }
+
+        #[test]
+        fn shield_soaked_damage_still_emits_the_copy() {
+            let mut app = app();
+            let (target, partner) = pair(&mut app, 0.0, 0.0, 1.0);
+            app.world_mut()
+                .entity_mut(target)
+                .insert(ShieldPool { amount: 500.0 });
+            hit(&mut app, target, 100.0, DamageType::Pure);
+            app.update();
+            app.update();
+            assert_eq!(taken(&app, target), 0.0);
+            assert!((taken(&app, partner) - 100.0).abs() < 1e-3);
         }
     }
 }

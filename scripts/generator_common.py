@@ -91,7 +91,7 @@ GATE_TYPES = ("proc", "pseudo_proc", "counter", "accumulate", "require_status")
 # Every effect type that fires a custom trigger: the gates plus the Chain mechanic gate (one
 # derived context per hop) and the Zone mechanic gate (one per tick). Used for reachability and
 # reaction propagation.
-CUSTOM_TRIGGER_FEEDERS = (*GATE_TYPES, "chain", "zone", "attached_zone")
+CUSTOM_TRIGGER_FEEDERS = (*GATE_TYPES, "chain", "zone", "attached_zone", "orbit")
 # Triggers whose resolved target is the unit that caused them (the `attacker` target).
 ATTACKER_TRIGGERS = ("on_damage_taken", "on_death")
 
@@ -172,6 +172,9 @@ EFFECT_TYPES = {
     "zone",
     # A zone that is re-centred on its caster before every tick and ends when the caster dies.
     "attached_zone",
+    # Mechanic gate: hitboxes orbiting the caster that fire a custom trigger (with the unit
+    # touched as the trigger unit) each time one of them starts touching a unit.
+    "orbit",
     # Extra basic attacks (instant / double / multi-target attack).
     "perform_attack",
 }
@@ -249,16 +252,22 @@ STATUSES = {
     "heal_block": ("StatusSpec::HealBlock", "heal_block", False),
     # Per-owner ids (`<owner>_damage_reduction`), like slow and burn.
     "damage_reduction": (None, "damage_reduction", True),
+    # Percent magic resistance (amount/value = 1..100), multiplicative with the rating.
+    "magic_resistance": (None, "magic_resistance", True),
     "stacks": (None, "stacks", False),
     "status_resistance": (None, "status_resistance", True),
     "mana_shield": (None, "mana_shield", True),
+    # Duplicates `amount` percent of the holder's incoming damage to the unit that applied it.
+    "damage_share": (None, "damage_share", True),
+    # Enemy creeps dying within `value` of the holder rise again as the holder's allies.
+    "convert_on_death": (None, "convert_on_death", True),
 }
 
 # `stat_modifier` effect-id suffix: each application keeps its own status instance and timer.
 INDEPENDENT_SUFFIX = "independent"
 
 # Statuses whose runtime id is `<owner>_<name>` (the keyword alone is not a status id).
-OWNER_ID_STATUSES = ("damage_reduction", "status_resistance", "stacks", "move_speed_bonus", "attack_point")
+OWNER_ID_STATUSES = ("damage_reduction", "magic_resistance", "status_resistance", "stacks", "move_speed_bonus", "attack_point")
 
 # Triggers whose context carries the cast's unit target (see TriggerContext::cast_target).
 CAST_TARGET_TRIGGERS = ("on_cast", "on_projectile_hit")
@@ -314,7 +323,8 @@ ITEM_ACTIVATION_OPTIONAL = (
     "projectile_end_radius",
     "projectile_origin_offset",
 )
-# Effect-polarity teams (`units_in_radius` defaults); "self" areas still mean allies.
+# Ability target teams. For `units_in_radius`, enemy/both abilities use these directly and
+# ally/self abilities follow effect polarity instead (harmful rows pick enemies).
 TARGET_TEAMS = {"enemy": "Enemy", "ally": "Ally", "both": "Any", "self": "Ally"}
 # Activation team rule (`TargetTeam` of the action).
 ACTION_TEAMS = {**TARGET_TEAMS, "self": "SelfOnly"}
@@ -989,7 +999,7 @@ class EffectContext:
     levels: int | None
     #: `units_in_radius` center for each trigger.
     center_for: dict[str, str]
-    #: Default `units_in_radius` team for abilities (None → derive from effect polarity).
+    #: Ability target team for `units_in_radius` ("Enemy"/"Any" win; otherwise effect polarity).
     team: str | None = None
     #: Ability aoe_radius > 0 (lets units_in_radius fall back to `AreaRadius::Ability`).
     has_aoe: bool = False
@@ -1428,7 +1438,7 @@ def chain_fed_triggers(effects: list[EffectRow]) -> set[str]:
             fed = fed_trigger(e)
             if e.effect_type not in CUSTOM_TRIGGER_FEEDERS or fed in fed_triggers:
                 continue
-            if e.effect_type in ("chain", "zone", "attached_zone") or e.trigger in fed_triggers:
+            if e.effect_type in ("chain", "zone", "attached_zone", "orbit") or e.trigger in fed_triggers:
                 fed_triggers.add(fed)
                 changed = True
     return fed_triggers
@@ -1828,7 +1838,7 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
                 return None
             _unused(e, report, "value", "amount")
             spec = f'StatusSpec::Stacks {{ id: "{ctx.owner_id}_stacks" }}'
-        elif effect_id in ("damage_reduction", "status_resistance"):
+        elif effect_id in ("damage_reduction", "magic_resistance", "status_resistance"):
             percent = amount or value
             if not percent:
                 report.error(row.file, row.line, "amount", "", f"required: {effect_id} percentage (e.g. 80)")
@@ -1838,6 +1848,31 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
                 return None
             variant = "".join(part.capitalize() for part in effect_id.split("_"))
             spec = f'StatusSpec::{variant} {{ id: "{ctx.owner_id}_{effect_id}", percent: {rank_value(percent)} }}'
+            if amount:
+                _unused(e, report, "value")
+        elif effect_id == "convert_on_death":
+            if e.trigger in ("passive", "while", "while_toggled"):
+                report.error(row.file, row.line, "trigger", e.trigger, "convert_on_death is a timed aura; it cannot be held by passive, while or while_toggled")
+                return None
+            if not _require(e, "value", report, "conversion radius in world units (above 0)"):
+                return None
+            if any(r <= 0 for r in value):
+                report.error(row.file, row.line, "value", row.get("value"), "convert_on_death radius must be above 0")
+                return None
+            spec = f"StatusSpec::ConvertOnDeath {{ radius: {rank_value(value)} }}"
+            _unused(e, report, "amount")
+        elif effect_id == "damage_share":
+            percent = amount or value
+            if not percent:
+                report.error(row.file, row.line, "amount", "", "required: percent of the holder's incoming damage duplicated to the caster (e.g. 100)")
+                return None
+            if any(not 0 < p <= 100 for p in percent):
+                report.error(row.file, row.line, "amount" if amount else "value", row.get("amount") or row.get("value"), "damage_share percentage must be above 0 and at most 100")
+                return None
+            if e.target in ("caster", "owner"):
+                report.error(row.file, row.line, "effect_target", e.target, "damage_share bonds the target to the caster; sharing with oneself does nothing (use cast_target, trigger_unit, affected_units or units_in_radius)")
+                return None
+            spec = f"StatusSpec::DamageShare {{ percent: {rank_value(percent)} }}"
             if amount:
                 _unused(e, report, "value")
         elif effect_id == "mana_shield":
@@ -2197,6 +2232,68 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             f'then: AbilityTrigger::Custom("{effect_id}"), '
             f"follow_caster: {'true' if t == 'attached_zone' else 'false'} }}"
         )
+    elif t == "orbit":
+        # `effect_id` = `on_<trigger>:<hit_radius>`; value = orbiters, duration, radius (else the
+        # ability's aoe_radius) = orbit radius, amount = seconds per revolution.
+        trigger_name, _, hit_text = effect_id.partition(":")
+        if not trigger_name or not hit_text:
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), "orbit needs effect_id <on_trigger>:<hit_radius>, e.g. on_spirit_touch:80")
+            return None
+        effect_id = trigger_name
+        if not CUSTOM_TRIGGER_PATTERN.match(effect_id) or effect_id in ABILITY_TRIGGERS or effect_id in ITEM_TRIGGERS:
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), "must be a custom on_<name> trigger, not a built-in trigger")
+            return None
+        if effect_id == e.trigger:
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), "an orbit cannot fire its own trigger")
+            return None
+        try:
+            hit_radius = float(hit_text)
+        except ValueError:
+            hit_radius = 0.0
+        if hit_radius <= 0:
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), "orbit hit radius (the number after the colon) must be above 0")
+            return None
+        if e.target not in ("caster", "owner"):
+            report.error(row.file, row.line, "effect_target", e.target, "an orbit circles the unit using it; use owner or caster")
+            return None
+        if ctx.owner_triggers is not None and effect_id not in ctx.owner_triggers:
+            report.error(row.file, row.line, "effect_id", row.get("effect_id"), f"no row of {e.owner!r} uses trigger {effect_id}, so this orbit would do nothing")
+            return None
+        if not no_scaling():
+            return None
+        if not _require(e, "value", report, "number of orbiting hitboxes (integer, at least 1)"):
+            return None
+        if len(value) != 1 or not float(value[0]).is_integer() or value[0] < 1:
+            report.error(row.file, row.line, "value", row.get("value"), "orbit needs a single integer number of orbiters of at least 1")
+            return None
+        if not _require(e, "duration", report, "seconds the orbit lasts (above 0)"):
+            return None
+        if any(d <= 0 for d in duration):
+            report.error(row.file, row.line, "duration", row.get("duration"), "orbit duration must be above 0")
+            return None
+        if not _require(e, "amount", report, "seconds per revolution (above 0)"):
+            return None
+        if any(a <= 0 for a in amount):
+            report.error(row.file, row.line, "amount", row.get("amount"), "orbit seconds per revolution must be above 0")
+            return None
+        if radius:
+            if any(r <= 0 for r in radius):
+                report.error(row.file, row.line, "radius", row.get("radius"), "orbit radius must be above 0")
+                return None
+            orbit_radius = f"AreaRadius::Fixed({rank_value(radius)})"
+        elif ctx.has_aoe:
+            orbit_radius = "AreaRadius::Ability"
+        else:
+            where = "the ability has no aoe_radius" if ctx.kind == "ability" else "items have no aoe_radius"
+            report.error(row.file, row.line, "radius", "", f"required for an orbit ({where})")
+            return None
+        _unused(e, report, "damage_type")
+        orbit_team = ctx.team if ctx.team in ("Enemy", "Ally", "Any") else "Enemy"
+        effect = (
+            f"AbilityEffect::Orbit {{ count: {int(value[0])}, radius: {orbit_radius}, "
+            f"hit_radius: {f32(hit_radius)}, period: {rank_value(amount)}, duration: {rank_value(duration)}, "
+            f'team: TargetTeam::{orbit_team}, then: AbilityTrigger::Custom("{effect_id}") }}'
+        )
     elif t == "perform_attack":
         if effect_id not in ("", "exclude_trigger_unit"):
             report.error(row.file, row.line, "effect_id", row.get("effect_id"), "perform_attack effect_id must be blank or exclude_trigger_unit")
@@ -2242,7 +2339,7 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
     else:  # pragma: no cover - parse_enum already rejected it
         return None
 
-    if t not in ("movement", "chain", "zone", "attached_zone") and e.target != "units_in_radius" and row.get("radius"):
+    if t not in ("movement", "chain", "zone", "attached_zone", "orbit") and e.target != "units_in_radius" and row.get("radius"):
         report.warn(row.file, row.line, "radius", row.get("radius"), "only used by units_in_radius targets")
 
     # --- target
@@ -2272,7 +2369,9 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             where = "the ability has no aoe_radius" if ctx.kind == "ability" else "items have no aoe_radius"
             report.error(row.file, row.line, "radius", "", f"required for units_in_radius ({where})")
             return None
-        team = ctx.team or ("Ally" if beneficial else "Enemy")
+        # Enemy/both abilities keep their team; ally/self abilities follow effect polarity, so a
+        # harmful area (damage, stun, knockback) hits enemies and a beneficial one hits allies.
+        team = ctx.team if ctx.team in ("Enemy", "Any") else ("Ally" if beneficial else "Enemy")
         center = ctx.center_for.get(e.trigger, "TriggerPoint")
         target = (
             f"EffectTarget::UnitsInRadius {{ center: AreaCenter::{center}, "
