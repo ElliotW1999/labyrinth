@@ -337,6 +337,129 @@ fn fold_caps(
     }
 }
 
+/// Bookkeeping of the live `temporary_mana` statuses, inserted lazily by
+/// [`sync_temporary_mana`] when the first grant lands and removed when nothing is left.
+#[derive(Component, Debug, Clone, Copy, Default, PartialEq)]
+pub struct AppliedTemporaryMana {
+    /// Bonus mana granted and not yet spent (the sum over live grants).
+    pub unspent: f32,
+    /// Max mana the grants added because their mana did not fit under the cap.
+    pub extra_max: f32,
+    /// Mana at the end of the last reconcile: a drop since then is spending.
+    pub last_mana: f32,
+}
+
+/// Reconcile `Mana` with the `temporary_mana` statuses every frame.
+///
+/// 1. Mana spent since the last frame is taken from the bonus first (oldest grant first).
+/// 2. Bonus that is gone (expired, removed) and still unspent is taken out of current mana,
+///    never more than the unspent bonus: spent mana is never taken back.
+/// 3. Max mana a grant added is removed with it, and current mana is clamped.
+/// 4. New grants add their mana; what does not fit under the max raises the max.
+///
+/// Must run after `apply_status_effect_events` and `tick_status_effects` (scheduled right
+/// after [`sync_status_attributes`]). Dead units are skipped.
+#[allow(clippy::type_complexity)]
+pub fn sync_temporary_mana(
+    mut commands: Commands,
+    mut units: Query<(
+        Entity,
+        &mut StatusEffects,
+        &mut Mana,
+        Option<&Health>,
+        Option<&mut AppliedTemporaryMana>,
+    )>,
+) {
+    for (entity, mut statuses, mut mana, health, applied) in &mut units {
+        if health.is_some_and(|h| !h.is_alive()) {
+            continue;
+        }
+        let has_pending = statuses
+            .effects
+            .iter()
+            .any(|e| e.temporary_mana_pending && e.remaining > 0.0);
+        let mut state = match applied {
+            Some(ref applied) => **applied,
+            None if has_pending => AppliedTemporaryMana {
+                last_mana: mana.current,
+                ..AppliedTemporaryMana::default()
+            },
+            None => continue,
+        };
+        reconcile_temporary_mana(&mut state, &mut statuses, &mut mana);
+        match applied {
+            Some(mut applied) => {
+                if state.unspent <= 0.0 && state.extra_max <= 0.0 {
+                    commands.entity(entity).remove::<AppliedTemporaryMana>();
+                } else {
+                    *applied = state;
+                }
+            }
+            None => {
+                if state.unspent > 0.0 || state.extra_max > 0.0 {
+                    commands.entity(entity).insert(state);
+                }
+            }
+        }
+    }
+}
+
+fn reconcile_temporary_mana(
+    state: &mut AppliedTemporaryMana,
+    statuses: &mut StatusEffects,
+    mana: &mut Mana,
+) {
+    // 1. Spending: any net drop since the last frame comes out of the bonus first.
+    let spent = (state.last_mana - mana.current).max(0.0);
+    if spent > 0.0 {
+        crate::status::consume_temporary_mana(statuses, spent);
+        state.unspent = (state.unspent - spent).max(0.0);
+    }
+    // 2. Bonus that is no longer backed by a live grant leaves with it.
+    let live: f32 = statuses
+        .effects
+        .iter()
+        .filter(|e| !e.temporary_mana_pending)
+        .map(|e| e.temporary_mana)
+        .sum();
+    let lost = (state.unspent - live).max(0.0);
+    if lost > 0.0 {
+        mana.current -= lost.min(mana.current.max(0.0));
+    }
+    state.unspent = live;
+    // 3. Max mana added by grants that ended.
+    let want_extra: f32 = statuses
+        .effects
+        .iter()
+        .filter(|e| !e.temporary_mana_pending)
+        .map(|e| e.temporary_max_mana)
+        .sum();
+    if want_extra < state.extra_max {
+        mana.max = (mana.max - (state.extra_max - want_extra)).max(0.0);
+        mana.current = mana.current.min(mana.max);
+    }
+    state.extra_max = want_extra;
+    // 4. New grants.
+    for effect in &mut statuses.effects {
+        if !effect.temporary_mana_pending {
+            continue;
+        }
+        effect.temporary_mana_pending = false;
+        if effect.remaining <= 0.0 {
+            effect.temporary_mana = 0.0;
+            continue;
+        }
+        let amount = effect.temporary_mana;
+        let overflow = (mana.current + amount - mana.max).max(0.0);
+        mana.max += overflow;
+        mana.current += amount;
+        effect.temporary_max_mana = overflow;
+        state.unspent += amount;
+        state.extra_max += overflow;
+    }
+    state.last_mana = mana.current;
+}
+
 /// Timed attribute modifiers already folded into [`HeroAttributes`] (and so into health, mana,
 /// armor, magic resist and attack speed). Inserted lazily by [`sync_status_attributes`].
 #[derive(Component, Debug, Clone, Copy, Default, PartialEq)]

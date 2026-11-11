@@ -1547,6 +1547,152 @@ class ImmunityStatusTests(unittest.TestCase):
         self.assertIn("0..90", report.errors[0].message)
 
 
+class TemporaryManaStatusTests(unittest.TestCase):
+    def test_emits_the_status_with_value_or_amount(self) -> None:
+        for cells in ({"value": "150"}, {"amount": "150"}):
+            report = Report()
+            effect, ctx = _effect("apply_status", "temporary_mana", target="owner", trigger="on_use", kind="item", duration="10", **cells)
+            result = effect_to_rust(effect, ctx, report)
+            self.assertFalse(report.errors, cells)
+            self.assertIn("StatusSpec::TemporaryMana { amount:", result[2])
+            self.assertEqual(runtime_status_id("temporary_mana"), "temporary_mana")
+
+    def test_rejects_missing_or_non_positive_amount_and_missing_duration(self) -> None:
+        cases = [
+            ({"duration": "10"}, "required"),
+            ({"value": "0", "duration": "10"}, "above 0"),
+            ({"value": "-5", "duration": "10"}, "above 0"),
+            ({"value": "150"}, "duration"),
+        ]
+        for cells, message in cases:
+            report = Report()
+            effect, ctx = _effect("apply_status", "temporary_mana", target="owner", trigger="on_use", kind="item", **cells)
+            self.assertIsNone(effect_to_rust(effect, ctx, report), cells)
+            self.assertIn(message, report.errors[0].message, cells)
+
+    def test_cannot_be_held_by_while_triggers(self) -> None:
+        for trigger in ("while:moving", "while_toggled"):
+            report = Report()
+            effect, ctx = _effect("apply_status", "temporary_mana", target="owner", trigger=trigger, value="150")
+            self.assertIsNone(effect_to_rust(effect, ctx, report), trigger)
+            self.assertTrue(report.errors, trigger)
+
+
+class ItemComponentSlotTests(unittest.TestCase):
+    ITEM_HEADER = "id,name,item_type,cost,sell_value,tier,rarity,stackable,max_stack,consumable,max_charges,description,components\n"
+    EFFECT_HEADER = "item_id,effect_index,trigger,effect_target,effect_type,effect_id,value,damage_type,duration,radius,amount,scaling_type,scaling_value\n"
+    BASES = (
+        "belt,Belt,attributes,450,225,1,common,false,,false,,,\n"
+        "band,Band,attributes,450,225,1,common,false,,false,,,\n"
+        "robe,Robe,attributes,500,250,1,common,false,,false,,,\n"
+        "boots,Boots,equipment,300,150,1,common,false,,false,,,\n"
+    )
+
+    def load(self, result_components: str, extra_rows: str = ""):
+        import tempfile
+
+        import ItemGenerator
+
+        row = f"result,Result,accessories,1000,500,1,common,false,,false,,,{result_components}\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            items = Path(tmp) / "items.csv"
+            effects = Path(tmp) / "effects.csv"
+            items.write_text(self.ITEM_HEADER + self.BASES + extra_rows + row, encoding="utf-8")
+            effects.write_text(self.EFFECT_HEADER, encoding="utf-8")
+            loaded, report = ItemGenerator.load(items, effects, set())
+        return ItemGenerator, loaded, report
+
+    def test_pipe_alternatives_render_as_one_slot(self) -> None:
+        module, items, report = self.load("boots;belt|band|robe")
+        self.assertFalse(report.errors)
+        result = next(i for i in items if i.id == "result")
+        self.assertEqual(result.components, [["boots"], ["belt", "band", "robe"]])
+        self.assertIn("components: &[&[ItemId::Boots], &[ItemId::Belt, ItemId::Band, ItemId::Robe]],", module.item_static(result))
+
+    def test_semicolon_only_rows_and_duplicate_slots_are_kept(self) -> None:
+        module, items, report = self.load("belt;belt;boots")
+        self.assertFalse(report.errors)
+        result = next(i for i in items if i.id == "result")
+        self.assertEqual(result.components, [["belt"], ["belt"], ["boots"]])
+        self.assertIn("components: &[&[ItemId::Belt], &[ItemId::Belt], &[ItemId::Boots]],", module.item_static(result))
+
+    def test_no_components_render_an_empty_list(self) -> None:
+        module, items, report = self.load("")
+        result = next(i for i in items if i.id == "result")
+        self.assertIn("components: &[],", module.item_static(result))
+
+    def test_alternative_errors(self) -> None:
+        cases = {
+            "belt|ghost": "no item with this id",
+            "belt|result": "own component",
+            "belt|belt;boots": "listed twice",
+            "belt;band;robe;boots;belt;band": "at most",
+        }
+        for components, message in cases.items():
+            _, _, report = self.load(components)
+            self.assertTrue(any(message in e.message for e in report.errors), (components, [e.message for e in report.errors]))
+
+    def test_alternatives_with_different_costs_warn(self) -> None:
+        _, _, report = self.load("belt|boots")
+        self.assertFalse(report.errors)
+        self.assertTrue(any("different costs" in w.message for w in report.warnings))
+        _, _, report = self.load("belt|band")
+        self.assertFalse([w for w in report.warnings if "different costs" in w.message])
+
+
+class AttributeToggleItemTests(unittest.TestCase):
+    ITEM_HEADER = "id,name,item_type,cost,sell_value,tier,rarity,stackable,max_stack,consumable,max_charges,description,cooldown,target_type,mana_cost,attribute_toggle\n"
+    EFFECT_HEADER = "item_id,effect_index,trigger,effect_target,effect_type,effect_id,value,damage_type,duration,radius,amount,scaling_type,scaling_value\n"
+    PASSIVE = "treads,0,passive,owner,stat_modifier,move_speed,55,,,,,,\n"
+
+    def load(self, item_row: str, effect_rows: str = PASSIVE):
+        import tempfile
+
+        import ItemGenerator
+
+        with tempfile.TemporaryDirectory() as tmp:
+            items = Path(tmp) / "items.csv"
+            effects = Path(tmp) / "effects.csv"
+            items.write_text(self.ITEM_HEADER + item_row + "\n", encoding="utf-8")
+            effects.write_text(self.EFFECT_HEADER + effect_rows, encoding="utf-8")
+            loaded, report = ItemGenerator.load(items, effects, set())
+        return ItemGenerator, loaded, report
+
+    def test_toggle_field_is_emitted_and_the_item_counts_as_active(self) -> None:
+        module, items, report = self.load("treads,Treads,accessories,1400,700,1,common,false,,false,,boots,0,,,10")
+        self.assertFalse(report.errors, [e.message for e in report.errors])
+        self.assertFalse([w for w in report.warnings if w.field == "cooldown"])
+        rendered = module.item_static(items[0])
+        self.assertIn("attribute_toggle: Some(10.0),", rendered)
+        self.assertIn("activation: ItemActivation::INSTANT,", rendered)
+
+    def test_items_without_the_column_emit_none(self) -> None:
+        module, items, report = self.load("treads,Treads,accessories,1400,700,1,common,false,,false,,boots,,,,")
+        self.assertFalse(report.errors)
+        self.assertIn("attribute_toggle: None,", module.item_static(items[0]))
+
+    def test_toggle_must_be_positive_and_exclusive_with_other_actives(self) -> None:
+        cases = {
+            "treads,Treads,accessories,1400,700,1,common,false,,false,,boots,0,,,0": ("above 0", self.PASSIVE),
+            "treads,Treads,accessories,1400,700,1,common,false,,false,,boots,0,,,-5": ("above 0", self.PASSIVE),
+            "treads,Treads,accessories,1400,700,1,common,false,,false,,boots,0,,,abc": ("number", self.PASSIVE),
+            "treads,Treads,accessories,1400,700,1,common,false,,true,,boots,0,,,10": ("consumable", self.PASSIVE),
+            "treads,Treads,accessories,1400,700,1,common,false,,false,,boots,5,,,10": ("no cooldown", self.PASSIVE),
+            "treads,Treads,accessories,1400,700,1,common,false,,false,,boots,0,unit,,10": ("switches instantly", self.PASSIVE),
+            "treads,Treads,accessories,1400,700,1,common,false,,false,,boots,0,,20,10": ("switches instantly", self.PASSIVE),
+            "treads,Treads,accessories,1400,700,1,common,false,,false,,boots,0,,,10": (
+                "cannot also have",
+                self.PASSIVE + "treads,1,on_use,owner,heal,,10,,,,,,\n",
+            ),
+        }
+        for row_text, (message, effects) in cases.items():
+            _, _, report = self.load(row_text, effects)
+            self.assertTrue(
+                any(message in e.message for e in report.errors),
+                (row_text, [e.message for e in report.errors]),
+            )
+
+
 class DamageReductionStatusTests(unittest.TestCase):
     def test_generated_damage_reduction_carries_a_per_owner_id(self) -> None:
         report = Report()

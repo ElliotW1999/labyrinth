@@ -285,6 +285,13 @@ pub struct StatusEffect {
     pub dot_source: Option<Entity>,
     /// Added to [`ShieldPool`] on apply; removed on expire.
     pub shield_amount: f32,
+    /// Temporary mana of this grant that is still unspent. Written only by
+    /// `vitals::sync_temporary_mana` and [`consume_temporary_mana`].
+    pub temporary_mana: f32,
+    /// The grant has not been added to the holder's mana yet (`sync_temporary_mana` does that).
+    pub temporary_mana_pending: bool,
+    /// Max mana this grant added because its mana did not fit under the cap.
+    pub temporary_max_mana: f32,
     /// Damage types the holder takes no damage from while active.
     pub immune_damage: DamageTypeMask,
     /// Nobody else may pick the holder as a unit target and area effects skip it.
@@ -453,6 +460,9 @@ impl StatusEffect {
             dot_damage_type: DamageType::Magical,
             dot_source: None,
             shield_amount: 0.0,
+            temporary_mana: 0.0,
+            temporary_mana_pending: false,
+            temporary_max_mana: 0.0,
             immune_damage: DamageTypeMask::NONE,
             untargetable: false,
             independent: false,
@@ -756,20 +766,32 @@ impl StatusEffect {
         }
     }
 
+    /// `amount` bonus mana for `duration`, granted by `vitals::sync_temporary_mana`: spent before
+    /// regular mana, and what is unspent (plus any max mana it added) goes when the status
+    /// ends. Undispellable, and every application is its own instance.
+    pub fn temporary_mana(amount: f32, duration: f32) -> Self {
+        Self {
+            temporary_mana: amount.max(0.0),
+            temporary_mana_pending: true,
+            independent: true,
+            undispellable: true,
+            dispel_type: DispelType::None,
+            ..Self::buff("temporary_mana", duration)
+        }
+    }
+
     /// Disarmed, immune to physical damage and to being attacked, and more vulnerable to
-    /// magic: `magic_amp_percent` (0..90) is the extra magic damage taken against a target with
-    /// no magic resistance, applied as a magic resistance reduction. `hostile` picks the
-    /// debuff kind (blocked by debuff immunity) over the buff kind (self / ally cast).
+    /// magic: `magic_amp_percent` (0..90) is the extra magic damage taken, exactly, on top of
+    /// the holder's own resistance (a negative percent magic resistance, so it multiplies
+    /// with the rating). `hostile` picks the debuff kind (blocked by debuff immunity) over
+    /// the buff kind (self / ally cast).
     pub fn ethereal(duration: f32, magic_amp_percent: f32, hostile: bool) -> Self {
         let amp = (magic_amp_percent / 100.0).clamp(0.0, 0.9);
-        // `mitigate` gives factor 1 - 0.06r / (1 + 0.06|r|); r = -amp / (0.06 (1 - amp)) makes
-        // that 1 + amp at zero base resistance.
-        let resist_points = amp / (0.06 * (1.0 - amp));
         Self {
             disarmed: true,
             attack_immune: true,
             immune_damage: DamageTypeMask::PHYSICAL,
-            magic_resist: -resist_points,
+            magic_resist_fraction: -amp,
             kind: Self::kind_for_hostility(hostile),
             ..Self::buff("ethereal", duration)
         }
@@ -966,13 +988,14 @@ impl StatusEffects {
             .product()
     }
 
-    /// Product of `(1 - f)` over every active percent magic resistance: the factor applied to
-    /// magical damage taken after mitigation (1.0 = none).
+    /// Product of `(1 - f)` over every active percent magic resistance (negative `f` is a
+    /// vulnerability, e.g. Ethereal): the factor applied to magical damage taken after
+    /// mitigation (1.0 = none).
     pub fn magic_damage_factor(&self) -> f32 {
         self.effects
             .iter()
-            .filter(|e| e.remaining > 0.0 && e.magic_resist_fraction > 0.0)
-            .map(|e| 1.0 - e.magic_resist_fraction.clamp(0.0, 1.0))
+            .filter(|e| e.remaining > 0.0 && e.magic_resist_fraction != 0.0)
+            .map(|e| 1.0 - e.magic_resist_fraction.clamp(-0.9, 1.0))
             .product()
     }
 
@@ -1606,6 +1629,22 @@ pub fn consume_shields(statuses: &mut StatusEffects, mut absorbed: f32) {
         let taken = effect.shield_amount.min(absorbed);
         effect.shield_amount -= taken;
         absorbed -= taken;
+    }
+}
+
+/// Temporary mana is spent oldest first, like [`consume_shields`]. Grants that
+/// `vitals::sync_temporary_mana` has not added to the holder's mana yet are skipped.
+pub fn consume_temporary_mana(statuses: &mut StatusEffects, mut spent: f32) {
+    for effect in &mut statuses.effects {
+        if spent <= 0.0 {
+            break;
+        }
+        if effect.temporary_mana <= 0.0 || effect.temporary_mana_pending {
+            continue;
+        }
+        let taken = effect.temporary_mana.min(spent);
+        effect.temporary_mana -= taken;
+        spent -= taken;
     }
 }
 
@@ -3345,6 +3384,229 @@ mod tests {
             step(&mut app, 0.0);
             assert_eq!(instances(&app, u), 1);
             assert!((damage(&app, u) - 49.0).abs() < 1e-4);
+        }
+    }
+
+    mod temporary_mana {
+        use super::*;
+        use crate::components::Mana;
+        use crate::vitals::{AppliedTemporaryMana, sync_temporary_mana};
+        use std::time::Duration;
+
+        fn app() -> App {
+            let mut app = App::new();
+            app.init_resource::<Time>()
+                .add_message::<StatusEffectEvent>()
+                .add_message::<StatusLifecycleEvent>()
+                .add_message::<DamageEvent>()
+                .add_message::<crate::combat::DamageAppliedEvent>()
+                .add_systems(
+                    Update,
+                    (
+                        apply_status_effect_events,
+                        tick_status_effects,
+                        sync_temporary_mana,
+                    )
+                        .chain(),
+                );
+            app
+        }
+
+        fn unit(app: &mut App, current: f32, max: f32) -> Entity {
+            let mut mana = Mana::new(max, 0.0);
+            mana.current = current;
+            app.world_mut()
+                .spawn((
+                    StatusEffects::default(),
+                    HeroAttributes::starter(),
+                    Health::new(500.0),
+                    mana,
+                    CombatStats::simple(0.0, 0.0, 1.0, 0.0, 0.0, 300.0),
+                ))
+                .id()
+        }
+
+        fn grant(app: &mut App, target: Entity, amount: f32, secs: f32) {
+            app.world_mut().write_message(StatusEffectEvent {
+                reactive: false,
+                source: None,
+                target,
+                change: StatusChange::Apply(StatusEffect::temporary_mana(amount, secs)),
+            });
+        }
+
+        fn step(app: &mut App, secs: f32) {
+            app.world_mut()
+                .resource_mut::<Time>()
+                .advance_by(Duration::from_secs_f32(secs));
+            app.update();
+        }
+
+        fn mana(app: &App, e: Entity) -> (f32, f32) {
+            let m = app.world().get::<Mana>(e).unwrap();
+            (m.current, m.max)
+        }
+
+        fn spend(app: &mut App, e: Entity, amount: f32) {
+            app.world_mut().get_mut::<Mana>(e).unwrap().current -= amount;
+        }
+
+        #[test]
+        fn overflow_raises_max_mana() {
+            let mut app = app();
+            let u = unit(&mut app, 450.0, 500.0);
+            grant(&mut app, u, 150.0, 10.0);
+            step(&mut app, 0.1);
+            assert_eq!(mana(&app, u), (600.0, 600.0));
+        }
+
+        #[test]
+        fn no_overflow_leaves_max_alone_and_unspent_bonus_goes_at_expiry() {
+            let mut app = app();
+            let u = unit(&mut app, 100.0, 500.0);
+            grant(&mut app, u, 150.0, 10.0);
+            step(&mut app, 0.1);
+            assert_eq!(mana(&app, u), (250.0, 500.0));
+            step(&mut app, 10.0);
+            assert_eq!(mana(&app, u), (100.0, 500.0));
+            assert!(app.world().get::<AppliedTemporaryMana>(u).is_none());
+        }
+
+        #[test]
+        fn unspent_bonus_and_overflow_are_removed_on_expiry() {
+            let mut app = app();
+            let u = unit(&mut app, 450.0, 500.0);
+            grant(&mut app, u, 150.0, 10.0);
+            step(&mut app, 0.1);
+            step(&mut app, 10.0);
+            assert_eq!(mana(&app, u), (450.0, 500.0));
+            assert!(app.world().get::<AppliedTemporaryMana>(u).is_none());
+        }
+
+        #[test]
+        fn spent_bonus_is_not_removed_again() {
+            let mut app = app();
+            let u = unit(&mut app, 450.0, 500.0);
+            grant(&mut app, u, 150.0, 10.0);
+            step(&mut app, 0.1);
+            spend(&mut app, u, 150.0);
+            step(&mut app, 0.1);
+            assert_eq!(mana(&app, u), (450.0, 600.0));
+            step(&mut app, 10.0);
+            assert_eq!(mana(&app, u), (450.0, 500.0), "only the max goes back");
+        }
+
+        #[test]
+        fn overspending_takes_regular_mana_and_only_restores_max() {
+            let mut app = app();
+            let u = unit(&mut app, 450.0, 500.0);
+            grant(&mut app, u, 150.0, 10.0);
+            step(&mut app, 0.1);
+            spend(&mut app, u, 300.0);
+            step(&mut app, 0.1);
+            assert_eq!(mana(&app, u), (300.0, 600.0));
+            step(&mut app, 10.0);
+            assert_eq!(mana(&app, u), (300.0, 500.0));
+        }
+
+        #[test]
+        fn two_grants_expire_independently() {
+            let mut app = app();
+            let u = unit(&mut app, 500.0, 500.0);
+            grant(&mut app, u, 100.0, 5.0);
+            step(&mut app, 0.1);
+            grant(&mut app, u, 100.0, 10.0);
+            step(&mut app, 0.1);
+            assert_eq!(mana(&app, u), (700.0, 700.0));
+            step(&mut app, 5.0);
+            assert_eq!(mana(&app, u), (600.0, 600.0), "first grant gone");
+            step(&mut app, 5.0);
+            assert_eq!(mana(&app, u), (500.0, 500.0), "second grant gone");
+        }
+
+        #[test]
+        fn removing_the_status_by_id_takes_the_bonus() {
+            let mut app = app();
+            let u = unit(&mut app, 450.0, 500.0);
+            grant(&mut app, u, 150.0, 10.0);
+            step(&mut app, 0.1);
+            app.world_mut().write_message(StatusEffectEvent {
+                reactive: false,
+                source: None,
+                target: u,
+                change: StatusChange::Remove("temporary_mana"),
+            });
+            step(&mut app, 0.1);
+            assert_eq!(mana(&app, u), (450.0, 500.0));
+        }
+
+        #[test]
+        fn grant_at_empty_mana_adds_bonus_without_raising_max_and_expiry_leaves_zero() {
+            let mut app = app();
+            let u = unit(&mut app, 0.0, 500.0);
+            grant(&mut app, u, 150.0, 10.0);
+            step(&mut app, 0.1);
+            assert_eq!(mana(&app, u), (150.0, 500.0));
+            step(&mut app, 10.0);
+            assert_eq!(mana(&app, u), (0.0, 500.0), "never negative");
+        }
+
+        #[test]
+        fn regenerated_mana_is_not_taken_back_at_expiry() {
+            let mut app = app();
+            let u = unit(&mut app, 450.0, 500.0);
+            grant(&mut app, u, 150.0, 10.0);
+            step(&mut app, 0.1);
+            spend(&mut app, u, 150.0);
+            step(&mut app, 0.1);
+            // Regeneration refills the 150 spent; that is regular mana, not the bonus.
+            spend(&mut app, u, -100.0);
+            step(&mut app, 0.1);
+            step(&mut app, 10.0);
+            let (current, max) = mana(&app, u);
+            assert_eq!(max, 500.0);
+            assert_eq!(current, 500.0, "regenerated mana stays, clamped to max");
+        }
+
+        #[test]
+        fn dead_holder_is_skipped_and_reconciles_once_alive_again() {
+            let mut app = app();
+            let u = unit(&mut app, 450.0, 500.0);
+            grant(&mut app, u, 150.0, 10.0);
+            step(&mut app, 0.1);
+            app.world_mut().get_mut::<Health>(u).unwrap().current = 0.0;
+            step(&mut app, 10.0);
+            assert_eq!(mana(&app, u), (600.0, 600.0), "skipped while dead");
+            app.world_mut().get_mut::<Health>(u).unwrap().current = 100.0;
+            step(&mut app, 0.1);
+            assert_eq!(mana(&app, u), (450.0, 500.0));
+        }
+
+        #[test]
+        fn dispels_cannot_remove_it() {
+            let mut app = app();
+            let u = unit(&mut app, 450.0, 500.0);
+            grant(&mut app, u, 150.0, 10.0);
+            step(&mut app, 0.1);
+            for strength in [DispelStrength::Basic, DispelStrength::Strong] {
+                app.world_mut().write_message(StatusEffectEvent {
+                    reactive: false,
+                    source: None,
+                    target: u,
+                    change: StatusChange::Dispel {
+                        kind: StatusKind::Buff,
+                        strength,
+                    },
+                });
+            }
+            step(&mut app, 0.1);
+            assert_eq!(mana(&app, u), (600.0, 600.0));
+            assert!(
+                app.world()
+                    .get::<StatusEffects>(u)
+                    .unwrap()
+                    .has_status("temporary_mana")
+            );
         }
     }
 
