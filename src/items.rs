@@ -3293,6 +3293,34 @@ mod tests {
     }
 
     #[test]
+    fn support_aura_items_grant_their_own_passive() {
+        let mut shop = Shopper::new();
+        shop.wallet.gold = 5000;
+        let (armor, mana, health) = (
+            shop.stats.armor,
+            shop.mana.regen_per_sec,
+            shop.health.regen_per_sec,
+        );
+        assert!(shop.buy(ItemId::RingOfProtection));
+        assert!(shop.buy(ItemId::RecipeBuckler));
+        assert_eq!(shop.owned(), vec![ItemId::Buckler]);
+        // +1 here, +2 from the aura on the carrier (see the aura tests in abilities).
+        assert_eq!(shop.stats.armor, armor + 1.0);
+        let mut shop = Shopper::new();
+        shop.wallet.gold = 5000;
+        assert!(shop.buy(ItemId::SagesMask));
+        assert!(shop.buy(ItemId::RecipeRingOfBasilius));
+        assert_eq!(shop.owned(), vec![ItemId::RingOfBasilius]);
+        assert_eq!(shop.mana.regen_per_sec, mana + 0.5);
+        let mut shop = Shopper::new();
+        shop.wallet.gold = 5000;
+        assert!(shop.buy(ItemId::RingOfRegen));
+        assert!(shop.buy(ItemId::RecipeHeaddress));
+        assert_eq!(shop.owned(), vec![ItemId::Headdress]);
+        assert_eq!(shop.health.regen_per_sec, health + 0.5);
+    }
+
+    #[test]
     fn moon_shard_combines_from_two_hyperstones() {
         let mut shop = Shopper::new();
         shop.wallet.gold = 5000;
@@ -4069,7 +4097,7 @@ mod tests {
         app.world_mut().entity_mut(owner).insert(loadout);
         give(&mut app, owner, ItemId::MaskOfMadness);
         step(&mut app);
-        let before = app.world().get::<CombatStats>(owner).unwrap().clone();
+        let before = *app.world().get::<CombatStats>(owner).unwrap();
         request(&mut app, owner, 0, CastTarget::None);
         step(&mut app);
         step(&mut app);
@@ -4106,6 +4134,79 @@ mod tests {
             .write_message(ActivationRequest::ability(owner, 0, CastTarget::None));
         step(&mut app);
         assert!(app.world().get::<Activation>(owner).is_none());
+    }
+
+    fn percent_slow_event(
+        target: Entity,
+        percent: f32,
+        speed: f32,
+    ) -> crate::status::StatusEffectEvent {
+        use crate::abilities::definition::{StatusBuildContext, StatusSpec};
+        let slow = StatusSpec::Slow {
+            id: "test_slow",
+            percent: RankValue::fixed(percent),
+        }
+        .build(
+            1,
+            5.0,
+            StatusBuildContext {
+                move_speed: speed,
+                agility: 0.0,
+                source: None,
+                point: Vec3::ZERO,
+                cast_target: None,
+                base_attack_damage: 0.0,
+            },
+        );
+        crate::status::StatusEffectEvent::new(
+            None,
+            target,
+            crate::status::StatusChange::Apply(slow),
+        )
+    }
+
+    #[test]
+    fn mask_of_madness_slow_resistance_reduces_a_slow_taken_during_the_active() {
+        // Without the item: a 50% slow of the base speed.
+        let mut app = item_app();
+        let plain = spawn_caster(&mut app, 100.0);
+        step(&mut app);
+        let base = app.world().get::<CombatStats>(plain).unwrap().move_speed;
+        app.world_mut()
+            .write_message(percent_slow_event(plain, 50.0, base));
+        step(&mut app);
+        let slowed = app.world().get::<CombatStats>(plain).unwrap().move_speed;
+        assert!((slowed - base * 0.5).abs() < 0.01, "{slowed} vs {base}");
+
+        // During the active: +12% speed, and the slow is cut by 30% (35% of the base).
+        let mut app = item_app();
+        let owner = spawn_caster(&mut app, 100.0);
+        give(&mut app, owner, ItemId::MaskOfMadness);
+        step(&mut app);
+        request(&mut app, owner, 0, CastTarget::None);
+        step(&mut app);
+        step(&mut app);
+        let boosted = app.world().get::<CombatStats>(owner).unwrap().move_speed;
+        assert!((boosted - base * 1.12).abs() < 0.01, "{boosted}");
+        app.world_mut()
+            .write_message(percent_slow_event(owner, 50.0, boosted));
+        step(&mut app);
+        let speed = app.world().get::<CombatStats>(owner).unwrap().move_speed;
+        assert!((speed - base * (1.12 - 0.35)).abs() < 0.01, "{speed}");
+    }
+
+    #[test]
+    fn mask_of_madness_does_not_resist_slows_outside_the_active() {
+        let mut app = item_app();
+        let owner = spawn_caster(&mut app, 100.0);
+        give(&mut app, owner, ItemId::MaskOfMadness);
+        step(&mut app);
+        let base = app.world().get::<CombatStats>(owner).unwrap().move_speed;
+        app.world_mut()
+            .write_message(percent_slow_event(owner, 50.0, base));
+        step(&mut app);
+        let speed = app.world().get::<CombatStats>(owner).unwrap().move_speed;
+        assert!((speed - base * 0.5).abs() < 0.01, "{speed}");
     }
 
     #[test]

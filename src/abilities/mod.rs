@@ -11621,6 +11621,36 @@ mod tests {
     }
 
     #[test]
+    fn buckler_carrier_gets_exactly_one_aura_bonus_on_top_of_the_passive() {
+        let mut app = aura_app();
+        let owner = spawn_unit(&mut app, Team::Radiant, Vec3::ZERO);
+        let base = armor(&app, owner);
+        app.world_mut().entity_mut(owner).insert(Inventory::empty());
+        give_item(&mut app, owner, ItemId::Buckler);
+        for _ in 0..10 {
+            step(&mut app);
+            // The +1 passive is applied by the stat pass (not in this app; see items.rs);
+            // the aura adds exactly +2, once, so the carrier ends at +3.
+            assert_eq!(armor(&app, owner), base + 2.0);
+        }
+    }
+
+    #[test]
+    fn an_enemy_carriers_aura_buffs_only_its_own_team() {
+        let mut app = aura_app();
+        let carrier = buckler_carrier(&mut app, Team::Dire, Vec3::ZERO);
+        let enemy = spawn_unit(&mut app, Team::Radiant, Vec3::new(100.0, 0.0, 0.0));
+        let ally = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        for _ in 0..6 {
+            step(&mut app);
+        }
+        assert!(has_status(&app, carrier, AURA_ID));
+        assert!(has_status(&app, ally, AURA_ID));
+        assert!(!has_status(&app, enemy, AURA_ID));
+        assert_eq!(armor(&app, enemy), 0.0);
+    }
+
+    #[test]
     fn aura_lingers_then_expires_after_the_unit_leaves() {
         let mut app = aura_app();
         let _owner = buckler_carrier(&mut app, Team::Radiant, Vec3::ZERO);
