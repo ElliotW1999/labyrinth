@@ -56,7 +56,7 @@ Rejected alternatives:
   - `effect_type` is `stat_modifier` (timed or resource stats) or `apply_status`.
   - `effect_target` is `units_in_radius`. Items must set `radius`; abilities may fall back to `aoe_radius`.
   - `duration` must be blank: the generator writes `AURA_LINGER = 0.5`.
-  - The generator rejects the `:independent` suffix, a `stat_modifier` `amount`, and the statuses `stacks`, `shield`, `attack_charges`, `mana_shield`, `damage_share`, `convert_on_death`, `taunt_target` and `mini_stun`.
+  - The generator rejects the `:independent` suffix, a `stat_modifier` `amount`, and the statuses `stacks`, `shield`, `attack_charges`, `mana_shield`, `damage_share`, `convert_on_death`, `taunt_target` and `mini_stun` and `temporary_mana`.
 - **Team.** The existing polarity rule applies: beneficial rows reach allies, including the owner; harmful rows reach enemies.
 - **Runtime.**
   - New `AbilityTrigger::Aura`.
@@ -100,23 +100,23 @@ fn pulse_period(t: AbilityTrigger) -> Option<f32> {
 
 ## 5. Exact CSV rows
 
-Append to `data/items.csv` in this order (27 fields; sell value = `cost // 2`; colors blank so they derive from the name):
+Append to `data/items.csv` in this order (28 columns after #72: the last is `attribute_toggle`, written as a trailing empty field; sell value = `cost // 2`; colors blank so they derive from the name):
 ```csv
 phase_boots,Phase Boots,accessories,1450,725,,,FALSE,,FALSE,,"+4 Armor, +50 Move Speed, +18 Attack Damage. Active: +10% Move Speed and phased for 3s",PB,8,boots_of_speed;chainmail;blades_of_attack,,,,,,,,,,,,
 oblivion_staff,Oblivion Staff,accessories,1625,812,,,FALSE,,FALSE,,"+10 Intelligence, +1.25 Mana Regen, +35 Attack Speed",OS,,blitz_knuckles;robe_of_the_magi;sages_mask,,,,,,,,,,,,
-perseverance,Perseverance,accessories,1400,700,,,FALSE,,FALSE,,"+5.5 HP Regen, +2.25 Mana Regen",PS,,ring_of_health;void_stone,,,,,,,,,,,,
+perseverance,Perseverance,accessories,1400,700,,,FALSE,,FALSE,,"+5.5 HP Regen, +2.25 Mana Regen",PV,,ring_of_health;void_stone,,,,,,,,,,,,
 mask_of_madness,Mask of Madness,accessories,1900,950,,,FALSE,,FALSE,,"+20 Attack Damage, +18% Lifesteal. Active (6s): +12% Move Speed, +110 Attack Speed, 30% slow resistance, -7 Armor, silenced",MoM,16,morbid_mask;broadsword,,,,,,,,,,25,,
 boots_of_travel,Boots of Travel,accessories,2500,1250,,,FALSE,,FALSE,,+110 Move Speed,BoT,,boots_of_speed;recipe_boots_of_travel,,,,,,,,,,,,
-recipe_boots_of_travel,Recipe: Boots of Travel,recipe,2000,1000,,,FALSE,,FALSE,,Combines with components into Boots of Travel,R-BoT,,,,,,,,,,,,,,
+recipe_boots_of_travel,Recipe: Boots of Travel,recipe,2000,1000,,,FALSE,,FALSE,,Combines with components into Boots of Travel,R-BT,,,,,,,,,,,,,,
 moon_shard,Moon Shard,accessories,4000,2000,,,FALSE,,FALSE,,+140 Attack Speed,MS,,hyperstone;hyperstone,,,,,,,,,,,,
-buckler,Buckler,support,425,212,,,FALSE,,FALSE,,+1 Armor. Aura: +2 Armor to allies within 1200,Bk,,ring_of_protection;recipe_buckler,,,,,,,,,,,,
-recipe_buckler,Recipe: Buckler,recipe,210,105,,,FALSE,,FALSE,,Combines with components into Buckler,R-Bk,,,,,,,,,,,,,,
+buckler,Buckler,support,425,212,,,FALSE,,FALSE,,+1 Armor. Aura: +2 Armor to allies within 1200,BK,,ring_of_protection;recipe_buckler,,,,,,,,,,,,
+recipe_buckler,Recipe: Buckler,recipe,210,105,,,FALSE,,FALSE,,Combines with components into Buckler,R-BK,,,,,,,,,,,,,,
 ring_of_basilius,Ring of Basilius,support,425,212,,,FALSE,,FALSE,,+0.5 Mana Regen. Aura: +1 Mana Regen to allies within 1200,RB,,sages_mask;recipe_ring_of_basilius,,,,,,,,,,,,
 recipe_ring_of_basilius,Recipe: Ring of Basilius,recipe,210,105,,,FALSE,,FALSE,,Combines with components into Ring of Basilius,R-RB,,,,,,,,,,,,,,
 headdress,Headdress,support,425,212,,,FALSE,,FALSE,,+0.5 HP Regen. Aura: +2 HP Regen to allies within 1200,HD,,ring_of_regen;recipe_headdress,,,,,,,,,,,,
 recipe_headdress,Recipe: Headdress,recipe,210,105,,,FALSE,,FALSE,,Combines with components into Headdress,R-HD,,,,,,,,,,,,,,
 ```
-Short labels must be unique among existing items (`MS` and `SR` are taken, for example). Check them and adjust if needed.
+Short labels must be unique and at most 4 characters (the generator rejects longer ones, so the Boots of Travel recipe is `R-BT`, Perseverance is `PV`, Buckler is `BK`). Implemented as listed here.
 
 Append to `data/item_effects.csv`:
 ```csv
@@ -265,3 +265,10 @@ Each step builds and passes its tests on its own.
 - D5. Auras reach all allied units.
 - D6. (Resolved) Morbid Mask already exists on main.
 - D7. Boots do not have a "do not stack" rule.
+
+
+## 12. Implementation notes
+
+- Rows were generated against the 28-column header (one trailing empty field). Mask of Madness and the aura items were added in their own steps.
+- `aura` joined `REACTIVE_PLAIN_TRIGGERS` (so it is in both trigger tables and `REACTIVE_TRIGGER_NAMES`), plus `REACTION_TRIGGERS` and `REACTIVE_NO_TRIGGER_UNIT`.
+- The duplicate-component generator test was skipped: `test_semicolon_only_rows_and_duplicate_slots_are_kept` already covers it. `boots_of_speed_combine_priority_is_deterministic` was added in `src/items.rs`.

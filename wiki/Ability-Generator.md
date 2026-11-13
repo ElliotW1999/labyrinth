@@ -60,7 +60,7 @@ skewer,1,on_unit_contact,trigger_unit,movement,drag_stun,,,,,,,
 | `require_status` | blank | blank | blank | `caster` / `owner` / `attacker`; `effect_id` = `on_<trigger>:<status_id>` (a keyword, runtime id or `<owner>_<stat>` id) |
 | `apply_status,heal_reduction` | blank | percent 0..100 (required) | blank | any |
 | `apply_status,heal_block` | blank | blank | blank | any |
-| `apply_status,damage_reduction` / `magic_resistance` / `status_resistance` | blank | percent, above 0 up to 100 (required) | blank | any |
+| `apply_status,damage_reduction` / `magic_resistance` / `status_resistance` / `slow_resistance` | blank | percent, above 0 up to 100 (required) | blank | any |
 | `apply_status,damage_share` | blank | percent, above 0 up to 100 (required) | blank | not `caster` / `owner`; the applier becomes the partner |
 | `apply_status,convert_on_death` | radius, above 0 (required) | blank | blank | any; timed (not `passive` / `while`) |
 | `orbit` | orbiters (integer, at least 1) | seconds per revolution, above 0 (required) | blank | `caster` / `owner` only; `effect_id` = `on_<name>:<hit_radius>`, `duration` required, `radius` = orbit radius |
@@ -89,6 +89,7 @@ The `trigger` cell is `name[:arg[:arg]]`; the base name decides everything else 
 | `on_status_applied`, `on_status_removed` with `:buff`, `:debuff` or `:<status id>` | `(StatusFilter::Any / Buff / Debuff / Id)` | id is a status id (`stun`, ...) or a timed-stat `<owner>_<stat>` id |
 | `on_cooldown_ready` | plain | invalid on passive abilities and on items with no `on_use` |
 | `on_interval:5` | `OnInterval { millis: 5000 }` | seconds, at least 0.1 |
+| `aura` | plain (`Aura`) | no argument; rows are `stat_modifier` (timed or resource stats) or `apply_status` on `units_in_radius` (items must set `radius`); `duration` blank (the generator writes `AURA_LINGER` 0.5); `:independent`, `amount` on a `stat_modifier` and the statuses `stacks`, `shield`, `attack_charges`, `mana_shield`, `damage_share`, `convert_on_death`, `taunt_target`, `mini_stun`, `temporary_mana` are rejected |
 | `on_move` | plain | every row must be `accumulate` |
 | `on_enemy_enter:600`, `on_enemy_leave:600` | `{ radius: 600 }` | radius above 0 |
 | `while:health_below:50`, `while:moving`, `while:stationary`, `while:enemies_near:600:2`, `while:allies_near:600:1`, `while:has_status:<id>` | `While(Condition::...)` | rows are `apply_status` (or a timed `stat_modifier`), blank `duration`, target `owner` / `caster`; `has_status` may not name the status the row holds |
@@ -105,6 +106,7 @@ Recipes:
 | Mana on cast | `on_spell_cast,owner,heal,mana,30` |
 | Pulse | `on_interval:3,units_in_radius,damage,,60,magical,,500` |
 | Every 1000 units walked | `on_move,owner,accumulate,on_far_walk,1000` + `on_far_walk,owner,apply_status,phased,,,2` |
+| Real aura (+2 armor to allies within 1200) | `aura,units_in_radius,stat_modifier,armor,2,,,1200` |
 | Aura-ish slow | `on_enemy_enter:600,trigger_unit,apply_status,slow,,,2,,30` |
 | Conditional bonus | `while:health_below:50,owner,stat_modifier,attack_damage,40` |
 | Pseudo-random stun | `on_attack_hit,owner,pseudo_proc,on_bash,25` + `on_bash,trigger_unit,apply_status,stun,,,1.2` |

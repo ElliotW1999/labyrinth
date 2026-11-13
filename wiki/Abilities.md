@@ -58,6 +58,7 @@ spell projectile → ProjectileHitEvent { primary, splashed } → OnProjectileHi
 | `on_status_applied[:buff\|debuff\|id]` / `on_status_removed[:...]` | a status was applied to / left the owner | `StatusLifecycleEvent` | applied next frame, expiry same frame |
 | `on_cooldown_ready` | the source's cooldown finished (never for a zero cooldown or a charge restore) | `CooldownReadyEvent` | same frame |
 | `on_interval:S` | every S seconds (at least 0.1) of the owner's life; copies of an item share one timer; paused while dead; at most once per frame | `TriggerTracking` | same frame |
+| `aura` | pulsed every 0.25 s from the first frame the source is held (copies share one timer; paused while dead; an ability aura also while Break suppresses it, items ignore Break); rows apply short-lived silent statuses (`AURA_LINGER` 0.5 s) to units in a radius | `TriggerTracking` | same frame |
 | `on_move` | the owner moved; `amount` is the distance this frame (teleports excluded, forced movement counts) | `TriggerTracking` | same frame |
 | `on_enemy_enter:R` / `on_enemy_leave:R` | a living, targetable enemy came within / left R; units in range when the source is first held count as entering; a death or despawn drops silently | `TriggerTracking` | same frame |
 | `while:<condition>` | held `apply_status` / `stat_modifier` rows while the condition is true (`health_below:P`, `moving`, `stationary`, `enemies_near:R:N`, `allies_near:R:N`, `has_status:id`) | `sync_conditional_statuses` | same frame |
