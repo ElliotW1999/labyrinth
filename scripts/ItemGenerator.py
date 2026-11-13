@@ -51,6 +51,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from generator_common import (  # noqa: E402
+    AURA_TARGET_HINT,
     ACTION_TEAMS,
     EFFECT_COLUMNS,
     ITEM_ACTIVATION_OPTIONAL,
@@ -372,7 +373,7 @@ def effect_context(item: Item) -> EffectContext:
         kind="item",
         owner_id=item.id,
         levels=None,
-        center_for={"on_use": "Caster" if target_type in ("no_target", "self") else "Aim", "passive": "Caster"},
+        center_for={"on_use": "Caster" if target_type in ("no_target", "self") else "Aim", "passive": "Caster", "aura": "Caster"},
         target_type=target_type,
     )
     if not item.activation.channel_time:
@@ -405,6 +406,8 @@ def effect_context(item: Item) -> EffectContext:
         ctx.invalid_combo[(trigger, "affected_units")] = f"{trigger} has no affected units; use units_in_radius"
     for trigger in REACTIVE_NO_TRIGGER_UNIT:
         ctx.invalid_combo[(trigger, "trigger_unit")] = f"{trigger} has no trigger unit"
+    for target in ("owner", "caster", "trigger_unit", "affected_units", "attacker"):
+        ctx.invalid_combo[("aura", target)] = AURA_TARGET_HINT
     return ctx
 
 

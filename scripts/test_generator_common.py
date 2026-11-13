@@ -1744,6 +1744,107 @@ class StatusResistanceStatusTests(unittest.TestCase):
         self.assertIn("<owner>_status_resistance", report.errors[0].message)
 
 
+class SlowResistanceStatusTests(unittest.TestCase):
+    def test_slow_resistance_status(self) -> None:
+        report = Report()
+        effect, ctx = _effect("apply_status", "slow_resistance", amount="30", duration="6")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertEqual(report.errors, [])
+        self.assertIn('StatusSpec::SlowResistance { id: "tester_slow_resistance"', result[2])
+        self.assertEqual(held_status_id(effect), "tester_slow_resistance")
+
+    def test_slow_resistance_percent_must_be_above_zero_and_at_most_100(self) -> None:
+        for bad in ("0", "101"):
+            report = Report()
+            effect, ctx = _effect("apply_status", "slow_resistance", amount=bad, duration="6")
+            self.assertIsNone(effect_to_rust(effect, ctx, report), bad)
+            self.assertTrue(report.errors, bad)
+
+
+def _aura(effect_type: str, effect_id: str, **kwargs):
+    kwargs.setdefault("target", "units_in_radius")
+    kwargs.setdefault("kind", "item")
+    kwargs.setdefault("radius", "1200")
+    effect, ctx = _effect(effect_type, effect_id, trigger="aura", **kwargs)
+    ctx.center_for["aura"] = "Caster"
+    return effect, ctx
+
+
+class AuraTriggerTests(unittest.TestCase):
+    def test_aura_is_a_reaction_trigger_for_items_and_abilities(self) -> None:
+        from generator_common import ABILITY_TRIGGERS, ITEM_TRIGGERS, REACTION_TRIGGERS
+
+        self.assertIn("aura", REACTION_TRIGGERS)
+        self.assertIn("aura", ITEM_TRIGGERS)
+        self.assertIn("aura", ABILITY_TRIGGERS)
+
+    def test_stat_modifier_aura_targets_allies_around_the_caster(self) -> None:
+        report = Report()
+        effect, ctx = _aura("stat_modifier", "armor", value="2")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertEqual(report.errors, [])
+        self.assertEqual(result[0], "AbilityTrigger::Aura")
+        self.assertIn("center: AreaCenter::Caster", result[1])
+        self.assertIn("radius: AreaRadius::Fixed(RankValue::fixed(1200.0))", result[1])
+        self.assertIn("team: TargetTeam::Ally", result[1])
+        self.assertIn('id: "tester_armor"', result[2])
+        self.assertIn("duration: RankValue::fixed(0.5)", result[2])
+
+    def test_resource_stat_aura_is_a_resource_modifier(self) -> None:
+        report = Report()
+        effect, ctx = _aura("stat_modifier", "mana_regen", value="1")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertEqual(report.errors, [])
+        self.assertIn("StatusSpec::ResourceModifier", result[2])
+        self.assertIn("duration: RankValue::fixed(0.5)", result[2])
+
+    def test_harmful_aura_targets_enemies(self) -> None:
+        report = Report()
+        effect, ctx = _aura("stat_modifier", "armor", value="-3")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertEqual(report.errors, [])
+        self.assertIn("team: TargetTeam::Enemy", result[1])
+
+    def test_apply_status_aura_gets_the_linger_duration(self) -> None:
+        report = Report()
+        effect, ctx = _aura("apply_status", "slow_resistance", amount="20")
+        result = effect_to_rust(effect, ctx, report)
+        self.assertEqual(report.errors, [])
+        self.assertIn("duration: RankValue::fixed(0.5)", result[2])
+        self.assertIn("team: TargetTeam::Ally", result[1])
+
+    def _rejected(self, *args, **kwargs) -> Report:
+        report = Report()
+        effect, ctx = _aura(*args, **kwargs)
+        self.assertIsNone(effect_to_rust(effect, ctx, report), (args, kwargs))
+        self.assertTrue(report.errors, (args, kwargs))
+        return report
+
+    def test_other_targets_are_rejected(self) -> None:
+        for target in ("owner", "caster", "trigger_unit", "affected_units", "cast_target"):
+            self._rejected("stat_modifier", "armor", value="2", target=target)
+
+    def test_item_aura_without_a_radius_is_rejected(self) -> None:
+        self._rejected("stat_modifier", "armor", value="2", radius="")
+
+    def test_duration_is_rejected(self) -> None:
+        self._rejected("stat_modifier", "armor", value="2", duration="5")
+
+    def test_independent_suffix_is_rejected(self) -> None:
+        self._rejected("stat_modifier", "armor:independent", value="2")
+
+    def test_attack_charges_are_rejected(self) -> None:
+        self._rejected("stat_modifier", "attack_speed_flat", value="20", amount="3")
+
+    def test_accumulating_and_stateful_statuses_are_rejected(self) -> None:
+        for status in ("stacks", "shield", "attack_charges", "mana_shield", "damage_share", "convert_on_death", "taunt_target", "mini_stun", "temporary_mana"):
+            self._rejected("apply_status", status, amount="10", value="10")
+
+    def test_damage_and_heal_are_rejected(self) -> None:
+        self._rejected("damage", "", value="10", damage_type="magical")
+        self._rejected("heal", "", value="10")
+
+
 class StackingStatusTests(unittest.TestCase):
     def test_stacks_status_carries_a_per_owner_id(self) -> None:
         report = Report()

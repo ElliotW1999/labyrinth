@@ -257,6 +257,7 @@ pub(crate) fn trigger_tag(trigger: AbilityTrigger) -> &'static str {
         AbilityTrigger::OnEnemyLeave { .. } => "when an enemy leaves",
         AbilityTrigger::OnCooldownReady => "when ready",
         AbilityTrigger::OnInterval { .. } => "periodically",
+        AbilityTrigger::Aura => "aura",
         AbilityTrigger::OnSpellCast => "on spell cast",
         AbilityTrigger::OnSpellHit => "on spell hit",
         AbilityTrigger::OnKill => "on kill",
@@ -518,6 +519,10 @@ fn status_rows(status: StatusSpec, duration: RankValue) -> Vec<EffectRow> {
         StatusSpec::StatusResistance { percent, .. } => vec![
             row("Status resistance %", percent),
             seconds_row("Status resistance duration", duration),
+        ],
+        StatusSpec::SlowResistance { percent, .. } => vec![
+            row("Slow resistance %", percent),
+            seconds_row("Slow resistance duration", duration),
         ],
         StatusSpec::ManaShield {
             absorb_percent,
@@ -810,6 +815,7 @@ fn status_name(status: StatusSpec) -> &'static str {
         StatusSpec::DamageShare { .. } => "Damage share",
         StatusSpec::MagicResistance { .. } => "Magic resistance",
         StatusSpec::StatusResistance { .. } => "Status resistance",
+        StatusSpec::SlowResistance { .. } => "Slow resistance",
         StatusSpec::ManaShield { .. } => "Mana shield",
         StatusSpec::ResourceModifier { .. } => "Modifier",
         StatusSpec::Modifier { .. } => "Modifier",

@@ -11585,6 +11585,221 @@ mod tests {
         );
     }
 
+    // --- Aura trigger ---
+
+    fn aura_app() -> App {
+        let mut app = test_app();
+        app.add_systems(
+            Update,
+            crate::status::tick_status_effects.before(reactive_triggers::status_triggers),
+        );
+        app
+    }
+
+    fn buckler_carrier(app: &mut App, team: Team, pos: Vec3) -> Entity {
+        let unit = spawn_unit(app, team, pos);
+        app.world_mut().entity_mut(unit).insert(Inventory::empty());
+        give_item(app, unit, ItemId::Buckler);
+        unit
+    }
+
+    const AURA_ID: &str = "buckler_armor";
+
+    #[test]
+    fn aura_applies_on_the_first_frame_to_the_owner_and_allies_in_radius() {
+        let mut app = aura_app();
+        let owner = buckler_carrier(&mut app, Team::Radiant, Vec3::ZERO);
+        let near = spawn_unit(&mut app, Team::Radiant, Vec3::new(1100.0, 0.0, 0.0));
+        let far = spawn_unit(&mut app, Team::Radiant, Vec3::new(1300.0, 0.0, 0.0));
+        let enemy = spawn_unit(&mut app, Team::Dire, Vec3::new(100.0, 0.0, 0.0));
+        step(&mut app);
+        assert!(has_status(&app, owner, AURA_ID), "the owner is an ally");
+        assert!(has_status(&app, near, AURA_ID));
+        assert!(!has_status(&app, far, AURA_ID), "outside the radius");
+        assert!(!has_status(&app, enemy, AURA_ID), "enemies are not buffed");
+        assert_eq!(armor(&app, near), 2.0);
+    }
+
+    #[test]
+    fn aura_lingers_then_expires_after_the_unit_leaves() {
+        let mut app = aura_app();
+        let _owner = buckler_carrier(&mut app, Team::Radiant, Vec3::ZERO);
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(500.0, 0.0, 0.0));
+        step(&mut app);
+        assert!(has_status(&app, ally, AURA_ID));
+        app.world_mut()
+            .get_mut::<Transform>(ally)
+            .unwrap()
+            .translation
+            .x = 5000.0;
+        step(&mut app);
+        step(&mut app);
+        assert!(has_status(&app, ally, AURA_ID), "still within the linger");
+        for _ in 0..12 {
+            step(&mut app);
+        }
+        assert!(!has_status(&app, ally, AURA_ID), "expired");
+        assert_eq!(armor(&app, ally), 0.0, "and its bonus reverted");
+    }
+
+    #[test]
+    fn aura_ends_when_the_item_is_removed_and_when_the_owner_dies() {
+        let mut app = aura_app();
+        let owner = buckler_carrier(&mut app, Team::Radiant, Vec3::ZERO);
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(500.0, 0.0, 0.0));
+        step(&mut app);
+        assert!(has_status(&app, ally, AURA_ID));
+        app.world_mut().get_mut::<Inventory>(owner).unwrap().slots = Default::default();
+        for _ in 0..14 {
+            step(&mut app);
+        }
+        assert!(
+            !has_status(&app, ally, AURA_ID),
+            "sold: gone after the linger"
+        );
+
+        give_item(&mut app, owner, ItemId::Buckler);
+        step(&mut app);
+        assert!(has_status(&app, ally, AURA_ID));
+        set_health(&mut app, owner, 0.0);
+        for _ in 0..14 {
+            step(&mut app);
+        }
+        assert!(!has_status(&app, ally, AURA_ID), "dead owner: no pulses");
+    }
+
+    #[test]
+    fn identical_auras_from_two_carriers_do_not_stack() {
+        let mut app = aura_app();
+        let _a = buckler_carrier(&mut app, Team::Radiant, Vec3::ZERO);
+        let _b = buckler_carrier(&mut app, Team::Radiant, Vec3::new(100.0, 0.0, 0.0));
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(200.0, 0.0, 0.0));
+        for _ in 0..10 {
+            step(&mut app);
+            assert_eq!(armor(&app, ally), 2.0);
+        }
+        let count = app
+            .world()
+            .get::<StatusEffects>(ally)
+            .unwrap()
+            .effects
+            .iter()
+            .filter(|e| e.id == AURA_ID)
+            .count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn two_copies_in_one_inventory_share_one_pulse() {
+        let mut app = aura_app();
+        let owner = buckler_carrier(&mut app, Team::Radiant, Vec3::ZERO);
+        give_item(&mut app, owner, ItemId::Buckler);
+        for _ in 0..6 {
+            step(&mut app);
+        }
+        assert_eq!(armor(&app, owner), 2.0);
+        let tracking = app
+            .world()
+            .get::<reactive_triggers::TriggerTracking>(owner)
+            .unwrap();
+        assert_eq!(tracking.intervals.len(), 1);
+    }
+
+    #[test]
+    fn aura_pulses_fire_no_status_triggers() {
+        let mut app = aura_app();
+        let _owner = buckler_carrier(&mut app, Team::Radiant, Vec3::ZERO);
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(500.0, 0.0, 0.0));
+        let mut lifecycle = 0;
+        for _ in 0..20 {
+            step(&mut app);
+            lifecycle += current_messages::<crate::status::StatusLifecycleEvent>(&app).len();
+        }
+        assert!(has_status(&app, ally, AURA_ID));
+        assert_eq!(lifecycle, 0, "reactive statuses are silent");
+        let status = status_of(&app, ally, AURA_ID).unwrap();
+        assert!(status.reactive);
+    }
+
+    #[test]
+    fn aura_never_lapses_between_pulses() {
+        let mut app = aura_app();
+        let _owner = buckler_carrier(&mut app, Team::Radiant, Vec3::ZERO);
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(500.0, 0.0, 0.0));
+        step(&mut app);
+        // Sampled every 50 ms frame for 3 s.
+        for frame in 0..60 {
+            step(&mut app);
+            assert!(has_status(&app, ally, AURA_ID), "lapsed at frame {frame}");
+        }
+    }
+
+    #[test]
+    fn every_aura_row_outlasts_the_pulse_period_with_margin() {
+        let mut checked = 0;
+        for &item in ItemId::all() {
+            for entry in item.definition().effects {
+                if entry.trigger != AbilityTrigger::Aura {
+                    continue;
+                }
+                let AbilityEffect::ApplyStatus { duration, .. } = entry.effect else {
+                    panic!("{item:?}: an aura row must apply a status");
+                };
+                assert!(
+                    duration.at(1) > 1.5 * reactive_triggers::AURA_PULSE_SECS,
+                    "{item:?}: {}",
+                    duration.at(1)
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked >= 3, "the aura items are in the catalog");
+    }
+
+    #[test]
+    fn ability_aura_is_suppressed_by_break_but_item_aura_is_not() {
+        let mut app = aura_app();
+        let aura_entries: Vec<AbilityEffectEntry> = ItemId::Buckler
+            .definition()
+            .effects
+            .iter()
+            .copied()
+            .filter(|e| e.trigger == AbilityTrigger::Aura)
+            .collect();
+        app.world_mut()
+            .resource_mut::<AbilityDefinitions>()
+            .insert(passive_def(aura_entries));
+        let caster = spawn_caster(&mut app, PASSIVE_KIT);
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(300.0, 0.0, 0.0));
+        // `spawn_caster` already ran the first pulse, before the ally existed: wait for the next.
+        for _ in 0..6 {
+            step(&mut app);
+        }
+        assert!(has_status(&app, ally, AURA_ID), "the passive aura works");
+
+        set_broken(&mut app, caster, true);
+        for _ in 0..14 {
+            step(&mut app);
+        }
+        assert!(!has_status(&app, ally, AURA_ID), "broken: it lapses");
+
+        set_broken(&mut app, caster, false);
+        for _ in 0..6 {
+            step(&mut app);
+        }
+        assert!(has_status(&app, ally, AURA_ID), "back after the break");
+
+        // An item aura ignores Break.
+        let mut app = aura_app();
+        let owner = buckler_carrier(&mut app, Team::Radiant, Vec3::ZERO);
+        let ally = spawn_unit(&mut app, Team::Radiant, Vec3::new(300.0, 0.0, 0.0));
+        set_broken(&mut app, owner, true);
+        for _ in 0..14 {
+            step(&mut app);
+        }
+        assert!(has_status(&app, ally, AURA_ID));
+    }
+
     // --- Break: ability passives off, items untouched ---
 
     const PASSIVE_KIT: [AbilityId; 4] = [
