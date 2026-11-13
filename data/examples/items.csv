@@ -27,3 +27,4 @@ sentinel_ward,Sentinel Ward,utility,1200,600,2,uncommon,false,,false,,Slows enem
 berserker_blood,Berserker Blood,weapon,2100,1050,2,rare,false,,false,,Hits harder while below half health,,,,,,,,,
 prd_basher,Steady Basher,weapon,2700,1350,3,rare,false,,false,,Attacks stun with a pseudo-random 25% chance (streaks stay short),,,,,,,,,
 storm_mail,Storm Mail,armor,2600,1300,3,rare,false,,false,,Every 300 damage taken arcs lightning from the attacker to nearby enemies,,,,,,,,,,
+banner_of_valor,Banner of Valor,support,900,450,2,uncommon,false,,false,,Aura: allies within 900 gain +3 armor

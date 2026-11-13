@@ -4,3 +4,4 @@ potion,Potion,consumable,50,25,1,common,false,3,true,,Max stack without stacking
 tonic,Tonic,consumable,50,25,1,common,false,,true,3,Item charges never regenerate,30
 siphon,Siphon,accessory,500,250,1,common,false,,false,,Resource effect errors,
 reactor,Reactor,accessory,500,250,1,common,false,,false,,Reactive trigger errors,
+warden,Warden,accessory,500,250,1,common,false,,false,,Aura errors,

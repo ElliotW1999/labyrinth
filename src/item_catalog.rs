@@ -90,6 +90,13 @@ pub fn definition(id: ItemId) -> &'static ItemDefinition {
         ItemId::BootsOfTravel => &BOOTS_OF_TRAVEL,
         ItemId::RecipeBootsOfTravel => &RECIPE_BOOTS_OF_TRAVEL,
         ItemId::MoonShard => &MOON_SHARD,
+        ItemId::MaskOfMadness => &MASK_OF_MADNESS,
+        ItemId::Buckler => &BUCKLER,
+        ItemId::RecipeBuckler => &RECIPE_BUCKLER,
+        ItemId::RingOfBasilius => &RING_OF_BASILIUS,
+        ItemId::RecipeRingOfBasilius => &RECIPE_RING_OF_BASILIUS,
+        ItemId::Headdress => &HEADDRESS,
+        ItemId::RecipeHeaddress => &RECIPE_HEADDRESS,
     }
 }
 
@@ -2809,3 +2816,370 @@ static MOON_SHARD: ItemDefinition = ItemDefinition {
     mechanics: &[],
 };
 // </item:moon_shard>
+
+// <item:mask_of_madness>
+static MASK_OF_MADNESS: ItemDefinition = ItemDefinition {
+    id: ItemId::MaskOfMadness,
+    name: "Mask of Madness",
+    short_label: "MoM",
+    item_type: ItemType::Accessories,
+    cost: 1900,
+    sell_value: 950,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 16.0,
+    activation: ItemActivation {
+        target_type: TargetType::NoTarget,
+        target_team: TargetTeam::Any,
+        cast_range: 0.0,
+        cast_time: 0.0,
+        channel_time: 0.0,
+        mana_cost: 25.0,
+    },
+    attribute_toggle: None,
+    components: &[&[ItemId::MorbidMask], &[ItemId::Broadsword]],
+    color: [0.848, 0.603, 0.318],
+    description: "+20 Attack Damage, +18% Lifesteal. Active (6s): +12% Move Speed, +110 Attack Speed, 30% slow resistance, -7 Armor, silenced",
+    effects: &[
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::AttackDamage,
+                amount: RankValue::fixed(20.0),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::Lifesteal,
+                amount: RankValue::fixed(0.18),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::OnUse,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::ApplyStatus {
+                status: StatusSpec::MoveSpeedBonus {
+                    id: "mask_of_madness_move_speed_bonus",
+                    percent: RankValue::fixed(12.0),
+                },
+                duration: RankValue::fixed(6.0),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::OnUse,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::ApplyStatus {
+                status: StatusSpec::Modifier {
+                    id: "mask_of_madness_attack_speed_flat",
+                    kind: StatusKind::Buff,
+                    armor: RankValue::ZERO,
+                    magic_resist: RankValue::ZERO,
+                    move_speed: RankValue::ZERO,
+                    attack_damage: RankValue::ZERO,
+                    attack_speed_flat: RankValue::fixed(110.0),
+                    attack_speed_mult: RankValue::ZERO,
+                    attack_range: RankValue::ZERO,
+                    attack_projectile_speed: RankValue::ZERO,
+                    attack_damage_pct: RankValue::ZERO,
+                    cleave: RankValue::ZERO,
+                    cleave_radius: RankValue::ZERO,
+                    cleave_end_radius: RankValue::ZERO,
+                    cleave_distance: RankValue::ZERO,
+                    attack_charges: RankValue::ZERO,
+                    independent: false,
+                },
+                duration: RankValue::fixed(6.0),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::OnUse,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::ApplyStatus {
+                status: StatusSpec::SlowResistance {
+                    id: "mask_of_madness_slow_resistance",
+                    percent: RankValue::fixed(30.0),
+                },
+                duration: RankValue::fixed(6.0),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::OnUse,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::ApplyStatus {
+                status: StatusSpec::Modifier {
+                    id: "mask_of_madness_armor",
+                    kind: StatusKind::Debuff,
+                    armor: RankValue::fixed(-7.0),
+                    magic_resist: RankValue::ZERO,
+                    move_speed: RankValue::ZERO,
+                    attack_damage: RankValue::ZERO,
+                    attack_speed_flat: RankValue::ZERO,
+                    attack_speed_mult: RankValue::ZERO,
+                    attack_range: RankValue::ZERO,
+                    attack_projectile_speed: RankValue::ZERO,
+                    attack_damage_pct: RankValue::ZERO,
+                    cleave: RankValue::ZERO,
+                    cleave_radius: RankValue::ZERO,
+                    cleave_end_radius: RankValue::ZERO,
+                    cleave_distance: RankValue::ZERO,
+                    attack_charges: RankValue::ZERO,
+                    independent: false,
+                },
+                duration: RankValue::fixed(6.0),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::OnUse,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::ApplyStatus {
+                status: StatusSpec::Silence,
+                duration: RankValue::fixed(6.0),
+            },
+        },
+    ],
+    mechanics: &[],
+};
+// </item:mask_of_madness>
+
+// <item:buckler>
+static BUCKLER: ItemDefinition = ItemDefinition {
+    id: ItemId::Buckler,
+    name: "Buckler",
+    short_label: "BK",
+    item_type: ItemType::Support,
+    cost: 425,
+    sell_value: 212,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    activation: ItemActivation::INSTANT,
+    attribute_toggle: None,
+    components: &[&[ItemId::RingOfProtection], &[ItemId::RecipeBuckler]],
+    color: [0.478, 0.434, 0.629],
+    description: "+1 Armor. Aura: +2 Armor to allies within 1200",
+    effects: &[
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::Armor,
+                amount: RankValue::fixed(1.0),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Aura,
+            target: EffectTarget::UnitsInRadius {
+                center: AreaCenter::Caster,
+                radius: AreaRadius::Fixed(RankValue::fixed(1200.0)),
+                team: TargetTeam::Ally,
+            },
+            effect: AbilityEffect::ApplyStatus {
+                status: StatusSpec::Modifier {
+                    id: "buckler_armor",
+                    kind: StatusKind::Buff,
+                    armor: RankValue::fixed(2.0),
+                    magic_resist: RankValue::ZERO,
+                    move_speed: RankValue::ZERO,
+                    attack_damage: RankValue::ZERO,
+                    attack_speed_flat: RankValue::ZERO,
+                    attack_speed_mult: RankValue::ZERO,
+                    attack_range: RankValue::ZERO,
+                    attack_projectile_speed: RankValue::ZERO,
+                    attack_damage_pct: RankValue::ZERO,
+                    cleave: RankValue::ZERO,
+                    cleave_radius: RankValue::ZERO,
+                    cleave_end_radius: RankValue::ZERO,
+                    cleave_distance: RankValue::ZERO,
+                    attack_charges: RankValue::ZERO,
+                    independent: false,
+                },
+                duration: RankValue::fixed(0.5),
+            },
+        },
+    ],
+    mechanics: &[],
+};
+// </item:buckler>
+
+// <item:recipe_buckler>
+static RECIPE_BUCKLER: ItemDefinition = ItemDefinition {
+    id: ItemId::RecipeBuckler,
+    name: "Recipe: Buckler",
+    short_label: "R-BK",
+    item_type: ItemType::Recipe,
+    cost: 210,
+    sell_value: 105,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    activation: ItemActivation::INSTANT,
+    attribute_toggle: None,
+    components: &[],
+    color: [0.721, 0.337, 0.739],
+    description: "Combines with components into Buckler",
+    effects: &[],
+    mechanics: &[],
+};
+// </item:recipe_buckler>
+
+// <item:ring_of_basilius>
+static RING_OF_BASILIUS: ItemDefinition = ItemDefinition {
+    id: ItemId::RingOfBasilius,
+    name: "Ring of Basilius",
+    short_label: "RB",
+    item_type: ItemType::Support,
+    cost: 425,
+    sell_value: 212,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    activation: ItemActivation::INSTANT,
+    attribute_toggle: None,
+    components: &[&[ItemId::SagesMask], &[ItemId::RecipeRingOfBasilius]],
+    color: [0.405, 0.316, 0.841],
+    description: "+0.5 Mana Regen. Aura: +1 Mana Regen to allies within 1200",
+    effects: &[
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::ManaRegen,
+                amount: RankValue::fixed(0.5),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Aura,
+            target: EffectTarget::UnitsInRadius {
+                center: AreaCenter::Caster,
+                radius: AreaRadius::Fixed(RankValue::fixed(1200.0)),
+                team: TargetTeam::Ally,
+            },
+            effect: AbilityEffect::ApplyStatus {
+                status: StatusSpec::ResourceModifier {
+                    id: "ring_of_basilius_mana_regen",
+                    kind: StatusKind::Buff,
+                    stat: ResourceStat::ManaRegen,
+                    amount: RankValue::fixed(1.0),
+                    independent: false,
+                },
+                duration: RankValue::fixed(0.5),
+            },
+        },
+    ],
+    mechanics: &[],
+};
+// </item:ring_of_basilius>
+
+// <item:recipe_ring_of_basilius>
+static RECIPE_RING_OF_BASILIUS: ItemDefinition = ItemDefinition {
+    id: ItemId::RecipeRingOfBasilius,
+    name: "Recipe: Ring of Basilius",
+    short_label: "R-RB",
+    item_type: ItemType::Recipe,
+    cost: 210,
+    sell_value: 105,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    activation: ItemActivation::INSTANT,
+    attribute_toggle: None,
+    components: &[],
+    color: [0.33, 0.415, 0.483],
+    description: "Combines with components into Ring of Basilius",
+    effects: &[],
+    mechanics: &[],
+};
+// </item:recipe_ring_of_basilius>
+
+// <item:headdress>
+static HEADDRESS: ItemDefinition = ItemDefinition {
+    id: ItemId::Headdress,
+    name: "Headdress",
+    short_label: "HD",
+    item_type: ItemType::Support,
+    cost: 425,
+    sell_value: 212,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    activation: ItemActivation::INSTANT,
+    attribute_toggle: None,
+    components: &[&[ItemId::RingOfRegen], &[ItemId::RecipeHeaddress]],
+    color: [0.346, 0.476, 0.622],
+    description: "+0.5 HP Regen. Aura: +2 HP Regen to allies within 1200",
+    effects: &[
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Passive,
+            target: EffectTarget::Caster,
+            effect: AbilityEffect::PassiveStat {
+                stat: PassiveStat::HealthRegen,
+                amount: RankValue::fixed(0.5),
+            },
+        },
+        AbilityEffectEntry {
+            trigger: AbilityTrigger::Aura,
+            target: EffectTarget::UnitsInRadius {
+                center: AreaCenter::Caster,
+                radius: AreaRadius::Fixed(RankValue::fixed(1200.0)),
+                team: TargetTeam::Ally,
+            },
+            effect: AbilityEffect::ApplyStatus {
+                status: StatusSpec::ResourceModifier {
+                    id: "headdress_health_regen",
+                    kind: StatusKind::Buff,
+                    stat: ResourceStat::HealthRegen,
+                    amount: RankValue::fixed(2.0),
+                    independent: false,
+                },
+                duration: RankValue::fixed(0.5),
+            },
+        },
+    ],
+    mechanics: &[],
+};
+// </item:headdress>
+
+// <item:recipe_headdress>
+static RECIPE_HEADDRESS: ItemDefinition = ItemDefinition {
+    id: ItemId::RecipeHeaddress,
+    name: "Recipe: Headdress",
+    short_label: "R-HD",
+    item_type: ItemType::Recipe,
+    cost: 210,
+    sell_value: 105,
+    tier: 1,
+    rarity: ItemRarity::Common,
+    max_stack: 1,
+    consumable: false,
+    max_charges: None,
+    cooldown: 0.0,
+    activation: ItemActivation::INSTANT,
+    attribute_toggle: None,
+    components: &[],
+    color: [0.643, 0.786, 0.652],
+    description: "Combines with components into Headdress",
+    effects: &[],
+    mechanics: &[],
+};
+// </item:recipe_headdress>
