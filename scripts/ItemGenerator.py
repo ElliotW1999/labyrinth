@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import math
 import re
 import sys
 from dataclasses import dataclass, field
@@ -51,6 +52,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from generator_common import (  # noqa: E402
+    AURA_TARGET_HINT,
     ACTION_TEAMS,
     EFFECT_COLUMNS,
     ITEM_ACTIVATION_OPTIONAL,
@@ -228,6 +230,27 @@ def short_label_from_name(name: str) -> str:
     return "".join(p[0] for p in parts[:3]).upper()
 
 
+# Constants below 1 that clippy's `approx_constant` lint recognises from a 3-digit literal
+# (`0.318` is FRAC_1_PI, ...). A generated colour component equal to one would fail
+# `cargo clippy`, so `clippy_safe` nudges it by 0.001.
+_CLIPPY_CONSTANTS = (
+    math.log10(math.e), math.log(2), 1 / math.pi, 2 / math.pi, math.pi / 4, 1 / math.sqrt(2),
+    math.pi / 6, math.pi / 8, math.pi / 3, math.log(2, 10), math.log2(math.e) - 1, math.log(10) - 2,
+    2 / math.sqrt(math.pi) - 1, math.sqrt(2) - 1,
+)
+
+
+def clippy_safe(value: float) -> float:
+    """`value` nudged when its (at most 3-digit) literal matches a std constant clippy flags."""
+    rounded = round(value, 3)
+    if abs(value - rounded) > 1e-9:
+        return value  # a longer literal does not match a constant's 3-digit prefix
+    for constant in _CLIPPY_CONSTANTS:
+        if rounded in (math.floor(constant * 1000) / 1000, round(constant, 3)):
+            return round(rounded + 0.001, 3)
+    return value
+
+
 def color_from_name(name: str) -> tuple[float, float, float]:
     digest = hashlib.sha256(name.encode("utf-8")).digest()
     return tuple(round(0.25 + (digest[i] / 255.0) * 0.6, 3) for i in range(3))  # type: ignore[return-value]
@@ -372,7 +395,7 @@ def effect_context(item: Item) -> EffectContext:
         kind="item",
         owner_id=item.id,
         levels=None,
-        center_for={"on_use": "Caster" if target_type in ("no_target", "self") else "Aim", "passive": "Caster"},
+        center_for={"on_use": "Caster" if target_type in ("no_target", "self") else "Aim", "passive": "Caster", "aura": "Caster"},
         target_type=target_type,
     )
     if not item.activation.channel_time:
@@ -405,6 +428,8 @@ def effect_context(item: Item) -> EffectContext:
         ctx.invalid_combo[(trigger, "affected_units")] = f"{trigger} has no affected units; use units_in_radius"
     for trigger in REACTIVE_NO_TRIGGER_UNIT:
         ctx.invalid_combo[(trigger, "trigger_unit")] = f"{trigger} has no trigger unit"
+    for target in ("owner", "caster", "trigger_unit", "affected_units", "attacker"):
+        ctx.invalid_combo[("aura", target)] = AURA_TARGET_HINT
     return ctx
 
 
@@ -432,7 +457,7 @@ def item_static(item: Item) -> str:
         f"    activation: {activation_rust(item.activation)},",
         f"    attribute_toggle: {f'Some({f32(item.attribute_toggle)})' if item.attribute_toggle is not None else 'None'},",
         f"    components: &[{components}],",
-        f"    color: [{f32(r)}, {f32(g)}, {f32(b)}],",
+        f"    color: [{f32(clippy_safe(r))}, {f32(clippy_safe(g))}, {f32(clippy_safe(b))}],",
         f"    description: {rust_str(item.description)},",
         "    effects: &[",
     ]

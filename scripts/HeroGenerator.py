@@ -4,7 +4,7 @@
 Reads rows describing hero kits and patches marked regions in:
   - src/heroes.rs   (HeroId enum, roster, blurbs, defs)
   - src/components.rs (AbilityId stubs + display names + ultimates)
-  - README.md       (heroes table)
+  - wiki/Heroes.md  (heroes table)
 
 Ability implementations are left as Instant no-op stubs (castable, no effect).
 
@@ -631,7 +631,7 @@ def main() -> int:
     repo = args.repo_root.resolve()
     heroes_path = repo / "src" / "heroes.rs"
     components_path = repo / "src" / "components.rs"
-    readme_path = repo / "README.md"
+    readme_path = repo / "wiki" / "Heroes.md"
 
     for path in (heroes_path, components_path, readme_path):
         if not path.exists():

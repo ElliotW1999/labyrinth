@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from generator_common import (  # noqa: E402
     ACTION_TEAMS,
+    AURA_TARGET_HINT,
     EFFECT_COLUMNS,
     REACTIVE_NO_CAST_TARGET,
     REACTIVE_NO_TRIGGER_UNIT,
@@ -278,7 +279,7 @@ def effect_context(a: Ability) -> EffectContext:
         kind="ability",
         owner_id=a.id,
         levels=a.max_rank,
-        center_for={"on_cast": on_cast_center},
+        center_for={"on_cast": on_cast_center, "aura": "Caster"},
         team=TARGET_TEAMS[a.target_team],
         has_aoe=bool(a.aoe_radius and any(a.aoe_radius)) or a.projectile in SKILLSHOT_TYPES,
         target_type=a.target_type,
@@ -309,6 +310,8 @@ def effect_context(a: Ability) -> EffectContext:
         ctx.invalid_combo[(trigger, "affected_units")] = f"{trigger} has no affected units; use units_in_radius"
     for trigger in REACTIVE_NO_TRIGGER_UNIT:
         ctx.invalid_combo[(trigger, "trigger_unit")] = f"{trigger} has no trigger unit"
+    for target in ("owner", "caster", "trigger_unit", "affected_units", "attacker"):
+        ctx.invalid_combo[("aura", target)] = AURA_TARGET_HINT
     ctx.invalid_combo[("on_cast", "affected_units")] = "on_cast has no affected units; use units_in_radius"
     ctx.invalid_combo[("on_unit_contact", "affected_units")] = "on_unit_contact reports one unit at a time; use trigger_unit"
     ctx.invalid_combo[("on_impact", "trigger_unit")] = "on_impact fires when the projectile hit no unit; use affected_units or units_in_radius"

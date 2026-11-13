@@ -257,6 +257,9 @@ pub struct StatusEffect {
     /// Fraction (0..1) by which the durations of new hostile debuffs are shortened;
     /// resistances multiply. Read by [`apply_status_effect_events`] when a debuff lands.
     pub status_resistance: f32,
+    /// Fraction (0..1) by which the percent move slows that land on the holder are reduced;
+    /// resistances multiply. Read by [`apply_status`] when a slow lands or refreshes.
+    pub slow_resistance: f32,
     /// Basic attacks (released, hit or miss) this status survives; `0` = not charge-limited.
     /// Decremented by [`StatusChange::ConsumeAttackCharge`]; the status ends at zero.
     pub attack_charges: u32,
@@ -446,6 +449,7 @@ impl StatusEffect {
             damage_reduction: 0.0,
             magic_resist_fraction: 0.0,
             status_resistance: 0.0,
+            slow_resistance: 0.0,
             attack_charges: 0,
             stacks: 0,
             heal_blocked: false,
@@ -547,6 +551,14 @@ impl StatusEffect {
     pub fn status_resistance(id: &'static str, fraction: f32, duration: f32) -> Self {
         Self {
             status_resistance: fraction.clamp(0.0, 1.0),
+            ..Self::buff(id, duration)
+        }
+    }
+
+    /// `fraction` (0..1) of every percent move slow that lands is ignored (a buff).
+    pub fn slow_resistance(id: &'static str, fraction: f32, duration: f32) -> Self {
+        Self {
+            slow_resistance: fraction.clamp(0.0, 1.0),
             ..Self::buff(id, duration)
         }
     }
@@ -1006,6 +1018,16 @@ impl StatusEffects {
             .iter()
             .filter(|e| e.remaining > 0.0 && e.status_resistance > 0.0)
             .map(|e| 1.0 - e.status_resistance.clamp(0.0, 1.0))
+            .product()
+    }
+
+    /// Product of `(1 - r)` over every active slow resistance: the factor applied to the
+    /// strength of a percent move slow as it lands (1.0 = none).
+    pub fn slow_resistance_factor(&self) -> f32 {
+        self.effects
+            .iter()
+            .filter(|e| e.remaining > 0.0 && e.slow_resistance > 0.0)
+            .map(|e| 1.0 - e.slow_resistance.clamp(0.0, 1.0))
             .product()
     }
 
@@ -1583,7 +1605,11 @@ pub fn apply_status(
         // refreshed status is gone, so refreshing never shrinks, removes or compounds it.
         let status_speed: f32 = statuses.effects.iter().map(|e| e.move_speed).sum();
         let base = (stats.move_speed - status_speed).max(0.0);
-        effect.move_speed = (effect.move_bonus_fraction - effect.move_slow_fraction) * base;
+        // Slow resistance scales the slow when it lands; the stored `move_slow_fraction`
+        // stays the raw value, and a speed bonus is never touched.
+        effect.move_speed = (effect.move_bonus_fraction
+            - effect.move_slow_fraction * statuses.slow_resistance_factor())
+            * base;
     }
     add_status_stat_delta(&effect, stats, agility);
     statuses.effects.push(effect);
@@ -2383,6 +2409,99 @@ mod tests {
             "{}",
             stats.move_speed
         );
+    }
+
+    #[test]
+    fn slow_resistance_scales_a_percent_slow() {
+        let mut statuses = StatusEffects::default();
+        let mut stats = CombatStats::simple(10.0, 8.0, 1.0, 2.0, 1.0, 300.0);
+        apply_status(
+            &mut statuses,
+            &mut stats,
+            StatusEffect::slow_resistance("t_slow_resistance", 0.3, 5.0),
+            0.0,
+        );
+        let slow = percent_slow("slow", 50.0, 5.0, stats.move_speed);
+        apply_status(&mut statuses, &mut stats, slow, 0.0);
+        // A 50% slow at 30% resistance is a 35% slow of the 300 base.
+        assert!(
+            (stats.move_speed - 195.0).abs() < 1e-3,
+            "{}",
+            stats.move_speed
+        );
+        assert!((statuses.effects[1].move_slow_fraction - 0.5).abs() < 1e-6);
+        // Refreshing keeps the same result.
+        let slow = percent_slow("slow", 50.0, 5.0, stats.move_speed);
+        apply_status(&mut statuses, &mut stats, slow, 0.0);
+        assert!((stats.move_speed - 195.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn slow_resistances_multiply() {
+        let mut statuses = StatusEffects::default();
+        let mut stats = CombatStats::simple(10.0, 8.0, 1.0, 2.0, 1.0, 300.0);
+        for (id, r) in [("a_slow_resistance", 0.5), ("b_slow_resistance", 0.5)] {
+            apply_status(
+                &mut statuses,
+                &mut stats,
+                StatusEffect::slow_resistance(id, r, 5.0),
+                0.0,
+            );
+        }
+        assert!((statuses.slow_resistance_factor() - 0.25).abs() < 1e-6);
+        let slow = percent_slow("slow", 40.0, 5.0, stats.move_speed);
+        apply_status(&mut statuses, &mut stats, slow, 0.0);
+        // 40% slow, scaled by 0.25: 10% of 300.
+        assert!((stats.move_speed - 270.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn slow_resistance_gained_later_leaves_an_applied_slow_unchanged() {
+        let mut statuses = StatusEffects::default();
+        let mut stats = CombatStats::simple(10.0, 8.0, 1.0, 2.0, 1.0, 300.0);
+        let slow = percent_slow("slow", 50.0, 5.0, stats.move_speed);
+        apply_status(&mut statuses, &mut stats, slow, 0.0);
+        assert!((stats.move_speed - 150.0).abs() < 1e-3);
+        apply_status(
+            &mut statuses,
+            &mut stats,
+            StatusEffect::slow_resistance("t_slow_resistance", 0.3, 5.0),
+            0.0,
+        );
+        assert!((stats.move_speed - 150.0).abs() < 1e-3, "snapshot");
+    }
+
+    #[test]
+    fn slow_resistance_does_not_touch_speed_bonuses() {
+        let mut statuses = StatusEffects::default();
+        let mut stats = CombatStats::simple(10.0, 8.0, 1.0, 2.0, 1.0, 300.0);
+        apply_status(
+            &mut statuses,
+            &mut stats,
+            StatusEffect::slow_resistance("t_slow_resistance", 0.5, 5.0),
+            0.0,
+        );
+        let bonus = percent_bonus("t_move_speed_bonus", 12.0, 5.0, stats.move_speed);
+        apply_status(&mut statuses, &mut stats, bonus, 0.0);
+        assert!(
+            (stats.move_speed - 336.0).abs() < 1e-3,
+            "{}",
+            stats.move_speed
+        );
+    }
+
+    #[test]
+    fn an_expired_slow_resistance_no_longer_counts() {
+        let mut statuses = StatusEffects::default();
+        let mut stats = CombatStats::simple(10.0, 8.0, 1.0, 2.0, 1.0, 300.0);
+        apply_status(
+            &mut statuses,
+            &mut stats,
+            StatusEffect::slow_resistance("t_slow_resistance", 0.5, 5.0),
+            0.0,
+        );
+        statuses.effects[0].remaining = 0.0;
+        assert_eq!(statuses.slow_resistance_factor(), 1.0);
     }
 
     #[test]

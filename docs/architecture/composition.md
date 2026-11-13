@@ -26,7 +26,7 @@ Invariants (I1 to I9 from the composition plan, with I1, I4 and I6 amended and I
 - **I7.** Source-specific rules stay in their own domain. Cooldown completion is reported once, with its source (`CooldownReadyEvent`).
 - **I8.** Generated Rust (`generated.rs`, `item_catalog.rs`) changes only by re-running the generators.
 - **I9.** The invariants of the cleanup plan still hold.
-- **I10 (reaction rule).** `reaction` is set at the root (`trigger.is_reaction()` or a `MotionSource`) and inherited by every derived context, `Chain` hops included. Under a reaction, Damage, ResourceDrain and Status events are stamped `reactive`. Reactive changes never fire damage dealt, damage taken or status triggers. Kill, death and health-below still fire. `PerformAttack` is inert under a reaction.
+- **I10 (reaction rule).** `reaction` is set at the root (`trigger.is_reaction()`, which includes `Aura`, so aura statuses are silent, or a `MotionSource`) and inherited by every derived context, `Chain` hops included. Under a reaction, Damage, ResourceDrain and Status events are stamped `reactive`. Reactive changes never fire damage dealt, damage taken or status triggers. Kill, death and health-below still fire. `PerformAttack` is inert under a reaction.
 - **I11.** Reactive dispatchers read only fact messages and write only `AbilityTriggerEvent`. The one exception is `sync_conditional_statuses`, which writes held statuses the way toggle upkeep does.
 - **I12.** `TriggerContext.magnitude` scales the output of Damage, DrainHealth and Heal (only `Chain` sets it below 1); `TriggerContext.amount` sizes the occurrence that fired the trigger (only `Accumulate` reads it). Neither derives from the other.
 
@@ -107,7 +107,8 @@ A chain hop therefore resolves in the same frame as the trigger that started it 
 | `on_spell_hit` | next frame | Read from `SpellHitEvent`, written by `resolve_ability_triggers` |
 | `on_spell_cast` | same frame | `AbilityCastEvent` is written earlier in the frame |
 | `on_attack`, `on_attack_hit`, `on_use`, `on_cast`, `on_projectile_hit`, `on_impact` | same frame | Emitted by the activation, mechanics and `attack_triggers` systems |
-| `on_cooldown_ready`, `on_interval`, `on_move`, `on_enemy_enter`, `on_enemy_leave` | same frame | Emitted by the dispatchers from this frame's state |
+| `on_cooldown_ready`, `on_interval`, `aura`, `on_move`, `on_enemy_enter`, `on_enemy_leave` | same frame | Emitted by the dispatchers from this frame's state | 
+| `aura` | same frame | `interval_triggers` also pulses `Aura` every `AURA_PULSE_SECS` (0.25 s), due on the first frame the source is held; Break-suppressed ability passives skip it. `Aura` is a reaction trigger, so its statuses are silent |
 | gate output (`on_overload`, `on_chain_hit`, `on_rocket_barrage_hit`, ...) | same frame as the trigger that fed the gate | Derived contexts resolve in the same call |
 | retargeted missile | a target that dies in frame N (`apply_damage_events`) is replaced in `fly_projectiles` in frame N+1; the strike is one `ProjectileHitEvent` as usual | Seeking reads `Health` at the start of the next combat chain |
 | zone tick (`on_shrapnel_tick`, ...) | the frame the tick comes due (`delay + k x interval`), resolved in that frame's `resolve_ability_triggers` | A zone spawned in frame N starts counting in N+1; overdue ticks catch up in one frame, never more than `ticks` in total |

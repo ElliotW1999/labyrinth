@@ -305,6 +305,19 @@ pub enum ItemId {
     SoulRing,
     RecipeSoulRing,
     PowerTreads,
+    PhaseBoots,
+    OblivionStaff,
+    Perseverance,
+    BootsOfTravel,
+    RecipeBootsOfTravel,
+    MoonShard,
+    MaskOfMadness,
+    Buckler,
+    RecipeBuckler,
+    RingOfBasilius,
+    RecipeRingOfBasilius,
+    Headdress,
+    RecipeHeaddress,
     // </item_generator:item_enum>
 }
 
@@ -644,6 +657,19 @@ impl ItemId {
             ItemId::SoulRing,
             ItemId::RecipeSoulRing,
             ItemId::PowerTreads,
+            ItemId::PhaseBoots,
+            ItemId::OblivionStaff,
+            ItemId::Perseverance,
+            ItemId::BootsOfTravel,
+            ItemId::RecipeBootsOfTravel,
+            ItemId::MoonShard,
+            ItemId::MaskOfMadness,
+            ItemId::Buckler,
+            ItemId::RecipeBuckler,
+            ItemId::RingOfBasilius,
+            ItemId::RecipeRingOfBasilius,
+            ItemId::Headdress,
+            ItemId::RecipeHeaddress,
             // </item_generator:item_all>
         ]
     }
@@ -3267,6 +3293,125 @@ mod tests {
     }
 
     #[test]
+    fn support_aura_items_grant_their_own_passive() {
+        let mut shop = Shopper::new();
+        shop.wallet.gold = 5000;
+        let (armor, mana, health) = (
+            shop.stats.armor,
+            shop.mana.regen_per_sec,
+            shop.health.regen_per_sec,
+        );
+        assert!(shop.buy(ItemId::RingOfProtection));
+        assert!(shop.buy(ItemId::RecipeBuckler));
+        assert_eq!(shop.owned(), vec![ItemId::Buckler]);
+        // +1 here, +2 from the aura on the carrier (see the aura tests in abilities).
+        assert_eq!(shop.stats.armor, armor + 1.0);
+        let mut shop = Shopper::new();
+        shop.wallet.gold = 5000;
+        assert!(shop.buy(ItemId::SagesMask));
+        assert!(shop.buy(ItemId::RecipeRingOfBasilius));
+        assert_eq!(shop.owned(), vec![ItemId::RingOfBasilius]);
+        assert_eq!(shop.mana.regen_per_sec, mana + 0.5);
+        let mut shop = Shopper::new();
+        shop.wallet.gold = 5000;
+        assert!(shop.buy(ItemId::RingOfRegen));
+        assert!(shop.buy(ItemId::RecipeHeaddress));
+        assert_eq!(shop.owned(), vec![ItemId::Headdress]);
+        assert_eq!(shop.health.regen_per_sec, health + 0.5);
+    }
+
+    #[test]
+    fn moon_shard_combines_from_two_hyperstones() {
+        let mut shop = Shopper::new();
+        shop.wallet.gold = 5000;
+        let base = shop.stats.attack_speed_flat;
+        assert!(shop.buy(ItemId::Hyperstone));
+        assert!(!shop.owned().contains(&ItemId::MoonShard));
+        assert!(shop.buy(ItemId::Hyperstone));
+        assert_eq!(shop.owned(), vec![ItemId::MoonShard]);
+        assert_eq!(shop.stats.attack_speed_flat, base + 140.0);
+    }
+
+    #[test]
+    fn phase_boots_and_boots_of_travel_combine() {
+        let mut shop = Shopper::new();
+        shop.wallet.gold = 5000;
+        let (armor, speed, damage) = (
+            shop.stats.armor,
+            shop.stats.move_speed,
+            shop.stats.attack_damage,
+        );
+        for item in [
+            ItemId::BootsOfSpeed,
+            ItemId::Chainmail,
+            ItemId::BladesOfAttack,
+        ] {
+            assert!(shop.buy(item));
+        }
+        assert_eq!(shop.owned(), vec![ItemId::PhaseBoots]);
+        assert_eq!(shop.stats.armor, armor + 4.0);
+        assert_eq!(shop.stats.move_speed, speed + 50.0);
+        assert_eq!(shop.stats.attack_damage, damage + 18.0);
+
+        let mut shop = Shopper::new();
+        shop.wallet.gold = 5000;
+        assert!(shop.buy(ItemId::BootsOfSpeed));
+        assert!(shop.buy(ItemId::RecipeBootsOfTravel));
+        assert_eq!(shop.owned(), vec![ItemId::BootsOfTravel]);
+        assert_eq!(shop.stats.move_speed, speed + 110.0);
+        assert_eq!(ItemId::RecipeBootsOfTravel.cost(), 2000);
+        assert_eq!(ItemId::BootsOfTravel.cost(), 2500);
+    }
+
+    #[test]
+    fn boots_of_speed_combine_priority_is_deterministic() {
+        // Phase Boots, Boots of Travel and Power Treads all take Boots of Speed. When the
+        // parts for several are present the first in `ItemId::all()` order is built.
+        let mut shop = Shopper::new();
+        shop.wallet.gold = 9000;
+        // The Boots of Speed come last, so both builds become possible at once.
+        for item in [
+            ItemId::RecipeBootsOfTravel,
+            ItemId::Chainmail,
+            ItemId::BladesOfAttack,
+            ItemId::BootsOfSpeed,
+        ] {
+            assert!(shop.buy(item));
+        }
+        let order = ItemId::all();
+        let position = |id: ItemId| order.iter().position(|&i| i == id).unwrap();
+        assert!(position(ItemId::PhaseBoots) < position(ItemId::BootsOfTravel));
+        assert!(shop.owned().contains(&ItemId::PhaseBoots));
+        assert!(!shop.owned().contains(&ItemId::BootsOfTravel));
+        assert!(shop.owned().contains(&ItemId::RecipeBootsOfTravel));
+    }
+
+    #[test]
+    fn plain_accessories_have_their_listed_passives() {
+        let mut shop = Shopper::new();
+        shop.wallet.gold = 9000;
+        let base_int = shop.attrs.intelligence;
+        let base_as = shop.stats.attack_speed_flat;
+        for item in [
+            ItemId::BlitzKnuckles,
+            ItemId::RobeOfTheMagi,
+            ItemId::SagesMask,
+        ] {
+            assert!(shop.buy(item));
+        }
+        assert_eq!(shop.owned(), vec![ItemId::OblivionStaff]);
+        assert_eq!(shop.attrs.intelligence, base_int + 10.0);
+        assert_eq!(shop.stats.attack_speed_flat, base_as + 35.0);
+
+        let mut shop = Shopper::new();
+        for item in [ItemId::RingOfHealth, ItemId::VoidStone] {
+            assert!(shop.buy(item));
+        }
+        assert_eq!(shop.owned(), vec![ItemId::Perseverance]);
+        assert_eq!(ItemId::Perseverance.definition().short_label, "PV");
+    }
+
+    #[test]
     fn item_types_include_attributes_equipment_misc_and_accessories() {
         assert_eq!(ItemType::Attributes.label(), "Attributes");
         assert_eq!(ItemType::Equipment.label(), "Equipment");
@@ -3599,6 +3744,7 @@ mod tests {
                     crate::abilities::casting::action_channel_end_triggers,
                     resolve_ability_triggers,
                     apply_heal_events,
+                    crate::status::apply_status_effect_events,
                 )
                     .chain(),
             );
@@ -3888,6 +4034,203 @@ mod tests {
             attributes_of(&app, owner),
             (base.0 + 10.0, base.1, base.2 + 10.0)
         );
+    }
+
+    fn status_ids(app: &App, owner: Entity) -> Vec<&'static str> {
+        app.world()
+            .get::<StatusEffects>(owner)
+            .unwrap()
+            .effects
+            .iter()
+            .map(|e| e.id)
+            .collect()
+    }
+
+    fn status_remaining(app: &App, owner: Entity, id: &str) -> Option<f32> {
+        app.world()
+            .get::<StatusEffects>(owner)
+            .unwrap()
+            .effects
+            .iter()
+            .find(|e| e.id == id)
+            .map(|e| e.remaining)
+    }
+
+    #[test]
+    fn phase_boots_active_grants_speed_and_phasing_for_three_seconds() {
+        let mut app = item_app();
+        let owner = spawn_caster(&mut app, 0.0);
+        give(&mut app, owner, ItemId::PhaseBoots);
+        step(&mut app);
+        let base_speed = app.world().get::<CombatStats>(owner).unwrap().move_speed;
+        request(&mut app, owner, 0, CastTarget::None);
+        step(&mut app);
+        step(&mut app);
+        let ids = status_ids(&app, owner);
+        assert!(ids.contains(&"phase_boots_move_speed_bonus"), "{ids:?}");
+        assert!(ids.contains(&"phased"), "{ids:?}");
+        let remaining = status_remaining(&app, owner, "phased").unwrap();
+        assert!(remaining > 2.8 && remaining <= 3.0, "{remaining}");
+        let speed = app.world().get::<CombatStats>(owner).unwrap().move_speed;
+        assert!(
+            (speed - base_speed * 1.1).abs() < 0.01,
+            "{speed} vs {base_speed}"
+        );
+        let item = slot(&app, owner, 0).unwrap();
+        assert!(item.cooldown.remaining > 7.0 && item.cooldown.remaining <= 8.0);
+        assert_eq!(ItemId::PhaseBoots.definition().activation.mana_cost, 0.0);
+    }
+
+    #[test]
+    fn mask_of_madness_active_applies_its_statuses_and_silences_the_owner() {
+        let mut app = item_app();
+        let owner = spawn_caster(&mut app, 100.0);
+        let mut loadout = AbilityLoadout::from_abilities([
+            AbilityId::Shockwave,
+            AbilityId::Bolt,
+            AbilityId::Execute,
+            AbilityId::Bulwark,
+        ]);
+        for slot in &mut loadout.slots {
+            slot.rank = 1;
+        }
+        app.world_mut().entity_mut(owner).insert(loadout);
+        give(&mut app, owner, ItemId::MaskOfMadness);
+        step(&mut app);
+        let before = *app.world().get::<CombatStats>(owner).unwrap();
+        request(&mut app, owner, 0, CastTarget::None);
+        step(&mut app);
+        step(&mut app);
+
+        assert_eq!(app.world().get::<Mana>(owner).unwrap().current, 75.0);
+        let ids = status_ids(&app, owner);
+        for id in [
+            "mask_of_madness_move_speed_bonus",
+            "mask_of_madness_slow_resistance",
+            "mask_of_madness_armor",
+        ] {
+            let left = status_remaining(&app, owner, id)
+                .unwrap_or_else(|| panic!("{id} missing from {ids:?}"));
+            assert!(left > 5.8 && left <= 6.0, "{id}: {left}");
+        }
+        assert_eq!(ids.len(), 5, "{ids:?}");
+        let stats = app.world().get::<CombatStats>(owner).unwrap();
+        assert_eq!(stats.armor, before.armor - 7.0);
+        assert_eq!(stats.attack_speed_flat, before.attack_speed_flat + 110.0);
+        assert!(stats.move_speed > before.move_speed);
+        assert!(
+            app.world()
+                .get::<StatusEffects>(owner)
+                .unwrap()
+                .effects
+                .iter()
+                .any(|e| e.silenced && e.remaining > 5.8)
+        );
+        let item = slot(&app, owner, 0).unwrap();
+        assert!(item.cooldown.remaining > 15.0 && item.cooldown.remaining <= 16.0);
+
+        // The owner is silenced: abilities are rejected.
+        app.world_mut()
+            .write_message(ActivationRequest::ability(owner, 0, CastTarget::None));
+        step(&mut app);
+        assert!(app.world().get::<Activation>(owner).is_none());
+    }
+
+    fn percent_slow_event(
+        target: Entity,
+        percent: f32,
+        speed: f32,
+    ) -> crate::status::StatusEffectEvent {
+        use crate::abilities::definition::{StatusBuildContext, StatusSpec};
+        let slow = StatusSpec::Slow {
+            id: "test_slow",
+            percent: RankValue::fixed(percent),
+        }
+        .build(
+            1,
+            5.0,
+            StatusBuildContext {
+                move_speed: speed,
+                agility: 0.0,
+                source: None,
+                point: Vec3::ZERO,
+                cast_target: None,
+                base_attack_damage: 0.0,
+            },
+        );
+        crate::status::StatusEffectEvent::new(
+            None,
+            target,
+            crate::status::StatusChange::Apply(slow),
+        )
+    }
+
+    #[test]
+    fn mask_of_madness_slow_resistance_reduces_a_slow_taken_during_the_active() {
+        // Without the item: a 50% slow of the base speed.
+        let mut app = item_app();
+        let plain = spawn_caster(&mut app, 100.0);
+        step(&mut app);
+        let base = app.world().get::<CombatStats>(plain).unwrap().move_speed;
+        app.world_mut()
+            .write_message(percent_slow_event(plain, 50.0, base));
+        step(&mut app);
+        let slowed = app.world().get::<CombatStats>(plain).unwrap().move_speed;
+        assert!((slowed - base * 0.5).abs() < 0.01, "{slowed} vs {base}");
+
+        // During the active: +12% speed, and the slow is cut by 30% (35% of the base).
+        let mut app = item_app();
+        let owner = spawn_caster(&mut app, 100.0);
+        give(&mut app, owner, ItemId::MaskOfMadness);
+        step(&mut app);
+        request(&mut app, owner, 0, CastTarget::None);
+        step(&mut app);
+        step(&mut app);
+        let boosted = app.world().get::<CombatStats>(owner).unwrap().move_speed;
+        assert!((boosted - base * 1.12).abs() < 0.01, "{boosted}");
+        app.world_mut()
+            .write_message(percent_slow_event(owner, 50.0, boosted));
+        step(&mut app);
+        let speed = app.world().get::<CombatStats>(owner).unwrap().move_speed;
+        assert!((speed - base * (1.12 - 0.35)).abs() < 0.01, "{speed}");
+    }
+
+    #[test]
+    fn mask_of_madness_does_not_resist_slows_outside_the_active() {
+        let mut app = item_app();
+        let owner = spawn_caster(&mut app, 100.0);
+        give(&mut app, owner, ItemId::MaskOfMadness);
+        step(&mut app);
+        let base = app.world().get::<CombatStats>(owner).unwrap().move_speed;
+        app.world_mut()
+            .write_message(percent_slow_event(owner, 50.0, base));
+        step(&mut app);
+        let speed = app.world().get::<CombatStats>(owner).unwrap().move_speed;
+        assert!((speed - base * 0.5).abs() < 0.01, "{speed}");
+    }
+
+    #[test]
+    fn mask_of_madness_needs_25_mana() {
+        let mut app = item_app();
+        let owner = spawn_caster(&mut app, 10.0);
+        give(&mut app, owner, ItemId::MaskOfMadness);
+        request(&mut app, owner, 0, CastTarget::None);
+        step(&mut app);
+        step(&mut app);
+        assert!(status_ids(&app, owner).is_empty());
+        assert_eq!(slot(&app, owner, 0).unwrap().cooldown.remaining, 0.0);
+    }
+
+    #[test]
+    fn mask_of_madness_builds_from_morbid_mask_and_broadsword() {
+        let mut shop = Shopper::new();
+        shop.wallet.gold = 5000;
+        let damage = shop.stats.attack_damage;
+        assert!(shop.buy(ItemId::MorbidMask));
+        assert!(shop.buy(ItemId::Broadsword));
+        assert_eq!(shop.owned(), vec![ItemId::MaskOfMadness]);
+        assert_eq!(shop.stats.attack_damage, damage + 20.0);
+        assert_eq!(ItemId::MaskOfMadness.cost(), 1900);
     }
 
     #[test]

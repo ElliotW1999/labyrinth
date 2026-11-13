@@ -61,6 +61,7 @@ REACTIVE_PLAIN_TRIGGERS = {
     "on_spell_hit": "OnSpellHit",
     "on_cooldown_ready": "OnCooldownReady",
     "on_move": "OnMove",
+    "aura": "Aura",
 }
 REACTIVE_PARAM_TRIGGERS = {
     "on_health_below": "OnHealthBelow",
@@ -74,7 +75,7 @@ REACTIVE_PARAM_TRIGGERS = {
 REACTIVE_TRIGGER_NAMES = (*REACTIVE_PLAIN_TRIGGERS, *REACTIVE_PARAM_TRIGGERS)
 # Reactive triggers that cannot name a cast target / have no trigger unit at all.
 REACTIVE_NO_CAST_TARGET = tuple(t for t in REACTIVE_TRIGGER_NAMES if t != "on_spell_cast")
-REACTIVE_NO_TRIGGER_UNIT = ("on_cooldown_ready", "on_interval", "on_move", "while")
+REACTIVE_NO_TRIGGER_UNIT = ("on_cooldown_ready", "on_interval", "on_move", "while", "aura")
 # Damage- or status-caused triggers: effects under them run as reactions (they never start
 # attacks and their damage / statuses fire no damage or status triggers).
 REACTION_TRIGGERS = {
@@ -85,6 +86,8 @@ REACTION_TRIGGERS = {
     "on_death",
     "on_status_applied",
     "on_status_removed",
+    # An aura pulses silent statuses: they never fire status triggers.
+    "aura",
 }
 # Effect types that re-fire the row's context under a custom `on_<name>` trigger.
 GATE_TYPES = ("proc", "pseudo_proc", "counter", "accumulate", "require_status")
@@ -128,6 +131,18 @@ ITEM_TRIGGERS = {
     **REACTIVE_PLAIN_TRIGGERS,
     **REACTIVE_PARAM_TRIGGERS,
 }
+
+# `aura` rows (see `AbilityTrigger::Aura`): the generator writes the status duration, which
+# must outlast the runtime pulse period (`AURA_PULSE_SECS` in reactive_triggers.rs, 0.25 s) with
+# margin so a status never lapses between pulses.
+AURA_LINGER = 0.5
+AURA_TARGET_HINT = "aura statuses apply to the units around the owner: use units_in_radius"
+# Statuses an aura cannot carry: they accumulate, hold a pool or per-use state, or bind units, so
+# a pulsed refresh would stack without bound, reset the pool or spam its side effects.
+AURA_FORBIDDEN_STATUSES = (
+    "stacks", "shield", "attack_charges", "mana_shield", "damage_share",
+    "convert_on_death", "taunt_target", "mini_stun", "temporary_mana",
+)
 
 # Triggers that parse but that no game system emits yet; rows using them never fire.
 NOT_EMITTED_TRIGGERS = {
@@ -265,6 +280,8 @@ STATUSES = {
     # `<owner>_attack_charges`. Gate on it with `require_status`.
     "attack_charges": (None, "attack_charges", True),
     "status_resistance": (None, "status_resistance", True),
+    # Percent of every percent move slow that lands on the holder is ignored (amount/value = 1..100).
+    "slow_resistance": (None, "slow_resistance", True),
     "mana_shield": (None, "mana_shield", True),
     # Duplicates `amount` percent of the holder's incoming damage to the unit that applied it.
     "damage_share": (None, "damage_share", True),
@@ -276,7 +293,7 @@ STATUSES = {
 INDEPENDENT_SUFFIX = "independent"
 
 # Statuses whose runtime id is `<owner>_<name>` (the keyword alone is not a status id).
-OWNER_ID_STATUSES = ("damage_reduction", "magic_resistance", "status_resistance", "stacks", "move_speed_bonus", "attack_point", "attack_charges")
+OWNER_ID_STATUSES = ("damage_reduction", "magic_resistance", "status_resistance", "slow_resistance", "stacks", "move_speed_bonus", "attack_point", "attack_charges")
 
 # Triggers whose context carries the cast's unit target (see TriggerContext::cast_target).
 CAST_TARGET_TRIGGERS = ("on_cast", "on_projectile_hit")
@@ -1616,6 +1633,38 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
                 f"the condition checks status {held!r}, which this row holds: it would keep itself on forever",
             )
             return None
+    if e.trigger == "aura":
+        if e.effect_type not in ("apply_status", "stat_modifier"):
+            report.error(
+                row.file,
+                row.line,
+                "effect_type",
+                e.effect_type,
+                "aura pulses short-lived statuses: use apply_status or a timed-stat stat_modifier",
+            )
+            return None
+        if e.target != "units_in_radius":
+            report.error(row.file, row.line, "effect_target", e.target, AURA_TARGET_HINT)
+            return None
+        if row.get("duration"):
+            report.error(row.file, row.line, "duration", row.get("duration"), f"aura statuses last {AURA_LINGER:g}s after each pulse (set by the generator); leave blank")
+            return None
+        if e.effect_type == "stat_modifier":
+            if ":" in row.get("effect_id"):
+                report.error(row.file, row.line, "effect_id", row.get("effect_id"), "aura statuses refresh one status per owner; :independent would stack a new one every pulse")
+                return None
+            if row.get("amount"):
+                report.error(row.file, row.line, "amount", row.get("amount"), "attack charges cannot ride an aura; leave blank")
+                return None
+        elif row.get("effect_id").lower() in AURA_FORBIDDEN_STATUSES:
+            report.error(
+                row.file,
+                row.line,
+                "effect_id",
+                row.get("effect_id"),
+                f"{row.get('effect_id').lower()} cannot be an aura status (it accumulates or holds per-application state)",
+            )
+            return None
     if e.effect_type == "perform_attack" and e.trigger in (ctx.reaction or REACTION_TRIGGERS):
         report.error(
             row.file,
@@ -1730,6 +1779,8 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
             return None
         if e.trigger == "while":
             duration = [0.0]
+        elif e.trigger == "aura":
+            duration = [AURA_LINGER]
         elif e.trigger == "while_toggled":
             if duration:
                 report.error(row.file, row.line, "duration", row.get("duration"), "while_toggled statuses last while toggled; leave blank")
@@ -1922,7 +1973,7 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
                 return None
             spec = f'StatusSpec::AttackCharges {{ id: "{ctx.owner_id}_attack_charges", charges: {rank_value(amount)} }}'
             _unused(e, report, "value")
-        elif effect_id in ("damage_reduction", "magic_resistance", "status_resistance"):
+        elif effect_id in ("damage_reduction", "magic_resistance", "status_resistance", "slow_resistance"):
             percent = amount or value
             if not percent:
                 report.error(row.file, row.line, "amount", "", f"required: {effect_id} percentage (e.g. 80)")
@@ -2121,6 +2172,8 @@ def effect_to_rust(e: EffectRow, ctx: EffectContext, report: Report) -> tuple[st
                     report.error(row.file, row.line, "duration", row.get("duration"), "while_toggled bonuses last while toggled; leave blank")
                     return None
                 duration = [0.0]
+            elif e.trigger == "aura":
+                duration = [AURA_LINGER]
             elif not _require(e, "duration", report, "timed stat modifiers need a duration (only item passives are permanent)"):
                 return None
             if effect_id == "cleave" and any(not 0 <= v <= 1 for v in value):

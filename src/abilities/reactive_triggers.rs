@@ -513,9 +513,23 @@ pub(crate) fn cooldown_triggers(
     }
 }
 
-/// `OnInterval { millis }` for each source the owner holds. Timers run on game time, are
-/// shared by copies of an item, pause while the owner is dead, and fire at most once per
-/// frame (any excess carries to the next frame).
+/// Seconds between pulses of an [`AbilityTrigger::Aura`] entry.
+pub(crate) const AURA_PULSE_SECS: f32 = 0.25;
+
+/// The fixed period of a pulsed trigger, if it is one.
+fn pulse_period(trigger: AbilityTrigger) -> Option<f32> {
+    match trigger {
+        AbilityTrigger::OnInterval { millis } if millis > 0 => Some(millis as f32 / 1000.0),
+        AbilityTrigger::Aura => Some(AURA_PULSE_SECS),
+        _ => None,
+    }
+}
+
+/// `OnInterval { millis }` and `Aura` for each source the owner holds. Timers run on game
+/// time, are shared by copies of an item, pause while the owner is dead, and fire at most
+/// once per frame (any excess carries to the next frame). An aura's timer starts already due,
+/// so its first pulse is on the first frame the source is held. A Break-suppressed ability
+/// passive pulses no aura.
 pub(crate) fn interval_triggers(
     time: Res<Time>,
     defs: Res<AbilityDefinitions>,
@@ -524,6 +538,7 @@ pub(crate) fn interval_triggers(
         &Transform,
         &Team,
         Option<&Health>,
+        Option<&StatusEffects>,
         Option<&Inventory>,
         Option<&AbilityLoadout>,
         &mut TriggerTracking,
@@ -531,18 +546,14 @@ pub(crate) fn interval_triggers(
     mut triggers: MessageWriter<AbilityTriggerEvent>,
 ) {
     let dt = time.delta_secs();
-    for (owner, owner_tf, team, health, inventory, loadout, mut tracking) in &mut owners {
+    for (owner, owner_tf, team, health, statuses, inventory, loadout, mut tracking) in &mut owners {
         if inventory.is_none() && loadout.is_none() {
             continue;
         }
         let alive = health.is_none_or(|health| health.is_alive());
         let mut held: Vec<(EffectSource, u32, AbilityTrigger)> = Vec::new();
         for (source, rank) in owner_sources(inventory, loadout) {
-            for trigger in source_triggers(
-                source,
-                &defs,
-                |t| matches!(t, AbilityTrigger::OnInterval { millis } if millis > 0),
-            ) {
+            for trigger in source_triggers(source, &defs, |t| pulse_period(t).is_some()) {
                 held.push((source, rank, trigger));
             }
         }
@@ -554,15 +565,26 @@ pub(crate) fn interval_triggers(
             continue;
         }
         for (source, rank, trigger) in held {
-            let AbilityTrigger::OnInterval { millis } = trigger else {
+            let Some(period) = pulse_period(trigger) else {
                 continue;
             };
-            let period = millis as f32 / 1000.0;
+            if trigger == AbilityTrigger::Aura
+                && statuses.is_some_and(|s| passive_suppressed(source, &defs, s))
+            {
+                // Break stops the pulses; the timer is kept so the aura resumes at once.
+                continue;
+            }
             let key = (source, trigger);
             let index = match tracking.intervals.iter().position(|(k, _)| *k == key) {
                 Some(index) => index,
                 None => {
-                    tracking.intervals.push((key, 0.0));
+                    // An aura is due immediately; an interval waits its first period.
+                    let start = if trigger == AbilityTrigger::Aura {
+                        period
+                    } else {
+                        0.0
+                    };
+                    tracking.intervals.push((key, start));
                     tracking.intervals.len() - 1
                 }
             };

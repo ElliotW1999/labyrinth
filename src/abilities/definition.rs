@@ -192,6 +192,12 @@ pub enum AbilityTrigger {
     OnInterval {
         millis: u32,
     },
+    /// A pulsed aura (`AURA_PULSE_SECS`): the first pulse fires on the first frame the owner
+    /// holds the source, then every pulse period while the owner lives. Entries refresh
+    /// short-lived, silent (reactive) statuses on the units in their radius; the statuses lapse
+    /// `AURA_LINGER` after the last pulse. Items and abilities share it; an ability's aura is
+    /// switched off by Break, an item's is not.
+    Aura,
     /// The owner finished casting an ability. Fans out to every other source the owner
     /// holds (never the cast ability itself); item uses are not spell casts.
     OnSpellCast,
@@ -285,6 +291,7 @@ impl AbilityTrigger {
                 | Self::OnStatusRemoved(_)
                 | Self::OnKill
                 | Self::OnDeath
+                | Self::Aura
         )
     }
 }
@@ -548,6 +555,13 @@ pub enum StatusSpec {
     /// `percent` (0-100) is cut from the duration of hostile debuffs that land on the holder
     /// while it lasts (a buff). `id` is `<owner>_status_resistance`; resistances multiply.
     StatusResistance {
+        id: &'static str,
+        percent: RankValue,
+    },
+    /// `percent` (0-100) of every percent move slow that lands on the holder is ignored while
+    /// it lasts (a buff). `id` is `<owner>_slow_resistance`; resistances multiply. Slows that
+    /// are already applied are unchanged.
+    SlowResistance {
         id: &'static str,
         percent: RankValue,
     },
@@ -836,6 +850,11 @@ impl StatusSpec {
                 ..StatusEffect::buff(id, duration)
             },
             StatusSpec::StatusResistance { id, percent } => StatusEffect::status_resistance(
+                id,
+                (percent.at(rank) / 100.0).clamp(0.0, 1.0),
+                duration,
+            ),
+            StatusSpec::SlowResistance { id, percent } => StatusEffect::slow_resistance(
                 id,
                 (percent.at(rank) / 100.0).clamp(0.0, 1.0),
                 duration,
