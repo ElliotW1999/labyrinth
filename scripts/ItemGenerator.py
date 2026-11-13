@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import math
 import re
 import sys
 from dataclasses import dataclass, field
@@ -227,6 +228,27 @@ def short_label_from_name(name: str) -> str:
     if len(parts) == 1:
         return parts[0][:2].upper()
     return "".join(p[0] for p in parts[:3]).upper()
+
+
+# Constants below 1 that clippy's `approx_constant` lint recognises from a 3-digit literal
+# (`0.318` is FRAC_1_PI, ...). A generated colour component equal to one would fail
+# `cargo clippy`, so `clippy_safe` nudges it by 0.001.
+_CLIPPY_CONSTANTS = (
+    math.log10(math.e), math.log(2), 1 / math.pi, 2 / math.pi, math.pi / 4, 1 / math.sqrt(2),
+    math.pi / 6, math.pi / 8, math.pi / 3, math.log(2, 10), math.log2(math.e) - 1, math.log(10) - 2,
+    2 / math.sqrt(math.pi) - 1, math.sqrt(2) - 1,
+)
+
+
+def clippy_safe(value: float) -> float:
+    """`value` nudged when its (at most 3-digit) literal matches a std constant clippy flags."""
+    rounded = round(value, 3)
+    if abs(value - rounded) > 1e-9:
+        return value  # a longer literal does not match a constant's 3-digit prefix
+    for constant in _CLIPPY_CONSTANTS:
+        if rounded in (math.floor(constant * 1000) / 1000, round(constant, 3)):
+            return round(rounded + 0.001, 3)
+    return value
 
 
 def color_from_name(name: str) -> tuple[float, float, float]:
@@ -435,7 +457,7 @@ def item_static(item: Item) -> str:
         f"    activation: {activation_rust(item.activation)},",
         f"    attribute_toggle: {f'Some({f32(item.attribute_toggle)})' if item.attribute_toggle is not None else 'None'},",
         f"    components: &[{components}],",
-        f"    color: [{f32(r)}, {f32(g)}, {f32(b)}],",
+        f"    color: [{f32(clippy_safe(r))}, {f32(clippy_safe(g))}, {f32(clippy_safe(b))}],",
         f"    description: {rust_str(item.description)},",
         "    effects: &[",
     ]

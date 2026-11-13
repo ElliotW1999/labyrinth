@@ -2841,7 +2841,7 @@ static MASK_OF_MADNESS: ItemDefinition = ItemDefinition {
     },
     attribute_toggle: None,
     components: &[&[ItemId::MorbidMask], &[ItemId::Broadsword]],
-    color: [0.848, 0.603, 0.318],
+    color: [0.848, 0.603, 0.319],
     description: "+20 Attack Damage, +18% Lifesteal. Active (6s): +12% Move Speed, +110 Attack Speed, 30% slow resistance, -7 Armor, silenced",
     effects: &[
         AbilityEffectEntry {
@@ -2964,7 +2964,7 @@ static BUCKLER: ItemDefinition = ItemDefinition {
     activation: ItemActivation::INSTANT,
     attribute_toggle: None,
     components: &[&[ItemId::RingOfProtection], &[ItemId::RecipeBuckler]],
-    color: [0.478, 0.434, 0.629],
+    color: [0.478, 0.435, 0.629],
     description: "+1 Armor. Aura: +2 Armor to allies within 1200",
     effects: &[
         AbilityEffectEntry {

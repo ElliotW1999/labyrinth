@@ -1744,6 +1744,24 @@ class StatusResistanceStatusTests(unittest.TestCase):
         self.assertIn("<owner>_status_resistance", report.errors[0].message)
 
 
+class ClippySafeColorTests(unittest.TestCase):
+    def test_colour_components_never_match_a_clippy_constant(self) -> None:
+        from ItemGenerator import clippy_safe
+
+        self.assertEqual(clippy_safe(0.318), 0.319)  # FRAC_1_PI
+        self.assertEqual(clippy_safe(0.707), 0.708)  # FRAC_1_SQRT_2
+        self.assertEqual(clippy_safe(0.693), 0.694)  # LN_2
+        self.assertEqual(clippy_safe(0.5), 0.5)
+
+    def test_generated_item_colours_are_clean(self) -> None:
+        text = (Path(__file__).resolve().parent.parent / "src" / "item_catalog.rs").read_text()
+        bad = {"0.318", "0.707", "0.693", "0.434", "0.636", "0.785"}
+        for line in text.splitlines():
+            if line.strip().startswith("color: ["):
+                parts = {p.strip() for p in line.split("[")[1].split("]")[0].split(",")}
+                self.assertFalse(parts & bad, line)
+
+
 class SlowResistanceStatusTests(unittest.TestCase):
     def test_slow_resistance_status(self) -> None:
         report = Report()
