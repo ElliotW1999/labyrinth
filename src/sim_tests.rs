@@ -863,6 +863,215 @@ mod story {
         );
     }
 
+    // --- Verification regressions (tester) ---
+
+    fn bottle_charges(app: &App, hero: Entity) -> Option<u32> {
+        app.world().get::<Inventory>(hero).unwrap().slots[BOTTLE_SLOT]
+            .unwrap()
+            .cooldown
+            .charges
+    }
+
+    fn set_bottle_charges(app: &mut App, hero: Entity, charges: u32) {
+        app.world_mut().get_mut::<Inventory>(hero).unwrap().slots[BOTTLE_SLOT]
+            .as_mut()
+            .unwrap()
+            .cooldown
+            .charges = Some(charges);
+    }
+
+    #[test]
+    fn bottle_refills_only_when_a_room_completes_and_never_above_max() {
+        let mut app = story_app();
+        let hero = hero(&mut app);
+
+        // The safe camp never refills: it has no completion.
+        set_bottle_charges(&mut app, hero, 0);
+        run(&mut app, 30);
+        assert_eq!(bottle_charges(&app, hero), Some(0), "safe room: no refill");
+
+        // Entering a hostile room does not refill either; clearing it does.
+        enter_room(&mut app, RoomId::Skirmish);
+        run(&mut app, 30);
+        assert_eq!(phase(&app), StoryPhase::Active);
+        assert_eq!(
+            bottle_charges(&app, hero),
+            Some(0),
+            "active room: no refill"
+        );
+        set_bottle_charges(&mut app, hero, 1);
+        kill_hostiles(&mut app);
+        run(&mut app, 5);
+        assert_eq!(bottle_charges(&app, hero), Some(3));
+
+        // A full bottle stays at the maximum through the next completion.
+        enter_room(&mut app, RoomId::Skirmish);
+        kill_hostiles(&mut app);
+        run(&mut app, 5);
+        assert_eq!(bottle_charges(&app, hero), Some(3), "never above max");
+    }
+
+    #[test]
+    fn hero_dying_on_the_clearing_frame_still_completes_once_and_costs_a_life() {
+        let mut app = story_app();
+        let hero = hero(&mut app);
+        enter_room(&mut app, RoomId::Skirmish);
+        set_bottle_charges(&mut app, hero, 0);
+        let before = gold(&app, hero);
+        kill_hostiles(&mut app);
+        app.world_mut().get_mut::<Health>(hero).unwrap().current = 0.0;
+        let mut completed = 0;
+        for _ in 0..10 {
+            app.update();
+            completed += completions(&app);
+        }
+        assert_eq!(completed, 1, "exactly one completion");
+        assert_eq!(app.world().get::<HeroLives>(hero).unwrap().remaining, 3);
+        assert!(app.world().get::<Downed>(hero).is_some());
+        assert_eq!(phase(&app), StoryPhase::Cleared);
+        assert_eq!(bottle_charges(&app, hero), Some(3));
+        // Six Skirmish creeps pay 35 gold each; the room reward is 400, paid once.
+        assert_eq!(gold(&app, hero), before + 6 * 35 + 400, "reward paid once");
+    }
+
+    #[test]
+    fn losing_the_last_life_on_the_clearing_frame_is_game_over_without_a_completion() {
+        let mut app = story_app();
+        let hero = hero(&mut app);
+        enter_room(&mut app, RoomId::Skirmish);
+        app.world_mut()
+            .get_mut::<HeroLives>(hero)
+            .unwrap()
+            .remaining = 1;
+        let before = gold(&app, hero);
+        kill_hostiles(&mut app);
+        app.world_mut().get_mut::<Health>(hero).unwrap().current = 0.0;
+        let mut completed = 0;
+        for _ in 0..10 {
+            app.update();
+            completed += completions(&app);
+        }
+        assert_eq!(phase(&app), StoryPhase::GameOver);
+        assert_eq!(completed, 0);
+        assert_eq!(
+            gold(&app, hero),
+            before + 6 * 35,
+            "bounties only, no room reward"
+        );
+        assert!(
+            pads(&mut app).iter().all(|(_, armed, _)| !armed),
+            "no exits after the run ended"
+        );
+    }
+
+    #[test]
+    fn victory_is_not_overwritten_by_a_later_death() {
+        let mut app = story_app();
+        let hero = hero(&mut app);
+        app.world_mut().resource_mut::<StoryRun>().depth = FINAL_DEPTH - 1;
+        enter_room(&mut app, RoomId::WarlordLair);
+        kill_hostiles(&mut app);
+        run(&mut app, 5);
+        assert_eq!(phase(&app), StoryPhase::Victory);
+        app.world_mut()
+            .get_mut::<HeroLives>(hero)
+            .unwrap()
+            .remaining = 1;
+        app.world_mut().get_mut::<Health>(hero).unwrap().current = 0.0;
+        run(&mut app, 5);
+        assert_eq!(phase(&app), StoryPhase::Victory);
+    }
+
+    #[test]
+    fn a_downed_hero_on_an_armed_exit_pad_does_not_take_it() {
+        let mut app = story_app();
+        let hero = hero(&mut app);
+        let pad = pads(&mut app)[0].2;
+        put_at(&mut app, hero, pad.xz());
+        app.world_mut().get_mut::<Health>(hero).unwrap().current = 0.0;
+        // The hero is killed before the dwell time elapses and stays dead for 5 s.
+        run(&mut app, 3 * 60);
+        assert!(app.world().get::<Downed>(hero).is_some());
+        assert_eq!(phase(&app), StoryPhase::Cleared, "a corpse takes no exit");
+        assert_eq!(app.world().resource::<StoryRun>().depth, 0);
+    }
+
+    #[test]
+    fn leaving_a_room_removes_its_pickups_and_keeps_heroes_and_their_bars() {
+        use crate::components::HealthBar;
+        let mut app = story_app();
+        let hero = hero(&mut app);
+        enter_room(&mut app, RoomId::Ambush);
+        kill_hostiles(&mut app);
+        run(&mut app, 5);
+        assert_eq!(
+            count::<ItemPickup>(&mut app),
+            1,
+            "the reward lies in the room"
+        );
+        let bar = app
+            .world_mut()
+            .spawn((HealthBar { owner: hero }, Transform::default()))
+            .id();
+
+        enter_room(&mut app, RoomId::Skirmish);
+        assert_eq!(count::<ItemPickup>(&mut app), 0, "no stale pickup");
+        assert!(app.world().get_entity(hero).is_ok(), "hero survives");
+        assert!(app.world().get_entity(bar).is_ok(), "health bar survives");
+        assert_eq!(count::<ExitPad>(&mut app), 2, "exactly one pad pair");
+        assert_eq!(count::<Ground>(&mut app), 1);
+    }
+
+    #[test]
+    fn hostiles_do_not_chase_or_target_a_downed_hero() {
+        let mut app = story_app();
+        let hero = hero(&mut app);
+        enter_room(&mut app, RoomId::Skirmish);
+        // Down the hero right beside the hostiles (inside their aggro radius).
+        put_at(&mut app, hero, Vec2::new(0.0, -300.0));
+        app.world_mut().get_mut::<Health>(hero).unwrap().current = 0.0;
+        run(&mut app, 3);
+        assert!(app.world().get::<Downed>(hero).is_some());
+        run(&mut app, 60);
+        let chasing = app
+            .world_mut()
+            .query_filtered::<&AttackTarget, With<RoomHostile>>()
+            .iter(app.world())
+            .filter(|target| target.0 == hero)
+            .count();
+        assert_eq!(chasing, 0, "no hostile attacks the corpse");
+    }
+
+    #[test]
+    fn a_pre_death_damage_over_time_cannot_kill_the_respawned_hero() {
+        use crate::status::{StatusChange, StatusEffect, StatusEffectEvent};
+        let mut app = story_app();
+        let hero = hero(&mut app);
+        let mut dot = StatusEffect::debuff("verify_dot", 30.0);
+        dot.dot_interval = 1.0;
+        dot.dot_timer = 1.0;
+        dot.dot_per_tick = 100_000.0;
+        dot.dot_ticks_left = 30;
+        app.world_mut()
+            .write_message(StatusEffectEvent::new(None, hero, StatusChange::Apply(dot)));
+        run(&mut app, 3 * 60);
+        assert!(
+            app.world().get::<Downed>(hero).is_some(),
+            "the DoT killed it"
+        );
+        assert_eq!(app.world().get::<HeroLives>(hero).unwrap().remaining, 3);
+        run(&mut app, 3 * 60);
+        assert!(app.world().get::<Downed>(hero).is_none(), "respawned");
+        run(&mut app, 4 * 60);
+        let health = app.world().get::<Health>(hero).unwrap();
+        assert!(health.is_alive(), "the DoT must not outlive the death");
+        assert_eq!(
+            app.world().get::<HeroLives>(hero).unwrap().remaining,
+            3,
+            "no second life lost to the old DoT"
+        );
+    }
+
     #[test]
     fn classic_matches_never_grant_story_gear() {
         let mut app = match_app();
