@@ -1693,6 +1693,97 @@ class AttributeToggleItemTests(unittest.TestCase):
             )
 
 
+class ItemSlotTests(unittest.TestCase):
+    ITEM_HEADER = "id,name,item_type,cost,sell_value,tier,rarity,stackable,max_stack,consumable,max_charges,description,cooldown,components,slot\n"
+    EFFECT_HEADER = "item_id,effect_index,trigger,effect_target,effect_type,effect_id,value,damage_type,duration,radius,amount,scaling_type,scaling_value\n"
+    BOTTLE_USE = "bottle,0,on_use,owner,heal,health,120,,,,,,\n"
+    PLAIN = "belt,Belt,attributes,450,225,1,common,false,,false,,,,,\n"
+
+    def load(self, rows: str, effect_rows: str = ""):
+        import tempfile
+
+        import ItemGenerator
+
+        with tempfile.TemporaryDirectory() as tmp:
+            items = Path(tmp) / "items.csv"
+            effects = Path(tmp) / "effects.csv"
+            items.write_text(self.ITEM_HEADER + rows, encoding="utf-8")
+            effects.write_text(self.EFFECT_HEADER + effect_rows, encoding="utf-8")
+            loaded, report = ItemGenerator.load(items, effects, set())
+        return ItemGenerator, loaded, report
+
+    def messages(self, report) -> list[str]:
+        return [e.message for e in report.errors]
+
+    def test_slot_is_emitted_and_defaults_to_backpack(self) -> None:
+        module, items, report = self.load(
+            self.PLAIN + "ring,Ring,artifacts,0,0,1,uncommon,false,,false,,+3 Int,,,neutral\n",
+            "ring,0,passive,owner,stat_modifier,intelligence,3,,,,,,\n",
+        )
+        self.assertFalse(report.errors, self.messages(report))
+        by_id = {i.id: i for i in items}
+        self.assertIn("slot: ItemSlot::Backpack,", module.item_static(by_id["belt"]))
+        self.assertIn("slot: ItemSlot::Neutral,", module.item_static(by_id["ring"]))
+
+    def test_bottle_with_charges_and_use_is_valid_and_charges_do_not_warn(self) -> None:
+        module, items, report = self.load(
+            "bottle,Bottle,utility,0,0,1,common,false,,false,3,Sip,0.5,,bottle\n", self.BOTTLE_USE
+        )
+        self.assertFalse(report.errors, self.messages(report))
+        self.assertFalse([w for w in report.warnings if w.field == "max_charges"])
+        rendered = module.item_static(items[0])
+        self.assertIn("slot: ItemSlot::Bottle,", rendered)
+        self.assertIn("max_charges: Some(3),", rendered)
+
+    def test_backpack_charges_on_a_non_consumable_still_warn(self) -> None:
+        _, _, report = self.load("belt,Belt,attributes,450,225,1,common,false,,false,3,,,,\n")
+        self.assertTrue(any(w.field == "max_charges" for w in report.warnings))
+
+    def test_neutral_with_charges_warns_because_nothing_refills_it(self) -> None:
+        _, _, report = self.load("ring,Ring,artifacts,0,0,1,uncommon,false,,false,3,,,,neutral\n")
+        self.assertTrue(any(w.field == "max_charges" for w in report.warnings))
+
+    def test_neutral_consumable_is_an_error(self) -> None:
+        _, _, report = self.load(
+            "ring,Ring,artifacts,0,0,1,uncommon,false,,true,,,5,,neutral\n",
+            "ring,0,on_use,owner,heal,health,50,,,,,,\n",
+        )
+        self.assertTrue(any("neutral items cannot be consumable" in m for m in self.messages(report)), self.messages(report))
+
+    def test_neutral_and_bottle_cannot_stack_or_have_recipes(self) -> None:
+        _, _, report = self.load(
+            self.PLAIN + "ring,Ring,artifacts,0,0,1,uncommon,true,5,false,,,,belt,neutral\n"
+        )
+        messages = self.messages(report)
+        self.assertTrue(any("cannot be stackable" in m for m in messages), messages)
+        self.assertTrue(any("cannot have a recipe" in m for m in messages), messages)
+
+    def test_bottle_needs_max_charges_and_an_on_use_effect(self) -> None:
+        _, _, report = self.load("bottle,Bottle,utility,0,0,1,common,false,,false,,Sip,0.5,,bottle\n", self.BOTTLE_USE)
+        self.assertTrue(any("needs max_charges" in m for m in self.messages(report)), self.messages(report))
+        _, _, report = self.load("bottle,Bottle,utility,0,0,1,common,false,,false,3,Sip,0.5,,bottle\n")
+        self.assertTrue(any("needs on_use" in m for m in self.messages(report)), self.messages(report))
+
+    def test_only_one_bottle_may_exist(self) -> None:
+        _, _, report = self.load(
+            "bottle,Bottle,utility,0,0,1,common,false,,false,3,Sip,0.5,,bottle\n"
+            "flask,Flask,utility,0,0,1,common,false,,false,3,Sip,0.5,,bottle\n",
+            self.BOTTLE_USE + "flask,0,on_use,owner,heal,health,120,,,,,,\n",
+        )
+        self.assertTrue(any("only one bottle" in m for m in self.messages(report)), self.messages(report))
+
+    def test_neutral_listed_as_a_component_is_an_error(self) -> None:
+        _, _, report = self.load(
+            "ring,Ring,artifacts,0,0,1,uncommon,false,,false,,,,,neutral\n"
+            "result,Result,accessories,1000,500,1,common,false,,false,,,,ring,\n"
+        )
+        self.assertTrue(any("neutral items cannot be recipe components" in m for m in self.messages(report)), self.messages(report))
+
+    def test_unknown_slot_is_an_error(self) -> None:
+        _, _, report = self.load("belt,Belt,attributes,450,225,1,common,false,,false,,,,,hat\n")
+        self.assertTrue(any("unknown value" in m for m in self.messages(report)), self.messages(report))
+
+
 class DamageReductionStatusTests(unittest.TestCase):
     def test_generated_damage_reduction_carries_a_per_owner_id(self) -> None:
         report = Report()

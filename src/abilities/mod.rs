@@ -216,7 +216,7 @@ fn tick_ability_cooldowns(
     }
 }
 
-fn regen_mana(
+pub(crate) fn regen_mana(
     time: Res<Time>,
     mut query: Query<(&mut Mana, Option<&Health>, Option<&StatusEffects>)>,
 ) {
@@ -907,6 +907,7 @@ mod tests {
             name: "Parity Damage",
             short_label: "PD",
             item_type: ItemType::Miscellaneous,
+            slot: crate::items::ItemSlot::Backpack,
             cost: 1,
             sell_value: 0,
             tier: 1,
@@ -950,6 +951,7 @@ mod tests {
             name: "Attack Heal",
             short_label: "AH",
             item_type: ItemType::Miscellaneous,
+            slot: crate::items::ItemSlot::Backpack,
             cost: 1,
             sell_value: 0,
             tier: 1,
@@ -4174,6 +4176,7 @@ mod tests {
             name: "Parity Stun",
             short_label: "PS",
             item_type: ItemType::Miscellaneous,
+            slot: crate::items::ItemSlot::Backpack,
             cost: 1,
             sell_value: 0,
             tier: 1,
@@ -4924,6 +4927,7 @@ mod tests {
             name: "Parity Blink",
             short_label: "PB",
             item_type: ItemType::Miscellaneous,
+            slot: crate::items::ItemSlot::Backpack,
             cost: 1,
             sell_value: 0,
             tier: 1,
@@ -10012,6 +10016,7 @@ mod tests {
             name: "Parity Zone",
             short_label: "PZ",
             item_type: ItemType::Miscellaneous,
+            slot: crate::items::ItemSlot::Backpack,
             cost: 1,
             sell_value: 0,
             tier: 1,
@@ -10346,6 +10351,7 @@ mod tests {
             name: "Parity Orbit",
             short_label: "PO",
             item_type: ItemType::Miscellaneous,
+            slot: crate::items::ItemSlot::Backpack,
             cost: 1,
             sell_value: 0,
             tier: 1,

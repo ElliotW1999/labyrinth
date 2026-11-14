@@ -801,6 +801,23 @@ mod tests {
     use crate::components::AbilityId;
 
     #[test]
+    fn neutral_passives_and_triggers_count_from_neutral_slot() {
+        let mut inventory = Inventory::empty();
+        inventory.slots[crate::items::NEUTRAL_SLOT] =
+            Some(crate::items::ItemInstance::new(ItemId::ArcaneRing));
+        inventory.slots[crate::items::BOTTLE_SLOT] =
+            Some(crate::items::ItemInstance::new(ItemId::Bottle));
+        let sources: Vec<_> = owner_sources(Some(&inventory), None).collect();
+        assert_eq!(
+            sources,
+            vec![
+                (EffectSource::Item(ItemId::ArcaneRing), 1),
+                (EffectSource::Item(ItemId::Bottle), 1),
+            ]
+        );
+    }
+
+    #[test]
     fn owner_sources_dedups_items_then_learned_abilities() {
         let mut inventory = Inventory::empty();
         for id in [

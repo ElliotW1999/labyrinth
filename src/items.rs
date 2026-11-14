@@ -357,7 +357,20 @@ pub enum ItemId {
     RecipeRingOfBasilius,
     Headdress,
     RecipeHeaddress,
+    Bottle,
+    ArcaneRing,
+    BroomHandle,
+    FadedBroach,
     // </item_generator:item_enum>
+}
+
+/// Which slot family an item belongs to. Backpack items are bought in the shop; neutral
+/// items (V) come from room rewards; the bottle (B) is granted by Story Mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemSlot {
+    Backpack,
+    Neutral,
+    Bottle,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -474,6 +487,9 @@ pub struct ItemDefinition {
     pub name: &'static str,
     pub short_label: &'static str,
     pub item_type: ItemType,
+    /// Which inventory slot family the item lives in: bought into the backpack, or the
+    /// neutral / bottle slot (never in the shop).
+    pub slot: ItemSlot,
     pub cost: u32,
     pub sell_value: u32,
     pub tier: u32,
@@ -709,6 +725,10 @@ impl ItemId {
             ItemId::RecipeRingOfBasilius,
             ItemId::Headdress,
             ItemId::RecipeHeaddress,
+            ItemId::Bottle,
+            ItemId::ArcaneRing,
+            ItemId::BroomHandle,
+            ItemId::FadedBroach,
             // </item_generator:item_all>
         ]
     }
@@ -721,9 +741,13 @@ impl ItemId {
         crate::item_catalog::definition(self)
     }
 
-    /// Items shown in the default shop grid (recipes are inspect-only via builds).
+    /// Items shown in the default shop grid: backpack items only (recipes are
+    /// inspect-only via builds; neutral and bottle items are never sold).
     pub fn shop_listed() -> impl Iterator<Item = ItemId> {
-        Self::all().iter().copied().filter(|id| !id.is_recipe())
+        Self::all()
+            .iter()
+            .copied()
+            .filter(|id| !id.is_recipe() && id.definition().slot == ItemSlot::Backpack)
     }
 
     /// Recipe scraps used in builds — hidden from the default shop list.
@@ -1258,6 +1282,35 @@ pub fn place_in_slot(
     apply_passives(id.passives(), health, mana, stats, attrs);
     inv.slots[slot] = Some(ItemInstance::new(id));
     true
+}
+
+/// Why [`equip_neutral`] refused an item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EquipError {
+    /// Only items with `slot=neutral` fit the neutral slot.
+    NotNeutral,
+}
+
+/// Put `instance` into the neutral slot, swapping out the previous neutral item. The old
+/// item's passives are removed and the new item's applied; the previous instance is
+/// returned so the caller can drop it back into the world. Nothing changes on error.
+pub fn equip_neutral(
+    inv: &mut Inventory,
+    health: &mut Health,
+    mana: &mut Mana,
+    stats: &mut CombatStats,
+    attrs: &mut HeroAttributes,
+    instance: ItemInstance,
+) -> Result<Option<ItemInstance>, EquipError> {
+    if instance.id.definition().slot != ItemSlot::Neutral {
+        return Err(EquipError::NotNeutral);
+    }
+    let previous = inv.slots[NEUTRAL_SLOT].replace(instance);
+    if let Some(previous) = previous {
+        remove_passives(previous.id.passives(), 1, health, mana, stats, attrs);
+    }
+    apply_passives(instance.id.passives(), health, mana, stats, attrs);
+    Ok(previous)
 }
 
 /// Restore the item in `slot` to its `max_charges`. The only way a non-consumable's
@@ -2687,6 +2740,125 @@ mod tests {
     }
 
     #[test]
+    fn equip_neutral_applies_passives_and_returns_previous() {
+        let (_, mut inv, mut health, mut mana, mut stats, mut attrs) = fresh_hero();
+        let base_armor = stats.armor;
+        let base_damage = stats.attack_damage;
+        let base_mana = mana.max;
+        let base_speed = stats.move_speed;
+
+        let broom = ItemInstance::new(ItemId::BroomHandle);
+        let previous = equip_neutral(
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            &mut attrs,
+            broom,
+        );
+        assert!(matches!(previous, Ok(None)));
+        assert_eq!(stats.armor, base_armor + 4.0);
+        assert_eq!(stats.attack_damage, base_damage + 12.0);
+        assert_eq!(inv.slots[NEUTRAL_SLOT].unwrap().instance, broom.instance);
+
+        let broach = ItemInstance::new(ItemId::FadedBroach);
+        let previous = equip_neutral(
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            &mut attrs,
+            broach,
+        )
+        .unwrap()
+        .expect("the broom handle comes back");
+        assert_eq!(previous.instance, broom.instance);
+        assert_eq!(stats.armor, base_armor, "old passives are removed exactly");
+        assert_eq!(stats.attack_damage, base_damage);
+        assert_eq!(mana.max, base_mana + 150.0);
+        assert_eq!(stats.move_speed, base_speed + 20.0);
+        assert!(inv.first_empty() == Some(0), "the backpack is untouched");
+    }
+
+    #[test]
+    fn equip_neutral_rejects_backpack_items() {
+        let (_, mut inv, mut health, mut mana, mut stats, mut attrs) = fresh_hero();
+        let armor = stats.armor;
+        let result = equip_neutral(
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            &mut attrs,
+            ItemInstance::new(ItemId::IronBracer),
+        );
+        assert!(matches!(result, Err(EquipError::NotNeutral)));
+        assert!(inv.slots[NEUTRAL_SLOT].is_none());
+        assert_eq!(stats.armor, armor);
+        let bottle = equip_neutral(
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut stats,
+            &mut attrs,
+            ItemInstance::new(ItemId::Bottle),
+        );
+        assert!(matches!(bottle, Err(EquipError::NotNeutral)));
+    }
+
+    #[test]
+    fn shop_grid_lists_only_backpack_items() {
+        let listed: Vec<ItemId> = ItemId::shop_listed().collect();
+        assert!(listed.contains(&ItemId::IronBracer));
+        for id in [
+            ItemId::Bottle,
+            ItemId::ArcaneRing,
+            ItemId::BroomHandle,
+            ItemId::FadedBroach,
+        ] {
+            assert!(!listed.contains(&id), "{id:?} must not be sold");
+        }
+        assert!(
+            listed
+                .iter()
+                .all(|id| id.definition().slot == ItemSlot::Backpack)
+        );
+    }
+
+    #[test]
+    fn neutral_and_bottle_items_are_plain_slot_items() {
+        for id in ItemId::all() {
+            let def = id.definition();
+            if def.slot == ItemSlot::Backpack {
+                continue;
+            }
+            assert_eq!(def.max_stack, 1, "{id:?}");
+            assert!(!def.consumable, "{id:?}");
+            assert!(def.components.is_empty(), "{id:?}");
+            for other in ItemId::all() {
+                assert!(
+                    other
+                        .definition()
+                        .components
+                        .iter()
+                        .all(|slot| !slot.contains(id)),
+                    "{id:?} is a component of {other:?}"
+                );
+            }
+        }
+        let bottle = ItemId::Bottle.definition();
+        assert_eq!(bottle.slot, ItemSlot::Bottle);
+        assert_eq!(bottle.max_charges, Some(3));
+        assert_eq!(
+            ItemId::all()
+                .iter()
+                .filter(|id| id.definition().slot == ItemSlot::Bottle)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn v_and_b_hotkeys_map_to_neutral_and_bottle_slots() {
         use crate::actions::ActionSource;
         assert_eq!(ItemId::inventory_hotkey(NEUTRAL_SLOT), Some("V"));
@@ -4066,6 +4238,7 @@ mod tests {
             name: "Channeled Test",
             short_label: "CH",
             item_type: ItemType::Miscellaneous,
+            slot: ItemSlot::Backpack,
             cost: 1,
             sell_value: 0,
             tier: 1,
@@ -4097,6 +4270,7 @@ mod tests {
             name: "Test Active",
             short_label: "TA",
             item_type: ItemType::Miscellaneous,
+            slot: ItemSlot::Backpack,
             cost: 1,
             sell_value: 0,
             tier: 1,
@@ -4583,6 +4757,148 @@ mod tests {
             .iter(app.world())
             .filter(|name| name.as_str() == "Item Heal FX")
             .count()
+    }
+
+    /// `item_app` plus the systems that tick statuses and regenerate mana, so a timed
+    /// heal and a timed mana regeneration play out.
+    fn bottle_app() -> App {
+        let mut app = item_app();
+        app.add_systems(
+            Update,
+            (
+                crate::abilities::effects::apply_mana_restore_events,
+                crate::status::tick_status_effects,
+                crate::abilities::regen_mana,
+            )
+                .chain()
+                .after(crate::status::apply_status_effect_events),
+        );
+        app
+    }
+
+    /// 10 ms frames: a timed effect overshoots by at most one frame's worth.
+    fn fine_step(app: &mut App) {
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_secs_f32(0.01));
+        app.update();
+    }
+
+    fn wounded_caster(app: &mut App) -> Entity {
+        let caster = spawn_caster(app, 400.0);
+        app.world_mut().get_mut::<Health>(caster).unwrap().current = 300.0;
+        app.world_mut().get_mut::<Mana>(caster).unwrap().current = 100.0;
+        caster
+    }
+
+    fn put_in_slot(app: &mut App, caster: Entity, slot: usize, id: ItemId) {
+        app.world_mut().get_mut::<Inventory>(caster).unwrap().slots[slot] =
+            Some(ItemInstance::new(id));
+    }
+
+    fn mana_of(app: &App, entity: Entity) -> f32 {
+        app.world().get::<Mana>(entity).unwrap().current
+    }
+
+    #[test]
+    fn bottle_restores_120_hp_and_60_mana_over_3_seconds() {
+        let mut app = bottle_app();
+        let caster = wounded_caster(&mut app);
+        let control = wounded_caster(&mut app);
+        put_in_slot(&mut app, caster, BOTTLE_SLOT, ItemId::Bottle);
+
+        request(&mut app, caster, BOTTLE_SLOT, CastTarget::None);
+        for _ in 0..100 {
+            fine_step(&mut app); // 1 s
+        }
+        let gained = health_of(&app, caster) - health_of(&app, control);
+        assert!(
+            (gained - 40.0).abs() < 3.0,
+            "about +40 HP after 1 s, got {gained}"
+        );
+        assert_eq!(
+            slot(&app, caster, BOTTLE_SLOT).unwrap().cooldown.charges,
+            Some(2)
+        );
+
+        for _ in 0..210 {
+            fine_step(&mut app); // 3.1 s in total
+        }
+        let hp = health_of(&app, caster) - health_of(&app, control);
+        let mp = mana_of(&app, caster) - mana_of(&app, control);
+        assert!((hp - 120.0).abs() <= 1.0, "+120 HP over 3 s, got {hp}");
+        assert!((mp - 60.0).abs() <= 1.0, "+60 mana over 3 s, got {mp}");
+        assert!(
+            app.world()
+                .get::<StatusEffects>(caster)
+                .unwrap()
+                .effects
+                .is_empty(),
+            "both timed effects ended"
+        );
+        // Three sips use the three charges, a fourth is refused.
+        for _ in 0..2 {
+            request(&mut app, caster, BOTTLE_SLOT, CastTarget::None);
+            for _ in 0..60 {
+                fine_step(&mut app);
+            }
+        }
+        assert_eq!(
+            slot(&app, caster, BOTTLE_SLOT).unwrap().cooldown.charges,
+            Some(0)
+        );
+        for _ in 0..400 {
+            fine_step(&mut app); // let the last sip's effects run out
+        }
+        let before = health_of(&app, caster);
+        request(&mut app, caster, BOTTLE_SLOT, CastTarget::None);
+        for _ in 0..100 {
+            fine_step(&mut app);
+        }
+        assert_eq!(health_of(&app, caster), before, "no charges, no heal");
+        assert!(slot(&app, caster, BOTTLE_SLOT).is_some(), "never consumed");
+    }
+
+    #[test]
+    fn bottle_blocked_while_muted_or_stunned() {
+        for status in [StatusEffect::mute(5.0), StatusEffect::stunned(5.0)] {
+            let mut app = bottle_app();
+            let caster = wounded_caster(&mut app);
+            put_in_slot(&mut app, caster, BOTTLE_SLOT, ItemId::Bottle);
+            app.world_mut()
+                .get_mut::<StatusEffects>(caster)
+                .unwrap()
+                .effects
+                .push(status);
+            request(&mut app, caster, BOTTLE_SLOT, CastTarget::None);
+            for _ in 0..10 {
+                step(&mut app);
+            }
+            assert_eq!(
+                slot(&app, caster, BOTTLE_SLOT).unwrap().cooldown.charges,
+                Some(3)
+            );
+            assert_eq!(health_of(&app, caster), 300.0);
+        }
+    }
+
+    #[test]
+    fn neutral_active_fires_from_v_slot() {
+        let mut app = bottle_app();
+        let caster = wounded_caster(&mut app);
+        put_in_slot(&mut app, caster, NEUTRAL_SLOT, ItemId::ArcaneRing);
+        request(&mut app, caster, NEUTRAL_SLOT, CastTarget::None);
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        assert!((mana_of(&app, caster) - 175.0).abs() < 0.01, "+75 mana");
+        assert!(slot(&app, caster, NEUTRAL_SLOT).unwrap().cooldown.remaining > 0.0);
+        // The cooldown gates a second use.
+        request(&mut app, caster, NEUTRAL_SLOT, CastTarget::None);
+        for _ in 0..4 {
+            step(&mut app);
+        }
+        assert!((mana_of(&app, caster) - 175.0).abs() < 0.01);
     }
 
     #[test]
