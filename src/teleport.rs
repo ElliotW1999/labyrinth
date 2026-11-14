@@ -110,6 +110,20 @@ type TeleportQuery<'w, 's> = Query<
     MobileFilter,
 >;
 
+/// Orders aimed at a unit's old location would drag it back across the map after it was
+/// relocated: remove its movement orders and steering. Shared by teleports and by game-mode
+/// relocations (Story rooms, respawns).
+pub fn drop_stale_orders(commands: &mut Commands, entity: Entity) {
+    commands.entity(entity).remove::<(
+        MoveTarget,
+        NavPath,
+        NavSteering,
+        AttackMoveOrder,
+        AttackPositionGoal,
+        ForcedMovement,
+    )>();
+}
+
 pub fn apply_teleport_events(
     mut events: MessageReader<TeleportEvent>,
     mut completed: MessageWriter<TeleportCompletedEvent>,
@@ -198,15 +212,7 @@ pub fn apply_teleport_events(
         let to = Vec3::new(destination.x, from.y, destination.z);
         transform_mut.translation = to;
 
-        // Orders aimed at the old location would drag the unit back across the map.
-        commands.entity(event.target).remove::<(
-            MoveTarget,
-            NavPath,
-            NavSteering,
-            AttackMoveOrder,
-            AttackPositionGoal,
-            ForcedMovement,
-        )>();
+        drop_stale_orders(&mut commands, event.target);
         completed.write(TeleportCompletedEvent {
             target: event.target,
             caster: event.caster,

@@ -12,12 +12,16 @@ pub struct MapPlugin;
 impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MapState>()
+            .init_resource::<GameMode>()
             .add_message::<ResetMatchRequest>()
             .configure_sets(Update, MapGenSet.after(crate::heroes::HeroSpawnSet))
             .add_systems(
                 Update,
                 (
-                    spawn_map.in_set(MapGenSet).run_if(map_requested),
+                    spawn_map
+                        .in_set(MapGenSet)
+                        .run_if(map_requested)
+                        .run_if(classic_mode),
                     finish_map_generation.after(MapGenSet),
                 ),
             )
@@ -54,6 +58,26 @@ impl MapState {
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MapGenSet;
 
+/// Which ruleset the current match runs. `Classic` is the three-lane battlefield; `Story`
+/// is the room-based dungeon crawl (see `crate::story`). A missing resource counts as
+/// `Classic`, so test apps built without `MapPlugin` keep the classic behaviour.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GameMode {
+    #[default]
+    Classic,
+    Story,
+}
+
+/// Run condition: the match is a classic match (or no mode is set).
+pub fn classic_mode(mode: Option<Res<GameMode>>) -> bool {
+    mode.is_none_or(|m| *m == GameMode::Classic)
+}
+
+/// Run condition: the match is a Story Mode match.
+pub fn story_mode(mode: Option<Res<GameMode>>) -> bool {
+    mode.is_some_and(|m| *m == GameMode::Story)
+}
+
 pub fn map_requested(state: Option<Res<MapState>>) -> bool {
     state.is_some_and(|s| s.requested && !s.generated)
 }
@@ -76,11 +100,23 @@ fn finish_map_generation(mut state: ResMut<MapState>) {
 #[derive(Message, Debug, Clone, Copy)]
 pub struct ResetMatchRequest {
     pub change_hero: bool,
+    /// The mode the next match runs in.
+    pub mode: GameMode,
+}
+
+impl ResetMatchRequest {
+    #[cfg(test)]
+    pub fn classic(change_hero: bool) -> Self {
+        Self {
+            change_hero,
+            mode: GameMode::Classic,
+        }
+    }
 }
 
 /// Root world-space entities that belong to the match. The camera and the fog overlay
 /// persist across matches; UI nodes carry no `Transform`.
-type MatchEntityFilter = (
+pub(crate) type MatchEntityFilter = (
     With<Transform>,
     Without<ChildOf>,
     Without<Camera>,
@@ -88,7 +124,7 @@ type MatchEntityFilter = (
 );
 
 #[allow(clippy::too_many_arguments)]
-fn reset_match(
+pub(crate) fn reset_match(
     mut requests: MessageReader<ResetMatchRequest>,
     mut commands: Commands,
     world_entities: Query<Entity, MatchEntityFilter>,
@@ -104,10 +140,12 @@ fn reset_match(
     mut hovered: ResMut<crate::picking::HoveredUnit>,
     mut selected: ResMut<crate::picking::SelectedUnit>,
     mut session: ResMut<crate::net::NetSession>,
+    mut mode: ResMut<GameMode>,
 ) {
     let Some(request) = requests.read().last().copied() else {
         return;
     };
+    *mode = request.mode;
     for entity in &world_entities {
         commands.entity(entity).despawn();
     }

@@ -9,6 +9,10 @@ cargo run
 # same as:
 cargo run -- --mode offline
 
+# Start in Story Mode (offline only; see Story Mode):
+cargo run -- --story
+cargo run -- --story --hero vanguard
+
 # Skip select screen:
 cargo run -- --hero vanguard
 cargo run -- --hero skirmisher

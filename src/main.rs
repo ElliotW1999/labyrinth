@@ -36,6 +36,7 @@ mod scale;
 #[cfg(test)]
 mod sim_tests;
 mod status;
+mod story;
 mod teleport;
 mod ui;
 mod unit_commands;
@@ -59,7 +60,7 @@ use healthbars::HealthBarPlugin;
 use heroes::{HeroId, HeroesPlugin, LocalHeroChoice};
 use input::InputPlugin;
 use items::ItemsPlugin;
-use map::MapPlugin;
+use map::{GameMode, MapPlugin};
 use menu::MenuPlugin;
 use movement::MovementPlugin;
 use net::{NetConfig, NetMode, NetPlugin};
@@ -68,6 +69,7 @@ use picking::PickingPlugin;
 use progression::ProgressionPlugin;
 use resources::ResourcesPlugin;
 use status::StatusPlugin;
+use story::StoryPlugin;
 use ui::UiPlugin;
 use unit_commands::UnitCommandsPlugin;
 use units::UnitsPlugin;
@@ -99,9 +101,13 @@ struct Cli {
     /// Start with the navigation debug overlay shown (toggle F9).
     #[arg(long)]
     debug_nav: bool,
+
+    /// Start in Story Mode (offline only) instead of the classic map.
+    #[arg(long)]
+    story: bool,
 }
 
-fn parse_net_config() -> (NetConfig, LocalHeroChoice, DebugOverlaySettings) {
+fn parse_net_config() -> (NetConfig, LocalHeroChoice, DebugOverlaySettings, GameMode) {
     let cli = Cli::parse();
     let addr: SocketAddr = if let Some(port) = cli.port {
         format!("0.0.0.0:{port}")
@@ -121,6 +127,16 @@ fn parse_net_config() -> (NetConfig, LocalHeroChoice, DebugOverlaySettings) {
             eprintln!("Unknown --hero `{name}` (use vanguard|skirmisher|arcanist); showing select");
         }
     }
+    let game_mode = if cli.story {
+        if story::story_available(cli.mode) {
+            GameMode::Story
+        } else {
+            eprintln!("--story is offline only; starting the classic map");
+            GameMode::Classic
+        }
+    } else {
+        GameMode::Classic
+    };
     (
         NetConfig {
             mode: cli.mode,
@@ -131,11 +147,12 @@ fn parse_net_config() -> (NetConfig, LocalHeroChoice, DebugOverlaySettings) {
             nav: cli.debug_nav,
             ..DebugOverlaySettings::all(cli.debug_dims)
         },
+        game_mode,
     )
 }
 
 fn main() {
-    let (net_config, hero_choice, debug_overlays) = parse_net_config();
+    let (net_config, hero_choice, debug_overlays, game_mode) = parse_net_config();
     let title = match net_config.mode {
         NetMode::Offline => "Labyrinth".to_string(),
         NetMode::Host => format!("Labyrinth (Host {})", net_config.addr),
@@ -146,6 +163,7 @@ fn main() {
         .insert_resource(net_config)
         .insert_resource(hero_choice)
         .insert_resource(debug_overlays)
+        .insert_resource(game_mode)
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title,
@@ -180,6 +198,7 @@ fn main() {
             ObstacleCoursePlugin,
             UiPlugin,
             MenuPlugin,
+            StoryPlugin,
         ))
         .run();
 }

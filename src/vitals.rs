@@ -2,7 +2,8 @@
 //!
 //! This module owns the *rules* (heal factor, resource-modifier lookup, overheal clamp).
 //! Effects only emit messages and `combat::apply_damage_events` stays the one place where
-//! damage changes health; every health *increase* goes through [`apply_heal`].
+//! damage changes health; every health *increase* of a living unit goes through
+//! [`apply_heal`], and a dead unit's only way back is [`revive`].
 
 use bevy::prelude::*;
 
@@ -167,6 +168,18 @@ pub fn apply_heal(health: &mut Health, raw: f32, factor: f32) -> HealOutcome {
         applied,
         overheal: amount - applied,
     }
+}
+
+/// Bring a dead unit back at full health and mana. The only place a dead unit's health
+/// rises (invariant I4: [`apply_heal`] never heals the dead). Returns false, changing
+/// nothing, for a unit that is alive.
+pub fn revive(health: &mut Health, mana: &mut Mana) -> bool {
+    if health.is_alive() {
+        return false;
+    }
+    health.current = health.max;
+    mana.current = mana.max;
+    true
 }
 
 /// A resource leaving a unit: mana burn, mana drain, sacrifice, or conversion.
@@ -562,6 +575,22 @@ mod tests {
             max,
             regen_per_sec: 0.0,
         }
+    }
+
+    #[test]
+    fn revive_restores_full_health_and_mana_only_for_dead_units() {
+        let mut health = hp(0.0, 600.0);
+        let mut mana = Mana::new(300.0, 1.0);
+        mana.current = 10.0;
+        assert!(revive(&mut health, &mut mana));
+        assert_eq!((health.current, mana.current), (600.0, 300.0));
+
+        // A living unit is left exactly as it is.
+        let mut hurt = hp(250.0, 600.0);
+        let mut low = Mana::new(300.0, 1.0);
+        low.current = 5.0;
+        assert!(!revive(&mut hurt, &mut low));
+        assert_eq!((hurt.current, low.current), (250.0, 5.0));
     }
 
     #[test]

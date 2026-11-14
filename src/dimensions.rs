@@ -55,6 +55,14 @@ impl UnitDimensions {
     }
 }
 
+/// Whether a walker's collision circle (`pos`, `radius`) touches the axis-aligned rectangle
+/// centred on `center` with half extents `half` (x, z), on the ground plane. The circle is
+/// treated as its bounding square, which is the pressure-plate rule. Shared by pressure
+/// plates, Story exit pads and item pickups.
+pub fn rect_touches_circle(center: Vec3, half: Vec2, pos: Vec3, radius: f32) -> bool {
+    (pos.x - center.x).abs() <= half.x + radius && (pos.z - center.z).abs() <= half.y + radius
+}
+
 /// Bounds radius of an optional component; units without one are treated as points.
 #[inline]
 pub fn bounds_of(bound: Option<&BoundRadius>) -> f32 {

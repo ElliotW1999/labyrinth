@@ -37,6 +37,20 @@ Each unit carries three explicit gameplay dimensions from `dimensions::UnitDimen
 - Attack speed rating: `(base AS + agility + flat bonuses) × (1 + mult)`, clamped **20–700**; attack interval = `BAT × 100 / AS` (APS = `(AS/100) / BAT`), measured from the **start** of one attack to the start of the next (the cooldown armed at release is the interval minus the scaled attack point; a windup cancelled before release spends nothing). E.g. BAT 1.7, attack point 0.3, 500 AS ⇒ an attack every 0.34s, connecting 0.06s in
 - Abilities use **cast point** then fire, then cancellable **cast backswing**
 
+### Creep classes and the Hunter AI
+
+Creeps carry a `CreepClass` (`Normal`, `Captain`, `Boss`; `components.rs`) whose `CreepClassProfile` (`units.rs`) scales health, damage and armor, the model / collision / bounds / selection size, bounties and the aggro radius, and says whether `convert_on_death` may raise it. `Normal` multiplies by one and adds nothing: lane creeps keep their exact classic stats.
+
+| Class | HP | Damage | Armor | Scale | Gold / XP | Aggro | Tag | Converts |
+|---|---|---|---|---|---|---|---|---|
+| Normal | x1 | x1 | +0 | 1.0 | x1 | 1600 | none | yes |
+| Captain | x3 | x1.6 | +4 | 1.35 | x3 | 1800 | "Captain" | no |
+| Boss | x12 | x2.5 | +8 | 1.9 | x10 | 2400 | "Boss" | no |
+
+`units::spawn_creep_with(CreepSpawn { team, position, ranged, class, lane })` spawns any class; `spawn_creep` is the lane-creep shortcut. A creep with a `lane` gets a `LaneFollower`; a lane-less creep (placed by a game mode) gets an `ai::Hunter { aggro_radius }` instead. `hunt_enemies` walks a hunter without an attack target to the nearest living enemy that is targetable within its aggro radius, and `acquire_targets` attacks once it is in range. With none in range it idles, and a unit whose orders a compulsion took (fear, taunt) is left alone. A `WorldTag` component gives any entity a world label (the Captain / Boss tag, Story exit names), shown like a hero's name above its bar.
+
+Story Mode rooms are built centred on the map origin with the room's own walls and pillars as `Obstacle`s (the navigation grid rebuilds from them) and a fog-free rectangle over the room, so rooms are fully visible. See Story Mode.
+
 ### Navigation and command queue
 
 ```

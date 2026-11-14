@@ -4,7 +4,7 @@
 
 ```
 src/
-  main.rs             App entry + CLI (--mode, --hero) + plugin wiring
+  main.rs             App entry + CLI (--mode, --hero, --story) + plugin wiring
   components.rs       Teams, vitals, attributes, abilities, unit tags
   scale.rs            MOBA-style world units (ranges, MS, legacy×26 helper)
   heroes.rs           Hero roster, select UI, spawn-on-pick
@@ -12,7 +12,7 @@ src/
   map.rs              Battlefield + lane waypoints
   units.rs            Hero / creep / tower / ancient factories
   facing.rs           Turn-rate / facing-cone helpers
-  menu.rs             Esc main menu (New Game / Settings / Quit)
+  menu.rs             Esc main menu (New Game / Story Mode / Change Hero / Settings / Quit)
   fog.rs              Fog of war + grey overlay + tree LoS
   obstacle_course.rs  Firebreather / Heartpiercer training strip
   movement.rs         Path following + avoidance + tree / building / unit collision, order helpers
@@ -35,7 +35,8 @@ src/
   dimensions.rs       Collision / bounds / selection dimensions + range math
   picking.rs          Hover, left-click selection, cursor ray picking
   input.rs            RMB move / attack, attack-move, stop (→ IssueCommand), spell ranking
-  ui.rs               HUD (spell bar, inventory, shop gold, minimap)
+  ui.rs               HUD (spell bar, inventory, V/B slots in Story Mode, shop gold, minimap)
+  story/              Story Mode: mod.rs (plugin, room state machine), rooms.rs, room_catalog.rs (generated), layouts.rs, lives.rs, pickups.rs, hud.rs
 docs/
   architecture/composition.md  Layer model, frame order, rule matrix, worked examples
   plans/                       Implementation specs
@@ -43,11 +44,13 @@ scripts/
   HeroGenerator.py     CSV → add HeroId + stub AbilityIds
   ItemGenerator.py    items.csv + item_effects.csv → ItemDefinitions
   AbilityGenerator.py abilities.csv + ability_effects.csv → AbilityDefinitions
+  RoomGenerator.py    rooms.csv + room_spawns.csv → src/story/room_catalog.rs
   generator_common.py Shared CSV validation + effect → Rust translation
 data/
   heroes.example.csv  Sample input for HeroGenerator
   abilities.csv, ability_effects.csv  AbilityGenerator input
   items.csv, item_effects.csv          ItemGenerator input
+  rooms.csv, room_spawns.csv           RoomGenerator input (Story Mode)
   examples/           Sample CSVs (examples/invalid/ shows each validation error)
 ```
 

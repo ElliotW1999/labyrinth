@@ -17,9 +17,11 @@ impl Plugin for WavesPlugin {
                 spawn_opening_wave
                     .in_set(crate::map::MapGenSet)
                     .run_if(crate::map::map_requested)
+                    .run_if(crate::map::classic_mode)
                     .run_if(crate::net::is_sim_authority),
                 spawn_waves
                     .run_if(crate::net::is_sim_authority)
+                    .run_if(crate::map::classic_mode)
                     .run_if(crate::map::map_generated),
             ),
         );

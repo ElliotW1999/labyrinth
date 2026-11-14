@@ -51,9 +51,10 @@ cd /home/user/labyrinth
 cargo test                                                    # see Phase 0 for the environment fix
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/AbilityGenerator.py --check
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/ItemGenerator.py --check
-(cd scripts && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest test_generator_common)
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/RoomGenerator.py --check              # added by the Story Mode plan
+(cd scripts && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest test_generator_common test_room_generator)
 # Determinism: re-running the generators must not change anything on disk
-PYTHONDONTWRITEBYTECODE=1 python3 scripts/AbilityGenerator.py && PYTHONDONTWRITEBYTECODE=1 python3 scripts/ItemGenerator.py && git diff --exit-code -- src/abilities/generated.rs src/item_catalog.rs src/components.rs src/items.rs
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/AbilityGenerator.py && PYTHONDONTWRITEBYTECODE=1 python3 scripts/ItemGenerator.py && PYTHONDONTWRITEBYTECODE=1 python3 scripts/RoomGenerator.py && git diff --exit-code -- src/abilities/generated.rs src/item_catalog.rs src/components.rs src/items.rs src/story/room_catalog.rs
 ```
 
 The last command only applies when the phase didn't intend to regenerate. When it did, commit the regenerated files and run it again; the second run must produce no diff.

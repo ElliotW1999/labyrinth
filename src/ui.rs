@@ -12,9 +12,11 @@ use crate::components::{
 };
 use crate::heroes::HeroKind;
 use crate::items::{
-    Inventory, InventoryContextMenu, ItemId, ItemShop, PurchaseItemRequest, SellItemRequest,
-    ShopTab, ShopUiState, ShopUndoLog, UndoShopRequest,
+    BOTTLE_SLOT, Inventory, InventoryContextMenu, ItemId, ItemShop, NEUTRAL_SLOT,
+    PurchaseItemRequest, SellItemRequest, ShopTab, ShopUiState, ShopUndoLog, SlotKind,
+    UndoShopRequest,
 };
+use crate::map::GameMode;
 use crate::menu::MainMenuState;
 use crate::net::NetStatus;
 use crate::resources::MatchConfig;
@@ -57,6 +59,8 @@ impl Plugin for UiPlugin {
             .add_systems(
                 Update,
                 (
+                    sync_story_slots_bar,
+                    sync_help_text,
                     update_item_tooltips,
                     update_ability_tooltips,
                     sync_ability_hover_range_ring,
@@ -177,6 +181,14 @@ struct SpellCdText {
 struct SpellLevelButton {
     index: usize,
 }
+
+/// The V (neutral) and B (bottle) slots, shown above the inventory bar in Story Mode only.
+#[derive(Component)]
+struct StorySlotsBar;
+
+/// The help line at the bottom left; its text depends on the game mode.
+#[derive(Component)]
+struct HudHelpText;
 
 #[derive(Component)]
 struct InventorySlotIcon {
@@ -311,6 +323,8 @@ const MAX_MINIMAP_DOTS: usize = 64;
 const SHOP_BUTTON_WIDTH: f32 = 108.0;
 const SHOP_BUTTON_HEIGHT: f32 = 44.0;
 const INVENTORY_WIDTH: f32 = 336.0;
+/// Slot height (70) plus the bar's padding (2 x 6).
+const INVENTORY_BAR_HEIGHT: f32 = 82.0;
 const MAX_SHOP_DETAIL_COMPONENTS: usize = 5;
 const HERO_ICON_SIZE: f32 = 84.0;
 const STATS_TABLE_WIDTH: f32 = 200.0;
@@ -501,9 +515,27 @@ fn spawn_hud(mut commands: Commands) {
                                 ..default()
                             })
                             .with_children(|col| {
-                                spawn_stat_row(col, "STR", "--", HudStatId::Str, Color::srgb(0.95, 0.55, 0.45));
-                                spawn_stat_row(col, "AGI", "--", HudStatId::Agi, Color::srgb(0.45, 0.9, 0.55));
-                                spawn_stat_row(col, "INT", "--", HudStatId::Int, Color::srgb(0.45, 0.7, 1.0));
+                                spawn_stat_row(
+                                    col,
+                                    "STR",
+                                    "--",
+                                    HudStatId::Str,
+                                    Color::srgb(0.95, 0.55, 0.45),
+                                );
+                                spawn_stat_row(
+                                    col,
+                                    "AGI",
+                                    "--",
+                                    HudStatId::Agi,
+                                    Color::srgb(0.45, 0.9, 0.55),
+                                );
+                                spawn_stat_row(
+                                    col,
+                                    "INT",
+                                    "--",
+                                    HudStatId::Int,
+                                    Color::srgb(0.45, 0.7, 1.0),
+                                );
                                 col.spawn((
                                     HudLevel,
                                     Text::new("Level 1"),
@@ -524,12 +556,48 @@ fn spawn_hud(mut commands: Commands) {
                                 ..default()
                             })
                             .with_children(|col| {
-                                spawn_stat_row(col, "AD", "--", HudStatId::Ad, Color::srgb(0.9, 0.9, 0.95));
-                                spawn_stat_row(col, "APS", "--", HudStatId::Aps, Color::srgb(0.9, 0.9, 0.95));
-                                spawn_stat_row(col, "RNG", "--", HudStatId::Range, Color::srgb(0.9, 0.9, 0.95));
-                                spawn_stat_row(col, "ARM", "--", HudStatId::Armor, Color::srgb(0.9, 0.9, 0.95));
-                                spawn_stat_row(col, "MR", "--", HudStatId::Mr, Color::srgb(0.9, 0.9, 0.95));
-                                spawn_stat_row(col, "MS", "--", HudStatId::Ms, Color::srgb(0.9, 0.9, 0.95));
+                                spawn_stat_row(
+                                    col,
+                                    "AD",
+                                    "--",
+                                    HudStatId::Ad,
+                                    Color::srgb(0.9, 0.9, 0.95),
+                                );
+                                spawn_stat_row(
+                                    col,
+                                    "APS",
+                                    "--",
+                                    HudStatId::Aps,
+                                    Color::srgb(0.9, 0.9, 0.95),
+                                );
+                                spawn_stat_row(
+                                    col,
+                                    "RNG",
+                                    "--",
+                                    HudStatId::Range,
+                                    Color::srgb(0.9, 0.9, 0.95),
+                                );
+                                spawn_stat_row(
+                                    col,
+                                    "ARM",
+                                    "--",
+                                    HudStatId::Armor,
+                                    Color::srgb(0.9, 0.9, 0.95),
+                                );
+                                spawn_stat_row(
+                                    col,
+                                    "MR",
+                                    "--",
+                                    HudStatId::Mr,
+                                    Color::srgb(0.9, 0.9, 0.95),
+                                );
+                                spawn_stat_row(
+                                    col,
+                                    "MS",
+                                    "--",
+                                    HudStatId::Ms,
+                                    Color::srgb(0.9, 0.9, 0.95),
+                                );
                             });
                     });
 
@@ -601,12 +669,35 @@ fn spawn_hud(mut commands: Commands) {
                 }
             });
 
+            // Neutral (V) and bottle (B) slots: separate from the shop slots, directly above
+            // the inventory bar, and only visible in Story Mode.
+            root.spawn((
+                StorySlotsBar,
+                BlocksWorldRmb,
+                Node {
+                    position_type: PositionType::Absolute,
+                    bottom: px(18.0 + INVENTORY_BAR_HEIGHT + 6.0),
+                    right: px(14.0 + MINIMAP_SIZE + 12.0),
+                    flex_direction: FlexDirection::Row,
+                    column_gap: px(6),
+                    padding: UiRect::all(px(6)),
+                    border_radius: BorderRadius::all(px(6)),
+                    justify_content: JustifyContent::FlexEnd,
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.05, 0.07, 0.1, 0.55)),
+                Visibility::Hidden,
+            ))
+            .with_children(|bar| {
+                spawn_inventory_slot(bar, NEUTRAL_SLOT);
+                spawn_inventory_slot(bar, BOTTLE_SLOT);
+            });
+
             // Help
             root.spawn((
+                HudHelpText,
                 BlocksWorldRmb,
-                Text::new(
-                    "1-3 hero select  |  RMB: move/attack  |  G: attack-move  |  ASDZXC: items  |  shop gold  |  Esc: menu",
-                ),
+                Text::new(help_text(GameMode::Classic)),
                 TextFont::from_font_size(14.0),
                 TextColor(Color::srgba(0.8, 0.85, 0.9, 0.8)),
                 Node {
@@ -1655,11 +1746,13 @@ fn handle_inventory_context_menu(
         if *interaction == Interaction::None {
             continue;
         }
-        if inventory
-            .slots
-            .get(slot.index)
-            .and_then(|s| s.as_ref())
-            .is_some()
+        // Only backpack items can be sold; the neutral and bottle slots have no menu.
+        if slot.index < crate::items::BACKPACK_SLOTS
+            && inventory
+                .slots
+                .get(slot.index)
+                .and_then(|s| s.as_ref())
+                .is_some()
         {
             menu.slot = Some(slot.index);
             *vis = Visibility::Visible;
@@ -1857,22 +1950,94 @@ fn refresh_inventory_bar(
                 None => format!("{}\n{}", item.id.short_label(), item.id.name()),
             });
         } else {
-            *text = Text::new(format!("{hotkey}"));
+            *text = Text::new(match empty_slot_caption(meta.index) {
+                Some(caption) => format!("{caption}\n{hotkey}"),
+                None => hotkey.to_string(),
+            });
         }
     }
 
     for (meta, mut text) in &mut cds {
         if let Some(item) = inv.slots.get(meta.index).and_then(|s| s.as_ref()) {
-            if item.cooldown.remaining > 0.05 {
-                *text = Text::new(format!("{:.0}s", item.cooldown.remaining.ceil()));
+            let charges = item_charges_text(item);
+            let state = if item.cooldown.remaining > 0.05 {
+                format!("{:.0}s", item.cooldown.remaining.ceil())
             } else if item.id.has_active() {
-                *text = Text::new("rdy");
+                "rdy".to_string()
             } else {
-                *text = Text::new("");
-            }
+                String::new()
+            };
+            *text = Text::new(match charges {
+                Some(charges) if state.is_empty() => charges,
+                Some(charges) => format!("{charges} {state}"),
+                None => state,
+            });
         } else {
             *text = Text::new("");
         }
+    }
+}
+
+/// "Neutral" / "Bottle" for the empty special slots; backpack slots show only their hotkey.
+fn empty_slot_caption(index: usize) -> Option<&'static str> {
+    match Inventory::kind_of(index)? {
+        SlotKind::Backpack => None,
+        SlotKind::Neutral => Some("Neutral"),
+        SlotKind::Bottle => Some("Bottle"),
+    }
+}
+
+/// "2/3" for an item with charges.
+fn item_charges_text(item: &crate::items::ItemInstance) -> Option<String> {
+    let charges = item.cooldown.charges?;
+    let max = item.id.definition().max_charges?;
+    Some(format!("{charges}/{max}"))
+}
+
+/// The V / B panel exists only in Story Mode, once its match is running.
+fn story_slots_visibility(mode: GameMode, map_generated: bool) -> Visibility {
+    if mode == GameMode::Story && map_generated {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    }
+}
+
+fn help_text(mode: GameMode) -> &'static str {
+    match mode {
+        GameMode::Classic => {
+            "1-3 hero select  |  RMB: move/attack  |  G: attack-move  |  ASDZXC: items  |  shop gold  |  Esc: menu"
+        }
+        GameMode::Story => {
+            "RMB: move/attack  |  G: attack-move  |  ASDZXC: items  |  V: neutral  |  B: bottle  |  Esc: menu"
+        }
+    }
+}
+
+fn sync_story_slots_bar(
+    mode: Option<Res<GameMode>>,
+    map: Option<Res<crate::map::MapState>>,
+    mut bar: Query<&mut Visibility, With<StorySlotsBar>>,
+) {
+    let Ok(mut visibility) = bar.single_mut() else {
+        return;
+    };
+    let wanted = story_slots_visibility(
+        mode.map(|m| *m).unwrap_or_default(),
+        map.is_some_and(|m| m.generated),
+    );
+    if *visibility != wanted {
+        *visibility = wanted;
+    }
+}
+
+fn sync_help_text(mode: Option<Res<GameMode>>, mut help: Query<&mut Text, With<HudHelpText>>) {
+    let Ok(mut text) = help.single_mut() else {
+        return;
+    };
+    let wanted = help_text(mode.map(|m| *m).unwrap_or_default());
+    if text.0 != wanted {
+        text.0 = wanted.to_string();
     }
 }
 
@@ -2239,10 +2404,14 @@ fn update_item_tooltips(
                         .selected_attribute_name()
                         .map(|attribute| format!("Selected attribute: {attribute}\n"))
                         .unwrap_or_default();
+                    let charges = item_charges_text(item)
+                        .map(|charges| format!("Charges: {charges}\n"))
+                        .unwrap_or_default();
                     body = Some(format!(
-                        "{}\n{}Hotkey: {}\n{}",
+                        "{}\n{}{}Hotkey: {}\n{}",
                         item.id.tooltip_body(),
                         selected,
+                        charges,
                         hotkey,
                         if item.cooldown.remaining > 0.05 {
                             format!("Cooldown: {:.0}s", item.cooldown.remaining.ceil())
@@ -2254,7 +2423,10 @@ fn update_item_tooltips(
                     ));
                 } else {
                     body = Some(format!(
-                        "Empty slot\nHotkey: {}",
+                        "Empty {} slot\nHotkey: {}",
+                        empty_slot_caption(slot.index)
+                            .map(str::to_lowercase)
+                            .unwrap_or_default(),
                         ItemId::inventory_hotkey(slot.index).unwrap_or("?")
                     ));
                 }
@@ -2763,6 +2935,85 @@ mod tests {
         let mut world = World::new();
         let mut system = IntoSystem::into_system(refresh_hero_name);
         system.initialize(&mut world);
+    }
+
+    #[test]
+    fn story_slots_bar_hidden_in_classic() {
+        assert_eq!(
+            story_slots_visibility(GameMode::Classic, true),
+            Visibility::Hidden
+        );
+        assert_eq!(
+            story_slots_visibility(GameMode::Story, false),
+            Visibility::Hidden,
+            "hero select is still up"
+        );
+        assert_ne!(
+            story_slots_visibility(GameMode::Story, true),
+            Visibility::Hidden
+        );
+    }
+
+    #[test]
+    fn story_slots_bar_follows_the_mode() {
+        let mut app = App::new();
+        app.insert_resource(GameMode::Classic)
+            .insert_resource(crate::map::MapState {
+                requested: false,
+                generated: true,
+            })
+            .add_systems(Update, (sync_story_slots_bar, sync_help_text));
+        let bar = app
+            .world_mut()
+            .spawn((StorySlotsBar, Visibility::Hidden))
+            .id();
+        let help = app
+            .world_mut()
+            .spawn((HudHelpText, Text::new(help_text(GameMode::Classic))))
+            .id();
+        app.update();
+        assert_eq!(
+            *app.world().get::<Visibility>(bar).unwrap(),
+            Visibility::Hidden
+        );
+        assert!(
+            !app.world()
+                .get::<Text>(help)
+                .unwrap()
+                .0
+                .contains("V: neutral")
+        );
+
+        *app.world_mut().resource_mut::<GameMode>() = GameMode::Story;
+        app.update();
+        assert_ne!(
+            *app.world().get::<Visibility>(bar).unwrap(),
+            Visibility::Hidden
+        );
+        let text = &app.world().get::<Text>(help).unwrap().0;
+        assert!(text.contains("V: neutral") && text.contains("B: bottle"));
+    }
+
+    #[test]
+    fn special_slots_have_captions_and_charges() {
+        assert_eq!(empty_slot_caption(0), None);
+        assert_eq!(empty_slot_caption(NEUTRAL_SLOT), Some("Neutral"));
+        assert_eq!(empty_slot_caption(BOTTLE_SLOT), Some("Bottle"));
+        let mut bottle = crate::items::ItemInstance::new(ItemId::Bottle);
+        assert_eq!(item_charges_text(&bottle).as_deref(), Some("3/3"));
+        bottle.cooldown.charges = Some(1);
+        assert_eq!(item_charges_text(&bottle).as_deref(), Some("1/3"));
+        assert_eq!(
+            item_charges_text(&crate::items::ItemInstance::new(ItemId::IronBracer)),
+            None
+        );
+    }
+
+    #[test]
+    fn story_slot_systems_initialize() {
+        let mut world = World::new();
+        IntoSystem::into_system(sync_story_slots_bar).initialize(&mut world);
+        IntoSystem::into_system(sync_help_text).initialize(&mut world);
     }
 
     #[test]

@@ -23,6 +23,12 @@ attribute (Strength -> Agility -> Intelligence) and grants that many points of t
 (Power Treads). It has no cooldown, no activation columns and no on_use / channel / projectile
 effects, and cannot be consumable; the toggle is handled by the item runtime, not an effect row.
 
+Optional `slot` column: blank or `backpack` (bought in the shop, the default), `neutral` (the V
+slot; obtained as a room reward, never bought, sold or used as a component) or `bottle` (the B
+slot; exactly one bottle item may exist and it needs `max_charges` and an `on_use` effect). Neutral and
+bottle items are not stackable, not consumable, have no `components`, and are not shown in the shop.
+A bottle's charges are refilled by game rules (Story Mode room completion), never regenerated.
+
 Optional activation columns for items with `on_use` effects (blank = instant no-target
 use, as before): `charge_restore_time`, `target_type`, `target_team`, `cast_range`,
 `cast_time`, `channel_time`, `mana_cost`, `projectile_type`, `projectile_speed`
@@ -125,6 +131,11 @@ ITEM_TYPES = {
     "weapons": "Weapons",
     "artifacts": "Artifacts",
 }
+ITEM_SLOTS = {
+    "backpack": "Backpack",
+    "neutral": "Neutral",
+    "bottle": "Bottle",
+}
 ACTIVATION_COLUMNS = ITEM_ACTIVATION_OPTIONAL
 RUST_TARGET_TYPES = {
     "unit": "Unit",
@@ -170,7 +181,7 @@ use crate::abilities::definition::{
 #[allow(unused_imports)]
 use crate::components::DamageType;
 #[allow(unused_imports)]
-use crate::items::{ItemActivation, ItemDefinition, ItemId, ItemRarity, ItemType};
+use crate::items::{ItemActivation, ItemDefinition, ItemId, ItemRarity, ItemSlot, ItemType};
 #[allow(unused_imports)]
 use crate::status::{DispelStrength, StatusKind};
 #[allow(unused_imports)]
@@ -203,6 +214,7 @@ class Item:
     name: str
     short_label: str
     item_type: str
+    slot: str
     cost: int
     sell_value: int
     tier: int
@@ -281,6 +293,7 @@ def parse_item(row: Row, effects: list[EffectRow], report: Report) -> Item | Non
     if not name:
         report.error(row.file, row.line, "name", "", "required")
     item_type = parse_enum(row, "item_type", list(ITEM_TYPES), report)
+    slot_kind = parse_enum(row, "slot", list(ITEM_SLOTS), report, required=False) or "backpack"
     rarity = parse_enum(row, "rarity", list(RARITIES), report, required=False) or "common"
     cost = parse_scalar(row, "cost", report, integer=True, minimum=0)
     if not row.get("cost"):
@@ -323,7 +336,19 @@ def parse_item(row: Row, effects: list[EffectRow], report: Report) -> Item | Non
         err("max_stack", "only stackable items have a max_stack")
     if consumable and not has_use:
         err("consumable", "consumable items need on_use effects in the item effects CSV")
-    if max_charges is not None and not consumable:
+    if slot_kind != "backpack":
+        if stackable:
+            err("stackable", f"{slot_kind} items cannot be stackable")
+        if consumable:
+            err("consumable", f"{slot_kind} items cannot be consumable")
+        if parse_components(row.get("components")):
+            err("components", f"{slot_kind} items cannot have a recipe")
+    if slot_kind == "bottle":
+        if max_charges is None:
+            err("max_charges", "the bottle needs max_charges")
+        if not has_use:
+            err("slot", "the bottle needs on_use effects in the item effects CSV")
+    elif max_charges is not None and not consumable:
         report.warn(row.file, row.line, "max_charges", row.get("max_charges"), "charges are only spent by consumable items")
     if item_type == "consumable" and not consumable:
         report.warn(row.file, row.line, "item_type", row.get("item_type"), "item_type consumable but consumable is false")
@@ -354,6 +379,7 @@ def parse_item(row: Row, effects: list[EffectRow], report: Report) -> Item | Non
         name=name,
         short_label=short,
         item_type=ITEM_TYPES.get(item_type or "", "Utility"),
+        slot=ITEM_SLOTS[slot_kind],
         cost=int(cost or 0),
         sell_value=int(sell_value) if sell_value is not None else int(cost or 0) // 2,
         tier=int(tier) if tier else 1,
@@ -446,6 +472,7 @@ def item_static(item: Item) -> str:
         f"    name: {rust_str(item.name)},",
         f"    short_label: {rust_str(item.short_label)},",
         f"    item_type: ItemType::{item.item_type},",
+        f"    slot: ItemSlot::{item.slot},",
         f"    cost: {item.cost},",
         f"    sell_value: {item.sell_value},",
         f"    tier: {item.tier},",
@@ -530,6 +557,11 @@ def load(items_csv: Path, effects_csv: Path, existing_ids: set[str], *, repo_roo
         elif name:
             names[name] = row.line
 
+    slot_by_id = {r.get("id"): r.get("slot").lower() or "backpack" for r in item_rows}
+    bottles = [r for r in item_rows if r.get("slot").lower() == "bottle"]
+    for extra in bottles[1:]:
+        report.error(extra.file, extra.line, "slot", extra.get("slot"), f"only one bottle item may exist (first defined on line {bottles[0].line})")
+
     costs_by_id = {r.get("id"): int(r.get("cost")) for r in item_rows if r.get("cost").isdigit()}
     by_owner = parse_effect_rows(effect_rows, "item_id", set(ids), report)
     known = set(ids) | existing_ids
@@ -549,6 +581,8 @@ def load(items_csv: Path, effects_csv: Path, existing_ids: set[str], *, repo_roo
                     report.error(row.file, row.line, "components", comp, "an item cannot be its own component")
                 elif comp not in known:
                     report.error(row.file, row.line, "components", comp, "no item with this id (in the CSV or already generated)")
+                elif slot_by_id.get(comp, "backpack") != "backpack":
+                    report.error(row.file, row.line, "components", comp, f"{slot_by_id[comp]} items cannot be recipe components")
             costs = {costs_by_id[c] for c in slot if c in costs_by_id}
             if len(costs) > 1:
                 report.warn(

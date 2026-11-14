@@ -947,6 +947,7 @@ fn maybe_spawn_local_hero(
     mut choice: ResMut<LocalHeroChoice>,
     mut session: ResMut<NetSession>,
     mut map: ResMut<crate::map::MapState>,
+    mode: Option<Res<crate::map::GameMode>>,
     roots: Query<Entity, With<HeroSelectRoot>>,
     mut buttons: Query<(&HeroSelectButton, &mut BorderColor)>,
 ) {
@@ -974,17 +975,16 @@ fn maybe_spawn_local_hero(
         return;
     }
 
+    // Story matches start in the safe room rather than at the classic Radiant base.
+    let start = if mode.is_some_and(|m| *m == crate::map::GameMode::Story) {
+        crate::story::SAFE_ENTRY
+    } else {
+        scale::v(-44.0, 0.9, -44.0)
+    };
+
     match config.mode {
         NetMode::Offline => {
-            spawn_hero_entity(
-                &mut commands,
-                &assets,
-                Team::Radiant,
-                true,
-                1,
-                scale::v(-44.0, 0.9, -44.0),
-                hero,
-            );
+            spawn_hero_entity(&mut commands, &assets, Team::Radiant, true, 1, start, hero);
             choice.spawned = true;
         }
         NetMode::Host => {

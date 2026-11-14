@@ -16,6 +16,7 @@ Bevy was chosen over a browser stack and over rolling a custom engine from scrat
 - [Damage and Resources](wiki/Damage-and-Resources.md) — Damage mechanics, healing and resources
 - [Abilities](wiki/Abilities.md) — Ability ranks, architecture, reactive triggers, attack modifiers, activation and targeting
 - [Ability Generator](wiki/Ability-Generator.md) — Adding abilities from CSV and generator validation
+- [Story Mode](wiki/Story-Mode.md) — Room-based dungeon crawl: lives, rooms and exits, neutral and bottle slots, creep classes, RoomGenerator
 - [Items](wiki/Items.md) — Shop, inventory, and adding items with ItemGenerator
 - [Movement](wiki/Movement.md) — Teleport and forced movement
 - [Limitations](wiki/Limitations.md) — What is not yet expressible without engine changes

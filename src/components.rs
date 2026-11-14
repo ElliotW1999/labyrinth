@@ -595,12 +595,35 @@ pub struct MoveTarget {
 #[derive(Component, Debug, Clone, Copy)]
 pub struct PlayerHero;
 
+/// Strength tier of a creep. `Normal` is the classic lane creep; Captains and Bosses are
+/// tougher, larger and worth more (see `units::CreepClassProfile`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CreepClass {
+    #[default]
+    Normal,
+    Captain,
+    Boss,
+}
+
 #[derive(Component, Debug, Clone, Copy)]
 pub struct Creep {
-    pub lane: Lane,
+    /// The lane the creep walks (`None` for creeps placed by a game mode, which hunt).
+    pub lane: Option<Lane>,
     /// Ranged (as opposed to melee) lane creep; a converted creep respawns as the same kind.
     pub ranged: bool,
+    pub class: CreepClass,
 }
+
+/// A dead hero waiting to respawn (Story Mode). While present the unit takes no orders and
+/// fires no actions; `respawn_in` counts down to the revive.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct Downed {
+    pub respawn_in: f32,
+}
+
+/// Text shown on the unit's world label (Captain / Boss, Story exit names).
+#[derive(Component, Debug, Clone, PartialEq, Eq)]
+pub struct WorldTag(pub String);
 
 /// Practice target near the Radiant ancient. It is not a lane creep: nothing moves it
 /// or makes it act.
@@ -1115,7 +1138,12 @@ pub struct HealthBarFill;
 #[derive(Component, Debug, Clone, Copy)]
 pub struct HasHealthBar;
 
-/// Screen-space label that tracks a hero above their world health bar.
+/// The entity already has its [`WorldHeroNameLabel`].
+#[derive(Component, Debug, Clone, Copy)]
+pub struct HasWorldLabel;
+
+/// Screen-space label that tracks a hero (name) or a [`WorldTag`] owner above its world
+/// health bar.
 #[derive(Component, Debug, Clone, Copy)]
 pub struct WorldHeroNameLabel {
     pub owner: Entity,

@@ -12,7 +12,7 @@ use crate::abilities::casting::{ability_action_spec, commit_ability};
 use crate::abilities::catalog::AbilityDefinitions;
 use crate::components::{
     AbilityLoadout, AttackMoveOrder, AttackSwing, AttackTarget, BoundRadius, CastTarget,
-    CombatStats, Health, Mana, MoveTarget, Team,
+    CombatStats, Downed, Health, Mana, MoveTarget, Team,
 };
 use crate::dimensions::{bounds_of, cast_distance};
 use crate::items::{Inventory, commit_item, item_action_spec};
@@ -158,6 +158,7 @@ type CasterQuery<'w, 's> = Query<
         &'static mut Mana,
         Option<&'static StatusEffects>,
         Option<&'static BoundRadius>,
+        Has<Downed>,
     ),
 >;
 
@@ -197,10 +198,15 @@ pub fn validate_activation_requests(
     units: UnitQuery,
 ) {
     for request in requests.read() {
-        let Ok((transform, team, mut mana, statuses, bound)) = casters.get_mut(request.caster)
+        let Ok((transform, team, mut mana, statuses, bound, downed)) =
+            casters.get_mut(request.caster)
         else {
             continue;
         };
+        // A downed hero (Story Mode) is disabled like a stunned one: the request is dropped.
+        if downed {
+            continue;
+        }
         let Ok(spec) = sources.spec(request.caster, request.source) else {
             continue;
         };

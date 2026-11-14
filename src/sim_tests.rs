@@ -195,7 +195,7 @@ fn map_is_generated_only_after_a_hero_is_picked_and_resets_on_change_hero() {
 
     // Change Hero: everything is torn down and hero select comes back.
     app.world_mut()
-        .write_message(ResetMatchRequest { change_hero: true });
+        .write_message(ResetMatchRequest::classic(true));
     app.update();
     app.update();
     assert!(!app.world().resource::<MapState>().generated);
@@ -221,13 +221,1080 @@ fn map_is_generated_only_after_a_hero_is_picked_and_resets_on_change_hero() {
 
     // New Game keeps the hero and regenerates the map without the select screen.
     app.world_mut()
-        .write_message(ResetMatchRequest { change_hero: false });
+        .write_message(ResetMatchRequest::classic(false));
     for _ in 0..4 {
         app.update();
     }
     assert_eq!(count::<HeroSelectRoot>(&mut app), 0);
     assert_eq!(count::<PlayerHero>(&mut app), 1);
     assert_eq!(count::<Tower>(&mut app), towers);
+}
+
+#[test]
+fn classic_new_game_is_unchanged_with_story_plugin() {
+    use crate::components::{Ancient, Creep, PlayerHero, Tower};
+    use crate::map::GameMode;
+
+    let mut app = match_app();
+    app.add_plugins(crate::story::StoryPlugin);
+    pick_hero(&mut app, HeroId::Vanguard);
+    assert_eq!(*app.world().resource::<GameMode>(), GameMode::Classic);
+    assert!(count::<Tower>(&mut app) > 0);
+    assert_eq!(count::<Ancient>(&mut app), 2);
+    assert!(count::<Creep>(&mut app) > 0);
+    assert_eq!(count::<PlayerHero>(&mut app), 1);
+}
+
+#[test]
+fn story_mode_does_not_build_the_classic_map() {
+    use crate::components::{Ancient, Creep, Obstacle, PlayerHero, Tower};
+    use crate::map::{GameMode, MapState, ResetMatchRequest};
+
+    let mut app = match_app();
+    app.add_plugins(crate::story::StoryPlugin);
+    app.world_mut().write_message(ResetMatchRequest {
+        change_hero: false,
+        mode: GameMode::Story,
+    });
+    for _ in 0..2 {
+        app.update();
+    }
+    pick_hero(&mut app, HeroId::Vanguard);
+    assert_eq!(*app.world().resource::<GameMode>(), GameMode::Story);
+    assert!(app.world().resource::<MapState>().generated);
+    assert_eq!(count::<Tower>(&mut app), 0);
+    assert_eq!(count::<Ancient>(&mut app), 0);
+    // Only the safe camp's walls exist: no trees, no lane creeps.
+    assert_eq!(
+        count::<Obstacle>(&mut app),
+        crate::story::layouts::RoomLayoutId::Camp
+            .layout()
+            .obstacles()
+            .len()
+    );
+    assert_eq!(count::<Creep>(&mut app), 0);
+    assert_eq!(count::<PlayerHero>(&mut app), 1);
+    // The hero starts in the safe room, not at the classic base.
+    let pos = app
+        .world_mut()
+        .query_filtered::<&Transform, With<PlayerHero>>()
+        .single(app.world())
+        .unwrap()
+        .translation;
+    assert!(pos.xz().distance(crate::story::SAFE_ENTRY.xz()) < 1.0);
+    // No lane waves arrive in Story Mode either.
+    for _ in 0..(31 * 60) {
+        app.update();
+    }
+    assert_eq!(count::<Creep>(&mut app), 0);
+}
+
+#[test]
+fn change_hero_keeps_the_current_mode_and_new_game_returns_to_classic() {
+    use crate::components::{PlayerHero, Tower};
+    use crate::map::{GameMode, ResetMatchRequest};
+
+    let mut app = match_app();
+    app.add_plugins(crate::story::StoryPlugin);
+    app.world_mut().write_message(ResetMatchRequest {
+        change_hero: false,
+        mode: GameMode::Story,
+    });
+    for _ in 0..2 {
+        app.update();
+    }
+    pick_hero(&mut app, HeroId::Vanguard);
+
+    // Change Hero in Story keeps Story.
+    let current = *app.world().resource::<GameMode>();
+    app.world_mut().write_message(ResetMatchRequest {
+        change_hero: true,
+        mode: current,
+    });
+    app.update();
+    app.update();
+    assert_eq!(*app.world().resource::<GameMode>(), GameMode::Story);
+    pick_hero(&mut app, HeroId::Sniper);
+    assert_eq!(count::<Tower>(&mut app), 0);
+
+    // New Game returns to the classic map with the same hero.
+    app.world_mut()
+        .write_message(ResetMatchRequest::classic(false));
+    for _ in 0..4 {
+        app.update();
+    }
+    assert_eq!(*app.world().resource::<GameMode>(), GameMode::Classic);
+    assert!(count::<Tower>(&mut app) > 0);
+    assert_eq!(count::<PlayerHero>(&mut app), 1);
+}
+
+// --- Story Mode: rooms, lives, rewards ---
+
+mod story {
+    use super::*;
+    use crate::components::{
+        AttackTarget, CastTarget, Creep, Downed, Ground, HeroProgress, Mana, MoveTarget,
+        PlayerHero, PlayerWallet,
+    };
+    use crate::items::{BOTTLE_SLOT, Inventory, ItemId, ItemInstance, ItemShop, NEUTRAL_SLOT};
+    use crate::map::{GameMode, ResetMatchRequest};
+    use crate::navigation::NavPath;
+    use crate::story::lives::HeroLives;
+    use crate::story::pickups::ItemPickup;
+    use crate::story::rooms::{FINAL_DEPTH, RoomId};
+    use crate::story::{
+        ExitPad, RoomCompletedEvent, RoomHostile, StoryPhase, StoryRun, StoryRunEndedEvent,
+        StorySeed,
+    };
+
+    fn story_app() -> App {
+        let mut app = match_app();
+        app.add_plugins((crate::items::ItemsPlugin, crate::story::StoryPlugin));
+        app.insert_resource(StorySeed(Some(7)));
+        app.world_mut().write_message(ResetMatchRequest {
+            change_hero: false,
+            mode: GameMode::Story,
+        });
+        for _ in 0..2 {
+            app.update();
+        }
+        pick_hero(&mut app, HeroId::Vanguard);
+        app
+    }
+
+    fn run(app: &mut App, frames: u32) {
+        for _ in 0..frames {
+            app.update();
+        }
+    }
+
+    fn hero(app: &mut App) -> Entity {
+        app.world_mut()
+            .query_filtered::<Entity, With<PlayerHero>>()
+            .single(app.world())
+            .unwrap()
+    }
+
+    fn phase(app: &App) -> StoryPhase {
+        app.world().resource::<StoryRun>().phase
+    }
+
+    fn pos_of(app: &App, entity: Entity) -> Vec3 {
+        app.world().get::<Transform>(entity).unwrap().translation
+    }
+
+    fn put_at(app: &mut App, entity: Entity, xz: Vec2) {
+        let mut tf = app.world_mut().get_mut::<Transform>(entity).unwrap();
+        tf.translation.x = xz.x;
+        tf.translation.z = xz.y;
+    }
+
+    /// Pad centres of the current room as (slot, armed, position).
+    fn pads(app: &mut App) -> Vec<(usize, bool, Vec3)> {
+        let mut found: Vec<_> = app
+            .world_mut()
+            .query::<(&ExitPad, &Transform)>()
+            .iter(app.world())
+            .map(|(pad, tf)| (pad.slot, pad.armed, tf.translation))
+            .collect();
+        found.sort_by_key(|(slot, ..)| *slot);
+        found
+    }
+
+    /// Jump straight into `room` as if its exit had been taken (the draw is seeded, but the
+    /// tests below want a specific room).
+    fn enter_room(app: &mut App, room: RoomId) {
+        app.world_mut().resource_mut::<StoryRun>().phase = StoryPhase::Transition(room);
+        run(app, 3);
+    }
+
+    fn kill_hostiles(app: &mut App) {
+        let hostiles: Vec<Entity> = app
+            .world_mut()
+            .query_filtered::<Entity, With<RoomHostile>>()
+            .iter(app.world())
+            .collect();
+        for hostile in hostiles {
+            app.world_mut().get_mut::<Health>(hostile).unwrap().current = 0.0;
+        }
+    }
+
+    fn completions(app: &App) -> usize {
+        app.world()
+            .resource::<Messages<RoomCompletedEvent>>()
+            .iter_current_update_messages()
+            .count()
+    }
+
+    fn gold(app: &App, hero: Entity) -> u32 {
+        app.world().get::<PlayerWallet>(hero).unwrap().gold
+    }
+
+    #[test]
+    fn story_start_builds_safe_room() {
+        let mut app = story_app();
+        let hero = hero(&mut app);
+        assert_eq!(phase(&app), StoryPhase::Cleared);
+        assert_eq!(count::<Ground>(&mut app), 1);
+        assert_eq!(count::<ItemShop>(&mut app), 1);
+        assert_eq!(count::<RoomHostile>(&mut app), 0);
+        let pads = pads(&mut app);
+        assert_eq!(pads.len(), 2);
+        assert!(pads.iter().all(|(_, armed, _)| *armed), "both exits armed");
+        let run = app.world().resource::<StoryRun>();
+        assert!(run.exits.iter().all(Option::is_some));
+        assert_ne!(run.exits[0], run.exits[1], "two different rooms");
+
+        let at = pos_of(&app, hero);
+        assert!(at.xz().distance(crate::story::SAFE_ENTRY.xz()) < 1.0);
+        assert_eq!(app.world().get::<HeroLives>(hero).unwrap().remaining, 4);
+        let inventory = app.world().get::<Inventory>(hero).unwrap();
+        let bottle = inventory.slots[BOTTLE_SLOT].expect("the bottle is granted");
+        assert_eq!(bottle.id, ItemId::Bottle);
+        assert_eq!(bottle.cooldown.charges, Some(3));
+        assert!(inventory.slots[NEUTRAL_SLOT].is_none());
+        assert_eq!(gold(&app, hero), crate::units::STARTING_GOLD);
+        assert_eq!(
+            app.world().get::<HeroProgress>(hero).unwrap().level,
+            crate::units::STARTING_HERO_LEVEL
+        );
+        // A safe room never completes.
+        assert_eq!(completions(&app), 0);
+    }
+
+    #[test]
+    fn dwelling_on_exit_pad_loads_next_room_and_tears_down_previous() {
+        let mut app = story_app();
+        let hero = hero(&mut app);
+        let old_floor = app
+            .world_mut()
+            .query_filtered::<Entity, With<Ground>>()
+            .single(app.world())
+            .unwrap();
+        let old_shop = app
+            .world_mut()
+            .query_filtered::<Entity, With<ItemShop>>()
+            .single(app.world())
+            .unwrap();
+        let old_pads: Vec<Entity> = app
+            .world_mut()
+            .query_filtered::<Entity, With<ExitPad>>()
+            .iter(app.world())
+            .collect();
+        let target = app.world().resource::<StoryRun>().exits[0].unwrap();
+        let (_, _, pad_pos) = pads(&mut app)[0];
+
+        put_at(&mut app, hero, pad_pos.xz());
+        run(&mut app, 50);
+
+        assert!(app.world().get_entity(old_floor).is_err());
+        assert!(app.world().get_entity(old_shop).is_err());
+        assert!(old_pads.iter().all(|e| app.world().get_entity(*e).is_err()));
+        let run_state = app.world().resource::<StoryRun>().clone();
+        assert_eq!(run_state.depth, 1);
+        assert_eq!(run_state.room, Some(target));
+        assert_eq!(phase(&app), StoryPhase::Active);
+        assert_eq!(
+            count::<RoomHostile>(&mut app) as u32,
+            target.definition().hostile_count()
+        );
+        assert_eq!(count::<Ground>(&mut app), 1, "exactly one floor");
+        assert_eq!(count::<ItemShop>(&mut app), 0);
+        assert_eq!(count::<ExitPad>(&mut app), 2);
+        assert!(pads(&mut app).iter().all(|(_, armed, _)| !armed));
+        assert_eq!(count::<Creep>(&mut app), count::<RoomHostile>(&mut app));
+
+        let at = pos_of(&app, hero);
+        assert!(at.xz().distance(run_state.entry.xz()) < 1.0, "{at:?}");
+        assert!(app.world().get::<MoveTarget>(hero).is_none());
+        assert!(app.world().get::<NavPath>(hero).is_none());
+        // The hero keeps what it had.
+        assert_eq!(app.world().get::<HeroLives>(hero).unwrap().remaining, 4);
+        assert!(app.world().get::<Inventory>(hero).unwrap().slots[BOTTLE_SLOT].is_some());
+    }
+
+    #[test]
+    fn brief_pad_touch_does_not_transition() {
+        let mut app = story_app();
+        let hero = hero(&mut app);
+        let (_, _, pad_pos) = pads(&mut app)[0];
+        let away = pos_of(&app, hero);
+        put_at(&mut app, hero, pad_pos.xz());
+        run(&mut app, 10); // well under the dwell time
+        put_at(&mut app, hero, away.xz());
+        run(&mut app, 60);
+        assert_eq!(phase(&app), StoryPhase::Cleared);
+        assert_eq!(app.world().resource::<StoryRun>().depth, 0);
+        // The dwell restarts: another short touch still does nothing.
+        put_at(&mut app, hero, pad_pos.xz());
+        run(&mut app, 10);
+        put_at(&mut app, hero, away.xz());
+        run(&mut app, 10);
+        assert_eq!(phase(&app), StoryPhase::Cleared);
+    }
+
+    #[test]
+    fn exits_stay_inactive_while_hostiles_live() {
+        let mut app = story_app();
+        let hero = hero(&mut app);
+        enter_room(&mut app, RoomId::Skirmish);
+        assert_eq!(phase(&app), StoryPhase::Active);
+        // Stand on each pad for longer than the dwell time.
+        for (_, armed, pad_pos) in pads(&mut app) {
+            assert!(!armed);
+            put_at(&mut app, hero, pad_pos.xz());
+            run(&mut app, 45);
+        }
+        assert_eq!(phase(&app), StoryPhase::Active);
+        assert_eq!(app.world().resource::<StoryRun>().depth, 1);
+    }
+
+    #[test]
+    fn killing_all_hostiles_completes_room_once() {
+        let mut app = story_app();
+        let hero = hero(&mut app);
+        enter_room(&mut app, RoomId::Skirmish);
+        app.world_mut().get_mut::<Inventory>(hero).unwrap().slots[BOTTLE_SLOT]
+            .as_mut()
+            .unwrap()
+            .cooldown
+            .charges = Some(0);
+        let before = gold(&app, hero);
+
+        assert_eq!(count::<RoomHostile>(&mut app), 6);
+        kill_hostiles(&mut app);
+        let mut events = 0;
+        for _ in 0..10 {
+            app.update();
+            events += completions(&app);
+        }
+        assert_eq!(events, 1, "exactly one completion event");
+        assert_eq!(phase(&app), StoryPhase::Cleared);
+        assert_eq!(
+            app.world().get::<Inventory>(hero).unwrap().slots[BOTTLE_SLOT]
+                .unwrap()
+                .cooldown
+                .charges,
+            Some(3),
+            "the bottle is refilled"
+        );
+        // 400 gold reward once, plus the 35 gold bounty of each of the six creeps.
+        assert_eq!(
+            gold(&app, hero),
+            before + 400 + 6 * 35,
+            "the gold reward, once"
+        );
+        let pads = pads(&mut app);
+        assert!(pads.iter().all(|(_, armed, _)| *armed));
+        assert!(
+            app.world().resource::<StoryRun>().exits[0].is_some(),
+            "exits are drawn for depth 2"
+        );
+        assert_eq!(count::<ItemPickup>(&mut app), 0, "skirmish pays gold only");
+    }
+
+    #[test]
+    fn neutral_reward_pickup_equips_then_swaps_without_ping_pong() {
+        let mut app = story_app();
+        let hero = hero(&mut app);
+        let base = {
+            let e = app.world().entity(hero);
+            (
+                *e.get::<Health>().unwrap(),
+                *e.get::<Mana>().unwrap(),
+                *e.get::<crate::components::CombatStats>().unwrap(),
+                *e.get::<crate::components::HeroAttributes>().unwrap(),
+            )
+        };
+        let (base_armor, base_damage) = (base.2.armor, base.2.attack_damage);
+        enter_room(&mut app, RoomId::Ambush);
+        kill_hostiles(&mut app);
+        run(&mut app, 5);
+        assert_eq!(count::<ItemPickup>(&mut app), 1);
+        let (first_id, first_pos) = {
+            let mut query = app.world_mut().query::<(&ItemPickup, &Transform)>();
+            let (pickup, tf) = query.single(app.world()).unwrap();
+            (pickup.instance.id, tf.translation)
+        };
+        assert_eq!(first_id.definition().slot, crate::items::ItemSlot::Neutral);
+
+        // Walk onto it: equipped, pickup gone.
+        put_at(&mut app, hero, first_pos.xz());
+        run(&mut app, 3);
+        let equipped = app.world().get::<Inventory>(hero).unwrap().slots[NEUTRAL_SLOT];
+        assert_eq!(equipped.map(|item| item.id), Some(first_id));
+        assert_eq!(count::<ItemPickup>(&mut app), 0);
+        let after_first = *app
+            .world()
+            .get::<crate::components::CombatStats>(hero)
+            .unwrap();
+        assert!(
+            after_first.armor != base_armor
+                || after_first.attack_damage != base_damage
+                || first_id == ItemId::ArcaneRing
+                || first_id == ItemId::FadedBroach,
+            "the item's passives apply"
+        );
+
+        // A second neutral reward swaps with the first.
+        put_at(&mut app, hero, Vec2::new(-900.0, 900.0));
+        enter_room(&mut app, RoomId::Ambush);
+        kill_hostiles(&mut app);
+        run(&mut app, 5);
+        let (second_id, second_pos) = {
+            let mut query = app.world_mut().query::<(&ItemPickup, &Transform)>();
+            let (pickup, tf) = query.single(app.world()).unwrap();
+            (pickup.instance.id, tf.translation)
+        };
+        assert_ne!(
+            second_id, first_id,
+            "the equipped item is not offered again"
+        );
+        put_at(&mut app, hero, second_pos.xz());
+        run(&mut app, 3);
+        let equipped = app.world().get::<Inventory>(hero).unwrap().slots[NEUTRAL_SLOT];
+        assert_eq!(equipped.map(|item| item.id), Some(second_id));
+        // The old item lies beside it, disarmed while the hero stands on the spot.
+        assert_eq!(count::<ItemPickup>(&mut app), 1);
+        let dropped = {
+            let mut query = app.world_mut().query::<&ItemPickup>();
+            *query.single(app.world()).unwrap()
+        };
+        assert_eq!(dropped.instance.id, first_id);
+
+        // No ping-pong: standing still keeps the second item equipped.
+        run(&mut app, 60);
+        let equipped = app.world().get::<Inventory>(hero).unwrap().slots[NEUTRAL_SLOT];
+        assert_eq!(equipped.map(|item| item.id), Some(second_id));
+        assert_eq!(count::<ItemPickup>(&mut app), 1);
+        // Passives of the swapped-out item are gone: the stats equal the base stats plus the
+        // second item alone.
+        let stats = *app
+            .world()
+            .get::<crate::components::CombatStats>(hero)
+            .unwrap();
+        let (mut health, mut mana, mut reference, mut attrs) = base;
+        let mut inv = Inventory::empty();
+        crate::items::equip_neutral(
+            &mut inv,
+            &mut health,
+            &mut mana,
+            &mut reference,
+            &mut attrs,
+            ItemInstance::new(second_id),
+        )
+        .unwrap();
+        assert_eq!(stats.armor, reference.armor);
+        assert_eq!(stats.attack_damage, reference.attack_damage);
+        assert_eq!(stats.move_speed, reference.move_speed);
+        assert_eq!(app.world().get::<Mana>(hero).unwrap().max, mana.max);
+    }
+
+    #[test]
+    fn hero_death_consumes_a_life_and_respawns_at_entry() {
+        use crate::unit_commands::{IssueCommand, UnitCommand};
+        let mut app = story_app();
+        let hero = hero(&mut app);
+        let entry = app.world().resource::<StoryRun>().entry;
+        put_at(&mut app, hero, Vec2::new(500.0, 200.0));
+        app.world_mut().get_mut::<Mana>(hero).unwrap().current = 0.0;
+        app.world_mut().get_mut::<Health>(hero).unwrap().current = 0.0;
+        run(&mut app, 2);
+        assert_eq!(app.world().get::<HeroLives>(hero).unwrap().remaining, 3);
+        assert!(app.world().get::<Downed>(hero).is_some());
+
+        // Downed: orders and the bottle are ignored.
+        app.world_mut().write_message(IssueCommand {
+            unit: hero,
+            command: UnitCommand::Move {
+                destination: Vec3::new(0.0, 0.0, 800.0),
+            },
+            queue: false,
+        });
+        app.world_mut()
+            .write_message(crate::actions::ActivationRequest::item(
+                hero,
+                BOTTLE_SLOT,
+                CastTarget::None,
+            ));
+        run(&mut app, 30);
+        assert!(app.world().get::<MoveTarget>(hero).is_none());
+        assert_eq!(
+            app.world().get::<Inventory>(hero).unwrap().slots[BOTTLE_SLOT]
+                .unwrap()
+                .cooldown
+                .charges,
+            Some(3)
+        );
+        assert_eq!(app.world().get::<Health>(hero).unwrap().current, 0.0);
+        assert_eq!(app.world().get::<HeroLives>(hero).unwrap().remaining, 3);
+
+        // After the respawn delay the hero is back at the entry, full.
+        run(&mut app, 5 * 60);
+        assert!(app.world().get::<Downed>(hero).is_none());
+        let health = app.world().get::<Health>(hero).unwrap();
+        assert_eq!(health.current, health.max);
+        let mana = app.world().get::<Mana>(hero).unwrap();
+        assert_eq!(mana.current, mana.max);
+        let at = pos_of(&app, hero);
+        assert!(at.xz().distance(entry.xz()) < 1.0, "{at:?} vs {entry:?}");
+        assert_eq!(phase(&app), StoryPhase::Cleared);
+    }
+
+    #[test]
+    fn fourth_death_is_game_over_without_respawn() {
+        let mut app = story_app();
+        let hero = hero(&mut app);
+        for expected in [3, 2, 1] {
+            app.world_mut().get_mut::<Health>(hero).unwrap().current = 0.0;
+            run(&mut app, 2);
+            assert_eq!(
+                app.world().get::<HeroLives>(hero).unwrap().remaining,
+                expected
+            );
+            assert_eq!(phase(&app), StoryPhase::Cleared, "still playing");
+            run(&mut app, 5 * 60 + 5);
+            assert!(app.world().get::<Downed>(hero).is_none(), "respawned");
+        }
+        app.world_mut().get_mut::<Health>(hero).unwrap().current = 0.0;
+        let mut ended = Vec::new();
+        for _ in 0..5 {
+            app.update();
+            ended.extend(
+                app.world()
+                    .resource::<Messages<StoryRunEndedEvent>>()
+                    .iter_current_update_messages()
+                    .map(|e| e.victory),
+            );
+        }
+        assert_eq!(ended, vec![false], "one defeat event");
+        assert_eq!(app.world().get::<HeroLives>(hero).unwrap().remaining, 0);
+        assert_eq!(phase(&app), StoryPhase::GameOver);
+        run(&mut app, 10 * 60);
+        assert_eq!(app.world().get::<Health>(hero).unwrap().current, 0.0);
+        assert!(app.world().get::<Downed>(hero).is_some(), "never respawns");
+        assert_eq!(phase(&app), StoryPhase::GameOver);
+    }
+
+    #[test]
+    fn boss_room_clear_is_victory() {
+        let mut app = story_app();
+        {
+            let mut run_state = app.world_mut().resource_mut::<StoryRun>();
+            run_state.depth = FINAL_DEPTH - 1;
+        }
+        enter_room(&mut app, RoomId::WarlordLair);
+        assert_eq!(app.world().resource::<StoryRun>().depth, FINAL_DEPTH);
+        assert_eq!(phase(&app), StoryPhase::Active);
+        kill_hostiles(&mut app);
+        let mut ended = Vec::new();
+        for _ in 0..6 {
+            app.update();
+            ended.extend(
+                app.world()
+                    .resource::<Messages<StoryRunEndedEvent>>()
+                    .iter_current_update_messages()
+                    .map(|e| e.victory),
+            );
+        }
+        assert_eq!(ended, vec![true]);
+        assert_eq!(phase(&app), StoryPhase::Victory);
+        assert!(
+            app.world()
+                .resource::<StoryRun>()
+                .exits
+                .iter()
+                .all(Option::is_none)
+        );
+        assert!(
+            pads(&mut app).iter().all(|(_, armed, _)| !armed),
+            "no way on"
+        );
+    }
+
+    #[test]
+    fn transition_cancels_in_flight_activation_and_command_queue() {
+        use crate::unit_commands::{CommandQueue, IssueCommand, UnitCommand};
+        let mut app = story_app();
+        let hero = hero(&mut app);
+        enter_room(&mut app, RoomId::Skirmish);
+        let enemy = app
+            .world_mut()
+            .query_filtered::<Entity, With<RoomHostile>>()
+            .iter(app.world())
+            .next()
+            .unwrap();
+        for (queue, destination) in [(false, 400.0), (true, 800.0)] {
+            app.world_mut().write_message(IssueCommand {
+                unit: hero,
+                command: UnitCommand::Move {
+                    destination: Vec3::new(0.0, 0.0, destination),
+                },
+                queue,
+            });
+        }
+        app.world_mut()
+            .write_message(crate::actions::ActivationRequest::item(
+                hero,
+                BOTTLE_SLOT,
+                CastTarget::None,
+            ));
+        app.world_mut().entity_mut(hero).insert(AttackTarget(enemy));
+        run(&mut app, 2);
+        {
+            let queue = app.world().get::<CommandQueue>(hero).unwrap();
+            assert!(queue.current.is_some() || !queue.queued.is_empty());
+        }
+
+        enter_room(&mut app, RoomId::Ambush);
+        let queue = app.world().get::<CommandQueue>(hero).unwrap();
+        assert!(queue.current.is_none() && queue.queued.is_empty());
+        assert!(app.world().get::<MoveTarget>(hero).is_none());
+        assert!(app.world().get::<AttackTarget>(hero).is_none());
+        assert!(
+            app.world()
+                .get::<crate::actions::Activation>(hero)
+                .is_none()
+        );
+        assert!(
+            app.world()
+                .get::<crate::actions::QueuedActivation>(hero)
+                .is_none()
+        );
+    }
+
+    // --- Verification regressions (tester) ---
+
+    fn bottle_charges(app: &App, hero: Entity) -> Option<u32> {
+        app.world().get::<Inventory>(hero).unwrap().slots[BOTTLE_SLOT]
+            .unwrap()
+            .cooldown
+            .charges
+    }
+
+    fn set_bottle_charges(app: &mut App, hero: Entity, charges: u32) {
+        app.world_mut().get_mut::<Inventory>(hero).unwrap().slots[BOTTLE_SLOT]
+            .as_mut()
+            .unwrap()
+            .cooldown
+            .charges = Some(charges);
+    }
+
+    #[test]
+    fn bottle_refills_only_when_a_room_completes_and_never_above_max() {
+        let mut app = story_app();
+        let hero = hero(&mut app);
+
+        // The safe camp never refills: it has no completion.
+        set_bottle_charges(&mut app, hero, 0);
+        run(&mut app, 30);
+        assert_eq!(bottle_charges(&app, hero), Some(0), "safe room: no refill");
+
+        // Entering a hostile room does not refill either; clearing it does.
+        enter_room(&mut app, RoomId::Skirmish);
+        run(&mut app, 30);
+        assert_eq!(phase(&app), StoryPhase::Active);
+        assert_eq!(
+            bottle_charges(&app, hero),
+            Some(0),
+            "active room: no refill"
+        );
+        set_bottle_charges(&mut app, hero, 1);
+        kill_hostiles(&mut app);
+        run(&mut app, 5);
+        assert_eq!(bottle_charges(&app, hero), Some(3));
+
+        // A full bottle stays at the maximum through the next completion.
+        enter_room(&mut app, RoomId::Skirmish);
+        kill_hostiles(&mut app);
+        run(&mut app, 5);
+        assert_eq!(bottle_charges(&app, hero), Some(3), "never above max");
+    }
+
+    #[test]
+    fn hero_dying_on_the_clearing_frame_still_completes_once_and_costs_a_life() {
+        let mut app = story_app();
+        let hero = hero(&mut app);
+        enter_room(&mut app, RoomId::Skirmish);
+        set_bottle_charges(&mut app, hero, 0);
+        let before = gold(&app, hero);
+        kill_hostiles(&mut app);
+        app.world_mut().get_mut::<Health>(hero).unwrap().current = 0.0;
+        let mut completed = 0;
+        for _ in 0..10 {
+            app.update();
+            completed += completions(&app);
+        }
+        assert_eq!(completed, 1, "exactly one completion");
+        assert_eq!(app.world().get::<HeroLives>(hero).unwrap().remaining, 3);
+        assert!(app.world().get::<Downed>(hero).is_some());
+        assert_eq!(phase(&app), StoryPhase::Cleared);
+        assert_eq!(bottle_charges(&app, hero), Some(3));
+        // Six Skirmish creeps pay 35 gold each; the room reward is 400, paid once.
+        assert_eq!(gold(&app, hero), before + 6 * 35 + 400, "reward paid once");
+    }
+
+    #[test]
+    fn losing_the_last_life_on_the_clearing_frame_is_game_over_without_a_completion() {
+        let mut app = story_app();
+        let hero = hero(&mut app);
+        enter_room(&mut app, RoomId::Skirmish);
+        app.world_mut()
+            .get_mut::<HeroLives>(hero)
+            .unwrap()
+            .remaining = 1;
+        let before = gold(&app, hero);
+        kill_hostiles(&mut app);
+        app.world_mut().get_mut::<Health>(hero).unwrap().current = 0.0;
+        let mut completed = 0;
+        for _ in 0..10 {
+            app.update();
+            completed += completions(&app);
+        }
+        assert_eq!(phase(&app), StoryPhase::GameOver);
+        assert_eq!(completed, 0);
+        assert_eq!(
+            gold(&app, hero),
+            before + 6 * 35,
+            "bounties only, no room reward"
+        );
+        assert!(
+            pads(&mut app).iter().all(|(_, armed, _)| !armed),
+            "no exits after the run ended"
+        );
+    }
+
+    #[test]
+    fn victory_is_not_overwritten_by_a_later_death() {
+        let mut app = story_app();
+        let hero = hero(&mut app);
+        app.world_mut().resource_mut::<StoryRun>().depth = FINAL_DEPTH - 1;
+        enter_room(&mut app, RoomId::WarlordLair);
+        kill_hostiles(&mut app);
+        run(&mut app, 5);
+        assert_eq!(phase(&app), StoryPhase::Victory);
+        app.world_mut()
+            .get_mut::<HeroLives>(hero)
+            .unwrap()
+            .remaining = 1;
+        app.world_mut().get_mut::<Health>(hero).unwrap().current = 0.0;
+        run(&mut app, 5);
+        assert_eq!(phase(&app), StoryPhase::Victory);
+    }
+
+    #[test]
+    fn a_downed_hero_on_an_armed_exit_pad_does_not_take_it() {
+        let mut app = story_app();
+        let hero = hero(&mut app);
+        let pad = pads(&mut app)[0].2;
+        put_at(&mut app, hero, pad.xz());
+        app.world_mut().get_mut::<Health>(hero).unwrap().current = 0.0;
+        // The hero is killed before the dwell time elapses and stays dead for 5 s.
+        run(&mut app, 3 * 60);
+        assert!(app.world().get::<Downed>(hero).is_some());
+        assert_eq!(phase(&app), StoryPhase::Cleared, "a corpse takes no exit");
+        assert_eq!(app.world().resource::<StoryRun>().depth, 0);
+    }
+
+    #[test]
+    fn leaving_a_room_removes_its_pickups_and_keeps_heroes_and_their_bars() {
+        use crate::components::HealthBar;
+        let mut app = story_app();
+        let hero = hero(&mut app);
+        enter_room(&mut app, RoomId::Ambush);
+        kill_hostiles(&mut app);
+        run(&mut app, 5);
+        assert_eq!(
+            count::<ItemPickup>(&mut app),
+            1,
+            "the reward lies in the room"
+        );
+        let bar = app
+            .world_mut()
+            .spawn((HealthBar { owner: hero }, Transform::default()))
+            .id();
+
+        enter_room(&mut app, RoomId::Skirmish);
+        assert_eq!(count::<ItemPickup>(&mut app), 0, "no stale pickup");
+        assert!(app.world().get_entity(hero).is_ok(), "hero survives");
+        assert!(app.world().get_entity(bar).is_ok(), "health bar survives");
+        assert_eq!(count::<ExitPad>(&mut app), 2, "exactly one pad pair");
+        assert_eq!(count::<Ground>(&mut app), 1);
+    }
+
+    #[test]
+    fn hostiles_do_not_chase_or_target_a_downed_hero() {
+        let mut app = story_app();
+        let hero = hero(&mut app);
+        enter_room(&mut app, RoomId::Skirmish);
+        // Down the hero right beside the hostiles (inside their aggro radius).
+        put_at(&mut app, hero, Vec2::new(0.0, -300.0));
+        app.world_mut().get_mut::<Health>(hero).unwrap().current = 0.0;
+        run(&mut app, 3);
+        assert!(app.world().get::<Downed>(hero).is_some());
+        run(&mut app, 60);
+        let chasing = app
+            .world_mut()
+            .query_filtered::<&AttackTarget, With<RoomHostile>>()
+            .iter(app.world())
+            .filter(|target| target.0 == hero)
+            .count();
+        assert_eq!(chasing, 0, "no hostile attacks the corpse");
+    }
+
+    #[test]
+    fn a_pre_death_damage_over_time_cannot_kill_the_respawned_hero() {
+        use crate::status::{StatusChange, StatusEffect, StatusEffectEvent};
+        let mut app = story_app();
+        let hero = hero(&mut app);
+        let mut dot = StatusEffect::debuff("verify_dot", 30.0);
+        dot.dot_interval = 1.0;
+        dot.dot_timer = 1.0;
+        dot.dot_per_tick = 100_000.0;
+        dot.dot_ticks_left = 30;
+        app.world_mut()
+            .write_message(StatusEffectEvent::new(None, hero, StatusChange::Apply(dot)));
+        run(&mut app, 3 * 60);
+        assert!(
+            app.world().get::<Downed>(hero).is_some(),
+            "the DoT killed it"
+        );
+        assert_eq!(app.world().get::<HeroLives>(hero).unwrap().remaining, 3);
+        run(&mut app, 3 * 60);
+        assert!(app.world().get::<Downed>(hero).is_none(), "respawned");
+        run(&mut app, 4 * 60);
+        let health = app.world().get::<Health>(hero).unwrap();
+        assert!(health.is_alive(), "the DoT must not outlive the death");
+        assert_eq!(
+            app.world().get::<HeroLives>(hero).unwrap().remaining,
+            3,
+            "no second life lost to the old DoT"
+        );
+    }
+
+    #[test]
+    fn classic_matches_never_grant_story_gear() {
+        let mut app = match_app();
+        app.add_plugins((crate::items::ItemsPlugin, crate::story::StoryPlugin));
+        pick_hero(&mut app, HeroId::Vanguard);
+        let hero = hero(&mut app);
+        assert!(app.world().get::<HeroLives>(hero).is_none());
+        let inventory = app.world().get::<Inventory>(hero).unwrap();
+        assert!(inventory.slots[BOTTLE_SLOT].is_none());
+        assert!(inventory.slots[NEUTRAL_SLOT].is_none());
+        assert_eq!(phase(&app), StoryPhase::Idle);
+        assert_eq!(count::<ExitPad>(&mut app), 0);
+        assert_eq!(count::<RoomHostile>(&mut app), 0);
+    }
+}
+
+// --- Downed heroes take no orders ---
+
+#[test]
+fn downed_unit_drops_issued_commands_and_activation_requests() {
+    use crate::actions::ActivationRequest;
+    use crate::components::{CastTarget, Downed, MoveTarget};
+    use crate::items::{Inventory, ItemId, ItemInstance};
+    use crate::unit_commands::{IssueCommand, UnitCommand};
+
+    let mut app = sim_app();
+    let hero = app
+        .world_mut()
+        .resource_scope(|world, assets: Mut<SharedAssets>| {
+            let mut queue = bevy::ecs::world::CommandQueue::default();
+            let mut commands = Commands::new(&mut queue, world);
+            let hero = crate::units::spawn_hero_entity(
+                &mut commands,
+                &assets,
+                Team::Radiant,
+                true,
+                0,
+                Vec3::ZERO,
+                HeroId::QueenOfPain,
+            );
+            queue.apply(world);
+            hero
+        });
+    app.world_mut().get_mut::<Inventory>(hero).unwrap().slots[0] =
+        Some(ItemInstance::new(ItemId::VialOfLight));
+    app.update();
+
+    app.world_mut()
+        .entity_mut(hero)
+        .insert(Downed { respawn_in: 5.0 });
+    app.world_mut().write_message(IssueCommand {
+        unit: hero,
+        command: UnitCommand::Move {
+            destination: Vec3::new(0.0, 0.0, 2000.0),
+        },
+        queue: false,
+    });
+    app.world_mut()
+        .write_message(ActivationRequest::item(hero, 0, CastTarget::None));
+    for _ in 0..5 {
+        app.update();
+    }
+    assert!(
+        app.world().get::<MoveTarget>(hero).is_none(),
+        "the move order was dropped"
+    );
+    let vial = app.world().get::<Inventory>(hero).unwrap().slots[0].unwrap();
+    assert_eq!(vial.cooldown.remaining, 0.0, "the item was not used");
+
+    // Once the unit is no longer downed the same inputs work.
+    app.world_mut().entity_mut(hero).remove::<Downed>();
+    app.world_mut().write_message(IssueCommand {
+        unit: hero,
+        command: UnitCommand::Move {
+            destination: Vec3::new(0.0, 0.0, 2000.0),
+        },
+        queue: false,
+    });
+    app.world_mut()
+        .write_message(ActivationRequest::item(hero, 0, CastTarget::None));
+    for _ in 0..3 {
+        app.update();
+    }
+    assert!(app.world().get::<MoveTarget>(hero).is_some());
+    let vial = app.world().get::<Inventory>(hero).unwrap().slots[0].unwrap();
+    assert!(vial.cooldown.remaining > 0.0, "the item fired");
+}
+
+// --- Hunter: lane-less creeps that walk to nearby enemies ---
+
+mod hunter {
+    use super::*;
+    use crate::ai::Hunter;
+    use crate::components::{AttackTarget, Creep, CreepClass, MoveTarget};
+    use crate::status::{StatusEffect, StatusEffects};
+
+    fn spawn_hunter(app: &mut App, pos: Vec3) -> Entity {
+        app.world_mut()
+            .resource_scope(|world, assets: Mut<SharedAssets>| {
+                let mut queue = bevy::ecs::world::CommandQueue::default();
+                let mut commands = Commands::new(&mut queue, world);
+                let id = crate::units::spawn_creep_with(
+                    &mut commands,
+                    &assets,
+                    crate::units::CreepSpawn {
+                        team: Team::Dire,
+                        position: pos,
+                        ranged: false,
+                        class: CreepClass::Normal,
+                        lane: None,
+                    },
+                );
+                queue.apply(world);
+                id
+            })
+    }
+
+    fn spawn_target_hero(app: &mut App, pos: Vec3) -> Entity {
+        app.world_mut()
+            .resource_scope(|world, assets: Mut<SharedAssets>| {
+                let mut queue = bevy::ecs::world::CommandQueue::default();
+                let mut commands = Commands::new(&mut queue, world);
+                let hero = crate::units::spawn_hero_entity(
+                    &mut commands,
+                    &assets,
+                    Team::Radiant,
+                    false,
+                    1,
+                    pos,
+                    HeroId::QueenOfPain,
+                );
+                queue.apply(world);
+                hero
+            })
+    }
+
+    fn at(app: &App, unit: Entity) -> Vec3 {
+        app.world().get::<Transform>(unit).unwrap().translation
+    }
+
+    fn flat(a: Vec3, b: Vec3) -> f32 {
+        Vec2::new(a.x - b.x, a.z - b.z).length()
+    }
+
+    fn run(app: &mut App, frames: u32) {
+        for _ in 0..frames {
+            app.update();
+        }
+    }
+
+    #[test]
+    fn hunter_walks_to_enemy_hero_in_aggro_radius_and_attacks() {
+        let mut app = sim_app();
+        let hero = spawn_target_hero(&mut app, Vec3::ZERO);
+        let hunter = spawn_hunter(&mut app, Vec3::new(1000.0, 0.0, 0.0));
+        let full = app.world().get::<Health>(hero).unwrap().current;
+        let start = flat(at(&app, hunter), at(&app, hero));
+        run(&mut app, 60);
+        assert!(
+            flat(at(&app, hunter), at(&app, hero)) < start - 100.0,
+            "the hunter closed in"
+        );
+        // The hero fights back, so watch for the exchange rather than the end state.
+        let (mut attacked, mut hero_hurt) = (false, false);
+        for _ in 0..600 {
+            app.update();
+            let Some(health) = app.world().get::<Health>(hero) else {
+                break;
+            };
+            hero_hurt |= health.current < full;
+            attacked |= app.world().get::<AttackTarget>(hunter).is_some();
+        }
+        assert!(attacked, "the hunter targeted the hero once in range");
+        assert!(hero_hurt, "and landed hits");
+    }
+
+    #[test]
+    fn hunter_ignores_enemies_outside_radius_or_invisible() {
+        let mut app = sim_app();
+        let radius = CreepClass::Normal.profile().aggro_radius;
+        let far = spawn_target_hero(&mut app, Vec3::new(-radius - 400.0, 0.0, 0.0));
+        let hunter = spawn_hunter(&mut app, Vec3::ZERO);
+        let start = at(&app, hunter);
+        run(&mut app, 120);
+        assert_eq!(at(&app, hunter), start, "out of range: it idles");
+        assert!(app.world().get::<MoveTarget>(hunter).is_none());
+
+        // An untargetable enemy inside the radius is ignored too.
+        app.world_mut()
+            .get_mut::<StatusEffects>(far)
+            .unwrap()
+            .effects
+            .push(StatusEffect::untargetable(60.0));
+        app.world_mut()
+            .get_mut::<Transform>(far)
+            .unwrap()
+            .translation = Vec3::new(-600.0, 0.0, 0.0);
+        run(&mut app, 120);
+        assert_eq!(at(&app, hunter), start, "untargetable: it idles");
+        assert!(app.world().get::<MoveTarget>(hunter).is_none());
+        assert!(app.world().get::<Hunter>(hunter).is_some());
+        assert!(app.world().get::<Creep>(hunter).unwrap().lane.is_none());
+    }
+
+    #[test]
+    fn hunter_does_not_override_compulsions() {
+        let mut app = sim_app();
+        let hero = spawn_target_hero(&mut app, Vec3::new(-500.0, 0.0, 0.0));
+        let hunter = spawn_hunter(&mut app, Vec3::ZERO);
+        app.update();
+        app.world_mut()
+            .get_mut::<StatusEffects>(hunter)
+            .unwrap()
+            .effects
+            .push(StatusEffect::fear(10.0, Some(hero)));
+        run(&mut app, 120);
+        let now = at(&app, hunter);
+        // Hunting would have taken it toward the hero (-x); fear sends it the other way.
+        assert!(
+            now.x > 300.0,
+            "the feared hunter ran away from the hero: {now:?}"
+        );
+    }
 }
 
 // --- Compulsions (fear, taunt, hypnosis): whole-sim behaviour ---
@@ -754,11 +1821,103 @@ mod conversion {
         let risen = creeps_of(&mut app, Team::Radiant);
         assert_eq!(risen.len(), 1);
         let creep = *app.world().get::<Creep>(risen[0]).unwrap();
-        assert_eq!(creep.lane, Lane::Top);
+        assert_eq!(creep.lane, Some(Lane::Top));
         assert!(creep.ranged, "same creep type");
         let health = app.world().get::<Health>(risen[0]).unwrap();
         assert_eq!(health.current, health.max);
         assert_eq!(health.max, 240.0, "a ranged creep's full health");
+    }
+
+    fn spawn_class_creep(
+        app: &mut App,
+        team: Team,
+        class: crate::components::CreepClass,
+        lane: Option<Lane>,
+        pos: Vec3,
+    ) -> Entity {
+        app.world_mut()
+            .resource_scope(|world, assets: Mut<SharedAssets>| {
+                let mut queue = bevy::ecs::world::CommandQueue::default();
+                let mut commands = Commands::new(&mut queue, world);
+                let id = crate::units::spawn_creep_with(
+                    &mut commands,
+                    &assets,
+                    crate::units::CreepSpawn {
+                        team,
+                        position: pos,
+                        ranged: false,
+                        class,
+                        lane,
+                    },
+                );
+                queue.apply(world);
+                id
+            })
+    }
+
+    #[test]
+    fn captains_and_bosses_never_convert_on_death() {
+        use crate::components::CreepClass;
+        for class in [CreepClass::Captain, CreepClass::Boss] {
+            let mut app = sim_app();
+            let _holder = spawn_holder(&mut app, Team::Radiant, Vec3::ZERO, 300.0, 10.0);
+            let victim = spawn_class_creep(
+                &mut app,
+                Team::Dire,
+                class,
+                Some(Lane::Mid),
+                Vec3::new(200.0, 0.0, 0.0),
+            );
+            app.update();
+            kill(&mut app, victim);
+            run(&mut app, 3);
+            assert!(creeps_of(&mut app, Team::Dire).is_empty(), "{class:?} died");
+            assert!(
+                creeps_of(&mut app, Team::Radiant).is_empty(),
+                "{class:?} must not be raised"
+            );
+        }
+        // A Normal creep next to them still converts (the rule is per class).
+        let mut app = sim_app();
+        let _holder = spawn_holder(&mut app, Team::Radiant, Vec3::ZERO, 300.0, 10.0);
+        let victim = spawn_class_creep(
+            &mut app,
+            Team::Dire,
+            CreepClass::Normal,
+            Some(Lane::Mid),
+            Vec3::new(200.0, 0.0, 0.0),
+        );
+        app.update();
+        kill(&mut app, victim);
+        run(&mut app, 3);
+        assert_eq!(creeps_of(&mut app, Team::Radiant).len(), 1);
+    }
+
+    #[test]
+    fn lane_less_converted_creep_hunts() {
+        use crate::components::CreepClass;
+        let mut app = sim_app();
+        let _holder = spawn_holder(&mut app, Team::Radiant, Vec3::ZERO, 300.0, 10.0);
+        let victim = spawn_class_creep(
+            &mut app,
+            Team::Dire,
+            CreepClass::Normal,
+            None,
+            Vec3::new(200.0, 0.0, 0.0),
+        );
+        app.update();
+        kill(&mut app, victim);
+        run(&mut app, 3);
+        let risen = creeps_of(&mut app, Team::Radiant);
+        assert_eq!(risen.len(), 1);
+        let creep = *app.world().get::<Creep>(risen[0]).unwrap();
+        assert_eq!(creep.lane, None);
+        assert!(app.world().get::<crate::ai::Hunter>(risen[0]).is_some());
+        assert!(
+            app.world()
+                .get::<crate::ai::LaneFollower>(risen[0])
+                .is_none()
+        );
     }
 
     #[test]
