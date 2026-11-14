@@ -1050,7 +1050,7 @@ fn conversion_holder(
 }
 
 #[allow(clippy::type_complexity)]
-fn despawn_dead(
+pub(crate) fn despawn_dead(
     mut commands: Commands,
     dead: Query<
         (

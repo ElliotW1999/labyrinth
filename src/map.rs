@@ -124,7 +124,7 @@ pub(crate) type MatchEntityFilter = (
 );
 
 #[allow(clippy::too_many_arguments)]
-fn reset_match(
+pub(crate) fn reset_match(
     mut requests: MessageReader<ResetMatchRequest>,
     mut commands: Commands,
     world_entities: Query<Entity, MatchEntityFilter>,

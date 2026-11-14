@@ -1217,48 +1217,74 @@ pub fn shop_purchase_range() -> f32 {
     scale::map(6.0)
 }
 
+/// Edge length of the shop cube.
+pub const SHOP_SIZE: f32 = 140.0;
+
+/// Look of a team's shop cube.
+pub fn shop_material(team: Team) -> StandardMaterial {
+    match team {
+        Team::Radiant => StandardMaterial {
+            base_color: Color::srgb(0.95, 0.75, 0.25),
+            emissive: LinearRgba::rgb(2.0, 1.2, 0.2),
+            perceptual_roughness: 0.45,
+            metallic: 0.35,
+            ..default()
+        },
+        Team::Dire => StandardMaterial {
+            base_color: Color::srgb(0.85, 0.35, 0.55),
+            emissive: LinearRgba::rgb(1.5, 0.3, 0.8),
+            perceptual_roughness: 0.45,
+            metallic: 0.35,
+            ..default()
+        },
+    }
+}
+
+/// Spawn one gold shop at `position` (its centre; see [`shop_world_position`] for the
+/// height). Shared by the classic map and Story Mode's safe room.
+pub fn spawn_item_shop(
+    commands: &mut Commands,
+    name: &str,
+    mesh: Handle<Mesh>,
+    material: Handle<StandardMaterial>,
+    team: Team,
+    position: Vec3,
+) -> Entity {
+    commands
+        .spawn((
+            Name::new(name.to_string()),
+            Mesh3d(mesh),
+            MeshMaterial3d(material),
+            Transform::from_translation(position),
+            ItemShop {
+                team,
+                purchase_range: shop_purchase_range(),
+            },
+        ))
+        .id()
+}
+
 fn spawn_shops(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let height = 140.0;
-    let mesh = meshes.add(Cuboid::new(height, height, height));
-    let radiant_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.95, 0.75, 0.25),
-        emissive: LinearRgba::rgb(2.0, 1.2, 0.2),
-        perceptual_roughness: 0.45,
-        metallic: 0.35,
-        ..default()
-    });
-    let dire_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.85, 0.35, 0.55),
-        emissive: LinearRgba::rgb(1.5, 0.3, 0.8),
-        perceptual_roughness: 0.45,
-        metallic: 0.35,
-        ..default()
-    });
-
-    commands.spawn((
-        Name::new("Radiant Item Shop"),
-        Mesh3d(mesh.clone()),
-        MeshMaterial3d(radiant_mat),
-        Transform::from_translation(shop_world_position(Team::Radiant)),
-        ItemShop {
-            team: Team::Radiant,
-            purchase_range: shop_purchase_range(),
-        },
-    ));
-    commands.spawn((
-        Name::new("Dire Item Shop"),
-        Mesh3d(mesh),
-        MeshMaterial3d(dire_mat),
-        Transform::from_translation(shop_world_position(Team::Dire)),
-        ItemShop {
-            team: Team::Dire,
-            purchase_range: shop_purchase_range(),
-        },
-    ));
+    let mesh = meshes.add(Cuboid::new(SHOP_SIZE, SHOP_SIZE, SHOP_SIZE));
+    let radiant_mat = materials.add(shop_material(Team::Radiant));
+    let dire_mat = materials.add(shop_material(Team::Dire));
+    for (name, material, team) in [
+        ("Radiant Item Shop", radiant_mat, Team::Radiant),
+        ("Dire Item Shop", dire_mat, Team::Dire),
+    ] {
+        spawn_item_shop(
+            &mut commands,
+            name,
+            mesh.clone(),
+            material,
+            team,
+            shop_world_position(team),
+        );
+    }
 }
 
 /// Put a new `id` into the empty neutral or bottle `slot`, applying its passives. Returns
