@@ -234,8 +234,8 @@ fn regen_mana(
     }
 }
 
-/// Ability (QWER) and item (A S D Z X C) hotkeys, in slot order.
-const ACTION_HOTKEYS: [(KeyCode, ActionSource); 10] = [
+/// Ability (QWER) and item (A S D Z X C, V neutral, B bottle) hotkeys, in slot order.
+pub(crate) const ACTION_HOTKEYS: [(KeyCode, ActionSource); 12] = [
     (KeyCode::KeyQ, ActionSource::Ability(0)),
     (KeyCode::KeyW, ActionSource::Ability(1)),
     (KeyCode::KeyE, ActionSource::Ability(2)),
@@ -246,6 +246,11 @@ const ACTION_HOTKEYS: [(KeyCode, ActionSource); 10] = [
     (KeyCode::KeyZ, ActionSource::Item(3)),
     (KeyCode::KeyX, ActionSource::Item(4)),
     (KeyCode::KeyC, ActionSource::Item(5)),
+    (
+        KeyCode::KeyV,
+        ActionSource::Item(crate::items::NEUTRAL_SLOT),
+    ),
+    (KeyCode::KeyB, ActionSource::Item(crate::items::BOTTLE_SLOT)),
 ];
 
 /// QWER / ASDZXC: no-target and self-target actions activate immediately; targeted ones

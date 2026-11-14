@@ -1655,11 +1655,13 @@ fn handle_inventory_context_menu(
         if *interaction == Interaction::None {
             continue;
         }
-        if inventory
-            .slots
-            .get(slot.index)
-            .and_then(|s| s.as_ref())
-            .is_some()
+        // Only backpack items can be sold; the neutral and bottle slots have no menu.
+        if slot.index < crate::items::BACKPACK_SLOTS
+            && inventory
+                .slots
+                .get(slot.index)
+                .and_then(|s| s.as_ref())
+                .is_some()
         {
             menu.slot = Some(slot.index);
             *vis = Visibility::Visible;
