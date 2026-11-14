@@ -321,6 +321,143 @@ fn change_hero_keeps_the_current_mode_and_new_game_returns_to_classic() {
     assert_eq!(count::<PlayerHero>(&mut app), 1);
 }
 
+// --- Hunter: lane-less creeps that walk to nearby enemies ---
+
+mod hunter {
+    use super::*;
+    use crate::ai::Hunter;
+    use crate::components::{AttackTarget, Creep, CreepClass, MoveTarget};
+    use crate::status::{StatusEffect, StatusEffects};
+
+    fn spawn_hunter(app: &mut App, pos: Vec3) -> Entity {
+        app.world_mut()
+            .resource_scope(|world, assets: Mut<SharedAssets>| {
+                let mut queue = bevy::ecs::world::CommandQueue::default();
+                let mut commands = Commands::new(&mut queue, world);
+                let id = crate::units::spawn_creep_with(
+                    &mut commands,
+                    &assets,
+                    crate::units::CreepSpawn {
+                        team: Team::Dire,
+                        position: pos,
+                        ranged: false,
+                        class: CreepClass::Normal,
+                        lane: None,
+                    },
+                );
+                queue.apply(world);
+                id
+            })
+    }
+
+    fn spawn_target_hero(app: &mut App, pos: Vec3) -> Entity {
+        app.world_mut()
+            .resource_scope(|world, assets: Mut<SharedAssets>| {
+                let mut queue = bevy::ecs::world::CommandQueue::default();
+                let mut commands = Commands::new(&mut queue, world);
+                let hero = crate::units::spawn_hero_entity(
+                    &mut commands,
+                    &assets,
+                    Team::Radiant,
+                    false,
+                    1,
+                    pos,
+                    HeroId::QueenOfPain,
+                );
+                queue.apply(world);
+                hero
+            })
+    }
+
+    fn at(app: &App, unit: Entity) -> Vec3 {
+        app.world().get::<Transform>(unit).unwrap().translation
+    }
+
+    fn flat(a: Vec3, b: Vec3) -> f32 {
+        Vec2::new(a.x - b.x, a.z - b.z).length()
+    }
+
+    fn run(app: &mut App, frames: u32) {
+        for _ in 0..frames {
+            app.update();
+        }
+    }
+
+    #[test]
+    fn hunter_walks_to_enemy_hero_in_aggro_radius_and_attacks() {
+        let mut app = sim_app();
+        let hero = spawn_target_hero(&mut app, Vec3::ZERO);
+        let hunter = spawn_hunter(&mut app, Vec3::new(1000.0, 0.0, 0.0));
+        let full = app.world().get::<Health>(hero).unwrap().current;
+        let start = flat(at(&app, hunter), at(&app, hero));
+        run(&mut app, 60);
+        assert!(
+            flat(at(&app, hunter), at(&app, hero)) < start - 100.0,
+            "the hunter closed in"
+        );
+        // The hero fights back, so watch for the exchange rather than the end state.
+        let (mut attacked, mut hero_hurt) = (false, false);
+        for _ in 0..600 {
+            app.update();
+            let Some(health) = app.world().get::<Health>(hero) else {
+                break;
+            };
+            hero_hurt |= health.current < full;
+            attacked |= app.world().get::<AttackTarget>(hunter).is_some();
+        }
+        assert!(attacked, "the hunter targeted the hero once in range");
+        assert!(hero_hurt, "and landed hits");
+    }
+
+    #[test]
+    fn hunter_ignores_enemies_outside_radius_or_invisible() {
+        let mut app = sim_app();
+        let radius = CreepClass::Normal.profile().aggro_radius;
+        let far = spawn_target_hero(&mut app, Vec3::new(-radius - 400.0, 0.0, 0.0));
+        let hunter = spawn_hunter(&mut app, Vec3::ZERO);
+        let start = at(&app, hunter);
+        run(&mut app, 120);
+        assert_eq!(at(&app, hunter), start, "out of range: it idles");
+        assert!(app.world().get::<MoveTarget>(hunter).is_none());
+
+        // An untargetable enemy inside the radius is ignored too.
+        app.world_mut()
+            .get_mut::<StatusEffects>(far)
+            .unwrap()
+            .effects
+            .push(StatusEffect::untargetable(60.0));
+        app.world_mut()
+            .get_mut::<Transform>(far)
+            .unwrap()
+            .translation = Vec3::new(-600.0, 0.0, 0.0);
+        run(&mut app, 120);
+        assert_eq!(at(&app, hunter), start, "untargetable: it idles");
+        assert!(app.world().get::<MoveTarget>(hunter).is_none());
+        assert!(app.world().get::<Hunter>(hunter).is_some());
+        assert!(app.world().get::<Creep>(hunter).unwrap().lane.is_none());
+    }
+
+    #[test]
+    fn hunter_does_not_override_compulsions() {
+        let mut app = sim_app();
+        let hero = spawn_target_hero(&mut app, Vec3::new(-500.0, 0.0, 0.0));
+        let hunter = spawn_hunter(&mut app, Vec3::ZERO);
+        app.update();
+        app.world_mut()
+            .get_mut::<StatusEffects>(hunter)
+            .unwrap()
+            .effects
+            .push(StatusEffect::fear(10.0, Some(hero)));
+        run(&mut app, 120);
+        let now = at(&app, hunter);
+        // Hunting would have taken it toward the hero (-x); fear sends it the other way.
+        assert!(
+            now.x > 300.0,
+            "the feared hunter ran away from the hero: {now:?}"
+        );
+    }
+}
+
 // --- Compulsions (fear, taunt, hypnosis): whole-sim behaviour ---
 
 mod compulsions {
@@ -915,6 +1052,33 @@ mod conversion {
         kill(&mut app, victim);
         run(&mut app, 3);
         assert_eq!(creeps_of(&mut app, Team::Radiant).len(), 1);
+    }
+
+    #[test]
+    fn lane_less_converted_creep_hunts() {
+        use crate::components::CreepClass;
+        let mut app = sim_app();
+        let _holder = spawn_holder(&mut app, Team::Radiant, Vec3::ZERO, 300.0, 10.0);
+        let victim = spawn_class_creep(
+            &mut app,
+            Team::Dire,
+            CreepClass::Normal,
+            None,
+            Vec3::new(200.0, 0.0, 0.0),
+        );
+        app.update();
+        kill(&mut app, victim);
+        run(&mut app, 3);
+        let risen = creeps_of(&mut app, Team::Radiant);
+        assert_eq!(risen.len(), 1);
+        let creep = *app.world().get::<Creep>(risen[0]).unwrap();
+        assert_eq!(creep.lane, None);
+        assert!(app.world().get::<crate::ai::Hunter>(risen[0]).is_some());
+        assert!(
+            app.world()
+                .get::<crate::ai::LaneFollower>(risen[0])
+                .is_none()
+        );
     }
 
     #[test]

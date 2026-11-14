@@ -281,6 +281,11 @@ pub fn spawn_creep_with(
             index: 0,
         });
     }
+    if lane.is_none() {
+        commands.entity(id).insert(crate::ai::Hunter {
+            aggro_radius: profile.aggro_radius,
+        });
+    }
     if let Some(tag) = profile.tag {
         commands.entity(id).insert(WorldTag(tag.to_string()));
     }
@@ -567,6 +572,7 @@ mod tests {
             assert_eq!(creep.lane, Some(Lane::Mid));
             assert_eq!(creep.class, CreepClass::Normal);
             assert!(world.get::<crate::ai::LaneFollower>(id).is_some());
+            assert!(world.get::<crate::ai::Hunter>(id).is_none());
             assert!(world.get::<WorldTag>(id).is_none());
         }
         // The classic entry point is the same thing.
@@ -637,6 +643,11 @@ mod tests {
             assert!(
                 world.get::<crate::ai::LaneFollower>(id).is_none(),
                 "a lane-less creep follows no lane"
+            );
+            assert_eq!(
+                world.get::<crate::ai::Hunter>(id).unwrap().aggro_radius,
+                profile.aggro_radius,
+                "it hunts instead"
             );
         }
     }

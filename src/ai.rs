@@ -1,4 +1,4 @@
-//! Creep lane following and tower / creep aggro.
+//! Creep lane following, lane-less hunting, and tower / creep aggro.
 //!
 //! The player hero is intentionally excluded — player orders must never be
 //! overwritten by AI aggro/chase logic.
@@ -32,6 +32,7 @@ impl Plugin for AiPlugin {
             Update,
             (
                 follow_lane_waypoints,
+                hunt_enemies,
                 acquire_targets,
                 player_attack_move,
                 enforce_compulsions,
@@ -81,6 +82,14 @@ impl LaneFollower {
     }
 }
 
+/// Aggro of a creep that follows no lane (placed by a game mode, e.g. Story rooms): it walks
+/// to the nearest living enemy within `aggro_radius`, and [`acquire_targets`] attacks it
+/// once it is in range.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct Hunter {
+    pub aggro_radius: f32,
+}
+
 /// Whether a status on the unit takes its orders away (a compulsion is in charge instead).
 fn orders_blocked(statuses: Option<&StatusEffects>) -> bool {
     statuses.is_some_and(|s| s.blocks().contains(ActionBlocks::ORDERS))
@@ -118,6 +127,41 @@ fn follow_lane_waypoints(
         commands.entity(entity).insert(MoveTarget {
             position: Vec3::new(next.x, 0.0, next.z),
         });
+    }
+}
+
+/// Hunters without an attack target walk toward the nearest enemy they may attack within
+/// their aggro radius. With none in range they keep their last move and idle. Units whose
+/// orders a compulsion has taken (fear, taunt) are left to `enforce_compulsions`.
+fn hunt_enemies(
+    hunters: Query<
+        (Entity, &Transform, &Team, &Hunter, Option<&StatusEffects>),
+        (With<Creep>, Without<AttackTarget>),
+    >,
+    candidates: Query<(Entity, &Transform, &Team, &Health)>,
+    statuses_of: Query<&StatusEffects>,
+    mut commands: Commands,
+) {
+    for (entity, transform, team, hunter, own_statuses) in &hunters {
+        if orders_blocked(own_statuses) {
+            continue;
+        }
+        let origin = transform.translation;
+        let nearest = candidates
+            .iter()
+            .filter(|(e, _, other_team, health)| {
+                **other_team == team.enemy()
+                    && health.is_alive()
+                    && is_targetable(&statuses_of, *e, TargetIntent::Attack)
+            })
+            .map(|(_, tf, _, _)| (tf.translation, flat_distance(origin, tf.translation)))
+            .filter(|(_, distance)| *distance <= hunter.aggro_radius)
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        if let Some((position, _)) = nearest {
+            commands.entity(entity).insert(MoveTarget {
+                position: Vec3::new(position.x, 0.0, position.z),
+            });
+        }
     }
 }
 
