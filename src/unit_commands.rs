@@ -137,6 +137,8 @@ pub struct CommandContext<'w, 's> {
     casts: MessageWriter<'w, ActivationRequest>,
     grid: Res<'w, NavGrid>,
     radii: Query<'w, 's, Option<&'static CollisionRadius>>,
+    /// Downed heroes (Story Mode) take no orders.
+    downed: Query<'w, 's, (), With<crate::components::Downed>>,
     health: Query<
         'w,
         's,
@@ -156,11 +158,13 @@ impl CommandContext<'_, '_> {
             .is_ok_and(|(h, statuses)| h.is_alive() && !statuses.is_some_and(|s| s.rejects(intent)))
     }
 
-    /// A compulsion (fear, taunt, hypnosis) holds the unit: it takes no orders.
+    /// A compulsion (fear, taunt, hypnosis) holds the unit, or it is downed: it takes no
+    /// orders.
     fn orders_blocked(&self, unit: Entity) -> bool {
-        self.health.get(unit).is_ok_and(|(_, statuses)| {
-            statuses.is_some_and(|s| s.blocks().contains(ActionBlocks::ORDERS))
-        })
+        self.downed.contains(unit)
+            || self.health.get(unit).is_ok_and(|(_, statuses)| {
+                statuses.is_some_and(|s| s.blocks().contains(ActionBlocks::ORDERS))
+            })
     }
 
     /// Non-navigable destinations resolve to the closest point the unit fits.

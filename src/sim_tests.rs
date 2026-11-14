@@ -321,6 +321,78 @@ fn change_hero_keeps_the_current_mode_and_new_game_returns_to_classic() {
     assert_eq!(count::<PlayerHero>(&mut app), 1);
 }
 
+// --- Downed heroes take no orders ---
+
+#[test]
+fn downed_unit_drops_issued_commands_and_activation_requests() {
+    use crate::actions::ActivationRequest;
+    use crate::components::{CastTarget, Downed, MoveTarget};
+    use crate::items::{Inventory, ItemId, ItemInstance};
+    use crate::unit_commands::{IssueCommand, UnitCommand};
+
+    let mut app = sim_app();
+    let hero = app
+        .world_mut()
+        .resource_scope(|world, assets: Mut<SharedAssets>| {
+            let mut queue = bevy::ecs::world::CommandQueue::default();
+            let mut commands = Commands::new(&mut queue, world);
+            let hero = crate::units::spawn_hero_entity(
+                &mut commands,
+                &assets,
+                Team::Radiant,
+                true,
+                0,
+                Vec3::ZERO,
+                HeroId::QueenOfPain,
+            );
+            queue.apply(world);
+            hero
+        });
+    app.world_mut().get_mut::<Inventory>(hero).unwrap().slots[0] =
+        Some(ItemInstance::new(ItemId::VialOfLight));
+    app.update();
+
+    app.world_mut()
+        .entity_mut(hero)
+        .insert(Downed { respawn_in: 5.0 });
+    app.world_mut().write_message(IssueCommand {
+        unit: hero,
+        command: UnitCommand::Move {
+            destination: Vec3::new(0.0, 0.0, 2000.0),
+        },
+        queue: false,
+    });
+    app.world_mut()
+        .write_message(ActivationRequest::item(hero, 0, CastTarget::None));
+    for _ in 0..5 {
+        app.update();
+    }
+    assert!(
+        app.world().get::<MoveTarget>(hero).is_none(),
+        "the move order was dropped"
+    );
+    let vial = app.world().get::<Inventory>(hero).unwrap().slots[0].unwrap();
+    assert_eq!(vial.cooldown.remaining, 0.0, "the item was not used");
+
+    // Once the unit is no longer downed the same inputs work.
+    app.world_mut().entity_mut(hero).remove::<Downed>();
+    app.world_mut().write_message(IssueCommand {
+        unit: hero,
+        command: UnitCommand::Move {
+            destination: Vec3::new(0.0, 0.0, 2000.0),
+        },
+        queue: false,
+    });
+    app.world_mut()
+        .write_message(ActivationRequest::item(hero, 0, CastTarget::None));
+    for _ in 0..3 {
+        app.update();
+    }
+    assert!(app.world().get::<MoveTarget>(hero).is_some());
+    let vial = app.world().get::<Inventory>(hero).unwrap().slots[0].unwrap();
+    assert!(vial.cooldown.remaining > 0.0, "the item fired");
+}
+
 // --- Hunter: lane-less creeps that walk to nearby enemies ---
 
 mod hunter {

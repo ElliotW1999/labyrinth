@@ -266,7 +266,10 @@ fn begin_or_cast_from_hotkeys(
     sources: ActionSources,
     mut issue: MessageWriter<IssueCommand>,
     mut requests: MessageWriter<ActivationRequest>,
-    hero: Query<(Entity, &Transform, &Mana, &StatusEffects), With<PlayerHero>>,
+    hero: Query<
+        (Entity, &Transform, &Mana, &StatusEffects),
+        (With<PlayerHero>, Without<crate::components::Downed>),
+    >,
 ) {
     let Ok((hero_entity, transform, mana, statuses)) = hero.single() else {
         return;

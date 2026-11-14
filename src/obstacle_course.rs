@@ -6,7 +6,7 @@ use crate::combat::apply_damage;
 use crate::components::{
     BoundRadius, CollisionRadius, CombatStats, Creep, DamageType, Health, Lifetime, PlayerHero,
 };
-use crate::dimensions::{area_contains, bounds_of, collision_of};
+use crate::dimensions::{area_contains, bounds_of, collision_of, rect_touches_circle};
 use crate::fog::{FogFreeZones, FogRect};
 use crate::net::NetworkedHero;
 use crate::resources::SharedAssets;
@@ -279,11 +279,14 @@ fn tick_heartpiercer_plates(
             continue;
         }
 
+        let half = Vec2::new(plate.half_x, plate.half_z);
         let stepped = walkers.iter().any(|(walker, radius)| {
-            let r = collision_of(radius);
-            let dx = (walker.translation.x - plate_tf.translation.x).abs();
-            let dz = (walker.translation.z - plate_tf.translation.z).abs();
-            dx <= plate.half_x + r && dz <= plate.half_z + r
+            rect_touches_circle(
+                plate_tf.translation,
+                half,
+                walker.translation,
+                collision_of(radius),
+            )
         });
         if !stepped {
             continue;
@@ -386,6 +389,105 @@ fn apply_hazard_hits(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn plate_app() -> (App, Entity) {
+        let mut app = App::new();
+        app.init_resource::<Time>()
+            .init_resource::<SharedAssets>()
+            .add_systems(Update, tick_heartpiercer_plates);
+        let piercer = app
+            .world_mut()
+            .spawn((
+                Transform::from_xyz(0.0, 0.0, 500.0),
+                Heartpiercer {
+                    damage: 10.0,
+                    cooldown: 3.0,
+                    remaining: 0.0,
+                    speed: 100.0,
+                },
+            ))
+            .id();
+        app.world_mut().spawn((
+            Transform::from_xyz(0.0, 0.0, 0.0),
+            PressurePlate {
+                piercer,
+                half_x: 50.0,
+                half_z: 40.0,
+            },
+        ));
+        (app, piercer)
+    }
+
+    fn orbs(app: &mut App) -> usize {
+        app.world_mut()
+            .query::<&HazardOrb>()
+            .iter(app.world())
+            .count()
+    }
+
+    #[test]
+    fn heartpiercer_plate_fires_when_a_walker_touches_it() {
+        let (mut app, piercer) = plate_app();
+        // Just outside the plate's edge plus the walker's radius: nothing happens.
+        let walker = app
+            .world_mut()
+            .spawn((
+                Transform::from_xyz(50.0 + 36.0 + 1.0, 0.0, 0.0),
+                Creep {
+                    lane: None,
+                    ranged: false,
+                    class: crate::components::CreepClass::Normal,
+                },
+                CollisionRadius(36.0),
+            ))
+            .id();
+        app.update();
+        assert_eq!(orbs(&mut app), 0);
+        assert_eq!(
+            app.world().get::<Heartpiercer>(piercer).unwrap().remaining,
+            0.0
+        );
+
+        // Touching it (within the radius of the plate edge) fires once and starts the cooldown.
+        app.world_mut()
+            .get_mut::<Transform>(walker)
+            .unwrap()
+            .translation
+            .x = 50.0 + 36.0 - 1.0;
+        app.update();
+        assert_eq!(orbs(&mut app), 1);
+        assert_eq!(
+            app.world().get::<Heartpiercer>(piercer).unwrap().remaining,
+            3.0
+        );
+        app.update();
+        assert_eq!(orbs(&mut app), 1, "cooling down");
+    }
+
+    #[test]
+    fn rect_touches_circle_matches_the_plate_rule() {
+        let center = Vec3::new(100.0, 0.0, -40.0);
+        let half = Vec2::new(50.0, 40.0);
+        assert!(rect_touches_circle(center, half, center, 0.0));
+        assert!(rect_touches_circle(
+            center,
+            half,
+            center + Vec3::new(60.0, 5.0, 0.0),
+            10.0
+        ));
+        assert!(!rect_touches_circle(
+            center,
+            half,
+            center + Vec3::new(61.0, 5.0, 0.0),
+            10.0
+        ));
+        assert!(!rect_touches_circle(
+            center,
+            half,
+            center + Vec3::new(0.0, 0.0, 51.0),
+            10.0
+        ));
+    }
 
     #[test]
     fn course_sits_just_south_of_the_radiant_ancient() {

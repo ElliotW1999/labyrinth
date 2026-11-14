@@ -614,6 +614,13 @@ pub struct Creep {
     pub class: CreepClass,
 }
 
+/// A dead hero waiting to respawn (Story Mode). While present the unit takes no orders and
+/// fires no actions; `respawn_in` counts down to the revive.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct Downed {
+    pub respawn_in: f32,
+}
+
 /// Text shown on the unit's world label (Captain / Boss, Story exit names).
 #[derive(Component, Debug, Clone, PartialEq, Eq)]
 pub struct WorldTag(pub String);
