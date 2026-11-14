@@ -1,7 +1,7 @@
 # Story Mode: dungeon-crawler game mode (rooms, lives, creep classes, neutral slot, bottle)
 
 **Date:** 2026-11-13
-**Status:** Proposed. The architect is read-only and did not run `cargo test`; Step 0 records the baseline.
+**Status:** Approved 2026-11-13 (D1a, D2a, D4a and all recommended defaults). Step 0 records the baseline.
 **Builds on:**
 - `docs/architecture/composition.md`: the six layers and invariants I1 to I12 (this plan amends I4).
 - `docs/plans/2026-11-07-item-ability-architecture-cleanup.md`: the **V** verification commands; source-specific rules stay in their own domain (I7).
