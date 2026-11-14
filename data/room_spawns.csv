@@ -1,0 +1,10 @@
+room_id,spawn_index,creep,class,count,x,z
+skirmish,0,melee,normal,4,0,-500
+skirmish,1,ranged,normal,2,0,-800
+ambush,0,melee,normal,3,-500,-400
+ambush,1,ranged,normal,3,500,-600
+captains_watch,0,melee,captain,1,0,-600
+captains_watch,1,melee,normal,4,0,-400
+captains_watch,2,ranged,normal,2,0,-850
+warlord_lair,0,melee,boss,1,0,-900
+warlord_lair,1,ranged,captain,2,0,-600
