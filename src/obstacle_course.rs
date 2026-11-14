@@ -20,7 +20,8 @@ impl Plugin for ObstacleCoursePlugin {
             Update,
             spawn_obstacle_course
                 .in_set(crate::map::MapGenSet)
-                .run_if(crate::map::map_requested),
+                .run_if(crate::map::map_requested)
+                .run_if(crate::map::classic_mode),
         )
         .add_systems(
             Update,

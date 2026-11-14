@@ -1,10 +1,12 @@
-//! Esc main menu: New Game, Change Hero, Settings, Quit.
+//! Esc main menu: New Game, Story Mode, Change Hero, Settings, Quit.
 
 use bevy::prelude::*;
 
 use crate::abilities::{AbilityTargeting, cancel_targeting_if_any};
 use crate::items::{InventoryContextMenu, ShopUiState};
-use crate::map::ResetMatchRequest;
+use crate::map::{GameMode, ResetMatchRequest};
+use crate::net::NetConfig;
+use crate::story::story_available;
 use crate::ui::InventorySellMenu;
 
 pub struct MenuPlugin;
@@ -19,6 +21,7 @@ impl Plugin for MenuPlugin {
                     toggle_main_menu,
                     handle_main_menu_buttons,
                     sync_main_menu_visibility,
+                    sync_story_button,
                     sync_settings_visibility,
                 )
                     .chain(),
@@ -41,6 +44,7 @@ struct SettingsPanel;
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 enum MainMenuButton {
     NewGame,
+    StoryMode,
     ChangeHero,
     Settings,
     Quit,
@@ -91,6 +95,7 @@ fn spawn_main_menu_ui(mut commands: Commands) {
                     },
                 ));
                 spawn_menu_button(panel, MainMenuButton::NewGame, "New Game");
+                spawn_menu_button(panel, MainMenuButton::StoryMode, "Story Mode");
                 spawn_menu_button(panel, MainMenuButton::ChangeHero, "Change Hero");
                 spawn_menu_button(panel, MainMenuButton::Settings, "Settings");
                 spawn_menu_button(panel, MainMenuButton::Quit, "Quit");
@@ -213,6 +218,38 @@ fn sync_main_menu_visibility(
     };
 }
 
+/// Story Mode is offline only: grey the button out (and relabel it) in host / client
+/// sessions. `handle_main_menu_buttons` ignores presses while it is unavailable.
+fn sync_story_button(
+    config: Option<Res<NetConfig>>,
+    mut buttons: Query<(&MainMenuButton, &mut BackgroundColor, &Children)>,
+    mut labels: Query<&mut Text>,
+) {
+    let available = config.is_none_or(|c| story_available(c.mode));
+    for (button, mut background, children) in &mut buttons {
+        if *button != MainMenuButton::StoryMode {
+            continue;
+        }
+        *background = BackgroundColor(if available {
+            Color::srgb(0.2, 0.28, 0.38)
+        } else {
+            Color::srgb(0.14, 0.16, 0.19)
+        });
+        for child in children.iter() {
+            if let Ok(mut text) = labels.get_mut(child) {
+                let wanted = if available {
+                    "Story Mode"
+                } else {
+                    "Story Mode (offline only)"
+                };
+                if text.0 != wanted {
+                    text.0 = wanted.to_string();
+                }
+            }
+        }
+    }
+}
+
 fn sync_settings_visibility(
     menu: Res<MainMenuState>,
     mut panel: Query<&mut Visibility, With<SettingsPanel>>,
@@ -227,22 +264,37 @@ fn sync_settings_visibility(
     };
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_main_menu_buttons(
     interactions: Query<(&Interaction, &MainMenuButton), Changed<Interaction>>,
     mut menu: ResMut<MainMenuState>,
     mut exit: MessageWriter<AppExit>,
     mut reset: MessageWriter<ResetMatchRequest>,
     mut time: ResMut<Time<Virtual>>,
+    config: Option<Res<NetConfig>>,
+    mode: Res<GameMode>,
 ) {
     for (interaction, button) in &interactions {
         if *interaction != Interaction::Pressed {
             continue;
         }
         match *button {
-            MainMenuButton::NewGame | MainMenuButton::ChangeHero => {
-                // Restart on a fresh map; Change Hero goes through hero select first.
+            MainMenuButton::NewGame | MainMenuButton::StoryMode | MainMenuButton::ChangeHero => {
+                // New Game is always classic; Story Mode starts (or restarts) a story run
+                // and is offline only; Change Hero keeps the current mode.
+                let next_mode = match *button {
+                    MainMenuButton::NewGame => GameMode::Classic,
+                    MainMenuButton::StoryMode => {
+                        if !config.as_ref().is_none_or(|c| story_available(c.mode)) {
+                            continue;
+                        }
+                        GameMode::Story
+                    }
+                    _ => *mode,
+                };
                 reset.write(ResetMatchRequest {
                     change_hero: *button == MainMenuButton::ChangeHero,
+                    mode: next_mode,
                 });
                 menu.open = false;
                 menu.settings_open = false;

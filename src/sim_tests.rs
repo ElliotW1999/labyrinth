@@ -195,7 +195,7 @@ fn map_is_generated_only_after_a_hero_is_picked_and_resets_on_change_hero() {
 
     // Change Hero: everything is torn down and hero select comes back.
     app.world_mut()
-        .write_message(ResetMatchRequest { change_hero: true });
+        .write_message(ResetMatchRequest::classic(true));
     app.update();
     app.update();
     assert!(!app.world().resource::<MapState>().generated);
@@ -221,13 +221,104 @@ fn map_is_generated_only_after_a_hero_is_picked_and_resets_on_change_hero() {
 
     // New Game keeps the hero and regenerates the map without the select screen.
     app.world_mut()
-        .write_message(ResetMatchRequest { change_hero: false });
+        .write_message(ResetMatchRequest::classic(false));
     for _ in 0..4 {
         app.update();
     }
     assert_eq!(count::<HeroSelectRoot>(&mut app), 0);
     assert_eq!(count::<PlayerHero>(&mut app), 1);
     assert_eq!(count::<Tower>(&mut app), towers);
+}
+
+#[test]
+fn classic_new_game_is_unchanged_with_story_plugin() {
+    use crate::components::{Ancient, Creep, PlayerHero, Tower};
+    use crate::map::GameMode;
+
+    let mut app = match_app();
+    app.add_plugins(crate::story::StoryPlugin);
+    pick_hero(&mut app, HeroId::Vanguard);
+    assert_eq!(*app.world().resource::<GameMode>(), GameMode::Classic);
+    assert!(count::<Tower>(&mut app) > 0);
+    assert_eq!(count::<Ancient>(&mut app), 2);
+    assert!(count::<Creep>(&mut app) > 0);
+    assert_eq!(count::<PlayerHero>(&mut app), 1);
+}
+
+#[test]
+fn story_mode_does_not_build_the_classic_map() {
+    use crate::components::{Ancient, Creep, Obstacle, PlayerHero, Tower};
+    use crate::map::{GameMode, MapState, ResetMatchRequest};
+
+    let mut app = match_app();
+    app.add_plugins(crate::story::StoryPlugin);
+    app.world_mut().write_message(ResetMatchRequest {
+        change_hero: false,
+        mode: GameMode::Story,
+    });
+    for _ in 0..2 {
+        app.update();
+    }
+    pick_hero(&mut app, HeroId::Vanguard);
+    assert_eq!(*app.world().resource::<GameMode>(), GameMode::Story);
+    assert!(app.world().resource::<MapState>().generated);
+    assert_eq!(count::<Tower>(&mut app), 0);
+    assert_eq!(count::<Ancient>(&mut app), 0);
+    assert_eq!(count::<Obstacle>(&mut app), 0);
+    assert_eq!(count::<Creep>(&mut app), 0);
+    assert_eq!(count::<PlayerHero>(&mut app), 1);
+    // The hero starts in the safe room, not at the classic base.
+    let pos = app
+        .world_mut()
+        .query_filtered::<&Transform, With<PlayerHero>>()
+        .single(app.world())
+        .unwrap()
+        .translation;
+    assert!(pos.xz().distance(crate::story::SAFE_ENTRY.xz()) < 1.0);
+    // No lane waves arrive in Story Mode either.
+    for _ in 0..(31 * 60) {
+        app.update();
+    }
+    assert_eq!(count::<Creep>(&mut app), 0);
+}
+
+#[test]
+fn change_hero_keeps_the_current_mode_and_new_game_returns_to_classic() {
+    use crate::components::{PlayerHero, Tower};
+    use crate::map::{GameMode, ResetMatchRequest};
+
+    let mut app = match_app();
+    app.add_plugins(crate::story::StoryPlugin);
+    app.world_mut().write_message(ResetMatchRequest {
+        change_hero: false,
+        mode: GameMode::Story,
+    });
+    for _ in 0..2 {
+        app.update();
+    }
+    pick_hero(&mut app, HeroId::Vanguard);
+
+    // Change Hero in Story keeps Story.
+    let current = *app.world().resource::<GameMode>();
+    app.world_mut().write_message(ResetMatchRequest {
+        change_hero: true,
+        mode: current,
+    });
+    app.update();
+    app.update();
+    assert_eq!(*app.world().resource::<GameMode>(), GameMode::Story);
+    pick_hero(&mut app, HeroId::Sniper);
+    assert_eq!(count::<Tower>(&mut app), 0);
+
+    // New Game returns to the classic map with the same hero.
+    app.world_mut()
+        .write_message(ResetMatchRequest::classic(false));
+    for _ in 0..4 {
+        app.update();
+    }
+    assert_eq!(*app.world().resource::<GameMode>(), GameMode::Classic);
+    assert!(count::<Tower>(&mut app) > 0);
+    assert_eq!(count::<PlayerHero>(&mut app), 1);
 }
 
 // --- Compulsions (fear, taunt, hypnosis): whole-sim behaviour ---

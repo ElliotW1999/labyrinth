@@ -35,7 +35,8 @@ impl Plugin for ItemsPlugin {
                 Update,
                 spawn_shops
                     .in_set(crate::map::MapGenSet)
-                    .run_if(crate::map::map_requested),
+                    .run_if(crate::map::map_requested)
+                    .run_if(crate::map::classic_mode),
             )
             .add_systems(
                 Update,
