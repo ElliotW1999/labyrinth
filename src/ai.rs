@@ -133,6 +133,7 @@ fn follow_lane_waypoints(
 /// Hunters without an attack target walk toward the nearest enemy they may attack within
 /// their aggro radius. With none in range they keep their last move and idle. Units whose
 /// orders a compulsion has taken (fear, taunt) are left to `enforce_compulsions`.
+#[allow(clippy::type_complexity)]
 fn hunt_enemies(
     hunters: Query<
         (Entity, &Transform, &Team, &Hunter, Option<&StatusEffects>),

@@ -257,6 +257,7 @@ pub(crate) const ACTION_HOTKEYS: [(KeyCode, ActionSource); 12] = [
 /// enter targeting mode. Shift queues the activation behind the current command. Actions
 /// that don't occupy the caster (instant items) skip the command queue so current
 /// orders keep running.
+#[allow(clippy::type_complexity)]
 fn begin_or_cast_from_hotkeys(
     keys: Res<ButtonInput<KeyCode>>,
     mut targeting: ResMut<AbilityTargeting>,

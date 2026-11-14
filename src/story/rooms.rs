@@ -74,14 +74,11 @@ impl RoomId {
             .find(|room| room.id == self)
             .expect("every RoomId has a definition")
     }
-
-    pub fn name(self) -> &'static str {
-        self.definition().name
-    }
 }
 
 impl RoomDefinition {
     /// Total creeps the room spawns.
+    #[cfg(test)]
     pub fn hostile_count(&self) -> u32 {
         self.spawns.iter().map(|spawn| spawn.count).sum()
     }

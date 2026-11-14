@@ -312,3 +312,51 @@ fn handle_main_menu_buttons(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::net::{NetConfig, NetMode};
+
+    fn config(mode: NetMode) -> NetConfig {
+        NetConfig {
+            mode,
+            addr: "127.0.0.1:7777".parse().unwrap(),
+        }
+    }
+
+    #[test]
+    fn story_button_disabled_when_not_offline() {
+        let mut app = App::new();
+        app.insert_resource(config(NetMode::Host))
+            .add_systems(Update, sync_story_button);
+        let label = app.world_mut().spawn(Text::new("Story Mode")).id();
+        let button = app
+            .world_mut()
+            .spawn((MainMenuButton::StoryMode, BackgroundColor(Color::WHITE)))
+            .add_child(label)
+            .id();
+        app.update();
+        assert_eq!(
+            app.world().get::<Text>(label).unwrap().0,
+            "Story Mode (offline only)"
+        );
+        let greyed = app.world().get::<BackgroundColor>(button).unwrap().0;
+
+        *app.world_mut().resource_mut::<NetConfig>() = config(NetMode::Offline);
+        app.update();
+        assert_eq!(app.world().get::<Text>(label).unwrap().0, "Story Mode");
+        assert_ne!(
+            app.world().get::<BackgroundColor>(button).unwrap().0,
+            greyed
+        );
+    }
+
+    #[test]
+    fn menu_systems_initialize() {
+        use bevy::ecs::system::IntoSystem;
+        let mut world = World::new();
+        IntoSystem::into_system(handle_main_menu_buttons).initialize(&mut world);
+        IntoSystem::into_system(sync_story_button).initialize(&mut world);
+    }
+}

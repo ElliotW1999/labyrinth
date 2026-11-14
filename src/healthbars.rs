@@ -66,6 +66,7 @@ fn attach_health_bars(
 
 /// Name labels: heroes show their name, anything with a [`WorldTag`] (Captain, Boss, Story
 /// exits) shows the tag. Independent of health bars so health-less entities can be labelled.
+#[allow(clippy::type_complexity)]
 fn attach_world_labels(
     mut commands: Commands,
     owners: Query<
@@ -174,6 +175,7 @@ fn sync_health_bars(
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn sync_world_hero_names(
     camera: Query<(&Camera, &GlobalTransform), With<GameCamera>>,
     owners: Query<

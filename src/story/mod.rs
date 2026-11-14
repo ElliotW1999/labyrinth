@@ -19,6 +19,7 @@
 //! Cleared at FINAL_DEPTH -> Victory;  last life lost -> GameOver
 //! ```
 
+pub mod hud;
 pub mod layouts;
 pub mod lives;
 pub mod pickups;
@@ -87,6 +88,16 @@ impl Plugin for StoryPlugin {
             .add_message::<RoomEnteredEvent>()
             .add_message::<RoomCompletedEvent>()
             .add_message::<StoryRunEndedEvent>()
+            .add_systems(Startup, hud::spawn_story_hud)
+            .add_systems(
+                Update,
+                (
+                    hud::sync_story_hud,
+                    hud::sync_story_overlay,
+                    hud::handle_overlay_buttons,
+                )
+                    .chain(),
+            )
             .configure_sets(
                 Update,
                 (
@@ -254,8 +265,9 @@ pub struct ExitPad {
     pub armed: bool,
 }
 
-/// Facts other systems (HUD, tests) can read.
+/// Facts other systems (and tests) can read.
 #[derive(Message, Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub struct RoomEnteredEvent {
     pub room: RoomId,
     pub depth: u32,
@@ -269,6 +281,7 @@ pub struct RoomCompletedEvent {
 }
 
 #[derive(Message, Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub struct StoryRunEndedEvent {
     pub victory: bool,
 }
