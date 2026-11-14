@@ -701,3 +701,16 @@ The classic gating covers `spawn_map`, `spawn_obstacle_course`, `spawn_shops`, `
   - `data/rooms.csv`, `data/room_spawns.csv`.
   - `scripts/RoomGenerator.py`, `scripts/test_room_generator.py`.
   - `wiki/Story-Mode.md`, and this plan.
+
+---
+
+## Implementation notes
+
+Running log kept while implementing; deviations are listed with reasons.
+
+### Step 0: baseline (before any change)
+
+- Environment: installed `pkg-config libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev` (Phase 0 workaround of the cleanup plan; system change only, nothing committed).
+- `cargo build`: ok. `cargo test`: 935 passed, 0 failed. `cargo fmt --check`: clean.
+- `cargo clippy`: 136 pre-existing warnings, 0 errors (the bar is "no new warnings").
+- `AbilityGenerator.py --check`: 38 abilities, 98 effect rows. `ItemGenerator.py --check`: 79 items, 122 effect rows. `test_generator_common`: 277 tests ok.
