@@ -15,7 +15,9 @@
 | Ctrl+Q / W / E / R | Spend a skill point to rank that ability |
 | Spell bar `+` | Rank up when highlighted |
 | A S D Z X C | Use inventory item in that slot (actives only) |
-| Esc | Main menu (New Game = same hero on a fresh map / Change Hero = back to hero select, then a fresh map / Settings / Quit) |
+| V | Use the neutral item (Story Mode; separate from the shop slots) |
+| B | Use the bottle (Story Mode; restores 120 HP and 60 mana over 3 s, 3 charges refilled on room completion) |
+| Esc | Main menu (New Game = same hero on a fresh **classic** map / Story Mode = start or restart a Story run, offline only / Change Hero = back to hero select, then a fresh map in the current mode / Settings / Quit) |
 | RMB inventory slot | Open sell menu at cursor (LMB Sell = 50% refund near shop) |
 | `$` shop button (bottom-right, shows gold) | Toggle item shop panel |
 | LMB shop item | Open components / buy popup (recipes hidden from grid) |

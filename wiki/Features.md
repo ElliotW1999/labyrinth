@@ -4,7 +4,7 @@
 
 - Three-lane map with river, jungle pockets, tree obstacles, towers, ancients, and a northern obstacle course
 - Fog of war with transparent grey overlay and tree line-of-sight (buildings always visible; course is fog-free)
-- Esc main menu (New Game / Settings / Quit); borderless fullscreen
+- Esc main menu (New Game / Story Mode / Change Hero / Settings / Quit); borderless fullscreen
 - Selectable heroes (Vanguard / Skirmisher / Arcanist) with unique spells and Str/Agi/Int growth
 - Player hero with Str/Agi/Int, HP / mana / gold / XP / levels and rankable QWER abilities
 - Item shop (gold on the shop button), 6-slot inventory between spells and minimap, timed buffs / debuffs
@@ -18,4 +18,5 @@
 - Free camera (extended far clip for the scaled map; collision ignores the camera), bottom HUD with hero icon + name / stats table / HP+MP bars (with regen) / spell bar centered on screen, inventory sell-at-cursor, shop, skill points, and clickable minimap
 - Heroes/creeps show facing noses; towers/ancients/trees use multi-part meshes; hero names appear above world health bars
 - Abilities spend mana and start cooldown only after the cast point completes (cancel during cast point is free)
+- **Story Mode** (Esc menu or `--story`, offline): a room-by-room dungeon crawl with 4 lives, a safe camp with a shop, two exit pads to different hostile rooms, Captain and Boss creeps, a neutral item slot (V) and a bottle (B); rooms come from `data/rooms.csv` via `RoomGenerator.py` (see Story Mode)
 - Optional online 1v1 (UDP host/client) while default play stays fully offline

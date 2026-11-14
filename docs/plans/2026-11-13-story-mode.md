@@ -714,3 +714,33 @@ Running log kept while implementing; deviations are listed with reasons.
 - `cargo build`: ok. `cargo test`: 935 passed, 0 failed. `cargo fmt --check`: clean.
 - `cargo clippy`: 136 pre-existing warnings, 0 errors (the bar is "no new warnings").
 - `AbilityGenerator.py --check`: 38 abilities, 98 effect rows. `ItemGenerator.py --check`: 79 items, 122 effect rows. `test_generator_common`: 277 tests ok.
+
+### Deviations from the plan, with reasons
+
+1. **`equip_neutral` moved from step 2 to step 3.** It requires `ItemDefinition.slot == Neutral`, and `ItemSlot` is introduced with the item data in step 3. Step 2 added `place_in_slot` and `refill_charges`; the charged-item tests used a temporary `DefinitionOverride` (the old test `non_consumable_items_never_lose_charges` encoded the behaviour this plan deliberately changes and was replaced by `non_consumable_charged_item_spends_charges_and_is_never_removed`).
+2. **`items::spawn_item_shop` was extracted in step 7**, where it is first used (with `SHOP_SIZE` and `shop_material`), so no step ships an unused helper.
+3. **Lane-less creeps had no AI between steps 4 and 5.** `spawn_creep_with` inserts `ai::Hunter` in the step 5 commit (the component did not exist earlier), and `lane_less_converted_creep_hunts` is a step 5 test.
+4. **Small field additions to plan structs.** `RoomDefinition.description` (the CSV column needs a Rust home; the HUD shows it for the safe camp) and `ExitPad.armed` (the plan armed pads through material and tag only; a flag is what the dwell rule reads).
+5. **Last life.** On the death that uses the last life the hero gets `Downed { respawn_in: f32::INFINITY }` in addition to the `GameOver` phase, so a dead hero in a finished run also takes no orders and fires no actions. The plan only said "the hero stays dead".
+6. **`grant_story_gear` instead of work inside `start_story_run`.** Lives and the Bottle are granted by a system keyed on `Without<HeroLives>`, which also covers a hero respawned by Change Hero; `start_story_run` only resets the run.
+7. **World labels are attached independently of health bars** (`attach_world_labels`, marker `HasWorldLabel`), because exit pads carry a `WorldTag` but no `Health`. `WorldHeroNameLabel` keeps its name. A label for a hero is now also retried until the `WorldNameLayer` exists (before, a hero spawned before the layer never got one).
+8. **Visibility changes of a few items.** `combat::despawn_dead`, `map::reset_match`, `abilities::regen_mana` and `abilities::ACTION_HOTKEYS` became `pub(crate)` (system ordering and tests); `StoryRng` is `pub` (the pure `choose_exits` in `rooms.rs` takes it). `RoomLayoutId::all` and `RoomDefinition::hostile_count` are `cfg(test)`.
+9. **`ActionError::CasterDisabled` is not returned for a downed caster.** `validate_activation_requests` drops the request, like every other rejected request (no error value is surfaced by that system).
+10. **Test layout.** `change_hero_keeps_the_current_mode` and `new_game_from_story_returns_to_classic` are one test; `classic_new_game_is_unchanged_with_story_plugin` is a new test (the shared `match_app` was not changed so the existing lifecycle test stays as it was); `captain_and_boss_get_a_world_tag_label` is covered in `units` (the `WorldTag`) and `healthbars` (the label). The bottle test steps 10 ms frames, because a timed status overshoots by up to one frame (2 HP at 50 ms). I added `a_second_bottle_sip_refreshes_the_effects_instead_of_stacking` to verify the documented refresh behaviour (D9).
+11. **`--story` with a host or client session** falls back to the classic map with a message instead of failing.
+12. **Pads arm through commands.** `Mesh3d` does not bring `Visibility` in a headless test world, so arming inserts `Visibility::Inherited` and the tag instead of mutating a `Visibility` the query would require.
+13. **Verification commands (V)** now include `RoomGenerator.py --check`, `test_room_generator` and the room catalog in the determinism diff (edited in the cleanup plan's shared V block, as step 9 asked). The generator writes unformatted Rust and then runs `rustfmt`; the determinism check is run after `cargo fmt`, as for the other generators.
+14. **`data/rooms.csv` and `data/room_spawns.csv` are force-added** (`git add -f`): `/data` is in `.gitignore`, and the other CSVs under `data/` were added the same way. `.gitignore` itself is untouched.
+
+### Final verification (after step 10)
+
+- `cargo build`: ok. `cargo test`: **1004 passed**, 0 failed (baseline 935; +69 tests). `cargo fmt --check`: clean.
+- `cargo clippy`: **137 lines of warnings, equal to the baseline** (136 warnings plus the summary line), 0 errors. Every warning that was new during the work (dead code awaiting the HUD, type complexity of added queries) was resolved or `allow`ed the way the code base does it.
+- `AbilityGenerator.py --check`: 38 abilities, 98 effect rows. `ItemGenerator.py --check`: 83 items, 130 effect rows. `RoomGenerator.py --check`: 5 rooms, 9 spawn groups, FINAL_DEPTH 4. `test_generator_common` plus `test_room_generator`: 309 tests ok (277 baseline + 10 slot tests + 22 room tests).
+- Determinism: after re-running all three generators and `cargo fmt`, `git diff` is empty; `src/story/room_catalog.rs` regenerated from the CSVs is byte-identical to the file hand-written in step 7 (also asserted by `test_generated_catalog_is_byte_identical_to_the_committed_file`).
+
+### Not verified / left open
+
+- The game was **not launched in a window** (no GPU / display here): the HUD layout, the V/B panel position, overlay look and the room visuals are covered by system-initialisation and state tests only, not by eye.
+- Captain and Boss profiles, bottle numbers and room contents are the plan's stub values.
+- Story Mode stays offline only (D6); the minimap does not zoom to a room.

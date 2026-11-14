@@ -4886,6 +4886,37 @@ mod tests {
     }
 
     #[test]
+    fn a_second_bottle_sip_refreshes_the_effects_instead_of_stacking() {
+        let mut app = bottle_app();
+        let caster = wounded_caster(&mut app);
+        let control = wounded_caster(&mut app);
+        put_in_slot(&mut app, caster, BOTTLE_SLOT, ItemId::Bottle);
+        request(&mut app, caster, BOTTLE_SLOT, CastTarget::None);
+        for _ in 0..60 {
+            fine_step(&mut app); // 0.6 s: past the 0.5 s cooldown
+        }
+        request(&mut app, caster, BOTTLE_SLOT, CastTarget::None);
+        for _ in 0..500 {
+            fine_step(&mut app); // let everything run out
+        }
+        assert_eq!(
+            slot(&app, caster, BOTTLE_SLOT).unwrap().cooldown.charges,
+            Some(1)
+        );
+        let hp = health_of(&app, caster) - health_of(&app, control);
+        let mp = mana_of(&app, caster) - mana_of(&app, control);
+        // One 3 s window restarted at 0.6 s: 40 x 3.6 HP and 20 x 3.6 mana, not 240 and 120.
+        assert!(
+            (hp - 144.0).abs() < 3.0,
+            "refreshed heal over time, got {hp}"
+        );
+        assert!(
+            (mp - 72.0).abs() < 3.0,
+            "refreshed mana regeneration, got {mp}"
+        );
+    }
+
+    #[test]
     fn bottle_blocked_while_muted_or_stunned() {
         for status in [StatusEffect::mute(5.0), StatusEffect::stunned(5.0)] {
             let mut app = bottle_app();
