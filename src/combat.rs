@@ -1021,7 +1021,8 @@ pub(crate) fn tick_lifetimes(
 pub struct CreepConvertedEvent {
     pub position: Vec3,
     pub team: Team,
-    pub lane: Lane,
+    /// The lane the converted creep resumes (`None`: it was placed by a game mode).
+    pub lane: Option<Lane>,
     pub ranged: bool,
 }
 
@@ -1095,6 +1096,7 @@ fn despawn_dead(
         // The bounty above is paid as usual; a creep dying inside an enemy conversion aura
         // is then replaced by a fresh creep of that enemy's team.
         if let (Some(victim_team), Some(creep)) = (team, creep)
+            && creep.class.profile().convertible
             && let Some(holder_team) = conversion_holder(
                 &holders,
                 *victim_team,

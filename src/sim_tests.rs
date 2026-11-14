@@ -845,11 +845,76 @@ mod conversion {
         let risen = creeps_of(&mut app, Team::Radiant);
         assert_eq!(risen.len(), 1);
         let creep = *app.world().get::<Creep>(risen[0]).unwrap();
-        assert_eq!(creep.lane, Lane::Top);
+        assert_eq!(creep.lane, Some(Lane::Top));
         assert!(creep.ranged, "same creep type");
         let health = app.world().get::<Health>(risen[0]).unwrap();
         assert_eq!(health.current, health.max);
         assert_eq!(health.max, 240.0, "a ranged creep's full health");
+    }
+
+    fn spawn_class_creep(
+        app: &mut App,
+        team: Team,
+        class: crate::components::CreepClass,
+        lane: Option<Lane>,
+        pos: Vec3,
+    ) -> Entity {
+        app.world_mut()
+            .resource_scope(|world, assets: Mut<SharedAssets>| {
+                let mut queue = bevy::ecs::world::CommandQueue::default();
+                let mut commands = Commands::new(&mut queue, world);
+                let id = crate::units::spawn_creep_with(
+                    &mut commands,
+                    &assets,
+                    crate::units::CreepSpawn {
+                        team,
+                        position: pos,
+                        ranged: false,
+                        class,
+                        lane,
+                    },
+                );
+                queue.apply(world);
+                id
+            })
+    }
+
+    #[test]
+    fn captains_and_bosses_never_convert_on_death() {
+        use crate::components::CreepClass;
+        for class in [CreepClass::Captain, CreepClass::Boss] {
+            let mut app = sim_app();
+            let _holder = spawn_holder(&mut app, Team::Radiant, Vec3::ZERO, 300.0, 10.0);
+            let victim = spawn_class_creep(
+                &mut app,
+                Team::Dire,
+                class,
+                Some(Lane::Mid),
+                Vec3::new(200.0, 0.0, 0.0),
+            );
+            app.update();
+            kill(&mut app, victim);
+            run(&mut app, 3);
+            assert!(creeps_of(&mut app, Team::Dire).is_empty(), "{class:?} died");
+            assert!(
+                creeps_of(&mut app, Team::Radiant).is_empty(),
+                "{class:?} must not be raised"
+            );
+        }
+        // A Normal creep next to them still converts (the rule is per class).
+        let mut app = sim_app();
+        let _holder = spawn_holder(&mut app, Team::Radiant, Vec3::ZERO, 300.0, 10.0);
+        let victim = spawn_class_creep(
+            &mut app,
+            Team::Dire,
+            CreepClass::Normal,
+            Some(Lane::Mid),
+            Vec3::new(200.0, 0.0, 0.0),
+        );
+        app.update();
+        kill(&mut app, victim);
+        run(&mut app, 3);
+        assert_eq!(creeps_of(&mut app, Team::Radiant).len(), 1);
     }
 
     #[test]

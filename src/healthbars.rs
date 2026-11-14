@@ -4,8 +4,8 @@ use bevy::prelude::*;
 
 use crate::camera::GameCamera;
 use crate::components::{
-    HasHealthBar, Health, HealthBar, HealthBarFill, SelectionBounds, WorldHeroNameLabel,
-    WorldNameLayer,
+    HasHealthBar, HasWorldLabel, Health, HealthBar, HealthBarFill, SelectionBounds,
+    WorldHeroNameLabel, WorldNameLayer, WorldTag,
 };
 use crate::heroes::HeroKind;
 use crate::resources::SharedAssets;
@@ -19,6 +19,7 @@ impl Plugin for HealthBarPlugin {
             Update,
             (
                 attach_health_bars,
+                attach_world_labels,
                 sync_health_bars,
                 sync_world_hero_names,
                 cull_orphan_health_bars,
@@ -32,15 +33,9 @@ impl Plugin for HealthBarPlugin {
 fn attach_health_bars(
     mut commands: Commands,
     assets: Res<SharedAssets>,
-    units: Query<
-        (Entity, Option<&SelectionBounds>, Option<&HeroKind>),
-        (With<Health>, Without<HasHealthBar>),
-    >,
-    layer: Query<Entity, With<WorldNameLayer>>,
+    units: Query<(Entity, Option<&SelectionBounds>), (With<Health>, Without<HasHealthBar>)>,
 ) {
-    let layer_entity = layer.single().ok();
-
-    for (entity, selection, hero_kind) in &units {
+    for (entity, selection) in &units {
         let width = bar_width(selection);
 
         commands
@@ -65,30 +60,55 @@ fn attach_health_bars(
                 ));
             });
 
-        if let (Some(kind), Some(layer_e)) = (hero_kind, layer_entity) {
-            commands.entity(layer_e).with_children(|parent| {
-                parent.spawn((
-                    Name::new(format!("WorldName:{}", kind.0.name())),
-                    WorldHeroNameLabel { owner: entity },
-                    Text::new(kind.0.name()),
-                    TextFont::from_font_size(14.0),
-                    TextColor(Color::srgb(0.95, 0.96, 1.0)),
-                    Node {
-                        position_type: PositionType::Absolute,
-                        left: px(-100.0),
-                        top: px(-100.0),
-                        padding: UiRect::axes(px(6), px(2)),
-                        border_radius: BorderRadius::all(px(3)),
-                        ..default()
-                    },
-                    BackgroundColor(Color::srgba(0.05, 0.07, 0.1, 0.72)),
-                    Visibility::Hidden,
-                    ZIndex(5),
-                ));
-            });
-        }
-
         commands.entity(entity).insert(HasHealthBar);
+    }
+}
+
+/// Name labels: heroes show their name, anything with a [`WorldTag`] (Captain, Boss, Story
+/// exits) shows the tag. Independent of health bars so health-less entities can be labelled.
+fn attach_world_labels(
+    mut commands: Commands,
+    owners: Query<
+        (Entity, Option<&HeroKind>, Option<&WorldTag>),
+        (Or<(With<HeroKind>, With<WorldTag>)>, Without<HasWorldLabel>),
+    >,
+    layer: Query<Entity, With<WorldNameLayer>>,
+) {
+    let Ok(layer_entity) = layer.single() else {
+        return;
+    };
+    for (entity, hero_kind, tag) in &owners {
+        let text = label_text(hero_kind, tag);
+        commands.entity(layer_entity).with_children(|parent| {
+            parent.spawn((
+                Name::new(format!("WorldName:{text}")),
+                WorldHeroNameLabel { owner: entity },
+                Text::new(text),
+                TextFont::from_font_size(14.0),
+                TextColor(Color::srgb(0.95, 0.96, 1.0)),
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: px(-100.0),
+                    top: px(-100.0),
+                    padding: UiRect::axes(px(6), px(2)),
+                    border_radius: BorderRadius::all(px(3)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.05, 0.07, 0.1, 0.72)),
+                Visibility::Hidden,
+                ZIndex(5),
+            ));
+        });
+        commands.entity(entity).insert(HasWorldLabel);
+    }
+}
+
+/// A [`WorldTag`] wins over the hero name.
+fn label_text(hero_kind: Option<&HeroKind>, tag: Option<&WorldTag>) -> String {
+    match (tag, hero_kind) {
+        (Some(tag), _) => tag.0.clone(),
+        (None, Some(kind)) => kind.0.name().to_string(),
+        (None, None) => String::new(),
     }
 }
 
@@ -159,7 +179,8 @@ fn sync_world_hero_names(
     owners: Query<
         (
             &GlobalTransform,
-            &HeroKind,
+            Option<&HeroKind>,
+            Option<&WorldTag>,
             Option<&SelectionBounds>,
             &Visibility,
         ),
@@ -172,7 +193,7 @@ fn sync_world_hero_names(
     };
 
     for (label, mut node, mut vis, mut text) in &mut labels {
-        let Ok((owner_gt, kind, selection, owner_vis)) = owners.get(label.owner) else {
+        let Ok((owner_gt, kind, tag, selection, owner_vis)) = owners.get(label.owner) else {
             *vis = Visibility::Hidden;
             continue;
         };
@@ -188,9 +209,15 @@ fn sync_world_hero_names(
             continue;
         };
 
-        *text = Text::new(kind.0.name());
+        let wanted = label_text(kind, tag);
         // Approximate half-width so the label sits centered above the bar.
-        node.left = px(screen.x - 36.0);
+        let half_width = if tag.is_some() {
+            wanted.chars().count() as f32 * 4.0 + 6.0
+        } else {
+            36.0
+        };
+        *text = Text::new(wanted);
+        node.left = px(screen.x - half_width);
         node.top = px(screen.y - 16.0);
         *vis = Visibility::Visible;
     }
@@ -211,7 +238,7 @@ fn cull_orphan_health_bars(
 fn cull_orphan_world_names(
     mut commands: Commands,
     labels: Query<(Entity, &WorldHeroNameLabel)>,
-    owners: Query<Entity, With<HeroKind>>,
+    owners: Query<Entity, Or<(With<HeroKind>, With<WorldTag>)>>,
 ) {
     for (entity, label) in &labels {
         if owners.get(label.owner).is_err() {
@@ -252,6 +279,48 @@ mod tests {
         let mut world = World::new();
         let mut system = IntoSystem::into_system(sync_world_hero_names);
         system.initialize(&mut world);
+    }
+
+    #[test]
+    fn attach_world_labels_system_initializes() {
+        let mut world = World::new();
+        let mut system = IntoSystem::into_system(attach_world_labels);
+        system.initialize(&mut world);
+    }
+
+    #[test]
+    fn world_tags_label_non_hero_owners_and_win_over_hero_names() {
+        let mut world = World::new();
+        let layer = world.spawn(WorldNameLayer).id();
+        let captain = world.spawn(WorldTag("Captain".to_string())).id();
+        let hero = world.spawn(HeroKind(crate::heroes::HeroId::Vanguard)).id();
+        let plain = world.spawn_empty().id();
+        let mut system = IntoSystem::into_system(attach_world_labels);
+        system.initialize(&mut world);
+        let _ = system.run((), &mut world);
+        system.apply_deferred(&mut world);
+
+        let mut labels = world.query::<(&WorldHeroNameLabel, &Text, &ChildOf)>();
+        let mut found: Vec<(Entity, String)> = labels
+            .iter(&world)
+            .map(|(label, text, parent)| {
+                assert_eq!(parent.parent(), layer);
+                (label.owner, text.0.clone())
+            })
+            .collect();
+        found.sort();
+        assert_eq!(found.len(), 2, "the unlabelled entity gets nothing");
+        assert!(found.contains(&(captain, "Captain".to_string())));
+        assert!(found.contains(&(hero, crate::heroes::HeroId::Vanguard.name().to_string())));
+        assert!(world.get::<HasWorldLabel>(plain).is_none());
+        assert!(world.get::<HasWorldLabel>(captain).is_some());
+        assert_eq!(
+            label_text(
+                Some(&HeroKind(crate::heroes::HeroId::Vanguard)),
+                Some(&WorldTag("Boss".to_string()))
+            ),
+            "Boss"
+        );
     }
 
     #[test]
